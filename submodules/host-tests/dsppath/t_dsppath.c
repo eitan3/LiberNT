@@ -86,7 +86,9 @@ check_endpoint(const NHLT_ENDPOINT_CASE* Case)
 
     if (NhltParseTable(Table->Table, Table->Size, &Summary) != NhltParseOk)
     {
-        CHECK(!"the table of an endpoint case did not parse");
+        fprintf(stderr, "%s:%d: FAIL: the table of endpoint case %u did not parse\n", __FILE__, __LINE__, Case->TableIndex);
+        ++Checks;
+        ++Failures;
         return;
     }
     if (Case->EndpointIndex >= Summary.EndpointsParsed || Case->EndpointIndex >= NHLT_SUMMARY_ENDPOINTS)
