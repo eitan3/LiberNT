@@ -689,8 +689,8 @@ BuildMicrophone(PageBuilder &page)
             page.Button(PathFindFileNameW(path.c_str()), path, L"apps_20_regular", Str(IDS_MIC_REMOVE),
                         [host, path](int)
                         {
-                            RegDeleteKeyW(HKEY_CURRENT_USER, MicAppKey(path).c_str());
-                            host->Refresh();
+                            if (RegDeleteKeyExW(HKEY_CURRENT_USER, MicAppKey(path).c_str(), KEY_WOW64_64KEY, 0) == ERROR_SUCCESS)
+                                host->Refresh();
                         });
         }
         page.Button(Str(IDS_MIC_ADD_APP), Str(IDS_MIC_ADD_APP_DESC), L"add_circle_20_regular", Str(IDS_MIC_ADD),
