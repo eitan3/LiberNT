@@ -7,6 +7,7 @@ list(APPEND SOURCE
     speakervolume.c
     volume.c
     audio.c
+    endpointprops.c
     voice.c
     mmsys.h)
 
@@ -19,6 +20,6 @@ add_library(mmsys MODULE
     ${CMAKE_CURRENT_BINARY_DIR}/mmsys.def)
 
 set_module_type(mmsys cpl UNICODE)
-add_importlibs(mmsys user32 comctl32 devmgr gdi32 winmm advapi32 shell32 setupapi shlwapi comdlg32 ole32 msvcrt kernel32 ntdll)
+add_importlibs(mmsys user32 comctl32 devmgr gdi32 winmm advapi32 shell32 setupapi shlwapi comdlg32 ole32 cfgmgr32 msvcrt kernel32 ntdll)
 add_pch(mmsys mmsys.h SOURCE)
 add_cd_file(TARGET mmsys DESTINATION reactos/system32 FOR all)

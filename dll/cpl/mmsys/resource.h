@@ -28,6 +28,7 @@
 #define IDD_SETUP1         4907
 #define IDD_MULTICHANNEL   4909
 #define IDD_SETUP2         4912
+#define IDD_ENDPOINT_GENERAL 4920
 
 /* Controls */
 #define IDC_VOLUME_TRACKBAR       5000
@@ -66,6 +67,16 @@
 #define IDC_SAVEAS_BTN            5033
 #define IDC_DELETE_BTN            5034
 
+/* Device properties */
+#define IDC_EP_NAME               5100
+#define IDC_EP_JACK               5101
+#define IDC_EP_CONTROLLER         5102
+#define IDC_EP_MANUFACTURER       5103
+#define IDC_EP_PROVIDER           5104
+#define IDC_EP_VERSION            5105
+#define IDC_EP_DATE               5106
+#define IDC_EP_PROPERTIES         5107
+
 #define IDI_SPEAKIMG  4624
 #define IDC_SPEAKIMG  4625
 #define IDC_MUTE_ICON 4626
@@ -89,6 +100,17 @@
 #define IDS_CPLDESCRIPTION 1001
 #define IDS_NO_SOUND       1002
 #define IDS_NO_DEVICES     1003
+#define IDS_UNKNOWN_VALUE  1004
+
+#define IDS_FORMFACTOR_UNKNOWN    1010
+#define IDS_FORMFACTOR_SPEAKERS   1011
+#define IDS_FORMFACTOR_LINE       1012
+#define IDS_FORMFACTOR_HEADPHONES 1013
+#define IDS_FORMFACTOR_MICROPHONE 1014
+#define IDS_FORMFACTOR_HEADSET    1015
+#define IDS_FORMFACTOR_HANDSET    1016
+#define IDS_FORMFACTOR_SPDIF      1017
+#define IDS_FORMFACTOR_HDMI       1018
 
 /* Sounds Image List */
 #define IMAGE_SOUND_SECTION  0

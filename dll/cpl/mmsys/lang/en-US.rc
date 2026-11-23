@@ -228,12 +228,46 @@ BEGIN
     LTEXT "If you Cancel, you will need to restart later for LiberNT Audio to function properly.", 10263, 60, 100, 150, 40
 END
 
+IDD_ENDPOINT_GENERAL DIALOGEX 0, 0, 252, 218
+STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "General"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    ICON IDI_CPLICON, -1, 10, 10, 20, 20
+    LTEXT "", IDC_EP_NAME, 40, 15, 200, 9, SS_NOPREFIX
+    GROUPBOX "Jack Information", -1, 7, 38, 238, 34
+    LTEXT "Connector:", -1, 15, 53, 70, 9
+    LTEXT "", IDC_EP_JACK, 90, 53, 150, 9, SS_NOPREFIX
+    GROUPBOX "Controller Information", -1, 7, 80, 238, 110
+    LTEXT "Controller:", -1, 15, 95, 70, 9
+    LTEXT "", IDC_EP_CONTROLLER, 90, 95, 150, 18, SS_NOPREFIX
+    LTEXT "Manufacturer:", -1, 15, 116, 70, 9
+    LTEXT "", IDC_EP_MANUFACTURER, 90, 116, 150, 9, SS_NOPREFIX
+    LTEXT "Driver provider:", -1, 15, 130, 70, 9
+    LTEXT "", IDC_EP_PROVIDER, 90, 130, 150, 9, SS_NOPREFIX
+    LTEXT "Driver version:", -1, 15, 144, 70, 9
+    LTEXT "", IDC_EP_VERSION, 90, 144, 150, 9, SS_NOPREFIX
+    LTEXT "Driver date:", -1, 15, 158, 70, 9
+    LTEXT "", IDC_EP_DATE, 90, 158, 150, 9, SS_NOPREFIX
+    PUSHBUTTON "&Properties", IDC_EP_PROPERTIES, 175, 170, 62, 14
+END
+
 STRINGTABLE
 BEGIN
     IDS_CPLNAME "Sound and Audio Devices"
     IDS_CPLDESCRIPTION "Changes the sound scheme for your computer, or configure the settings for your speakers and recording devices."
     IDS_NO_SOUND "(None)"
     IDS_NO_DEVICES "No Devices"
+    IDS_UNKNOWN_VALUE "Not available"
+    IDS_FORMFACTOR_UNKNOWN "Unknown"
+    IDS_FORMFACTOR_SPEAKERS "Speakers"
+    IDS_FORMFACTOR_LINE "Line"
+    IDS_FORMFACTOR_HEADPHONES "Headphones"
+    IDS_FORMFACTOR_MICROPHONE "Microphone"
+    IDS_FORMFACTOR_HEADSET "Headset"
+    IDS_FORMFACTOR_HANDSET "Handset"
+    IDS_FORMFACTOR_SPDIF "Digital output (S/PDIF)"
+    IDS_FORMFACTOR_HDMI "Digital display audio (HDMI)"
     IDS_SPEAKER_VOLUME "Speaker Volume"
     IDS_SPEAKER_LEFT "&Left:"
     IDS_SPEAKER_RIGHT "&Right:"

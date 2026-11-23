@@ -91,6 +91,11 @@ AudioDlgProc(HWND hwndDlg,
              WPARAM wParam,
              LPARAM lParam);
 
+/* endpointprops.c */
+
+VOID
+ShowEndpointProperties(HWND hwndOwner, LPCWSTR pszEndpointId);
+
 /* speakervolume.c */
 
 INT_PTR

@@ -11,6 +11,7 @@
 extern void func_capturestream(void);
 extern void func_defaultdevice(void);
 extern void func_deviceenum(void);
+extern void func_endpointdriver(void);
 extern void func_devicetopology(void);
 extern void func_exclusivestream(void);
 extern void func_renderendpoint(void);
@@ -28,6 +29,7 @@ const struct test winetest_testlist[] =
     { "defaultdevice", func_defaultdevice },
     { "deviceenum", func_deviceenum },
     { "devicetopology", func_devicetopology },
+    { "endpointdriver", func_endpointdriver },
     { "exclusivestream", func_exclusivestream },
     { "renderendpoint", func_renderendpoint },
     { "renderstream", func_renderstream },

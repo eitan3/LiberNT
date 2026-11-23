@@ -412,7 +412,7 @@ AudioDlgProc(HWND hwndDlg,
 
                 case IDC_ADV2_BTN:
                 {
-
+                    ShowEndpointProperties(hwndDlg, GetSelectedEndpointId(GetDlgItem(hwndDlg, IDC_DEVICE_PLAY_LIST)));
                 }
                 break;
 
@@ -436,7 +436,7 @@ AudioDlgProc(HWND hwndDlg,
 
                 case IDC_ADV1_BTN:
                 {
-
+                    ShowEndpointProperties(hwndDlg, GetSelectedEndpointId(GetDlgItem(hwndDlg, IDC_DEVICE_REC_LIST)));
                 }
                 break;
 
