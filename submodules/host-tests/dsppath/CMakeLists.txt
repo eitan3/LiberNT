@@ -6,7 +6,8 @@
 add_executable(dsppath
     t_dsppath.c
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/nhlt/nhlt_parse.c
-    ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/hdaudbus/policy.c)
+    ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/hdaudbus/policy.c
+    ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/hdaudbus/policy_dmi.c)
 target_include_directories(dsppath PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/stubs
     ${CMAKE_CURRENT_SOURCE_DIR}

@@ -17,6 +17,7 @@ typedef uint16_t UINT16, *PUINT16;
 typedef uint32_t UINT32, *PUINT32;
 typedef uint64_t UINT64, *PUINT64;
 typedef size_t SIZE_T;
+typedef char CHAR, *PCHAR;
 typedef unsigned char UCHAR, *PUCHAR, BOOLEAN, *PBOOLEAN;
 typedef void VOID, *PVOID;
 
@@ -31,5 +32,9 @@ typedef void VOID, *PVOID;
 #define _Out_
 #define _In_reads_bytes_(x)
 #define _In_reads_bytes_opt_(x)
+#define _Out_writes_bytes_(x)
+#define _In_opt_
+#define _In_z_
+#define _Inout_
 
 #endif
