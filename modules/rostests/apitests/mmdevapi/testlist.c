@@ -13,6 +13,7 @@ extern void func_defaultdevice(void);
 extern void func_deviceenum(void);
 extern void func_deviceformat(void);
 extern void func_endpointdriver(void);
+extern void func_endpointvolume(void);
 extern void func_devicetopology(void);
 extern void func_exclusivestream(void);
 extern void func_micprivacy(void);
@@ -33,6 +34,7 @@ const struct test winetest_testlist[] =
     { "deviceformat", func_deviceformat },
     { "devicetopology", func_devicetopology },
     { "endpointdriver", func_endpointdriver },
+    { "endpointvolume", func_endpointvolume },
     { "exclusivestream", func_exclusivestream },
     { "micprivacy", func_micprivacy },
     { "renderendpoint", func_renderendpoint },

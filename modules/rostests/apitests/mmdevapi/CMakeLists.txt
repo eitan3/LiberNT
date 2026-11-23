@@ -31,6 +31,7 @@ add_executable(mmdevapi_apitest
     deviceformat.c
     devicetopology.c
     endpointdriver.c
+    endpointvolume.c
     exclusivestream.c
     micprivacy.c
     renderendpoint.c

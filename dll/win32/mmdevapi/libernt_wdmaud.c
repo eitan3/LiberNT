@@ -395,9 +395,9 @@ static BOOL query_mixer_line(DWORD mixer_index, DWORD component_type,
     return TRUE;
 }
 
-static BOOL query_render_mixer_line(DWORD mixer_index, MIXERLINEW *line)
+static BOOL query_endpoint_mixer_line(DWORD mixer_index, EDataFlow flow, MIXERLINEW *line)
 {
-    static const DWORD component_types[] =
+    static const DWORD render_component_types[] =
     {
         MIXERLINE_COMPONENTTYPE_DST_SPEAKERS,
         MIXERLINE_COMPONENTTYPE_DST_HEADPHONES,
@@ -406,9 +406,13 @@ static BOOL query_render_mixer_line(DWORD mixer_index, MIXERLINEW *line)
     };
     UINT i;
 
-    for (i = 0; i < ARRAY_SIZE(component_types); ++i)
+    /* A recording device has one destination line, the recording destination */
+    if (flow == eCapture)
+        return query_mixer_line(mixer_index, MIXERLINE_COMPONENTTYPE_DST_WAVEIN, line);
+
+    for (i = 0; i < ARRAY_SIZE(render_component_types); ++i)
     {
-        if (query_mixer_line(mixer_index, component_types[i], line))
+        if (query_mixer_line(mixer_index, render_component_types[i], line))
             return TRUE;
     }
 
@@ -513,7 +517,8 @@ HRESULT reactos_endpoint_volume_initialize(
     if (!get_device_name_from_guid(guid, &device, &flow))
         return AUDCLNT_E_DEVICE_INVALIDATED;
 
-    if (!parse_device_name(device, &flow, &wave_index) || flow != eRender)
+    /* Both flows have a destination line with the endpoint's volume and mute: the render line of a playback device, the recording line of a recording device */
+    if (!parse_device_name(device, &flow, &wave_index) || (flow != eRender && flow != eCapture))
     {
         free(device);
         return E_NOINTERFACE;
@@ -524,7 +529,7 @@ HRESULT reactos_endpoint_volume_initialize(
         return AUDCLNT_E_DEVICE_INVALIDATED;
     if (!query_wave_mixer_id(flow, wave_index, &state->mixer_index))
         return wdmaud_error_hresult();
-    if (!query_render_mixer_line(state->mixer_index, &line))
+    if (!query_endpoint_mixer_line(state->mixer_index, flow, &line))
         return wdmaud_error_hresult();
     if (!query_mixer_control(state->mixer_index, line.dwLineID,
                              MIXERCONTROL_CONTROLTYPE_VOLUME,

@@ -116,6 +116,7 @@ AddAudioGroup(PageBuilder &page, EDataFlow flow)
     IAudioEndpointVolume *volume;
     float level = 0.0f;
     BOOL muted = FALSE;
+    bool muteSupported = false;
     int selected;
     bool output = flow == eRender;
 
@@ -140,7 +141,8 @@ AddAudioGroup(PageBuilder &page, EDataFlow flow)
     if (volume)
     {
         volume->GetMasterVolumeLevelScalar(&level);
-        volume->GetMute(&muted);
+        /* A device without a mute control keeps its mute switch off, as on Windows */
+        muteSupported = SUCCEEDED(volume->GetMute(&muted));
         volume->Release();
     }
     {
@@ -169,7 +171,7 @@ AddAudioGroup(PageBuilder &page, EDataFlow flow)
                         volume->SetMute(value != 0, NULL);
                         volume->Release();
                     }
-                }).Enabled = volume != NULL;
+                }).Enabled = muteSupported;
 }
 
 struct AudioApp
