@@ -206,6 +206,7 @@ i8042InitializeHwHacks(
     if (!NT_SUCCESS(Status) && Status != STATUS_BUFFER_TOO_SMALL)
     {
         DPRINT1("IoWMIOpenBlock failed: 0x%08lx\n", Status);
+        IoWMIHandleClose(DataBlockObject);
         return;
     }
 
@@ -213,11 +214,13 @@ i8042InitializeHwHacks(
     if (AllData == NULL)
     {
         DPRINT1("Failed to allocate %lu bytes for SMBIOS tables\n", BufferSize);
+        IoWMIHandleClose(DataBlockObject);
         return;
     }
 
     /* Query the buffer data */
     Status = IoWMIQueryAllData(DataBlockObject, &BufferSize, AllData);
+    IoWMIHandleClose(DataBlockObject);
     if (!NT_SUCCESS(Status))
     {
         DPRINT1("IoWMIOpenBlock failed: 0x%08lx\n", Status);
