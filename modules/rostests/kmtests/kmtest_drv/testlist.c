@@ -183,6 +183,8 @@ KMT_TESTFUNC Test_HalDmaAlignment;
 KMT_TESTFUNC Test_HdAudBusInterface;
 KMT_TESTFUNC Test_NhltParser;
 KMT_TESTFUNC Test_Policy;
+KMT_TESTFUNC Test_SofIpc4;
+KMT_TESTFUNC Test_Disco;
 KMT_TESTFUNC Test_KsCreateItemSlot;
 KMT_TESTFUNC Test_KsDispatchFileObject;
 KMT_TESTFUNC Test_HalRealTimeClock;
@@ -639,6 +641,8 @@ const KMT_TEST TestList[] =
     { "HdAudBusInterface",                  Test_HdAudBusInterface },
     { "NhltParser",                         Test_NhltParser },
     { "Policy",                             Test_Policy },
+    { "SofIpc4",                            Test_SofIpc4 },
+    { "Disco",                              Test_Disco },
     { "KsCreateItemSlot",                   Test_KsCreateItemSlot },
     { "KsDispatchFileObject",               Test_KsDispatchFileObject },
     { "HalRealTimeClock",                   Test_HalRealTimeClock },
