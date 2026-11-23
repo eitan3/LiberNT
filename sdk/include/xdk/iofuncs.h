@@ -2772,6 +2772,12 @@ IoWMIHandleToInstanceName(
   _Out_ PUNICODE_STRING InstanceName);
 
 NTKERNELAPI
+VOID
+NTAPI
+IoWMIHandleClose(
+  _In_ PVOID DataBlockObject);
+
+NTKERNELAPI
 NTSTATUS
 NTAPI
 IoWMIOpenBlock(

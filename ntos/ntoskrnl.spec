@@ -565,6 +565,7 @@
 @ stdcall IoWMIDeviceObjectToInstanceName(ptr ptr ptr)
 @ stdcall -arch=win64 IoWMIDeviceObjectToProviderId(ptr)
 @ stdcall IoWMIExecuteMethod(ptr ptr long long ptr ptr)
+@ stdcall IoWMIHandleClose(ptr)
 @ stdcall IoWMIHandleToInstanceName(ptr ptr ptr)
 @ stdcall IoWMIOpenBlock(ptr long ptr)
 @ stdcall IoWMIQueryAllData(ptr ptr ptr)

@@ -216,6 +216,15 @@ IoWMIOpenBlock(
     return STATUS_SUCCESS;
 }
 
+/* IoWMIOpenBlock leaves the caller one reference to the data block object; this gives it back */
+VOID
+NTAPI
+IoWMIHandleClose(
+    _In_ PVOID DataBlockObject)
+{
+    ObDereferenceObject(DataBlockObject);
+}
+
 /* Reads every instance of one data block */
 NTSTATUS
 NTAPI
