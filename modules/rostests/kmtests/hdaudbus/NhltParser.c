@@ -262,5 +262,5 @@ START_TEST(NhltParser)
     ok_eq_str(NhltLinkTypeName(NHLT_LINKTYPE_UAOL), "UAOL");
     ok_eq_str(NhltLinkTypeName(0xff), "UNKNOWN");
 
-    /* TODO: add a real machine's NHLT table (acpidump -b -n NHLT, plan Step-0 L5) as a fixture once its vendor blobs are checked */
+    /* TODO: add the endpoint table the firmware _DSM of a real machine returns at run time (the static table above is a stub) once checked for vendor blobs */
 }

@@ -315,6 +315,14 @@ static const unsigned char NhltBytesAfterDevicesTable[] =
     0x01, NHLT_DEVICE_INFO('a', 'm', 'p', '0', 1, 0), 0xDE, 0xAD
 };
 
+/* A real machine's static table, structure reproduced with fictional strings: Windows publishes a stub with no endpoint and a 4-byte placeholder OED config; the descriptors come from the firmware _DSM at run time. The checksum byte is computed over the fictional OEM strings */
+static const unsigned char NhltStubTable[] =
+{
+    'N', 'H', 'L', 'T', DSP_U32(45), 0x01, 0x73, 'O', 'E', 'M', 'X', 'Y', 'Z', 'S', 'T', 'U', 'B', '0', '1', ' ', ' ',
+    DSP_U32(1), 'A', 'C', 'P', 'I', DSP_U32(0x00040000),
+    0x00, DSP_U32(4), 0xDE, 0xAD, 0xBE, 0xEF
+};
+
 static const NHLT_TABLE_CASE NhltTableCases[] =
 {
     { "empty table", NhltEmptyTable, sizeof(NhltEmptyTable), 0, 37, 37, 0, 0, 0, 0, 0, 0, { 0, 0, 0, 0, 0, 0, 0 }, 0 },
@@ -339,7 +347,8 @@ static const NHLT_TABLE_CASE NhltTableCases[] =
     { "formats count names more formats than the endpoint holds", NhltFormatsCountPastEndpointTable, sizeof(NhltFormatsCountPastEndpointTable), 4, 115, 37, 0, 0, 0, 0, 1, 0, { 0, 0, 0, 0, 0, 0, 0 }, 0 },
     { "endpoint without its formats count", NhltNoFormatsCountTable, sizeof(NhltNoFormatsCountTable), 4, 60, 37, 0, 0, 0, 0, 1, 0, { 0, 0, 0, 0, 0, 0, 0 }, 0 },
     { "endpoint keeps bytes after its devices", NhltBytesAfterDevicesTable, sizeof(NhltBytesAfterDevicesTable), 0, 82, 82, 0, 0, 1, 0, 1, 1, { 0, 0, 0, 0, 0, 1, 0 }, 0 },
-    { "devices count one past its endpoint", NhltDevicesOnePastEndpointTable, sizeof(NhltDevicesOnePastEndpointTable), 4, 80, 37, 0, 0, 0, 0, 1, 0, { 0, 0, 0, 0, 0, 0, 0 }, 0 }
+    { "devices count one past its endpoint", NhltDevicesOnePastEndpointTable, sizeof(NhltDevicesOnePastEndpointTable), 4, 80, 37, 0, 0, 0, 0, 1, 0, { 0, 0, 0, 0, 0, 0, 0 }, 0 },
+    { "a real machine's static table: a stub without endpoints", NhltStubTable, sizeof(NhltStubTable), 0, 45, 37, 4, 8, 0, 0, 0, 0, { 0, 0, 0, 0, 0, 0, 0 }, 0 }
 };
 
 static const NHLT_ENDPOINT_CASE NhltEndpointCases[] =
@@ -414,7 +423,9 @@ static const NHLT_LINK_CASE NhltLinkCases[] =
     { 13, 5, 1, 0x0 },
     { 14, 3, 1, 0x1 },
     { 15, 3, 1, 0x2 },
-    { 9, 7, 1, 0x1 }
+    { 9, 7, 1, 0x1 },
+    { 21, 2, 0, 0x0 },
+    { 21, 5, 0, 0x0 }
 };
 
 static const unsigned char NhltAddressReply[] =
