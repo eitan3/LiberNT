@@ -5,7 +5,32 @@
 DEFINE_GUID(GUID_ACPI_DSD,
 	0xdaffd814, 0x6eba, 0x4d8c, 0x8a, 0x91, 0xbc, 0x9b, 0xbf, 0x4a, 0xa3, 0x01);
 
-void copyDSDParam(PACPI_METHOD_ARGUMENT dsdParameterData, char** buf) {
+static
+BOOLEAN
+AcpiArgumentFits(
+	_In_ PACPI_METHOD_ARGUMENT Argument,
+	_In_ PUCHAR End)
+{
+	if ((PUCHAR)Argument + FIELD_OFFSET(ACPI_METHOD_ARGUMENT, Data) > End) {
+		return FALSE;
+	}
+	return ACPI_METHOD_ARGUMENT_LENGTH(Argument->DataLength) <= (SIZE_T)(End - (PUCHAR)Argument);
+}
+
+static
+BOOLEAN
+AcpiArgumentIsName(
+	_In_ PACPI_METHOD_ARGUMENT Argument,
+	_In_z_ PCSTR Name)
+{
+	SIZE_T Length = strlen(Name);
+
+	return (Argument->DataLength == Length ||
+			(Argument->DataLength == Length + 1 && Argument->Data[Length] == 0)) &&
+		memcmp(Argument->Data, Name, Length) == 0;
+}
+
+void copyDSDParam(PACPI_METHOD_ARGUMENT dsdParameterData, char* buf) {
 	RtlZeroMemory(buf, 32);
 	RtlCopyMemory(buf, dsdParameterData->Data, min(dsdParameterData->DataLength, 32));
 }
@@ -114,40 +139,65 @@ GetSOFTplg(
 	sofTplg->length = sizeof(*sofTplg);
 
 	{
-	PACPI_METHOD_ARGUMENT currArgument = &outputBuffer->Argument[0];
-	for (ULONG i = 0; i < outputBuffer->Count; i += 2) {
-		PACPI_METHOD_ARGUMENT guidArg = currArgument;
-		currArgument = ACPI_METHOD_NEXT_ARGUMENT(currArgument);
-		PACPI_METHOD_ARGUMENT packageArg = currArgument;
-		currArgument = ACPI_METHOD_NEXT_ARGUMENT(currArgument);
+		PUCHAR argumentsEnd = (PUCHAR)outputBuffer->Argument + outputBuffer->Length;
+		PACPI_METHOD_ARGUMENT currArgument = outputBuffer->Argument;
 
-		if (guidArg->Type != ACPI_METHOD_ARGUMENT_BUFFER ||
-			guidArg->DataLength != 16 ||
-			packageArg->Type != ACPI_METHOD_ARGUMENT_PACKAGE) {
-			break;
+		if (argumentsEnd > (PUCHAR)outputBuffer + outputBufferSize) {
+			argumentsEnd = (PUCHAR)outputBuffer + outputBufferSize;
 		}
 
-		if (memcmp(guidArg->Data, &GUID_ACPI_DSD, guidArg->DataLength) != 0) {
-			continue;
+		for (ULONG i = 0; i < outputBuffer->Count; i += 2) {
+			PACPI_METHOD_ARGUMENT guidArg = currArgument;
+			PACPI_METHOD_ARGUMENT packageArg;
+
+			if (!AcpiArgumentFits(guidArg, argumentsEnd)) {
+				break;
+			}
+			packageArg = ACPI_METHOD_NEXT_ARGUMENT(guidArg);
+			if (!AcpiArgumentFits(packageArg, argumentsEnd)) {
+				break;
+			}
+			currArgument = ACPI_METHOD_NEXT_ARGUMENT(packageArg);
+
+			if (guidArg->Type != ACPI_METHOD_ARGUMENT_BUFFER ||
+				guidArg->DataLength != 16 ||
+				packageArg->Type != ACPI_METHOD_ARGUMENT_PACKAGE) {
+				break;
+			}
+
+			if (memcmp(guidArg->Data, &GUID_ACPI_DSD, guidArg->DataLength) != 0) {
+				continue;
+			}
+
+			status = STATUS_SUCCESS;
+
+			for (PACPI_METHOD_ARGUMENT dsdParameter = (PACPI_METHOD_ARGUMENT)packageArg->Data;
+				 AcpiArgumentFits(dsdParameter, packageArg->Data + packageArg->DataLength);
+				 dsdParameter = ACPI_METHOD_NEXT_ARGUMENT(dsdParameter)) {
+				PUCHAR dsdEnd = dsdParameter->Data + dsdParameter->DataLength;
+				PACPI_METHOD_ARGUMENT dsdParameterName = (PACPI_METHOD_ARGUMENT)dsdParameter->Data;
+				PACPI_METHOD_ARGUMENT dsdParameterData;
+
+				if (dsdParameter->Type != ACPI_METHOD_ARGUMENT_PACKAGE ||
+					!AcpiArgumentFits(dsdParameterName, dsdEnd)) {
+					continue;
+				}
+				dsdParameterData = ACPI_METHOD_NEXT_ARGUMENT(dsdParameterName);
+				if (!AcpiArgumentFits(dsdParameterData, dsdEnd)) {
+					continue;
+				}
+
+				if (AcpiArgumentIsName(dsdParameterName, "speaker-tplg")) {
+					copyDSDParam(dsdParameterData, sofTplg->speaker_tplg);
+				}
+				else if (AcpiArgumentIsName(dsdParameterName, "hp-tplg")) {
+					copyDSDParam(dsdParameterData, sofTplg->hp_tplg);
+				}
+				else if (AcpiArgumentIsName(dsdParameterName, "mic-tplg")) {
+					copyDSDParam(dsdParameterData, sofTplg->dmic_tplg);
+				}
+			}
 		}
-
-		status = STATUS_SUCCESS;
-
-		FOR_EACH_ACPI_METHOD_ARGUMENT(dsdParameter, (PACPI_METHOD_ARGUMENT)packageArg->Data, (PACPI_METHOD_ARGUMENT)(packageArg->Data + packageArg->DataLength)) {
-			PACPI_METHOD_ARGUMENT dsdParameterName = (PACPI_METHOD_ARGUMENT)dsdParameter->Data;
-			PACPI_METHOD_ARGUMENT dsdParameterData = ACPI_METHOD_NEXT_ARGUMENT(dsdParameterName);
-
-			if (strncmp((const char*)&dsdParameterName->Data[0], "speaker-tplg", dsdParameterName->DataLength) == 0) {
-				copyDSDParam(dsdParameterData, (char **)&sofTplg->speaker_tplg);
-			}
-			else if (strncmp((const char*)&dsdParameterName->Data[0], "hp-tplg", dsdParameterName->DataLength) == 0) {
-				copyDSDParam(dsdParameterData, (char**)&sofTplg->hp_tplg);
-			}
-			else if (strncmp((const char*)&dsdParameterName->Data[0], "mic-tplg", dsdParameterName->DataLength) == 0) {
-				copyDSDParam(dsdParameterData, (char**)&sofTplg->dmic_tplg);
-			}
-		}
-	}
 	}
 
 Exit:

@@ -1,6 +1,7 @@
 #include "driver.h"
 #include "nhlt.h"
 #include <acpiioct.h>
+#include <nhlt_parse.h>
 
 DEFINE_GUID(GUID_SST_NHLT,
 	0xA69F886E, 0x6CEB, 0x4594, 0xA4, 0x1F, 0x7B, 0x5D, 0xCE, 0x24, 0xC5, 0x53);
@@ -181,8 +182,6 @@ end:
 	return status;
 }
 
-void parseACPI(UINT8* res, UINT32 offset, UINT32 sz, UINT64* nhltAddr, UINT64* nhltSz);
-
 NTSTATUS NHLTQueryTableAddress(_In_ WDFDEVICE FxDevice, UINT64 *nhltAddr, UINT64 *nhltSz) {
 	WDFMEMORY outputBufferMemory;
 	NTSTATUS status = NHLTQuery(FxDevice, NHLTRev1, NHLTMemoryAddress, &outputBufferMemory);
@@ -202,15 +201,17 @@ NTSTATUS NHLTQueryTableAddress(_In_ WDFDEVICE FxDevice, UINT64 *nhltAddr, UINT64
 	{
 	PACPI_METHOD_ARGUMENT argument = outputBuffer->Argument;
 
-	UINT8* res = argument->Data;
-	UINT32 sz = argument->DataLength;
-
 	*nhltAddr = 0;
 	*nhltSz = 0;
-	parseACPI(res, 0, sz, nhltAddr, nhltSz);
+	if (argument->Type == ACPI_METHOD_ARGUMENT_BUFFER) {
+		NHLT_PARSE_STATUS parseStatus = NhltFindMemoryAddress64(argument->Data, argument->DataLength, nhltAddr, nhltSz);
+
+		SklHdAudBusPrint(DEBUG_LEVEL_INFO, DBG_INIT,
+			"NHLT address resource: %s\n", NhltParseStatusName(parseStatus));
+	}
 	}
 
-	if (nhltAddr == 0 || nhltSz == 0) {
+	if (*nhltAddr == 0 || *nhltSz == 0) {
 		status = STATUS_UNSUCCESSFUL;
 	}
 
@@ -222,61 +223,3 @@ end:
 	return status;
 }
 
-//Begin ACPI parser
-
-#define ACPI_RESOURCE_NAME_ADDRESS64            0x8A
-
-/*
- * LARGE descriptors
- */
-#define AML_RESOURCE_LARGE_HEADER_COMMON \
-    UINT8                           DescriptorType;\
-    UINT16                          ResourceLength;
-
-#define AML_RESOURCE_ADDRESS_COMMON \
-    UINT8                           ResourceType; \
-    UINT8                           Flags; \
-    UINT8                           SpecificFlags;
-
-#include <pshpack1.h>
-typedef struct aml_resource_address64
-{
-	AML_RESOURCE_LARGE_HEADER_COMMON
-	AML_RESOURCE_ADDRESS_COMMON
-	UINT64                          Granularity;
-	UINT64                          Minimum;
-	UINT64                          Maximum;
-	UINT64                          TranslationOffset;
-	UINT64                          AddressLength;
-} AML_RESOURCE_ADDRESS64;
-#include <poppack.h>
-
-void parseACPIMemory64(UINT8* res, UINT32 offset, UINT32 sz, UINT64 *nhltAddr, UINT64 *nhltSz) {
-	if (offset + 3 > sz)
-		return;
-
-	UINT8 opcode = res[offset];
-	if (opcode != ACPI_RESOURCE_NAME_ADDRESS64)
-		return;
-
-	AML_RESOURCE_ADDRESS64* address64 = (AML_RESOURCE_ADDRESS64*)(res + offset);
-
-	*nhltAddr = address64->Minimum;
-	*nhltSz = address64->AddressLength;
-}
-
-void parseACPI(UINT8* res, UINT32 offset, UINT32 sz, UINT64* nhltAddr, UINT64* nhltSz) {
-	if (offset + 3 > sz)
-		return;
-
-	UINT8 opcode = res[offset];
-
-	UINT16 len;
-	memcpy(&len, res + offset + 1, sizeof(UINT16));
-
-	if (opcode == ACPI_RESOURCE_NAME_ADDRESS64)
-		parseACPIMemory64(res, offset, sz, nhltAddr, nhltSz);
-
-	offset += (len + 3);
-	parseACPI(res, offset, sz, nhltAddr, nhltSz);
-}

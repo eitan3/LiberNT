@@ -24,13 +24,11 @@ NTSTATUS ADSPGetResources(_In_ PVOID _context, _PCI_BAR* hdaBar, _PCI_BAR* adspB
 	}
 
 	if (nhltInfo) {
+		nhltInfo->nhlt = NULL;
+		nhltInfo->nhltSz = 0;
 		if (devData->FdoContext->nhlt) {
 			nhltInfo->nhlt = devData->FdoContext->nhlt;
 			nhltInfo->nhltSz = devData->FdoContext->nhltSz;
-		}
-		else if (devData->FdoContext->sofTplg) {
-			nhltInfo->nhlt = devData->FdoContext->sofTplg;
-			nhltInfo->nhltSz = devData->FdoContext->sofTplgSz;
 		}
 	}
 
