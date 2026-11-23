@@ -10,6 +10,18 @@
 
 #include "mmsys.h"
 
+#define COBJMACROS
+#include <objbase.h>
+#include <initguid.h>
+#include <mmdeviceapi.h>
+#include <reactos/mmdevdefault.h>
+
+/* mmddk.h; mmsys.h already defines the DRVM_MAPPER messages that header would redefine */
+#define DRV_QUERYFUNCTIONINSTANCEID (DRV_RESERVED + 17)
+
+static const PROPERTYKEY DeviceFriendlyNameKey =
+    { { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
+
 typedef struct _GLOBAL_DATA
 {
     BOOL bNoAudioOut;
@@ -22,11 +34,142 @@ typedef struct _GLOBAL_DATA
 
 } GLOBAL_DATA, *PGLOBAL_DATA;
 
+/* Fill a device list with the active endpoints of a flow, each item holding its endpoint ID, and select the default */
+static BOOL
+FillEndpointList(HWND hCB, EDataFlow Flow)
+{
+    IMMDeviceEnumerator *pEnum = NULL;
+    IMMDeviceCollection *pCollection = NULL;
+    IMMDevice *pDefault = NULL;
+    LPWSTR pszDefaultId = NULL;
+    UINT Count = 0, Index;
+    LRESULT Res;
+    HRESULT hrInit = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+
+    if (FAILED(CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_INPROC_SERVER,
+                                &IID_IMMDeviceEnumerator, (void **)&pEnum)))
+    {
+        if (SUCCEEDED(hrInit))
+            CoUninitialize();
+        return FALSE;
+    }
+
+    if (SUCCEEDED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(pEnum, Flow, eConsole, &pDefault)))
+    {
+        IMMDevice_GetId(pDefault, &pszDefaultId);
+        IMMDevice_Release(pDefault);
+    }
+
+    if (SUCCEEDED(IMMDeviceEnumerator_EnumAudioEndpoints(pEnum, Flow, DEVICE_STATE_ACTIVE, &pCollection)))
+    {
+        IMMDeviceCollection_GetCount(pCollection, &Count);
+        for (Index = 0; Index < Count; Index++)
+        {
+            IMMDevice *pDevice = NULL;
+            IPropertyStore *pProps = NULL;
+            LPWSTR pszId = NULL, pszItemId;
+            PROPVARIANT Name;
+
+            if (FAILED(IMMDeviceCollection_Item(pCollection, Index, &pDevice)))
+                continue;
+            if (FAILED(IMMDevice_GetId(pDevice, &pszId)))
+            {
+                IMMDevice_Release(pDevice);
+                continue;
+            }
+
+            PropVariantInit(&Name);
+            if (SUCCEEDED(IMMDevice_OpenPropertyStore(pDevice, STGM_READ, &pProps)))
+            {
+                IPropertyStore_GetValue(pProps, &DeviceFriendlyNameKey, &Name);
+                IPropertyStore_Release(pProps);
+            }
+
+            Res = SendMessageW(hCB, CB_ADDSTRING, 0,
+                               (LPARAM)(Name.vt == VT_LPWSTR && Name.pwszVal ? Name.pwszVal : pszId));
+            pszItemId = (Res >= 0) ? HeapAlloc(GetProcessHeap(), 0, (wcslen(pszId) + 1) * sizeof(WCHAR)) : NULL;
+            if (pszItemId)
+            {
+                wcscpy(pszItemId, pszId);
+                SendMessageW(hCB, CB_SETITEMDATA, Res, (LPARAM)pszItemId);
+                if (pszDefaultId && !wcscmp(pszDefaultId, pszId))
+                    SendMessageW(hCB, CB_SETCURSEL, Res, 0);
+            }
+            else if (Res >= 0)
+            {
+                SendMessageW(hCB, CB_DELETESTRING, Res, 0);
+            }
+
+            PropVariantClear(&Name);
+            CoTaskMemFree(pszId);
+            IMMDevice_Release(pDevice);
+        }
+        IMMDeviceCollection_Release(pCollection);
+    }
+
+    if (pszDefaultId)
+        CoTaskMemFree(pszDefaultId);
+    IMMDeviceEnumerator_Release(pEnum);
+    if (SUCCEEDED(hrInit))
+        CoUninitialize();
+
+    Count = (UINT)SendMessageW(hCB, CB_GETCOUNT, 0, 0);
+    if (Count == 0 || Count == (UINT)CB_ERR)
+        return FALSE;
+    if (SendMessageW(hCB, CB_GETCURSEL, 0, 0) == CB_ERR)
+        SendMessageW(hCB, CB_SETCURSEL, 0, 0);
+    return TRUE;
+}
+
+static VOID
+FreeEndpointList(HWND hCB)
+{
+    LRESULT Count = SendMessageW(hCB, CB_GETCOUNT, 0, 0);
+    LRESULT Index;
+
+    for (Index = 0; Index < Count; Index++)
+    {
+        LRESULT Data = SendMessageW(hCB, CB_GETITEMDATA, Index, 0);
+        if (Data != CB_ERR && Data != 0)
+            HeapFree(GetProcessHeap(), 0, (LPVOID)Data);
+    }
+    SendMessageW(hCB, CB_RESETCONTENT, 0, 0);
+}
+
+static LPCWSTR
+GetSelectedEndpointId(HWND hCB)
+{
+    LRESULT CurSel = SendMessageW(hCB, CB_GETCURSEL, 0, 0);
+    LRESULT Data;
+
+    if (CurSel == CB_ERR)
+        return NULL;
+    Data = SendMessageW(hCB, CB_GETITEMDATA, CurSel, 0);
+    return (Data == CB_ERR) ? NULL : (LPCWSTR)Data;
+}
+
+/* The winmm wave device that plays or records through an endpoint, for the mixer of that device */
+static UINT
+GetWaveDeviceOfEndpoint(LPCWSTR pszId, BOOL bOutput)
+{
+    WCHAR szId[256];
+    UINT Count = bOutput ? waveOutGetNumDevs() : waveInGetNumDevs();
+    UINT Index;
+
+    for (Index = 0; pszId && Index < Count; Index++)
+    {
+        MMRESULT mr = bOutput ?
+            waveOutMessage((HWAVEOUT)UlongToHandle(Index), DRV_QUERYFUNCTIONINSTANCEID, (DWORD_PTR)szId, sizeof(szId)) :
+            waveInMessage((HWAVEIN)UlongToHandle(Index), DRV_QUERYFUNCTIONINSTANCEID, (DWORD_PTR)szId, sizeof(szId));
+        if (mr == MMSYSERR_NOERROR && !wcscmp(szId, pszId))
+            return Index;
+    }
+    return 0;
+}
+
 VOID
 InitAudioDlg(HWND hwnd, PGLOBAL_DATA pGlobalData)
 {
-    WAVEOUTCAPSW waveOutputPaps;
-    WAVEINCAPSW waveInputPaps;
     MIDIOUTCAPSW midiOutCaps;
     WCHAR szNoDevices[256];
     UINT DevsNum;
@@ -38,85 +181,20 @@ InitAudioDlg(HWND hwnd, PGLOBAL_DATA pGlobalData)
 
     // Init sound playback devices list
     hCB = GetDlgItem(hwnd, IDC_DEVICE_PLAY_LIST);
-
-    DevsNum = waveOutGetNumDevs();
-    if (DevsNum < 1)
+    if (!FillEndpointList(hCB, eRender))
     {
         Res = SendMessageW(hCB, CB_ADDSTRING, 0, (LPARAM)szNoDevices);
         SendMessageW(hCB, CB_SETCURSEL, (WPARAM)Res, 0);
         pGlobalData->bNoAudioOut = TRUE;
     }
-    else
-    {
-        WCHAR DefaultDevice[MAX_PATH] = {0};
-        HKEY hKey;
-        DWORD dwSize = sizeof(DefaultDevice);
-        UINT DefaultIndex = 0;
-
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Multimedia\\Sound Mapper", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
-        {
-            RegQueryValueExW(hKey, L"Playback", NULL, NULL, (LPBYTE)DefaultDevice, &dwSize);
-            DefaultDevice[_countof(DefaultDevice) - 1] = UNICODE_NULL;
-            RegCloseKey(hKey);
-        }
-
-        for (uIndex = 0; uIndex < DevsNum; uIndex++)
-        {
-            if (waveOutGetDevCapsW(uIndex, &waveOutputPaps, sizeof(waveOutputPaps)))
-                continue;
-
-            Res = SendMessageW(hCB, CB_ADDSTRING, 0, (LPARAM)waveOutputPaps.szPname);
-
-            if (CB_ERR != Res)
-            {
-                SendMessageW(hCB, CB_SETITEMDATA, Res, (LPARAM)uIndex);
-                if (!_wcsicmp(waveOutputPaps.szPname, DefaultDevice))
-                    DefaultIndex = Res;
-            }
-        }
-        SendMessageW(hCB, CB_SETCURSEL, (WPARAM)DefaultIndex, 0);
-    }
 
     // Init sound recording devices list
     hCB = GetDlgItem(hwnd, IDC_DEVICE_REC_LIST);
-
-    DevsNum = waveInGetNumDevs();
-    if (DevsNum < 1)
+    if (!FillEndpointList(hCB, eCapture))
     {
         Res = SendMessageW(hCB, CB_ADDSTRING, 0, (LPARAM)szNoDevices);
         SendMessageW(hCB, CB_SETCURSEL, (WPARAM)Res, 0);
         pGlobalData->bNoAudioIn = TRUE;
-    }
-    else
-    {
-        WCHAR DefaultDevice[MAX_PATH] = {0};
-        HKEY hKey;
-        DWORD dwSize = sizeof(DefaultDevice);
-        UINT DefaultIndex = 0;
-
-        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Multimedia\\Sound Mapper", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
-        {
-            RegQueryValueExW(hKey, L"Record", NULL, NULL, (LPBYTE)DefaultDevice, &dwSize);
-            DefaultDevice[_countof(DefaultDevice) - 1] = UNICODE_NULL;
-            RegCloseKey(hKey);
-        }
-
-
-        for (uIndex = 0; uIndex < DevsNum; uIndex++)
-        {
-            if (waveInGetDevCapsW(uIndex, &waveInputPaps, sizeof(waveInputPaps)))
-                continue;
-
-            Res = SendMessageW(hCB, CB_ADDSTRING, 0, (LPARAM)waveInputPaps.szPname);
-
-            if (CB_ERR != Res)
-            {
-                SendMessageW(hCB, CB_SETITEMDATA, Res, (LPARAM)uIndex);
-                if (!_wcsicmp(waveInputPaps.szPname, DefaultDevice))
-                    DefaultIndex = Res;
-            }
-        }
-        SendMessageW(hCB, CB_SETCURSEL, (WPARAM)DefaultIndex, 0);
     }
 
     // Init MIDI devices list
@@ -190,20 +268,22 @@ UpdateRegistryString(HWND hwnd, INT ctrl, LPCWSTR key, LPCWSTR value)
 VOID
 SaveAudioDlg(HWND hwnd, PGLOBAL_DATA pGlobalData)
 {
-    if (pGlobalData->bAudioOutChanged)
+    LPCWSTR pszId;
+
+    if (pGlobalData->bAudioOutChanged && !pGlobalData->bNoAudioOut)
     {
-        UpdateRegistryString(hwnd,
-                             IDC_DEVICE_PLAY_LIST,
-                             L"Software\\Microsoft\\Multimedia\\Sound Mapper",
-                             L"Playback");
+        pszId = GetSelectedEndpointId(GetDlgItem(hwnd, IDC_DEVICE_PLAY_LIST));
+        if (pszId)
+            MMDevSetDefaultEndpoint(eRender, eConsole, pszId);
+        pGlobalData->bAudioOutChanged = FALSE;
     }
 
-    if (pGlobalData->bAudioInChanged)
+    if (pGlobalData->bAudioInChanged && !pGlobalData->bNoAudioIn)
     {
-        UpdateRegistryString(hwnd,
-                             IDC_DEVICE_REC_LIST,
-                             L"Software\\Microsoft\\Multimedia\\Sound Mapper",
-                             L"Record");
+        pszId = GetSelectedEndpointId(GetDlgItem(hwnd, IDC_DEVICE_REC_LIST));
+        if (pszId)
+            MMDevSetDefaultEndpoint(eCapture, eConsole, pszId);
+        pGlobalData->bAudioInChanged = FALSE;
     }
 
     if (pGlobalData->bMIDIOutChanged)
@@ -226,7 +306,10 @@ GetDevNum(HWND hControl, DWORD Id)
     if (iCurSel == CB_ERR)
         return 0;
 
-    DevNum = (UINT)SendMessageW(hControl, CB_GETITEMDATA, iCurSel, 0);
+    if (Id == MIXER_OBJECTF_WAVEOUT || Id == MIXER_OBJECTF_WAVEIN)
+        DevNum = GetWaveDeviceOfEndpoint(GetSelectedEndpointId(hControl), Id == MIXER_OBJECTF_WAVEOUT);
+    else
+        DevNum = (UINT)SendMessageW(hControl, CB_GETITEMDATA, iCurSel, 0);
     if (DevNum == (UINT) CB_ERR)
         return 0;
 
@@ -399,6 +482,7 @@ AudioDlgProc(HWND hwndDlg,
                         pGlobalData->bAudioInChanged = TRUE;
                     }
                 }
+                break;
 
                 case IDC_DEVICE_MIDI_LIST:
                 {
@@ -417,6 +501,10 @@ AudioDlgProc(HWND hwndDlg,
             if (!pGlobalData)
                 break;
 
+            if (!pGlobalData->bNoAudioOut)
+                FreeEndpointList(GetDlgItem(hwndDlg, IDC_DEVICE_PLAY_LIST));
+            if (!pGlobalData->bNoAudioIn)
+                FreeEndpointList(GetDlgItem(hwndDlg, IDC_DEVICE_REC_LIST));
             HeapFree(GetProcessHeap(), 0, pGlobalData);
             break;
 

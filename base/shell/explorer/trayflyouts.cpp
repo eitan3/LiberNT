@@ -3463,6 +3463,7 @@ VOID TrayFlyouts_Destroy(VOID)
 #include <mmdeviceapi.h>
 #include <audiopolicy.h>
 #include <endpointvolume.h>
+#include <reactos/mmdevdefault.h>
 
 struct TFYVOLUME
 {
@@ -3673,8 +3674,9 @@ VOID TrayVolume_SetCachedState(int nPercent, BOOL bMute)
 
 #define TFY_WM_VOLUMECHANGED (WM_APP + 43)
 
+/* bDeviceChanged: the default output changed, so the flyouts show another device */
 static VOID
-TfyBroadcastVolume(VOID)
+TfyBroadcastVolume(BOOL bDeviceChanged = FALSE)
 {
     static const LPCWSTR s_Classes[] = { L"TrayVolumeFlyout", L"TrayQuickSettingsFlyout", L"ROSVolumeMixer" };
 
@@ -3682,7 +3684,7 @@ TfyBroadcastVolume(VOID)
     {
         HWND hwnd = NULL;
         while ((hwnd = FindWindowExW(NULL, hwnd, s_Classes[i], NULL)) != NULL)
-            PostMessageW(hwnd, TFY_WM_VOLUMECHANGED, 0, 0);
+            PostMessageW(hwnd, TFY_WM_VOLUMECHANGED, bDeviceChanged, 0);
     }
 }
 
@@ -3737,7 +3739,10 @@ public:
     STDMETHODIMP OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR pwstrDefaultDeviceId)
     {
         if (flow == eRender && role == eMultimedia)
+        {
             SetEvent(m_hDeviceChanged);
+            TfyBroadcastVolume(TRUE);
+        }
         return S_OK;
     }
 
@@ -4013,16 +4018,7 @@ TfyEnumRenderDevices(IMMDeviceEnumerator *pEnum, CAtlArray<TFYAUDIODEV> &Devices
 static BOOL
 TfySetDefaultRenderDevice(LPCWSTR pszId)
 {
-    HKEY hKey;
-    BOOL bRet = FALSE;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Wine\\Drivers\\wdmaud.drv", 0, NULL, 0,
-                        KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS)
-    {
-        bRet = RegSetValueExW(hKey, L"DefaultOutput", 0, REG_SZ, (const BYTE *)pszId,
-                              (DWORD)((wcslen(pszId) + 1) * sizeof(WCHAR))) == ERROR_SUCCESS;
-        RegCloseKey(hKey);
-    }
-    return bRet;
+    return MMDevSetDefaultEndpoint(eRender, eConsole, pszId) == ERROR_SUCCESS;
 }
 
 static INIT_ONCE g_TfyMasterInit = INIT_ONCE_STATIC_INIT;
@@ -5545,18 +5541,21 @@ public:
     int m_iHotRow;
     BOOL m_bHotMute;
     BOOL m_bHotMixer;
+    BOOL m_bHotDevice;
+    BOOL m_bMenu;
     BOOL m_bTracking;
     SIZE m_size;
-    RECT m_rcMasterRow, m_rcMasterSlider, m_rcMasterMute, m_rcMixerLink;
+    RECT m_rcMasterRow, m_rcMasterSlider, m_rcMasterMute, m_rcMixerLink, m_rcDevice;
 
     CTrayVolumeWnd() : m_bComVolume(FALSE), m_bAudioLoaded(FALSE), m_bOpenBelow(FALSE),
                        m_hFont(NULL), m_hFontSmall(NULL),
                        m_nMaster(0), m_bMasterMute(FALSE),
                        m_iDragRow(-2), m_iHotRow(-2), m_bHotMute(FALSE), m_bHotMixer(FALSE),
-                       m_bTracking(FALSE)
+                       m_bHotDevice(FALSE), m_bMenu(FALSE), m_bTracking(FALSE)
     {
         ZeroMemory(&m_Pal, sizeof(m_Pal));
         ZeroMemory(&m_size, sizeof(m_size));
+        ZeroMemory(&m_rcDevice, sizeof(m_rcDevice));
         m_nMaster = (int)InterlockedCompareExchange(&g_TfyAudioPercent, 0, 0);
         m_bMasterMute = InterlockedCompareExchange(&g_TfyAudioMute, 0, 0) != 0;
         StringCchCopyW(m_szDevice, _countof(m_szDevice), L"Speakers");
@@ -5709,6 +5708,7 @@ public:
         m_size.cx = Sc(320);
         int y = Sc(10);
 
+        SetRect(&m_rcDevice, Sc(8), Sc(6), m_size.cx - Sc(8), Sc(8) + Sc(20));
         y += Sc(20);
         SetRect(&m_rcMasterRow, Sc(8), y, m_size.cx - Sc(8), y + Sc(40));
         LayoutSliderRow(&m_rcMasterRow, &m_rcMasterMute, &m_rcMasterSlider);
@@ -5892,7 +5892,16 @@ public:
         HGDIOBJ hFontOld = SelectObject(hdcMem, m_hFontSmall);
 
         WCHAR szBuf[128];
-        RECT rcDevice = { Sc(12), Sc(8), rc.right - Sc(12), Sc(8) + Sc(18) };
+        if (m_bHotDevice || m_bMenu)
+        {
+            HBRUSH hbrHot = CreateSolidBrush(TfyMix(m_Pal.PanelBg, m_Pal.HotFill, 140));
+            FillRect(hdcMem, &m_rcDevice, hbrHot);
+            DeleteObject(hbrHot);
+        }
+        RECT rcChevron = { m_rcDevice.right - Sc(16), (m_rcDevice.top + m_rcDevice.bottom) / 2 - Sc(6),
+                           m_rcDevice.right - Sc(4), (m_rcDevice.top + m_rcDevice.bottom) / 2 + Sc(6) };
+        TfyDrawFluent(hdcMem, &rcChevron, IDI_FLU_CHEVDOWN);
+        RECT rcDevice = { m_rcDevice.left + Sc(4), m_rcDevice.top, rcChevron.left - Sc(4), m_rcDevice.bottom };
         SetTextColor(hdcMem, m_Pal.DimText);
         StringCchPrintfW(szBuf, _countof(szBuf), L"%s \x2014 %d", m_szDevice, m_nMaster);
         DrawTextW(hdcMem, szBuf, -1, &rcDevice,
@@ -6036,12 +6045,14 @@ public:
         const RECT *prcSlider;
         int iRow = RowHitTest(pt, &bMute, &prcSlider);
         BOOL bMixer = PtInRect(&m_rcMixerLink, pt);
+        BOOL bDevice = PtInRect(&m_rcDevice, pt);
 
-        if (iRow != m_iHotRow || bMute != m_bHotMute || bMixer != m_bHotMixer)
+        if (iRow != m_iHotRow || bMute != m_bHotMute || bMixer != m_bHotMixer || bDevice != m_bHotDevice)
         {
             m_iHotRow = iRow;
             m_bHotMute = bMute;
             m_bHotMixer = bMixer;
+            m_bHotDevice = bDevice;
             InvalidateRect(NULL, FALSE);
         }
         if (!m_bTracking)
@@ -6056,11 +6067,12 @@ public:
     LRESULT OnMouseLeave(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
     {
         m_bTracking = FALSE;
-        if (m_iHotRow != -2 || m_bHotMixer)
+        if (m_iHotRow != -2 || m_bHotMixer || m_bHotDevice)
         {
             m_iHotRow = -2;
             m_bHotMute = FALSE;
             m_bHotMixer = FALSE;
+            m_bHotDevice = FALSE;
             InvalidateRect(NULL, FALSE);
         }
         return 0;
@@ -6134,7 +6146,38 @@ public:
             FadeOut();
             TrayMixer_Open(&rcSelf);
         }
+        else if (PtInRect(&m_rcDevice, pt))
+        {
+            ShowDeviceMenu();
+        }
         return 0;
+    }
+
+    /* Windows 11 lists the output devices behind the volume slider and makes the chosen one the default */
+    VOID ShowDeviceMenu()
+    {
+        CAtlArray<TFYAUDIODEV> Devices;
+
+        EnsureAudioLoaded();
+        TfyEnumRenderDevices(m_pEnum, Devices);
+        if (Devices.GetCount() == 0 || m_bMenu)
+            return;
+        HMENU hMenu = CreatePopupMenu();
+        if (!hMenu)
+            return;
+        for (SIZE_T i = 0; i < Devices.GetCount(); i++)
+            AppendMenuW(hMenu, MF_STRING | (Devices[i].bDefault ? MF_CHECKED : 0), (UINT_PTR)(i + 1), Devices[i].szName);
+        POINT pt = { m_rcDevice.left, m_rcDevice.bottom + Sc(2) };
+        ClientToScreen(&pt);
+        m_bMenu = TRUE;
+        InvalidateRect(NULL, FALSE);
+        int cmd = TrackPopupMenuEx(hMenu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+                                   pt.x, pt.y, m_hWnd, NULL);
+        m_bMenu = FALSE;
+        DestroyMenu(hMenu);
+        if (cmd > 0 && (SIZE_T)cmd <= Devices.GetCount() && !Devices[cmd - 1].bDefault)
+            TfySetDefaultRenderDevice(Devices[cmd - 1].szId);
+        InvalidateRect(NULL, FALSE);
     }
 
     LRESULT OnMouseWheel(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
@@ -6149,7 +6192,7 @@ public:
 
     LRESULT OnActivate(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
     {
-        if (LOWORD(wParam) == WA_INACTIVE)
+        if (LOWORD(wParam) == WA_INACTIVE && !m_bMenu)
             FadeOut();
         return 0;
     }
@@ -6182,6 +6225,15 @@ public:
 
     LRESULT OnVolumeChanged(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
     {
+        /* Another default output: show its name, volume and sessions */
+        if (wParam && m_bAudioLoaded && m_iDragRow == -2 && m_AnimPhase != TFY_CLOSE)
+        {
+            BuildAudio();
+            Layout();
+            Reposition();
+            InvalidateRect(NULL, FALSE);
+            return 0;
+        }
         if (m_iDragRow != -1)
         {
             m_nMaster = (int)InterlockedCompareExchange(&g_TfyAudioPercent, 0, 0);

@@ -26,6 +26,7 @@ add_dependencies(mmdevapi_child dxsdk)
 
 add_executable(mmdevapi_apitest
     capturestream.c
+    defaultdevice.c
     deviceenum.c
     devicetopology.c
     exclusivestream.c

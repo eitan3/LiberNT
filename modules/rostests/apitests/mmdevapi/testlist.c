@@ -9,6 +9,7 @@
 #include <apitest.h>
 
 extern void func_capturestream(void);
+extern void func_defaultdevice(void);
 extern void func_deviceenum(void);
 extern void func_devicetopology(void);
 extern void func_exclusivestream(void);
@@ -24,6 +25,7 @@ extern void func_wdmaudbroker(void);
 const struct test winetest_testlist[] =
 {
     { "capturestream", func_capturestream },
+    { "defaultdevice", func_defaultdevice },
     { "deviceenum", func_deviceenum },
     { "devicetopology", func_devicetopology },
     { "exclusivestream", func_exclusivestream },

@@ -10,6 +10,7 @@
 #include <mmdeviceapi.h>
 #include <audiopolicy.h>
 #include <endpointvolume.h>
+#include <reactos/mmdevdefault.h>
 
 static const PROPERTYKEY DeviceFriendlyNameKey =
     { { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
@@ -105,8 +106,7 @@ AudioVolume(EDataFlow flow)
 static void
 SetPreferredAudio(EDataFlow flow, const std::wstring &id)
 {
-    WriteString(HKEY_CURRENT_USER, L"Software\\Wine\\Drivers\\wdmaud.drv",
-                flow == eRender ? L"DefaultOutput" : L"DefaultInput", id);
+    MMDevSetDefaultEndpoint(flow, eConsole, id.c_str());
 }
 
 static void
