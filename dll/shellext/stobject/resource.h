@@ -40,6 +40,7 @@
 #define IDI_VOLUME3_LIGHT         1234
 #define IDI_BLUETOOTH_LIGHT       1235
 #define IDI_MICROPHONE            236
+#define IDI_MICROPHONE_LIGHT      1236
 
 #define IDS_VOL_VOLUME            252
 #define IDS_VOL_ADJUST            255

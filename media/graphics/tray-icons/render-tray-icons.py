@@ -500,6 +500,7 @@ ICONS = (
     (STOBJECT + "speaker_mute.ico", Fluent("speaker_mute")),
     (STOBJECT + "usb.ico", usb),
     (STOBJECT + "bluetooth.ico", Fluent("bluetooth")),
+    (STOBJECT + "microphone.ico", Fluent("mic")),
 )
 
 

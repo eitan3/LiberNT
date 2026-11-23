@@ -5543,6 +5543,7 @@ public:
     BOOL m_bHotMixer;
     BOOL m_bHotDevice;
     BOOL m_bMenu;
+    BOOL m_bRebuildAfterMenu;
     BOOL m_bTracking;
     SIZE m_size;
     RECT m_rcMasterRow, m_rcMasterSlider, m_rcMasterMute, m_rcMixerLink, m_rcDevice;
@@ -5551,7 +5552,7 @@ public:
                        m_hFont(NULL), m_hFontSmall(NULL),
                        m_nMaster(0), m_bMasterMute(FALSE),
                        m_iDragRow(-2), m_iHotRow(-2), m_bHotMute(FALSE), m_bHotMixer(FALSE),
-                       m_bHotDevice(FALSE), m_bMenu(FALSE), m_bTracking(FALSE)
+                       m_bHotDevice(FALSE), m_bMenu(FALSE), m_bRebuildAfterMenu(FALSE), m_bTracking(FALSE)
     {
         ZeroMemory(&m_Pal, sizeof(m_Pal));
         ZeroMemory(&m_size, sizeof(m_size));
@@ -6177,6 +6178,12 @@ public:
         DestroyMenu(hMenu);
         if (cmd > 0 && (SIZE_T)cmd <= Devices.GetCount() && !Devices[cmd - 1].bDefault)
             TfySetDefaultRenderDevice(Devices[cmd - 1].szId);
+        /* A default-device change that arrived under the menu rebuilds the flyout now that its copy is gone */
+        if (m_bRebuildAfterMenu)
+        {
+            m_bRebuildAfterMenu = FALSE;
+            PostMessage(TFY_WM_VOLUMECHANGED, TRUE, 0);
+        }
         InvalidateRect(NULL, FALSE);
     }
 
@@ -6225,9 +6232,15 @@ public:
 
     LRESULT OnVolumeChanged(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
     {
-        /* Another default output: show its name, volume and sessions */
+        /* Another default output: show its name, volume and sessions. The device menu holds its own
+         * device list, so the rebuild waits until it closes. */
         if (wParam && m_bAudioLoaded && m_iDragRow == -2 && m_AnimPhase != TFY_CLOSE)
         {
+            if (m_bMenu)
+            {
+                m_bRebuildAfterMenu = TRUE;
+                return 0;
+            }
             BuildAudio();
             Layout();
             Reposition();

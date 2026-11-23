@@ -14,18 +14,19 @@
 static HICON g_hIconMicrophone = NULL;
 static BOOL g_bMicrophoneShown = FALSE;
 static WCHAR g_szMicrophoneTip[128];
+/* One enumerator for the lifetime of the tray, so the poll creates no COM object per tick */
+static CComPtr<IMMDeviceEnumerator> g_pMicrophoneEnum;
 
 /* Name of the first app with an active capture session, or an empty string when nobody records */
 static BOOL
 MicrophoneFindRecordingApp(LPWSTR pszApp, SIZE_T cchApp)
 {
-    CComPtr<IMMDeviceEnumerator> pEnum;
     CComPtr<IMMDeviceCollection> pCollection;
     UINT cDevices = 0;
 
     pszApp[0] = UNICODE_NULL;
-    if (FAILED(CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_INPROC_SERVER, IID_IMMDeviceEnumerator, (void **)&pEnum)) ||
-        FAILED(pEnum->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &pCollection)) ||
+    if (!g_pMicrophoneEnum ||
+        FAILED(g_pMicrophoneEnum->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &pCollection)) ||
         FAILED(pCollection->GetCount(&cDevices)))
     {
         return FALSE;
@@ -81,6 +82,7 @@ HRESULT STDMETHODCALLTYPE Microphone_Init(_In_ CSysTray * pSysTray)
 {
     TRACE("Microphone_Init\n");
 
+    CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_INPROC_SERVER, IID_IMMDeviceEnumerator, (void **)&g_pMicrophoneEnum);
     g_hIconMicrophone = StoLoadTrayIcon(g_hInstance, IDI_MICROPHONE);
     LoadStringW(g_hInstance, IDS_MIC_IN_USE, g_szMicrophoneTip, _countof(g_szMicrophoneTip));
     g_bMicrophoneShown = FALSE;
@@ -111,6 +113,7 @@ HRESULT STDMETHODCALLTYPE Microphone_Shutdown(_In_ CSysTray * pSysTray)
 {
     TRACE("Microphone_Shutdown\n");
 
+    g_pMicrophoneEnum.Release();
     DestroyIcon(g_hIconMicrophone);
     g_hIconMicrophone = NULL;
     return pSysTray->NotifyIcon(NIM_DELETE, ID_ICON_MICROPHONE, NULL, NULL);

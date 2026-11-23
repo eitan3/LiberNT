@@ -17,6 +17,12 @@ Files used, copied unmodified and rasterized by render-tray-icons.py:
 - assets/Lock Closed/SVG/ic_fluent_lock_closed_28_filled.svg
 - assets/Lock Closed/SVG/ic_fluent_lock_closed_32_filled.svg
 - assets/Lock Closed/SVG/ic_fluent_lock_closed_48_filled.svg
+- assets/Mic/SVG/ic_fluent_mic_16_regular.svg
+- assets/Mic/SVG/ic_fluent_mic_20_regular.svg
+- assets/Mic/SVG/ic_fluent_mic_24_regular.svg
+- assets/Mic/SVG/ic_fluent_mic_28_regular.svg
+- assets/Mic/SVG/ic_fluent_mic_32_regular.svg
+- assets/Mic/SVG/ic_fluent_mic_48_regular.svg
 - assets/Speaker 0/SVG/ic_fluent_speaker_0_16_regular.svg
 - assets/Speaker 0/SVG/ic_fluent_speaker_0_20_regular.svg
 - assets/Speaker 0/SVG/ic_fluent_speaker_0_24_regular.svg
