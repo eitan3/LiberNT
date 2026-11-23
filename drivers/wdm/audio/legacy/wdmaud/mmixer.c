@@ -771,6 +771,74 @@ WdmAudGetPreferredWaveFormat(
 }
 
 NTSTATUS
+WdmAudQueryWaveFormat(
+    IN PIRP Irp,
+    IN PWDMAUD_DEVICE_INFO DeviceInfo)
+{
+    PIO_STACK_LOCATION IoStack;
+    MIXER_STATUS Status;
+    ULONG WaveIn = DeviceInfo->DeviceType == WAVE_IN_DEVICE_TYPE;
+
+    IoStack = IoGetCurrentIrpStackLocation(Irp);
+    if (IoStack->Parameters.DeviceIoControl.OutputBufferLength <
+        sizeof(WDMAUD_DEVICE_INFO))
+    {
+        return SetIrpIoStatus(Irp, STATUS_BUFFER_TOO_SMALL, 0);
+    }
+
+    if (DeviceInfo->DeviceType != WAVE_IN_DEVICE_TYPE &&
+        DeviceInfo->DeviceType != WAVE_OUT_DEVICE_TYPE)
+    {
+        return SetIrpIoStatus(Irp, STATUS_INVALID_PARAMETER, 0);
+    }
+
+    DeviceInfo->Flags = 0;
+    Status = MMixerQueryWaveFormatSupport(&MixerContext,
+                                          DeviceInfo->DeviceIndex,
+                                          WaveIn,
+                                          &DeviceInfo->u.WaveFormatEx,
+                                          sizeof(WAVEFORMATEXTENSIBLE));
+    if (Status == MM_STATUS_INVALID_PARAMETER)
+        return SetIrpIoStatus(Irp, STATUS_INVALID_PARAMETER, 0);
+    if (Status != MM_STATUS_SUCCESS && Status != MM_STATUS_MORE_ENTRIES)
+        return SetIrpIoStatus(Irp, STATUS_NOT_SUPPORTED, 0);
+
+    DeviceInfo->Flags = 1;
+    return SetIrpIoStatus(Irp, STATUS_SUCCESS, sizeof(WDMAUD_DEVICE_INFO));
+}
+
+NTSTATUS
+WdmAudGetWaveDataRange(
+    IN PIRP Irp,
+    IN PWDMAUD_DEVICE_INFO DeviceInfo)
+{
+    PIO_STACK_LOCATION IoStack;
+    MIXER_STATUS Status;
+
+    IoStack = IoGetCurrentIrpStackLocation(Irp);
+    if (IoStack->Parameters.DeviceIoControl.OutputBufferLength <
+        sizeof(WDMAUD_DEVICE_INFO))
+    {
+        return SetIrpIoStatus(Irp, STATUS_BUFFER_TOO_SMALL, 0);
+    }
+
+    if (DeviceInfo->DeviceType != WAVE_IN_DEVICE_TYPE &&
+        DeviceInfo->DeviceType != WAVE_OUT_DEVICE_TYPE)
+    {
+        return SetIrpIoStatus(Irp, STATUS_INVALID_PARAMETER, 0);
+    }
+
+    Status = MMixerGetWaveDataRange(&MixerContext,
+                                    DeviceInfo->DeviceIndex,
+                                    DeviceInfo->DeviceType == WAVE_IN_DEVICE_TYPE,
+                                    &DeviceInfo->u.WaveDataRange);
+    if (Status != MM_STATUS_SUCCESS)
+        return SetIrpIoStatus(Irp, STATUS_NOT_SUPPORTED, 0);
+
+    return SetIrpIoStatus(Irp, STATUS_SUCCESS, sizeof(WDMAUD_DEVICE_INFO));
+}
+
+NTSTATUS
 WdmAudGetWaveMixerId(
     IN PIRP Irp,
     IN PWDMAUD_DEVICE_INFO DeviceInfo)

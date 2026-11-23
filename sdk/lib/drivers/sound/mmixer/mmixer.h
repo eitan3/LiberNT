@@ -212,6 +212,13 @@ MMixerGetWaveFormat(
     OUT PWAVEFORMATEXTENSIBLE Format);
 
 MIXER_STATUS
+MMixerGetWaveDataRange(
+    IN PMIXER_CONTEXT MixerContext,
+    IN ULONG DeviceIndex,
+    IN ULONG bWaveIn,
+    OUT PKSDATARANGE_AUDIO DataRange);
+
+MIXER_STATUS
 MMixerGetWaveConnectionState(
     IN PMIXER_CONTEXT MixerContext,
     IN ULONG DeviceIndex,

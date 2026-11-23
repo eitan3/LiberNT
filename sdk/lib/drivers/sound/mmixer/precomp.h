@@ -131,6 +131,7 @@ typedef struct
     ULONG ConnectorDeviceId;
     ULONG ConnectorPinId;
     WAVEFORMATEXTENSIBLE PreferredFormat;
+    KSDATARANGE_AUDIO DataRange;
     union
     {
         WAVEOUTCAPSW OutCaps;

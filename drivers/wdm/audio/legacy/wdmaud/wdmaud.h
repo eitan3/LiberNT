@@ -205,6 +205,16 @@ WdmAudGetPreferredWaveFormat(
     IN PWDMAUD_DEVICE_INFO DeviceInfo);
 
 NTSTATUS
+WdmAudQueryWaveFormat(
+    IN PIRP Irp,
+    IN PWDMAUD_DEVICE_INFO DeviceInfo);
+
+NTSTATUS
+WdmAudGetWaveDataRange(
+    IN PIRP Irp,
+    IN PWDMAUD_DEVICE_INFO DeviceInfo);
+
+NTSTATUS
 WdmAudGetWaveMixerId(
     IN PIRP Irp,
     IN PWDMAUD_DEVICE_INFO DeviceInfo);

@@ -704,6 +704,10 @@ WdmAudDeviceControlDispatch(
             return WdmAudDuplicatePinHandle(Irp, DeviceInfo, ClientInfo);
         case IOCTL_GETPREFERRED_WAVE_FORMAT:
             return WdmAudGetPreferredWaveFormat(Irp, DeviceInfo);
+        case IOCTL_QUERY_WAVE_FORMAT:
+            return WdmAudQueryWaveFormat(Irp, DeviceInfo);
+        case IOCTL_GETWAVE_DATARANGE:
+            return WdmAudGetWaveDataRange(Irp, DeviceInfo);
         case IOCTL_GETWAVEMIXERID:
             return WdmAudGetWaveMixerId(Irp, DeviceInfo);
         case IOCTL_GETENDPOINT_STATE:

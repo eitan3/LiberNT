@@ -50,6 +50,7 @@ typedef struct
         WAVEINCAPSW  WaveInCaps;
         MIDIINCAPSW  MidiInCaps;
         MIDIOUTCAPSW MidiOutCaps;
+        KSDATARANGE_AUDIO WaveDataRange;
         ULONGLONG    Position;
         struct
         {
@@ -469,5 +470,44 @@ typedef struct
 #define IOCTL_GETWAVECONNECTOR \
     CTL_CODE(FILE_DEVICE_SOUND, \
              22, \
+             METHOD_BUFFERED, \
+             FILE_CREATE_TREE_CONNECTION | FILE_ANY_ACCESS)
+
+/// IOCTL_QUERY_WAVE_FORMAT
+///
+/// Description: This IOCTL asks the driver of a wave endpoint whether it
+///              accepts an exact PCM or WAVEFORMATEXTENSIBLE format. It goes
+///              through the KS data intersection, so it answers for formats
+///              the WAVEOUTCAPS / WAVEINCAPS legacy flags cannot describe.
+///
+/// Arguments:  InputBuffer is a pointer to a WDMAUD_DEVICE_INFO structure,
+///             InputBufferSize is size of WDMAUD_DEVICE_INFO structure
+/// Note:       DeviceType and DeviceIndex must identify a wave endpoint and
+///             u.WaveFormatExtensible holds the format to query
+/// Result:     Flags is 1 when the driver accepts the format, else 0
+/// ReturnCode: STATUS_SUCCESS indicates the query was answered,
+///             STATUS_NOT_SUPPORTED a device which cannot be asked
+
+#define IOCTL_QUERY_WAVE_FORMAT \
+    CTL_CODE(FILE_DEVICE_SOUND, \
+             23, \
+             METHOD_BUFFERED, \
+             FILE_CREATE_TREE_CONNECTION | FILE_ANY_ACCESS)
+
+/// IOCTL_GETWAVE_DATARANGE
+///
+/// Description: This IOCTL returns the PCM data range of a wave endpoint's
+///              pin, as the driver advertises it.
+///
+/// Arguments:  InputBuffer is a pointer to a WDMAUD_DEVICE_INFO structure,
+///             InputBufferSize is size of WDMAUD_DEVICE_INFO structure
+/// Note:       DeviceType and DeviceIndex must identify a wave endpoint
+/// Result:     The range is returned in u.WaveDataRange
+/// ReturnCode: STATUS_SUCCESS indicates success, STATUS_NOT_SUPPORTED an
+///             endpoint without a PCM data range
+
+#define IOCTL_GETWAVE_DATARANGE \
+    CTL_CODE(FILE_DEVICE_SOUND, \
+             24, \
              METHOD_BUFFERED, \
              FILE_CREATE_TREE_CONNECTION | FILE_ANY_ACCESS)

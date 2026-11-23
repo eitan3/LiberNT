@@ -25,6 +25,7 @@ extern void func_sessioncrossproc(void);
 extern void func_sessionregistry(void);
 extern void func_sessionpublic(void);
 extern void func_wdmaudbroker(void);
+extern void func_waveformat(void);
 
 const struct test winetest_testlist[] =
 {
@@ -45,5 +46,6 @@ const struct test winetest_testlist[] =
     { "sessionregistry", func_sessionregistry },
     { "sessionpublic", func_sessionpublic },
     { "wdmaudbroker", func_wdmaudbroker },
+    { "waveformat", func_waveformat },
     { 0, 0 }
 };

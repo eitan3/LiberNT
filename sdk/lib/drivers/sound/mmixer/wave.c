@@ -518,6 +518,7 @@ MMixerInitializeWaveInfo(
     /* Keep the native pin format for clients which are not representable by
        the legacy WAVE_FORMAT_* capability flags. */
     MMixerAudioRangeToWaveFormat(DataRangeAudio, &WaveInfo->PreferredFormat);
+    WaveInfo->DataRange = *DataRangeAudio;
 
     /* free dataranges buffer */
     MixerContext->Free(MultipleItem);
@@ -803,6 +804,33 @@ MMixerGetWaveFormat(
         return MM_STATUS_UNSUCCESSFUL;
 
     MixerContext->Copy(Format, &WaveInfo->PreferredFormat, sizeof(*Format));
+    return MM_STATUS_SUCCESS;
+}
+
+MIXER_STATUS
+MMixerGetWaveDataRange(
+    IN PMIXER_CONTEXT MixerContext,
+    IN ULONG DeviceIndex,
+    IN ULONG bWaveIn,
+    OUT PKSDATARANGE_AUDIO DataRange)
+{
+    PMIXER_LIST MixerList;
+    MIXER_STATUS Status;
+    LPWAVE_INFO WaveInfo;
+
+    if (!DataRange)
+        return MM_STATUS_INVALID_PARAMETER;
+
+    Status = MMixerVerifyContext(MixerContext);
+    if (Status != MM_STATUS_SUCCESS)
+        return Status;
+
+    MixerList = (PMIXER_LIST)MixerContext->MixerContext;
+    Status = MMixerGetWaveInfoByIndexAndType(MixerList, DeviceIndex, bWaveIn, &WaveInfo);
+    if (Status != MM_STATUS_SUCCESS || !WaveInfo->DataRange.DataRange.FormatSize)
+        return MM_STATUS_UNSUCCESSFUL;
+
+    MixerContext->Copy(DataRange, &WaveInfo->DataRange, sizeof(*DataRange));
     return MM_STATUS_SUCCESS;
 }
 

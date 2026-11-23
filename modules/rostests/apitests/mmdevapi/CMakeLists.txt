@@ -43,6 +43,7 @@ add_executable(mmdevapi_apitest
     sessionregistry.c
     testlist.c
     wdmaudbroker.c
+    waveformat.c
     ${SESSION_SOURCE})
 target_compile_definitions(mmdevapi_apitest PRIVATE _FORCENAMELESSUNION _FORCENAMELESSSTRUCT "CONST_VTABLE=")
 set_module_type(mmdevapi_apitest win32cui)
