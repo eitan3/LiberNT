@@ -140,10 +140,13 @@ NhltParseTable(
     }
 
     Summary->ParsedLength = (UINT32)Offset;
-    Remaining = Length - Offset;
-    Summary->TrailingBytes = (UINT32)Remaining;
-    if (Remaining >= NHLT_CONFIG_SIZE_FIELD)
-        Summary->OedConfigSize = NhltReadU32(Table + Offset);
+    if (Status == NhltParseOk)
+    {
+        Remaining = Length - Offset;
+        Summary->TrailingBytes = (UINT32)Remaining;
+        if (Remaining >= NHLT_CONFIG_SIZE_FIELD)
+            Summary->OedConfigSize = NhltReadU32(Table + Offset);
+    }
     return Status;
 }
 
