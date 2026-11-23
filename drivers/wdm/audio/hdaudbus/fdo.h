@@ -11,6 +11,8 @@ typedef struct _PCI_BAR {
     ULONG Len;
 } PCI_BAR, * PPCI_BAR;
 
+#include <nhlt_parse.h>
+#include "policy.h"
 #include "adsp.h"
 
 #define HDA_UNSOL_QUEUE_SIZE	64
@@ -156,8 +158,11 @@ typedef struct _FDO_CONTEXT
     PVOID dspInterruptContext;
     PVOID nhlt;
     UINT64 nhltSz;
+    NHLT_SUMMARY nhltSummary;
+    NHLT_PARSE_STATUS nhltStatus;
     PVOID sofTplg;
     UINT64 sofTplgSz;
+    DSP_AUDIO_PATH AudioPath;
 
     //bit flags of detected codecs
     UINT16 codecMask;

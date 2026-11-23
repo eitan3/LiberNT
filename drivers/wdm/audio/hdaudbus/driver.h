@@ -111,4 +111,14 @@ static inline void udelay(LONG usec) {
 #define SklHdAudBusPrint(dbglevel, fmt, ...) {                       \
 }
 #endif
+
+#if DBG
+#define SklHdAudBusReport(fmt, ...) {            \
+    DbgPrint(DRIVERNAME);                       \
+    DbgPrint(fmt, ##__VA_ARGS__);               \
+    }
+#else
+#define SklHdAudBusReport(fmt, ...) {           \
+}
+#endif
 #endif

@@ -15,6 +15,137 @@ void CheckHDAGraphicsRegistryKeys(PFDO_CONTEXT fdoCtx);
 
 static
 VOID
+Fdo_ReportNhlt(
+    _In_ PFDO_CONTEXT fdoCtx)
+{
+    const NHLT_SUMMARY* Summary = &fdoCtx->nhltSummary;
+    UINT8 Index;
+
+    SklHdAudBusReport(
+        "NHLT table (0x%I64x bytes): %s, header length %u, parsed %u bytes, %u of %u endpoints\n",
+        fdoCtx->nhltSz,
+        NhltParseStatusName(fdoCtx->nhltStatus),
+        Summary->HeaderLength,
+        Summary->ParsedLength,
+        Summary->EndpointsParsed,
+        Summary->EndpointsCount);
+
+    for (Index = 0; Index < Summary->EndpointsParsed && Index < NHLT_SUMMARY_ENDPOINTS; Index++) {
+        const NHLT_ENDPOINT_SUMMARY* Entry = &Summary->Endpoints[Index];
+
+        SklHdAudBusReport(
+            "NHLT endpoint %u: %s vendor %04x device %04x revision %04x subsystem %08x device type %u direction %u instance %u bus %u, %u bytes\n",
+            Index,
+            NhltLinkTypeName(Entry->LinkType),
+            Entry->VendorId,
+            Entry->DeviceId,
+            Entry->RevisionId,
+            Entry->SubsystemId,
+            Entry->DeviceType,
+            Entry->Direction,
+            Entry->InstanceId,
+            Entry->VirtualBusId,
+            Entry->Length);
+    }
+
+    SklHdAudBusReport(
+        "NHLT links: HDA %u DSP %u PDM %u SSP %u SLIMBUS %u SDW %u UAOL %u other %u; OED config %u bytes, %u bytes after the endpoints\n",
+        Summary->LinkCounts[NHLT_LINKTYPE_HDA],
+        Summary->LinkCounts[NHLT_LINKTYPE_DSP],
+        Summary->LinkCounts[NHLT_LINKTYPE_PDM],
+        Summary->LinkCounts[NHLT_LINKTYPE_SSP],
+        Summary->LinkCounts[NHLT_LINKTYPE_SLIMBUS],
+        Summary->LinkCounts[NHLT_LINKTYPE_SDW],
+        Summary->LinkCounts[NHLT_LINKTYPE_UAOL],
+        Summary->OtherLinkCount,
+        Summary->OedConfigSize,
+        Summary->TrailingBytes);
+}
+
+static
+VOID
+Fdo_WriteAudioPath(
+    _In_ WDFDEVICE Device,
+    _In_ DSP_AUDIO_PATH Path)
+{
+    DECLARE_CONST_UNICODE_STRING(SettingsName, L"Settings");
+    DECLARE_CONST_UNICODE_STRING(ValueName, L"DspAudioPath");
+    UNICODE_STRING pathWide;
+    ANSI_STRING pathAnsi;
+    WDFKEY deviceKey;
+    WDFKEY settingsKey;
+    NTSTATUS status;
+
+    RtlInitAnsiString(&pathAnsi, DspAudioPathName(Path));
+    status = RtlAnsiStringToUnicodeString(&pathWide, &pathAnsi, TRUE);
+    if (!NT_SUCCESS(status)) {
+        goto fail;
+    }
+
+    status = WdfDeviceOpenRegistryKey(Device, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, NULL, &deviceKey);
+    if (!NT_SUCCESS(status)) {
+        goto freePath;
+    }
+
+    status = WdfRegistryCreateKey(deviceKey, &SettingsName, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE,
+        NULL, WDF_NO_OBJECT_ATTRIBUTES, &settingsKey);
+    if (!NT_SUCCESS(status)) {
+        goto closeDevice;
+    }
+
+    status = WdfRegistryAssignValue(settingsKey, &ValueName, REG_SZ, pathWide.Length + sizeof(WCHAR), pathWide.Buffer);
+    WdfRegistryClose(settingsKey);
+
+closeDevice:
+    WdfRegistryClose(deviceKey);
+
+freePath:
+    RtlFreeUnicodeString(&pathWide);
+
+fail:
+    if (!NT_SUCCESS(status)) {
+        SklHdAudBusPrint(DEBUG_LEVEL_ERROR, DBG_PNP,
+            "Could not record the audio path under Settings: 0x%08lx\n", status);
+    }
+}
+
+static
+VOID
+Fdo_ReportAudioPath(
+    _In_ WDFDEVICE Device,
+    _In_ PFDO_CONTEXT fdoCtx)
+{
+    DSP_AUDIO_PATH_EVIDENCE evidence;
+    DSP_AUDIO_PATH path;
+    UINT16 codecMask = fdoCtx->codecMask;
+
+    if (fdoCtx->UseSGPCCodec && fdoCtx->GraphicsCodecAddress < HDA_MAX_CODECS) {
+        codecMask &= (UINT16)~(1UL << fdoCtx->GraphicsCodecAddress);
+    }
+
+    RtlZeroMemory(&evidence, sizeof(evidence));
+    evidence.CodecMask = codecMask;
+    evidence.NonHdaEndpoints = fdoCtx->nhltSummary.NonHdaEndpoints;
+    evidence.DspPresent = (fdoCtx->ppcap != NULL);
+    evidence.NhltTableValid = (fdoCtx->nhltStatus == NhltParseOk || fdoCtx->nhltStatus == NhltParseTruncated);
+    path = DspAudioPathDecide(&evidence);
+    fdoCtx->AudioPath = path;
+
+    SklHdAudBusReport(
+        "audio path %s on PCI %04x:%04x: codec mask 0x%04x, DSP %s, NHLT %s, %u endpoints not on the HDA link\n",
+        DspAudioPathName(path),
+        fdoCtx->venId,
+        fdoCtx->devId,
+        codecMask,
+        evidence.DspPresent ? "present" : "absent",
+        NhltParseStatusName(fdoCtx->nhltStatus),
+        evidence.NonHdaEndpoints);
+
+    Fdo_WriteAudioPath(Device, path);
+}
+
+static
+VOID
 Fdo_LogResources(
     _In_z_ PCSTR ListName,
     _In_ WDFCMRESLIST Resources
@@ -797,6 +928,7 @@ Fdo_EvtDevicePrepareHardware(
 
     fdoCtx->nhlt = NULL;
     fdoCtx->nhltSz = 0;
+    fdoCtx->nhltStatus = NhltParseNoTable;
 
     { //Check NHLT for Intel SST
         NTSTATUS status2 = NHLTCheckSupported(Device);
@@ -811,11 +943,18 @@ Fdo_EvtDevicePrepareHardware(
                 nhltBaseAddr.QuadPart = nhltAddr;
 
                 if (nhltAddr != 0 && nhltSz != 0) {
-                    fdoCtx->nhlt = MmMapIoSpace(nhltBaseAddr, nhltSz, MmCached);
+                    fdoCtx->nhlt = MmMapIoSpace(nhltBaseAddr, (SIZE_T)nhltSz, MmCached);
                     if (!fdoCtx->nhlt) {
-                        return STATUS_NO_MEMORY;
+                        SklHdAudBusPrint(DEBUG_LEVEL_ERROR, DBG_PNP,
+                            "Could not map the NHLT table at 0x%I64x (length 0x%I64x); continuing without it\n",
+                            nhltAddr,
+                            nhltSz);
                     }
-                    fdoCtx->nhltSz = nhltSz;
+                    else {
+                        fdoCtx->nhltSz = nhltSz;
+                        fdoCtx->nhltStatus = NhltParseTable((const UINT8*)fdoCtx->nhlt, nhltSz, &fdoCtx->nhltSummary);
+                        Fdo_ReportNhlt(fdoCtx);
+                    }
                 }
             }
         }
@@ -829,8 +968,14 @@ Fdo_EvtDevicePrepareHardware(
         NTSTATUS status2 = GetSOFTplg(Device, &sofTplg);
         if (NT_SUCCESS(status2) && sofTplg.magic == SOFTPLG_MAGIC) {
             fdoCtx->sofTplg = ExAllocatePoolUninitialized(NonPagedPool, sofTplg.length, SKLHDAUDBUS_POOL_TAG);
-            RtlCopyMemory(fdoCtx->sofTplg, &sofTplg, sofTplg.length);
-            fdoCtx->sofTplgSz = sofTplg.length;
+            if (!fdoCtx->sofTplg) {
+                SklHdAudBusPrint(DEBUG_LEVEL_ERROR, DBG_PNP,
+                    "Could not allocate the SOF topology names; continuing without them\n");
+            }
+            else {
+                RtlCopyMemory(fdoCtx->sofTplg, &sofTplg, sofTplg.length);
+                fdoCtx->sofTplgSz = sofTplg.length;
+            }
         }
     }
 
@@ -1137,13 +1282,16 @@ Fdo_EnumerateCodec(
     UINT32 cmdTmpl = (addr << 28) | (AC_NODE_ROOT << 20) |
         (AC_VERB_PARAMETERS << 8);
     ULONG funcType = 0, vendorDevice, subsysId, revId, nodeCount;
-    if (!NT_SUCCESS(RunSingleHDACmd(fdoCtx, cmdTmpl | AC_PAR_VENDOR_ID, &vendorDevice))) {
-        return;
+    NTSTATUS status = RunSingleHDACmd(fdoCtx, cmdTmpl | AC_PAR_VENDOR_ID, &vendorDevice);
+    if (NT_SUCCESS(status)) {
+        status = RunSingleHDACmd(fdoCtx, cmdTmpl | AC_PAR_REV_ID, &revId);
     }
-    if (!NT_SUCCESS(RunSingleHDACmd(fdoCtx, cmdTmpl | AC_PAR_REV_ID, &revId))) {
-        return;
+    if (NT_SUCCESS(status)) {
+        status = RunSingleHDACmd(fdoCtx, cmdTmpl | AC_PAR_NODE_COUNT, &nodeCount);
     }
-    if (!NT_SUCCESS(RunSingleHDACmd(fdoCtx, cmdTmpl | AC_PAR_NODE_COUNT, &nodeCount))) {
+    if (!NT_SUCCESS(status)) {
+        SklHdAudBusReport(
+            "HDA codec %u does not answer on the link (0x%08lx)\n", addr, status);
         return;
     }
 
@@ -1168,6 +1316,16 @@ Fdo_EnumerateCodec(
         cmd = (addr << 28) | (nid << 20) |
             (AC_VERB_GET_SUBSYSTEM_ID << 8);
         RunSingleHDACmd(fdoCtx, cmd, &subsysId);
+
+        SklHdAudBusReport(
+            "HDA codec %u: vendor %04x device %04x revision %04x subsystem %08x, function group %02x at node %u\n",
+            addr,
+            (vendorDevice >> 16) & 0xFFFF,
+            vendorDevice & 0xFFFF,
+            (revId >> 8) & 0xFFFF,
+            subsysId,
+            funcType & 0xFF,
+            nid);
 
         PDO_IDENTIFICATION_DESCRIPTION description;
         RtlZeroMemory(&description, sizeof(description));
@@ -1298,6 +1456,8 @@ Fdo_EvtDeviceSelfManagedIoInit(
     }
 
     WdfChildListEndScan(WdfFdoGetDefaultChildList(Device));
+
+    Fdo_ReportAudioPath(Device, fdoCtx);
 
     SklHdAudBusPrint(DEBUG_LEVEL_INFO, DBG_INIT,
         "hda scan complete\n");

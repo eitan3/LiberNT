@@ -8,6 +8,7 @@ list(APPEND SOURCE
     hdac_stream.cpp
     hdaudio.cpp
     nhlt.cpp
+    policy.c
     sgpc.cpp
     sklhdaudbus.cpp
     sof-tplg.cpp)
