@@ -36,6 +36,7 @@ option(HOST_TEST_DXGKRNL "Build native DirectX graphics kernel tests" ON)
 option(HOST_TEST_BOOTLOADER "Build native boot loader tests" ON)
 option(HOST_TEST_APPLEAGX "Build native Apple graphics firmware data tests" ON)
 option(HOST_TEST_AUDIOFMT "Build native audio format rule tests" ON)
+option(HOST_TEST_DSPPATH "Build native Intel SST audio path rule tests" ON)
 
 if(BUILD_TESTING AND HOST_TEST_DHCPCSVC)
     add_subdirectory(dhcpcsvc)
@@ -80,6 +81,10 @@ endif()
 
 if(BUILD_TESTING AND HOST_TEST_AUDIOFMT)
     add_subdirectory(audiofmt)
+endif()
+
+if(BUILD_TESTING AND HOST_TEST_DSPPATH)
+    add_subdirectory(dsppath)
 endif()
 
 if(BUILD_TESTING AND HOST_TEST_NDIS)

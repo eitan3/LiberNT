@@ -136,6 +136,9 @@ list(APPEND KMTEST_DRV_SOURCE
     hal/HalRealTimeClock.c
     hal/HalSystemInfo.c
     hdaudbus/HdAudBusInterface.c
+    hdaudbus/NhltParser.c
+    hdaudbus/Policy.c
+    ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus/policy.c
     ks/KsCreateItemSlot.c
     ks/KsDispatchFileObject.c
     ndis/NdisIfProvider.c
@@ -566,6 +569,7 @@ target_include_directories(kmtest_drv PRIVATE
     ${REACTOS_SOURCE_DIR}/drivers/bus/acpi
     ${REACTOS_SOURCE_DIR}/drivers/input/i8042prt
     ${REACTOS_SOURCE_DIR}/drivers/directx/dxgkrnl
+    ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus
     ${REACTOS_SOURCE_DIR}/drivers/directx/dxgmms2
     ${REACTOS_SOURCE_DIR}/sdk/lib/drivers/softgpu
     ${REACTOS_SOURCE_DIR}/sdk/lib/drivers/arblib)
@@ -601,7 +605,7 @@ elseif(CMAKE_C_COMPILER_ID STREQUAL "Clang")
 else()
     target_link_options(kmtest_drv PRIVATE -Wl,--forceinteg)
 endif()
-target_link_libraries(kmtest_drv kmtest_printf chkstk memcmp poguid wdmguid arblib wdmsec aux_klib ${PSEH_LIB})
+target_link_libraries(kmtest_drv kmtest_printf chkstk memcmp poguid wdmguid arblib wdmsec aux_klib nhlt ${PSEH_LIB})
 add_importlibs(kmtest_drv battc ks ksecdd ndis smclib ntoskrnl hal)
 if(REACTOS_USE_WDDM)
     add_importlibs(kmtest_drv dxgkrnl dxgmms2)
