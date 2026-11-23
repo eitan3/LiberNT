@@ -161,6 +161,20 @@ CFunctionGroupNode::AddNode(ULONG NodeId)
         if (NT_SUCCESS(Status))
         {
             PinDefaultAssociation = PinConfigurationDefault.DefaultAssociation;
+            ULONG PinDefault = ((ULONG)PinConfigurationDefault.PortConnectivity << 30) |
+                               ((ULONG)PinConfigurationDefault.Location << 24) |
+                               ((ULONG)PinConfigurationDefault.DefaultDevice << 20) |
+                               ((ULONG)PinConfigurationDefault.ConnectionType << 16) |
+                               ((ULONG)PinConfigurationDefault.Color << 12) |
+                               ((ULONG)PinConfigurationDefault.Misc << 8) |
+                               ((ULONG)PinConfigurationDefault.DefaultAssociation << 4) |
+                               (ULONG)PinConfigurationDefault.Sequence;
+            DPRINT1("HDAUDIO: codec %u pin 0x%02x configuration default 0x%08x (port %u location 0x%02x device %u connection %u color %u misc %u association %u sequence %u)\n",
+                    m_CodecAddress, NodeId, PinDefault,
+                    PinConfigurationDefault.PortConnectivity, PinConfigurationDefault.Location,
+                    PinConfigurationDefault.DefaultDevice, PinConfigurationDefault.ConnectionType,
+                    PinConfigurationDefault.Color, PinConfigurationDefault.Misc,
+                    PinConfigurationDefault.DefaultAssociation, PinConfigurationDefault.Sequence);
         }
     }
 

@@ -158,6 +158,8 @@ CAdapterCommon::GetVendorRevisionId()
     {
         VendorId = (Verbs[0].Input.Response >> 16) & 0xFFFF;
         RevisionId = (Verbs[1].Input.Response >> 8) & 0xFFFF;
+        DPRINT1("HDAUDIO: codec %u vendor %04x device %04x revision %04x\n", m_CodecAddress, VendorId,
+                Verbs[0].Input.Response & 0xFFFF, RevisionId);
     }
     return Status;
 }
