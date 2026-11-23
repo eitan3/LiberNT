@@ -90,6 +90,7 @@ struct local_render_endpoint
     BOOL transport_started;
     BYTE *mix_buffer;
     UINT32 mix_buffer_frames;
+    pcm_dither dither;
     UINT64 completed_frames;
     UINT32 pending_chunk_head;
     UINT32 pending_chunk_count;
@@ -720,9 +721,19 @@ mix_one_chunk(struct local_render_endpoint *endpoint)
                     source, endpoint->format.Format.wBitsPerSample, endpoint->format.Samples.wValidBitsPerSample);
             }
 
-            write_pcm_sample(
-                destination + channel * sample_size, endpoint->format.Format.wBitsPerSample,
-                endpoint->format.Samples.wValidBitsPerSample, saturate_sample(mixed_sample));
+            if (endpoint->format.Samples.wValidBitsPerSample < 24)
+            {
+                /* Narrowing the 32-bit mix word to 16 or 8 bits is dithered; 24 and 32 keep every bit */
+                write_pcm_sample_dithered(
+                    destination + channel * sample_size, endpoint->format.Format.wBitsPerSample,
+                    endpoint->format.Samples.wValidBitsPerSample, saturate_sample(mixed_sample), &endpoint->dither);
+            }
+            else
+            {
+                write_pcm_sample(
+                    destination + channel * sample_size, endpoint->format.Format.wBitsPerSample,
+                    endpoint->format.Samples.wValidBitsPerSample, saturate_sample(mixed_sample));
+            }
         }
     }
 

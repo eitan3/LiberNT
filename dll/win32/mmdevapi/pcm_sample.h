@@ -95,3 +95,48 @@ saturate_sample(INT64 sample)
         return (-0x7fffffff - 1);
     return (INT32)sample;
 }
+
+/* Deterministic TPDF dither: a 32-bit xorshift sequence, reproducible run to run */
+typedef struct pcm_dither
+{
+    UINT32 state;
+} pcm_dither;
+
+#define PCM_DITHER_INIT { 0x9e3779b9u }
+
+/* The next 32-bit word of a xorshift32 sequence: every output but zero occurs once per period */
+static __inline UINT32
+pcm_dither_next(pcm_dither *dither)
+{
+    UINT32 x = dither->state;
+
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    dither->state = x;
+    return x;
+}
+
+/*
+ * write_pcm_sample with triangular (TPDF) dither of one least-significant bit at
+ * the valid-bit depth, added before the sample is narrowed: it turns the
+ * truncation distortion into a fixed noise floor. The dither is a function of
+ * the sample sequence and the seed, so a run is reproducible.
+ */
+static __inline void
+write_pcm_sample_dithered(BYTE *data, WORD bits, WORD valid_bits, INT32 value, pcm_dither *dither)
+{
+    UINT32 raw, first, second;
+    WORD shift;
+
+    if (!valid_bits || valid_bits > bits)
+        valid_bits = bits;
+    raw = (UINT32)value;
+    shift = (WORD)(32 - valid_bits);
+    /* One LSB at the target depth is 2^shift in the 32-bit mix word; two uniform
+       words of that size differ to a triangle from -1 to +1 LSB */
+    first = pcm_dither_next(dither) >> shift;
+    second = pcm_dither_next(dither) >> shift;
+    raw += first - second;
+    write_pcm_sample(data, bits, valid_bits, (INT32)raw);
+}

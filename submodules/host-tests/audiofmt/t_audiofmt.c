@@ -233,6 +233,65 @@ static void TestPcmSamples(void)
     CHECK_EQ(data[0], 0);
 }
 
+/* Dither when narrowing to 16 bits: a fixed xorshift sequence from the fixed seed, so
+   a run is reproducible; the reference words come from the algorithm written out */
+static void TestDither(void)
+{
+    static const WORD Expected16[] = { 0x1233, 0x1234, 0x1233, 0x1233, 0x1233, 0x1233 };
+    pcm_dither dither = PCM_DITHER_INIT, again = PCM_DITHER_INIT, untouched = PCM_DITHER_INIT;
+    BYTE data[4], first[4];
+    unsigned i;
+
+    for (i = 0; i < 6; ++i)
+    {
+        write_pcm_sample_dithered(data, 16, 16, 0x12340000, &dither);
+        CHECK_EQ((WORD)(data[0] | (data[1] << 8)), Expected16[i]);
+    }
+    /* A negative sample dithers the same way around its own truncated word (0xedca = 0x1234 - 0x1234 + 0xedca) */
+    dither = (pcm_dither)PCM_DITHER_INIT;
+    for (i = 0; i < 6; ++i)
+    {
+        write_pcm_sample_dithered(data, 16, 16, (INT32)0xedca0000, &dither);
+        CHECK_EQ((WORD)(data[0] | (data[1] << 8)), (WORD)(Expected16[i] + 0xedca - 0x1234));
+    }
+    /* The same seed and the same samples give the same words, whatever came before */
+    dither = (pcm_dither)PCM_DITHER_INIT;
+    again = (pcm_dither)PCM_DITHER_INIT;
+    for (i = 0; i < 64; ++i)
+    {
+        write_pcm_sample_dithered(data, 16, 16, (INT32)(0x12340000 + i * 0x10000), &dither);
+        write_pcm_sample_dithered(first, 16, 16, (INT32)(0x12340000 + i * 0x10000), &again);
+        CHECK(memcmp(data, first, 2) == 0);
+    }
+    /* The dithered word stays within one LSB of the truncated one */
+    dither = (pcm_dither)PCM_DITHER_INIT;
+    for (i = 0; i < 4096; ++i)
+    {
+        INT32 value = (INT32)(0x12340000 + (i * 0x9e37) % 0x10000);
+        WORD plain, dithered;
+
+        write_pcm_sample(data, 16, 16, value);
+        plain = (WORD)(data[0] | (data[1] << 8));
+        write_pcm_sample_dithered(first, 16, 16, value, &dither);
+        dithered = (WORD)(first[0] | (first[1] << 8));
+        CHECK(dithered + 1 >= plain && dithered <= plain + 1);
+    }
+    /* 24 and 32 valid bits keep every bit of the mix word: the engine writes them undithered */
+    write_pcm_sample(data, 32, 24, 0x12345678);
+    CHECK_EQ(data[0], 0x00);
+    CHECK_EQ(data[1], 0x56);
+    CHECK_EQ(data[2], 0x34);
+    CHECK_EQ(data[3], 0x12);
+    CHECK_EQ(untouched.state, 0x9e3779b9u);
+    /* The generator advances and never falls into the zero state */
+    for (i = 0; i < 1000; ++i)
+    {
+        pcm_dither_next(&untouched);
+        CHECK(untouched.state != 0);
+    }
+    CHECK(untouched.state != 0x9e3779b9u);
+}
+
 int main(void)
 {
     TestContainerBits();
@@ -240,6 +299,7 @@ int main(void)
     TestPreferredFormat();
     TestLegacyTable();
     TestPcmSamples();
+    TestDither();
     if (Failures)
     {
         fprintf(stderr, "audiofmt: %d check(s) failed\n", Failures);
