@@ -43,6 +43,9 @@
 
 #include "mmdevapi_private.h"
 #include "devpkey.h"
+#ifdef __REACTOS__
+#include <reactos/mmdevdefault.h>
+#endif
 
 WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
 
@@ -750,14 +753,23 @@ HRESULT load_devices_from_reg(void)
 }
 
 #ifdef __REACTOS__
-/* The format the user chose for an endpoint (PKEY_AudioEngine_DeviceFormat), if any */
+/*
+ * The format the user chose for an endpoint: the per-user value a standard
+ * user can write (MMDevGetDeviceFormat) comes before the device property
+ * (PKEY_AudioEngine_DeviceFormat), which needs administrator rights.
+ */
 BOOL reactos_user_device_format(EDataFlow flow, const char *device, WAVEFORMATEXTENSIBLE *fmt)
 {
     PROPVARIANT pv = { VT_EMPTY };
+    WCHAR guidstr[39], endpoint_id[64];
     GUID guid;
     BOOL ret = FALSE;
 
     get_device_guid(flow, device, &guid);
+    StringFromGUID2(&guid, guidstr, ARRAY_SIZE(guidstr));
+    swprintf(endpoint_id, ARRAY_SIZE(endpoint_id), L"{0.0.%u.00000000}.%ls", flow, guidstr);
+    if (MMDevGetDeviceFormat(endpoint_id, fmt) == ERROR_SUCCESS)
+        return TRUE;
     if (SUCCEEDED(MMDevice_GetPropValue(&guid, flow, &PKEY_AudioEngine_DeviceFormat, &pv)) &&
         pv.vt == VT_BLOB && pv.blob.cbSize >= sizeof(WAVEFORMATEX))
     {

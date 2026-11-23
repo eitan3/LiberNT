@@ -19,6 +19,7 @@
 #include <mmreg.h>
 #include <ks.h>
 #include <ksmedia.h>
+#include <reactos/mmdevdefault.h>
 
 int WINAPI
 DevicePropertiesW(HWND hWndParent,
@@ -189,6 +190,7 @@ ReadFormats(IMMDevice *pDevice, IPropertyStore *pProps, PENDPOINT_PROPS Props)
     static const WORD Bits[] = { 8, 16 };
     IAudioClient *pClient = NULL;
     PROPVARIANT Value;
+    WAVEFORMATEXTENSIBLE UserFormat;
     WORD Channels;
     UINT Rate, Bit;
 
@@ -212,8 +214,16 @@ ReadFormats(IMMDevice *pDevice, IPropertyStore *pProps, PENDPOINT_PROPS Props)
     }
     IAudioClient_Release(pClient);
 
+    /* The user's own choice comes before the device property, as mmdevapi reads them */
     PropVariantInit(&Value);
-    if (SUCCEEDED(IPropertyStore_GetValue(pProps, &DeviceFormatKey, &Value)))
+    if (MMDevGetDeviceFormat(Props->EndpointId, &UserFormat) == ERROR_SUCCESS)
+    {
+        Value.vt = VT_BLOB;
+        Value.blob.cbSize = sizeof(UserFormat);
+        Value.blob.pBlobData = (BYTE *)&UserFormat;
+        Props->CurrentFormat = FindFormat(Props, &Value);
+    }
+    if (Props->CurrentFormat < 0 && SUCCEEDED(IPropertyStore_GetValue(pProps, &DeviceFormatKey, &Value)))
         Props->CurrentFormat = FindFormat(Props, &Value);
     PropVariantClear(&Value);
     if (SUCCEEDED(IPropertyStore_GetValue(pProps, &OemFormatKey, &Value)))
@@ -221,6 +231,7 @@ ReadFormats(IMMDevice *pDevice, IPropertyStore *pProps, PENDPOINT_PROPS Props)
     PropVariantClear(&Value);
 }
 
+/* Stores the chosen format: in the device property when this user may write it, else per user */
 static BOOL
 SaveFormat(PENDPOINT_PROPS Props, INT Index)
 {
@@ -242,7 +253,12 @@ SaveFormat(PENDPOINT_PROPS Props, INT Index)
         Value.blob.cbSize = sizeof(Props->Formats[Index]);
         Value.blob.pBlobData = (BYTE *)&Props->Formats[Index];
         hr = IPropertyStore_SetValue(pProps, &DeviceFormatKey, &Value);
+        /* The device property applies to every user, so the per-user choice must go */
+        if (SUCCEEDED(hr) && MMDevSetDeviceFormat(Props->EndpointId, NULL) != ERROR_SUCCESS)
+            hr = E_FAIL;
     }
+    if (FAILED(hr))
+        hr = MMDevSetDeviceFormat(Props->EndpointId, &Props->Formats[Index]) == ERROR_SUCCESS ? S_OK : E_FAIL;
     if (pProps)
         IPropertyStore_Release(pProps);
     if (pDevice)

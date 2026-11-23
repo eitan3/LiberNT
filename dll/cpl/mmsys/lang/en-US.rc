@@ -267,6 +267,7 @@ BEGIN
     COMBOBOX IDC_EP_FORMAT, 15, 42, 222, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     PUSHBUTTON "&Restore Defaults", IDC_EP_RESTORE, 167, 58, 70, 14
     LTEXT "Programs that are already playing or recording keep the current format until they close the device. Programs started afterwards use the new format as soon as they are the only ones using the device.", -1, 15, 84, 222, 30
+    LTEXT "As a standard user, the format applies to your account only.", -1, 15, 118, 222, 18
 END
 
 STRINGTABLE
@@ -288,7 +289,7 @@ BEGIN
     IDS_FORMAT_TEMPLATE "%u channel, %u bit, %u Hz"
     IDS_FORMAT_CD "(CD Quality)"
     IDS_FORMAT_DVD "(DVD Quality)"
-    IDS_FORMAT_SAVE_FAILED "The format could not be saved. Changing the format of a device requires administrator rights."
+    IDS_FORMAT_SAVE_FAILED "The format could not be saved. Check that you have permission to change this device, then try again."
     IDS_DEVICE_COLUMN_NAME "Device"
     IDS_DEVICE_COLUMN_ADAPTER "Connected to"
     IDS_DEVICE_COLUMN_STATUS "Status"
