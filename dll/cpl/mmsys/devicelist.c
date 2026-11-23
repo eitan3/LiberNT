@@ -41,6 +41,7 @@ typedef struct _DEVICE_PAGE
     HWND List;
     HIMAGELIST Images;
     UINT Count;
+    WCHAR EmptyText[128];
     DEVICE_ROW Rows[MAX_DEVICES];
 } DEVICE_PAGE, *PDEVICE_PAGE;
 
@@ -68,6 +69,36 @@ FreeRows(PDEVICE_PAGE Page)
     }
     Page->Count = 0;
     ListView_DeleteAllItems(Page->List);
+}
+
+/* Without a device the list shows why: the DSP message when the machine has no other way to play sound */
+static VOID
+ShowEmptyNotice(HWND hwndDlg, PDEVICE_PAGE Page)
+{
+    HWND Notice = GetDlgItem(hwndDlg, IDC_DEVLIST_EMPTY);
+    WCHAR Text[256];
+    RECT Rect = { 0, 0, 0, 9 };
+
+    if (Page->Count)
+    {
+        ShowWindow(Notice, SW_HIDE);
+        return;
+    }
+
+    if (Page->Flow == eRender && AudioOutputNeedsDsp() &&
+        LoadStringW(hApplet, IDS_NO_ENDPOINT_DSP, Text, _countof(Text)))
+    {
+        Rect.bottom = 45;
+    }
+    else
+    {
+        StringCchCopyW(Text, _countof(Text), Page->EmptyText);
+    }
+
+    SetDlgItemTextW(hwndDlg, IDC_DEVLIST_EMPTY, Text);
+    MapDialogRect(hwndDlg, &Rect);
+    SetWindowPos(Notice, NULL, 0, 0, 0, Rect.bottom, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    ShowWindow(Notice, SW_SHOW);
 }
 
 /* Windows lists each device with its name, its description and whether it is the default */
@@ -154,7 +185,7 @@ LoadDevices(HWND hwndDlg, PDEVICE_PAGE Page)
         CoTaskMemFree(DefaultCommId);
     IMMDeviceEnumerator_Release(pEnum);
 
-    ShowWindow(GetDlgItem(hwndDlg, IDC_DEVLIST_EMPTY), Page->Count ? SW_HIDE : SW_SHOW);
+    ShowEmptyNotice(hwndDlg, Page);
     if (Page->Count)
         ListView_SetItemState(Page->List, Selected >= 0 ? Selected : 0, LVIS_SELECTED | LVIS_FOCUSED,
                               LVIS_SELECTED | LVIS_FOCUSED);
@@ -247,6 +278,7 @@ DeviceListDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, EDataFl
             ListView_SetExtendedListViewStyle(Page->List, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
             InitColumns(Page);
             SendDlgItemMessageW(hwndDlg, IDC_DEVLIST_METER, PBM_SETRANGE32, 0, 100);
+            GetDlgItemTextW(hwndDlg, IDC_DEVLIST_EMPTY, Page->EmptyText, _countof(Page->EmptyText));
             LoadDevices(hwndDlg, Page);
             UpdateButtons(hwndDlg, Page);
             SetTimer(hwndDlg, METER_TIMER_ID, METER_INTERVAL, NULL);

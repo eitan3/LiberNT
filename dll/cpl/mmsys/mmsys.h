@@ -102,6 +102,11 @@ AudioDlgProc(HWND hwndDlg,
 VOID
 ShowEndpointProperties(HWND hwndOwner, LPCWSTR pszEndpointId);
 
+/* dspaudio.c */
+
+BOOL
+AudioOutputNeedsDsp(VOID);
+
 /* speakervolume.c */
 
 INT_PTR

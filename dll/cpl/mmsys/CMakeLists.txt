@@ -8,6 +8,7 @@ list(APPEND SOURCE
     volume.c
     audio.c
     devicelist.c
+    dspaudio.c
     endpointprops.c
     mmsys.h)
 
