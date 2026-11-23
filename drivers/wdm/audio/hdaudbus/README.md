@@ -28,7 +28,7 @@ Implemented:
 Not implemented:
 
 * Booting, resetting or powering the DSP, and loading any firmware, SOF or vendor. The `ADSP_BUS_INTERFACE` only hands out resources.
-* Any communication with the DSP (IPC3 or IPC4), parsing a topology beyond the three `*-tplg` names of the controller's `_DSD`, and any audio stream that runs through the DSP. The parser libraries under `sdk/lib/drivers/audio/` (`nhlt`, `sofipc4`, `disco`) are built and tested on their own; no driver uses `sofipc4` or `disco` yet. `disco` walks a `_DSD` reply generically; the SoundWire DisCo property names wait for MIPI's public specification.
+* Any communication with the DSP (IPC3 or IPC4), parsing a topology beyond the three `*-tplg` names of the controller's `_DSD`, and any audio stream that runs through the DSP. The parser libraries under `sdk/lib/drivers/audio/` (`nhlt`, `sofipc4`, `disco`, `softplg`) are built and tested on their own; no driver uses `sofipc4`, `disco` or `softplg` yet. `softplg` walks an ALSA SoC topology binary into its blocks, elements, controls and vendor tuples without mapping them onto firmware pipelines. `disco` walks a `_DSD` reply generically; the SoundWire DisCo property names wait for MIPI's public specification.
 * SoundWire: no bus, controller or codec driver. The `SoundWire*.h` headers in the tree are interface definitions only.
 * The Audio Class eXtension (ACX): headers only.
 * Codec fixups for a codec that sits behind the DSP. They are decided per codec after a run shows the codec's pin configuration defaults.
