@@ -41,7 +41,7 @@ static const PROPERTYKEY DeviceFormatKey =
 static const PROPERTYKEY OemFormatKey =
     { { 0xe4870e26, 0x3cc5, 0x4cd2, { 0xba, 0x46, 0xca, 0x0a, 0x9a, 0x70, 0xed, 0x04 } }, 3 };
 
-#define MAX_ENDPOINT_FORMATS 24
+#define MAX_ENDPOINT_FORMATS 96
 
 typedef struct _ENDPOINT_PROPS
 {
@@ -145,18 +145,19 @@ ReadDriver(PENDPOINT_PROPS Props)
     }
 }
 
+/* A sample of ValidBits carried in a ContainerBits-wide word, as the device takes it */
 static VOID
-SetPcmFormat(WAVEFORMATEXTENSIBLE *Format, DWORD Rate, WORD Bits, WORD Channels)
+SetPcmFormatValid(WAVEFORMATEXTENSIBLE *Format, DWORD Rate, WORD ContainerBits, WORD ValidBits, WORD Channels)
 {
     ZeroMemory(Format, sizeof(*Format));
     Format->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
     Format->Format.nChannels = Channels;
     Format->Format.nSamplesPerSec = Rate;
-    Format->Format.wBitsPerSample = Bits;
-    Format->Format.nBlockAlign = Channels * Bits / 8;
+    Format->Format.wBitsPerSample = ContainerBits;
+    Format->Format.nBlockAlign = Channels * ContainerBits / 8;
     Format->Format.nAvgBytesPerSec = Rate * Format->Format.nBlockAlign;
     Format->Format.cbSize = sizeof(*Format) - sizeof(Format->Format);
-    Format->Samples.wValidBitsPerSample = Bits;
+    Format->Samples.wValidBitsPerSample = ValidBits;
     Format->dwChannelMask = Channels == 1 ? SPEAKER_FRONT_CENTER : SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
     Format->SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
 }
@@ -165,16 +166,25 @@ static INT
 FindFormat(PENDPOINT_PROPS Props, const PROPVARIANT *Value)
 {
     const WAVEFORMATEX *Format;
+    WORD ValidBits;
     UINT Index;
 
     if (Value->vt != VT_BLOB || Value->blob.cbSize < sizeof(WAVEFORMATEX))
         return -1;
     Format = (const WAVEFORMATEX *)Value->blob.pBlobData;
+    ValidBits = Format->wBitsPerSample;
+    if (Format->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+        Value->blob.cbSize >= sizeof(WAVEFORMATEXTENSIBLE) &&
+        Format->cbSize >= sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX))
+    {
+        ValidBits = ((const WAVEFORMATEXTENSIBLE *)Format)->Samples.wValidBitsPerSample;
+    }
     for (Index = 0; Index < Props->FormatCount; Index++)
     {
         if (Props->Formats[Index].Format.nSamplesPerSec == Format->nSamplesPerSec &&
             Props->Formats[Index].Format.wBitsPerSample == Format->wBitsPerSample &&
-            Props->Formats[Index].Format.nChannels == Format->nChannels)
+            Props->Formats[Index].Format.nChannels == Format->nChannels &&
+            Props->Formats[Index].Samples.wValidBitsPerSample == ValidBits)
         {
             return (INT)Index;
         }
@@ -182,17 +192,20 @@ FindFormat(PENDPOINT_PROPS Props, const PROPVARIANT *Value)
     return -1;
 }
 
-/* The formats the device itself accepts, as Windows 11 offers them under Default Format */
+/* The formats the device itself accepts, as Windows 11 offers them under Default Format.
+   Depths above 16 bits have no legacy capability flag: the driver is asked for each. */
 static VOID
 ReadFormats(IMMDevice *pDevice, IPropertyStore *pProps, PENDPOINT_PROPS Props)
 {
-    static const DWORD Rates[] = { 11025, 22050, 44100, 48000, 96000 };
-    static const WORD Bits[] = { 8, 16 };
+    static const DWORD Rates[] = { 48000, 44100, 96000, 192000, 176400, 88200, 32000, 22050, 11025, 8000 };
+    /* Container and valid bits: 16-bit, 24-in-32, 32-bit, then 20-in-32 for a codec without 24 */
+    static const WORD Depths[][2] = { {16, 16}, {32, 24}, {32, 32}, {32, 20} };
     IAudioClient *pClient = NULL;
     PROPVARIANT Value;
     WAVEFORMATEXTENSIBLE UserFormat;
     WORD Channels;
-    UINT Rate, Bit;
+    UINT Rate, Depth;
+    BOOL Has24 = FALSE;
 
     Props->CurrentFormat = Props->DefaultFormat = -1;
     if (FAILED(IMMDevice_Activate(pDevice, &IID_IAudioClient, CLSCTX_INPROC_SERVER, NULL, (void **)&pClient)))
@@ -200,15 +213,21 @@ ReadFormats(IMMDevice *pDevice, IPropertyStore *pProps, PENDPOINT_PROPS Props)
 
     for (Channels = 1; Channels <= 2; Channels++)
     {
-        for (Bit = 0; Bit < _countof(Bits); Bit++)
+        for (Rate = 0; Rate < _countof(Rates) && Props->FormatCount < MAX_ENDPOINT_FORMATS; Rate++)
         {
-            for (Rate = 0; Rate < _countof(Rates) && Props->FormatCount < MAX_ENDPOINT_FORMATS; Rate++)
+            for (Depth = 0; Depth < _countof(Depths) && Props->FormatCount < MAX_ENDPOINT_FORMATS; Depth++)
             {
                 WAVEFORMATEXTENSIBLE *Format = &Props->Formats[Props->FormatCount];
 
-                SetPcmFormat(Format, Rates[Rate], Bits[Bit], Channels);
-                if (IAudioClient_IsFormatSupported(pClient, AUDCLNT_SHAREMODE_EXCLUSIVE, &Format->Format, NULL) == S_OK)
-                    Props->FormatCount++;
+                /* 20-bit is offered only to a codec that has no 24-bit */
+                if (Depths[Depth][1] == 20 && Has24)
+                    continue;
+                SetPcmFormatValid(Format, Rates[Rate], Depths[Depth][0], Depths[Depth][1], Channels);
+                if (IAudioClient_IsFormatSupported(pClient, AUDCLNT_SHAREMODE_EXCLUSIVE, &Format->Format, NULL) != S_OK)
+                    continue;
+                if (Depths[Depth][1] == 24)
+                    Has24 = TRUE;
+                Props->FormatCount++;
             }
         }
     }
@@ -372,15 +391,26 @@ static VOID
 FormatName(const WAVEFORMATEXTENSIBLE *Format, LPWSTR Buffer, SIZE_T Chars)
 {
     WCHAR Template[64], Quality[32] = L"";
+    WORD ValidBits = Format->Samples.wValidBitsPerSample;
     UINT QualityId = 0;
 
     LoadStringW(hApplet, IDS_FORMAT_TEMPLATE, Template, _countof(Template));
-    StringCchPrintfW(Buffer, Chars, Template, Format->Format.nChannels, Format->Format.wBitsPerSample,
+    StringCchPrintfW(Buffer, Chars, Template, Format->Format.nChannels, ValidBits,
                      Format->Format.nSamplesPerSec);
-    if (Format->Format.wBitsPerSample == 16 && Format->Format.nSamplesPerSec == 44100)
+    if (ValidBits != Format->Format.wBitsPerSample)
+    {
+        WCHAR Container[64], Formatted[64];
+
+        LoadStringW(hApplet, IDS_FORMAT_CONTAINER, Container, _countof(Container));
+        StringCchPrintfW(Formatted, _countof(Formatted), Container, Format->Format.wBitsPerSample);
+        StringCchCatW(Buffer, Chars, Formatted);
+    }
+    if (ValidBits == 16 && Format->Format.nSamplesPerSec == 44100)
         QualityId = IDS_FORMAT_CD;
-    else if (Format->Format.wBitsPerSample == 16 && Format->Format.nSamplesPerSec == 48000)
+    else if (ValidBits == 16 && Format->Format.nSamplesPerSec == 48000)
         QualityId = IDS_FORMAT_DVD;
+    else if (ValidBits >= 24)
+        QualityId = IDS_FORMAT_STUDIO;
     if (QualityId && LoadStringW(hApplet, QualityId, Quality, _countof(Quality)))
     {
         StringCchCatW(Buffer, Chars, L" ");

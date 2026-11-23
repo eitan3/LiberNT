@@ -799,3 +799,6 @@
 #define IDS_UPDATE_OPTIONS             857
 #define IDS_UPDATE_AUTOMATIC           858
 #define IDS_UPDATE_AUTOMATIC_DESC      859
+#define IDS_AUDIO_FORMAT                860
+#define IDS_AUDIO_FORMAT_DESC           861
+#define IDS_FORMAT_IN_CONTAINER         862

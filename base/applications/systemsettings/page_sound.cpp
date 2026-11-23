@@ -14,6 +14,121 @@
 
 static const PROPERTYKEY DeviceFriendlyNameKey =
     { { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
+/* PKEY_AudioEngine_DeviceFormat: the format the endpoint runs at in shared mode */
+static const PROPERTYKEY DeviceFormatKey =
+    { { 0xf19f064d, 0x082c, 0x4e27, { 0xbc, 0x73, 0x68, 0x82, 0xa1, 0xbb, 0x8e, 0x4c } }, 0 };
+
+static void
+SetPcmFormat(WAVEFORMATEXTENSIBLE *Format, DWORD Rate, WORD ContainerBits, WORD ValidBits, WORD Channels)
+{
+    ZeroMemory(Format, sizeof(*Format));
+    Format->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    Format->Format.nChannels = Channels;
+    Format->Format.nSamplesPerSec = Rate;
+    Format->Format.wBitsPerSample = ContainerBits;
+    Format->Format.nBlockAlign = Channels * ContainerBits / 8;
+    Format->Format.nAvgBytesPerSec = Rate * Format->Format.nBlockAlign;
+    Format->Format.cbSize = sizeof(*Format) - sizeof(Format->Format);
+    Format->Samples.wValidBitsPerSample = ValidBits;
+    Format->dwChannelMask = Channels == 1 ? SPEAKER_FRONT_CENTER : SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+    Format->SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+}
+
+static bool
+SameFormat(const WAVEFORMATEXTENSIBLE &left, const WAVEFORMATEXTENSIBLE &right)
+{
+    return left.Format.nChannels == right.Format.nChannels &&
+           left.Format.nSamplesPerSec == right.Format.nSamplesPerSec &&
+           left.Format.wBitsPerSample == right.Format.wBitsPerSample &&
+           left.Samples.wValidBitsPerSample == right.Samples.wValidBitsPerSample;
+}
+
+static std::wstring
+FormatName(const WAVEFORMATEXTENSIBLE &Format)
+{
+    if (Format.Samples.wValidBitsPerSample != Format.Format.wBitsPerSample)
+    {
+        return Printf(Str(IDS_FORMAT_IN_CONTAINER).c_str(), Format.Samples.wValidBitsPerSample,
+                      Format.Format.wBitsPerSample, Format.Format.nSamplesPerSec);
+    }
+    return Printf(L"%u bit, %u Hz", Format.Samples.wValidBitsPerSample, Format.Format.nSamplesPerSec);
+}
+
+/*
+ * The depths the driver of the default endpoint takes at the mix rate and channel
+ * count: 16-bit first (the default), then 24-in-32 and 32-bit, as the driver answers.
+ */
+static std::vector<WAVEFORMATEXTENSIBLE>
+AudioFormats(IAudioClient *client, const WAVEFORMATEX *mix)
+{
+    static const WORD Depths[][2] = { {16, 16}, {32, 24}, {32, 32} };
+    std::vector<WAVEFORMATEXTENSIBLE> formats;
+
+    for (size_t d = 0; d < _countof(Depths); d++)
+    {
+        WAVEFORMATEXTENSIBLE format;
+
+        SetPcmFormat(&format, mix->nSamplesPerSec, Depths[d][0], Depths[d][1], mix->nChannels);
+        if (client->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &format.Format, NULL) == S_OK)
+            formats.push_back(format);
+    }
+    return formats;
+}
+
+/* The format in force: the per-user choice a standard user can write comes before the device property */
+static int
+AudioFormatIndex(IMMDevice *device, const std::wstring &id, const std::vector<WAVEFORMATEXTENSIBLE> &formats)
+{
+    WAVEFORMATEXTENSIBLE current;
+    IPropertyStore *store = NULL;
+    PROPVARIANT value;
+    int index = -1;
+
+    PropVariantInit(&value);
+    if (MMDevGetDeviceFormat(id.c_str(), &current) == ERROR_SUCCESS ||
+        (SUCCEEDED(device->OpenPropertyStore(STGM_READ, &store)) &&
+         SUCCEEDED(store->GetValue(DeviceFormatKey, &value)) && value.vt == VT_BLOB &&
+         value.blob.cbSize >= sizeof(current) &&
+         (memcpy(&current, value.blob.pBlobData, sizeof(current)), TRUE)))
+    {
+        for (size_t i = 0; i < formats.size(); i++)
+        {
+            if (SameFormat(formats[i], current))
+            {
+                index = (int)i;
+                break;
+            }
+        }
+    }
+    PropVariantClear(&value);
+    if (store)
+        store->Release();
+    return index;
+}
+
+/* Stores the chosen format: in the device property when this user may write it, else per user */
+static void
+SetAudioFormat(HWND owner, IMMDevice *device, const std::wstring &id, const WAVEFORMATEXTENSIBLE &format)
+{
+    IPropertyStore *store = NULL;
+    PROPVARIANT value;
+    LONG error = ERROR_ACCESS_DENIED;
+
+    PropVariantInit(&value);
+    value.vt = VT_BLOB;
+    value.blob.cbSize = sizeof(format);
+    value.blob.pBlobData = (BYTE *)&format;
+    if (SUCCEEDED(device->OpenPropertyStore(STGM_READWRITE, &store)))
+    {
+        if (SUCCEEDED(store->SetValue(DeviceFormatKey, value)))
+            error = MMDevSetDeviceFormat(id.c_str(), NULL);
+        store->Release();
+    }
+    if (error != ERROR_SUCCESS)
+        error = MMDevSetDeviceFormat(id.c_str(), &format);
+    if (error != ERROR_SUCCESS)
+        ShowError(owner, error);
+}
 
 static IMMDeviceEnumerator *
 AudioEnumerator()
@@ -109,6 +224,58 @@ SetPreferredAudio(EDataFlow flow, const std::wstring &id)
     MMDevSetDefaultEndpoint(flow, eConsole, id.c_str());
 }
 
+/* The Default Format of the flow's default endpoint, among the depths its driver takes */
+static void
+AddAudioFormat(PageBuilder &page, EDataFlow flow, const std::wstring &id)
+{
+    IMMDeviceEnumerator *enumerator = AudioEnumerator();
+    IMMDevice *device = NULL;
+    IAudioClient *client = NULL;
+    WAVEFORMATEX *mix = NULL;
+    std::vector<WAVEFORMATEXTENSIBLE> formats;
+    std::vector<std::wstring> names;
+    int selected = -1;
+
+    if (!enumerator || id.empty())
+        goto done;
+    if (FAILED(enumerator->GetDevice(id.c_str(), &device)) ||
+        FAILED(device->Activate(IID_IAudioClient, CLSCTX_INPROC_SERVER, NULL, (void **)&client)) ||
+        FAILED(client->GetMixFormat(&mix)))
+        goto done;
+    formats = AudioFormats(client, mix);
+    if (formats.empty())
+        goto done;
+    for (size_t i = 0; i < formats.size(); i++)
+        names.push_back(FormatName(formats[i]));
+    selected = AudioFormatIndex(device, id, formats);
+    page.Choice(Str(IDS_AUDIO_FORMAT), Str(IDS_AUDIO_FORMAT_DESC),
+                flow == eRender ? L"speaker_2_20_regular" : L"mic_20_regular", names, selected,
+                [host = page.Host, id, formats](int index)
+                {
+                    IMMDeviceEnumerator *enumerator = AudioEnumerator();
+                    IMMDevice *device = NULL;
+
+                    if (enumerator && SUCCEEDED(enumerator->GetDevice(id.c_str(), &device)))
+                    {
+                        SetAudioFormat(host->Window(), device, id, formats[index]);
+                        device->Release();
+                    }
+                    if (enumerator)
+                        enumerator->Release();
+                    host->Refresh();
+                });
+
+done:
+    if (mix)
+        CoTaskMemFree(mix);
+    if (client)
+        client->Release();
+    if (device)
+        device->Release();
+    if (enumerator)
+        enumerator->Release();
+}
+
 static void
 AddAudioGroup(PageBuilder &page, EDataFlow flow)
 {
@@ -137,6 +304,7 @@ AddAudioGroup(PageBuilder &page, EDataFlow flow)
     page.Choice(Str(output ? IDS_OUTPUT_DEVICE : IDS_INPUT_DEVICE), Str(output ? IDS_OUTPUT_DESC : IDS_INPUT_DESC),
                 output ? L"speaker_2_20_regular" : L"mic_20_regular", names, selected,
                 [flow, ids](int index) { SetPreferredAudio(flow, ids[index]); });
+    AddAudioFormat(page, flow, ids[selected]);
     volume = AudioVolume(flow);
     if (volume)
     {
