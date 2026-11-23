@@ -15,11 +15,15 @@
  *
  * Strict mode is a LiberNT addition: when it is on, only desktop apps whose
  * NonPackaged subkey holds Value "Allow" may record.
+ *
+ * Every access goes through the 64-bit view: a 32-bit recorder and the
+ * 64-bit Settings page must read and write the same store.
  */
 #define MIC_CONSENT_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\microphone"
 #define MIC_CONSENT_APPS_KEY MIC_CONSENT_KEY L"\\NonPackaged"
 #define MIC_CONSENT_STRICT_KEY L"Software\\LiberNT\\Privacy\\Microphone"
 #define MIC_CONSENT_STRICT_VALUE L"StrictMode"
+#define MIC_CONSENT_VIEW KEY_WOW64_64KEY
 
 static __inline VOID
 MicConsentAppKeyName(LPCWSTR ImagePath, LPWSTR Name, SIZE_T Chars)
@@ -39,7 +43,8 @@ MicConsentValueIs(HKEY Root, LPCWSTR SubKey, LPCWSTR Name)
     WCHAR Value[16];
     DWORD Size = sizeof(Value);
 
-    return RegGetValueW(Root, SubKey, L"Value", RRF_RT_REG_SZ, NULL, Value, &Size) == ERROR_SUCCESS &&
+    return RegGetValueW(Root, SubKey, L"Value", RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, NULL, Value, &Size) ==
+               ERROR_SUCCESS &&
            !lstrcmpiW(Value, Name);
 }
 
@@ -48,8 +53,9 @@ MicConsentStrictMode(VOID)
 {
     DWORD Value = 0, Size = sizeof(Value);
 
-    return RegGetValueW(HKEY_CURRENT_USER, MIC_CONSENT_STRICT_KEY, MIC_CONSENT_STRICT_VALUE, RRF_RT_REG_DWORD,
-                        NULL, &Value, &Size) == ERROR_SUCCESS && Value != 0;
+    return RegGetValueW(HKEY_CURRENT_USER, MIC_CONSENT_STRICT_KEY, MIC_CONSENT_STRICT_VALUE,
+                        RRF_RT_REG_DWORD | RRF_SUBKEY_WOW6464KEY, NULL, &Value, &Size) == ERROR_SUCCESS &&
+           Value != 0;
 }
 
 static __inline BOOL

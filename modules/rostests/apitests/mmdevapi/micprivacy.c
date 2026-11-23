@@ -33,14 +33,28 @@ static SAVED_VALUE Saved[] =
     { AppKey, L"Value" },
 };
 
+static BOOL
+SetValue(HKEY Root, LPCWSTR Key, LPCWSTR Name, DWORD Type, const VOID *Data, DWORD Size)
+{
+    HKEY hKey;
+    LSTATUS Error;
+
+    Error = RegCreateKeyExW(Root, Key, 0, NULL, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, NULL, &hKey, NULL);
+    if (Error)
+        return FALSE;
+    Error = RegSetValueExW(hKey, Name, 0, Type, Data, Size);
+    RegCloseKey(hKey);
+    return Error == ERROR_SUCCESS;
+}
+
 static VOID
 SaveValues(VOID)
 {
     for (UINT i = 0; i < ARRAYSIZE(Saved); i++)
     {
         Saved[i].Size = sizeof(Saved[i].Data);
-        Saved[i].Present = RegGetValueW(HKEY_CURRENT_USER, Saved[i].Key, Saved[i].Name, RRF_RT_ANY, &Saved[i].Type,
-                                        Saved[i].Data, &Saved[i].Size) == ERROR_SUCCESS;
+        Saved[i].Present = RegGetValueW(HKEY_CURRENT_USER, Saved[i].Key, Saved[i].Name, RRF_RT_ANY | RRF_SUBKEY_WOW6464KEY,
+                                        &Saved[i].Type, Saved[i].Data, &Saved[i].Size) == ERROR_SUCCESS;
     }
 }
 
@@ -56,21 +70,29 @@ RestoreValues(VOID)
     }
 }
 
-static VOID
+static BOOL
 SetConsent(LPCWSTR Key, LPCWSTR Value)
 {
+    HKEY hKey;
+    BOOL Ok;
+
     if (Value)
-        RegSetKeyValueW(HKEY_CURRENT_USER, Key, L"Value", REG_SZ, Value, (lstrlenW(Value) + 1) * sizeof(WCHAR));
-    else
-        RegDeleteKeyValueW(HKEY_CURRENT_USER, Key, L"Value");
+        return SetValue(HKEY_CURRENT_USER, Key, L"Value", REG_SZ, Value, (lstrlenW(Value) + 1) * sizeof(WCHAR));
+    Ok = !RegOpenKeyExW(HKEY_CURRENT_USER, Key, 0, KEY_SET_VALUE | KEY_WOW64_64KEY, &hKey);
+    if (Ok)
+    {
+        RegDeleteValueW(hKey, L"Value");
+        RegCloseKey(hKey);
+    }
+    return Ok;
 }
 
-static VOID
+static BOOL
 SetStrict(BOOL On)
 {
     DWORD Value = On;
 
-    RegSetKeyValueW(HKEY_CURRENT_USER, MIC_CONSENT_STRICT_KEY, MIC_CONSENT_STRICT_VALUE, REG_DWORD, &Value, sizeof(Value));
+    return SetValue(HKEY_CURRENT_USER, MIC_CONSENT_STRICT_KEY, MIC_CONSENT_STRICT_VALUE, REG_DWORD, &Value, sizeof(Value));
 }
 
 /* Initialize a shared capture stream on the default recording device */
@@ -99,6 +121,17 @@ OpenCapture(IMMDeviceEnumerator *Enumerator)
     return hr;
 }
 
+static BOOL
+KeyExists(LPCWSTR Key)
+{
+    HKEY hKey;
+    BOOL Exists = !RegOpenKeyExW(HKEY_CURRENT_USER, Key, 0, KEY_READ | KEY_WOW64_64KEY, &hKey);
+
+    if (Exists)
+        RegCloseKey(hKey);
+    return Exists;
+}
+
 static VOID
 TestStore(LPCWSTR Image)
 {
@@ -107,24 +140,28 @@ TestStore(LPCWSTR Image)
     MicConsentAppKeyName(L"C:\\Program Files\\App\\app.exe", Name, ARRAYSIZE(Name));
     ok(!wcscmp(Name, L"C:#Program File"), "truncated key name is %ls\n", Name);
 
-    SetConsent(MIC_CONSENT_KEY, NULL);
-    SetConsent(MIC_CONSENT_APPS_KEY, NULL);
-    SetConsent(AppKey, NULL);
-    SetStrict(FALSE);
+    ok(SetConsent(MIC_CONSENT_KEY, NULL), "clearing the microphone Value failed\n");
+    ok(SetConsent(MIC_CONSENT_APPS_KEY, NULL), "clearing the desktop apps Value failed\n");
+    ok(SetConsent(AppKey, NULL), "clearing the app Value failed\n");
+    ok(SetStrict(FALSE), "turning strict mode off failed\n");
     ok(MicConsentCheck(Image), "default is not allow\n");
 
-    SetConsent(MIC_CONSENT_KEY, L"Deny");
+    ok(SetConsent(MIC_CONSENT_KEY, L"Deny"), "setting the microphone Value failed\n");
+    ok(KeyExists(MIC_CONSENT_KEY), "the microphone consent key was not created\n");
     ok(!MicConsentCheck(Image), "global switch off still allows\n");
-    SetConsent(MIC_CONSENT_KEY, L"Allow");
-    SetConsent(MIC_CONSENT_APPS_KEY, L"Deny");
+    ok(SetConsent(MIC_CONSENT_KEY, L"Allow"), "setting the microphone Value failed\n");
+    ok(SetConsent(MIC_CONSENT_APPS_KEY, L"Deny"), "setting the desktop apps Value failed\n");
+    ok(KeyExists(MIC_CONSENT_APPS_KEY), "the desktop apps consent key was not created\n");
     ok(!MicConsentCheck(Image), "desktop apps switch off still allows\n");
-    SetConsent(MIC_CONSENT_APPS_KEY, L"Allow");
+    ok(SetConsent(MIC_CONSENT_APPS_KEY, L"Allow"), "setting the desktop apps Value failed\n");
 
-    SetStrict(TRUE);
+    ok(SetStrict(TRUE), "turning strict mode on failed\n");
+    ok(KeyExists(MIC_CONSENT_STRICT_KEY), "the strict mode key was not created\n");
     ok(!MicConsentCheck(Image), "strict mode allows an unlisted app\n");
-    SetConsent(AppKey, L"Allow");
+    ok(SetConsent(AppKey, L"Allow"), "allowing the app failed\n");
+    ok(KeyExists(AppKey), "the app consent key was not created\n");
     ok(MicConsentCheck(Image), "strict mode refuses a listed app\n");
-    SetConsent(AppKey, L"Deny");
+    ok(SetConsent(AppKey, L"Deny"), "refusing the app failed\n");
     ok(!MicConsentCheck(Image), "strict mode allows an app set to Deny\n");
 }
 
@@ -140,10 +177,10 @@ TestEnforcement(LPCWSTR Image)
     if (FAILED(hr))
         return;
 
-    SetConsent(MIC_CONSENT_KEY, NULL);
-    SetConsent(MIC_CONSENT_APPS_KEY, NULL);
-    SetConsent(AppKey, NULL);
-    SetStrict(FALSE);
+    ok(SetConsent(MIC_CONSENT_KEY, NULL), "clearing the microphone Value failed\n");
+    ok(SetConsent(MIC_CONSENT_APPS_KEY, NULL), "clearing the desktop apps Value failed\n");
+    ok(SetConsent(AppKey, NULL), "clearing the app Value failed\n");
+    ok(SetStrict(FALSE), "turning strict mode off failed\n");
     hr = OpenCapture(Enumerator);
     if (hr == E_NOTFOUND || hr == AUDCLNT_E_DEVICE_INVALIDATED)
     {
@@ -153,16 +190,16 @@ TestEnforcement(LPCWSTR Image)
     }
     ok(hr == S_OK, "allowed capture returned 0x%08lx\n", hr);
 
-    SetStrict(TRUE);
+    ok(SetStrict(TRUE), "turning strict mode on failed\n");
     hr = OpenCapture(Enumerator);
     ok(hr == E_ACCESSDENIED, "unlisted app in strict mode: 0x%08lx\n", hr);
 
-    SetConsent(AppKey, L"Allow");
+    ok(SetConsent(AppKey, L"Allow"), "allowing the app failed\n");
     hr = OpenCapture(Enumerator);
     ok(hr == S_OK, "listed app in strict mode: 0x%08lx\n", hr);
 
-    SetStrict(FALSE);
-    SetConsent(MIC_CONSENT_KEY, L"Deny");
+    ok(SetStrict(FALSE), "turning strict mode off failed\n");
+    ok(SetConsent(MIC_CONSENT_KEY, L"Deny"), "setting the microphone Value failed\n");
     hr = OpenCapture(Enumerator);
     ok(hr == E_ACCESSDENIED, "global switch off: 0x%08lx\n", hr);
 
@@ -173,10 +210,11 @@ START_TEST(micprivacy)
 {
     WCHAR Image[MAX_PATH];
     SIZE_T Length;
+    DWORD Length_ = GetModuleFileNameW(NULL, Image, ARRAYSIZE(Image));
 
-    if (!GetModuleFileNameW(NULL, Image, ARRAYSIZE(Image)))
+    if (!Length_ || Length_ >= ARRAYSIZE(Image))
     {
-        skip("GetModuleFileNameW failed\n");
+        skip("GetModuleFileNameW failed or truncated (%lu)\n", Length_);
         return;
     }
     StringCchCopyW(AppKey, ARRAYSIZE(AppKey), MIC_CONSENT_APPS_KEY L"\\");

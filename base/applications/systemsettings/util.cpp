@@ -294,7 +294,7 @@ ReadDword(HKEY root, LPCWSTR key, LPCWSTR value, DWORD fallback)
 bool
 WriteDword(HKEY root, LPCWSTR key, LPCWSTR value, DWORD data)
 {
-    return RegSetKeyValueW(root, key, value, REG_DWORD, &data, sizeof(data)) == ERROR_SUCCESS;
+    return WriteValue(root, key, value, REG_DWORD, &data, sizeof(data));
 }
 
 std::wstring
@@ -312,8 +312,20 @@ ReadString(HKEY root, LPCWSTR key, LPCWSTR value)
 bool
 WriteString(HKEY root, LPCWSTR key, LPCWSTR value, const std::wstring &data)
 {
-    return RegSetKeyValueW(root, key, value, REG_SZ, data.c_str(), (DWORD)((data.length() + 1) * sizeof(WCHAR))) ==
-           ERROR_SUCCESS;
+    return WriteValue(root, key, value, REG_SZ, data.c_str(), (DWORD)((data.length() + 1) * sizeof(WCHAR)));
+}
+
+bool
+WriteValue(HKEY root, LPCWSTR key, LPCWSTR value, DWORD type, const void *data, DWORD size)
+{
+    HKEY handle;
+    LSTATUS error = RegCreateKeyExW(root, key, 0, NULL, 0, KEY_SET_VALUE, NULL, &handle, NULL);
+
+    if (error != ERROR_SUCCESS)
+        return false;
+    error = RegSetValueExW(handle, value, 0, type, (const BYTE *)data, size);
+    RegCloseKey(handle);
+    return error == ERROR_SUCCESS;
 }
 
 static DWORD WINAPI

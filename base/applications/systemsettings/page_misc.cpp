@@ -593,7 +593,7 @@ AllowedMicApps()
     WCHAR name[MAX_PATH * 2];
     HKEY key;
 
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, MIC_CONSENT_APPS_KEY, 0, KEY_READ, &key) != ERROR_SUCCESS)
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, MIC_CONSENT_APPS_KEY, 0, KEY_READ | MIC_CONSENT_VIEW, &key) != ERROR_SUCCESS)
         return apps;
     for (DWORD i = 0;; i++)
     {

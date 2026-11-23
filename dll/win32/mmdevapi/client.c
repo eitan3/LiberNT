@@ -428,9 +428,15 @@ static HRESULT stream_init(struct audio_client *client, const BOOLEAN force_def_
 #ifdef __REACTOS__
     /* The microphone privacy settings decide which programs may record (Settings, Privacy, Microphone) */
     if (client->dataflow == eCapture) {
-        WCHAR image[MAX_PATH];
+        WCHAR image[MAX_PATH] = L"";
+        DWORD image_length = GetModuleFileNameW(NULL, image, ARRAY_SIZE(image));
 
-        if (!GetModuleFileNameW(NULL, image, ARRAY_SIZE(image)) || !MicConsentCheck(image)) {
+        /* A truncated path could match the wrong entry of the strict-mode list, so refuse it */
+        if (!image_length || image_length >= ARRAY_SIZE(image)) {
+            ERR("Microphone access denied: the program path is unavailable.\n");
+            return E_ACCESSDENIED;
+        }
+        if (!MicConsentCheck(image)) {
             ERR("Microphone access denied for %s by the privacy settings.\n", debugstr_w(image));
             return E_ACCESSDENIED;
         }

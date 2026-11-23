@@ -347,6 +347,7 @@ std::wstring Printf(LPCWSTR format, ...);
 std::wstring Bytes(ULONGLONG size);
 std::wstring Win32Message(DWORD error);
 DWORD ReadDword(HKEY root, LPCWSTR key, LPCWSTR value, DWORD fallback);
+bool WriteValue(HKEY root, LPCWSTR key, LPCWSTR value, DWORD type, const void *data, DWORD size);
 bool WriteDword(HKEY root, LPCWSTR key, LPCWSTR value, DWORD data);
 std::wstring ReadString(HKEY root, LPCWSTR key, LPCWSTR value);
 bool WriteString(HKEY root, LPCWSTR key, LPCWSTR value, const std::wstring &data);

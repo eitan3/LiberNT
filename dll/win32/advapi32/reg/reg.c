@@ -1992,10 +1992,16 @@ RegGetValueW(HKEY hKey,
     if ((dwFlags & RRF_RT_REG_EXPAND_SZ) && !(dwFlags & RRF_NOEXPAND) &&
             ((dwFlags & RRF_RT_ANY) != RRF_RT_ANY))
         return ERROR_INVALID_PARAMETER;
+    if ((dwFlags & RRF_WOW64_MASK) == RRF_WOW64_MASK)
+        return ERROR_INVALID_PARAMETER;
 
     if (pszSubKey && pszSubKey[0])
     {
-        ret = RegOpenKeyExW(hKey, pszSubKey, 0, KEY_QUERY_VALUE, &hKey);
+        REGSAM samDesired = KEY_QUERY_VALUE;
+
+        if (dwFlags & RRF_WOW64_MASK)
+            samDesired |= (dwFlags & RRF_SUBKEY_WOW6432KEY) ? KEY_WOW64_32KEY : KEY_WOW64_64KEY;
+        ret = RegOpenKeyExW(hKey, pszSubKey, 0, samDesired, &hKey);
         if (ret != ERROR_SUCCESS) return ret;
     }
 
@@ -2098,10 +2104,16 @@ RegGetValueA(HKEY hKey,
     if ((dwFlags & RRF_RT_REG_EXPAND_SZ) && !(dwFlags & RRF_NOEXPAND) &&
             ((dwFlags & RRF_RT_ANY) != RRF_RT_ANY))
         return ERROR_INVALID_PARAMETER;
+    if ((dwFlags & RRF_WOW64_MASK) == RRF_WOW64_MASK)
+        return ERROR_INVALID_PARAMETER;
 
     if (pszSubKey && pszSubKey[0])
     {
-        ret = RegOpenKeyExA(hKey, pszSubKey, 0, KEY_QUERY_VALUE, &hKey);
+        REGSAM samDesired = KEY_QUERY_VALUE;
+
+        if (dwFlags & RRF_WOW64_MASK)
+            samDesired |= (dwFlags & RRF_SUBKEY_WOW6432KEY) ? KEY_WOW64_32KEY : KEY_WOW64_64KEY;
+        ret = RegOpenKeyExA(hKey, pszSubKey, 0, samDesired, &hKey);
         if (ret != ERROR_SUCCESS) return ret;
     }
 
