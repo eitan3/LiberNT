@@ -23,13 +23,14 @@ static const PROPERTYKEY InterfaceNameKey =
 
 #define METER_TIMER_ID 1
 #define METER_INTERVAL 100
-#define MAX_DEVICES    32
+#define MAX_DEVICES    128
 
 typedef struct _DEVICE_ROW
 {
     LPWSTR Id;
     IAudioMeterInformation *Meter;
     BOOL Default;
+    BOOL DefaultComm;
     INT Level;
 } DEVICE_ROW;
 
@@ -75,8 +76,8 @@ LoadDevices(HWND hwndDlg, PDEVICE_PAGE Page)
 {
     IMMDeviceEnumerator *pEnum = NULL;
     IMMDeviceCollection *pCollection = NULL;
-    IMMDevice *pDefault = NULL;
-    LPWSTR DefaultId = NULL;
+    IMMDevice *pDefault = NULL, *pDefaultComm = NULL;
+    LPWSTR DefaultId = NULL, DefaultCommId = NULL;
     WCHAR Line[256], Status[64];
     UINT Count = 0, Index;
     INT Selected = -1;
@@ -89,6 +90,11 @@ LoadDevices(HWND hwndDlg, PDEVICE_PAGE Page)
     {
         IMMDevice_GetId(pDefault, &DefaultId);
         IMMDevice_Release(pDefault);
+    }
+    if (SUCCEEDED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(pEnum, Page->Flow, eCommunications, &pDefaultComm)))
+    {
+        IMMDevice_GetId(pDefaultComm, &DefaultCommId);
+        IMMDevice_Release(pDefaultComm);
     }
 
     if (SUCCEEDED(IMMDeviceEnumerator_EnumAudioEndpoints(pEnum, Page->Flow, DEVICE_STATE_ACTIVE, &pCollection)))
@@ -120,6 +126,7 @@ LoadDevices(HWND hwndDlg, PDEVICE_PAGE Page)
         IMMDevice_Activate(pDevice, &IID_IAudioMeterInformation, CLSCTX_INPROC_SERVER, NULL, (void **)&Row->Meter);
         IMMDevice_Release(pDevice);
         Row->Default = DefaultId && !wcscmp(DefaultId, Row->Id);
+        Row->DefaultComm = DefaultCommId && !wcscmp(DefaultCommId, Row->Id);
 
         ZeroMemory(&Item, sizeof(Item));
         Item.mask = LVIF_TEXT | LVIF_IMAGE | LVIF_PARAM;
@@ -131,7 +138,8 @@ LoadDevices(HWND hwndDlg, PDEVICE_PAGE Page)
 
         StringCchCopyW(Line, _countof(Line), Adapter[0] ? Adapter : Name);
         ListView_SetItemText(Page->List, Page->Count, 1, Line);
-        LoadStringW(hApplet, Row->Default ? IDS_DEVICE_DEFAULT : IDS_DEVICE_READY, Status, _countof(Status));
+        LoadStringW(hApplet, Row->Default ? IDS_DEVICE_DEFAULT : Row->DefaultComm ? IDS_DEVICE_DEFAULT_COMM : IDS_DEVICE_READY,
+                    Status, _countof(Status));
         ListView_SetItemText(Page->List, Page->Count, 2, Status);
         if (Row->Default)
             Selected = Page->Count;
@@ -142,6 +150,8 @@ LoadDevices(HWND hwndDlg, PDEVICE_PAGE Page)
         IMMDeviceCollection_Release(pCollection);
     if (DefaultId)
         CoTaskMemFree(DefaultId);
+    if (DefaultCommId)
+        CoTaskMemFree(DefaultCommId);
     IMMDeviceEnumerator_Release(pEnum);
 
     ShowWindow(GetDlgItem(hwndDlg, IDC_DEVLIST_EMPTY), Page->Count ? SW_HIDE : SW_SHOW);
@@ -172,6 +182,7 @@ UpdateButtons(HWND hwndDlg, PDEVICE_PAGE Page)
     INT Row = SelectedRow(Page);
 
     EnableWindow(GetDlgItem(hwndDlg, IDC_DEVLIST_DEFAULT), Row >= 0 && !Page->Rows[Row].Default);
+    EnableWindow(GetDlgItem(hwndDlg, IDC_DEVLIST_DEFAULT_COMM), Row >= 0 && !Page->Rows[Row].DefaultComm);
     EnableWindow(GetDlgItem(hwndDlg, IDC_DEVLIST_PROPERTIES), Row >= 0);
 }
 
@@ -255,6 +266,12 @@ DeviceListDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, EDataFl
             {
                 /* Windows applies Set Default at once, not on OK */
                 MMDevSetDefaultEndpoint(Page->Flow, eConsole, Page->Rows[Row].Id);
+                LoadDevices(hwndDlg, Page);
+                UpdateButtons(hwndDlg, Page);
+            }
+            else if (LOWORD(wParam) == IDC_DEVLIST_DEFAULT_COMM && Row >= 0)
+            {
+                MMDevSetDefaultEndpoint(Page->Flow, eCommunications, Page->Rows[Row].Id);
                 LoadDevices(hwndDlg, Page);
                 UpdateButtons(hwndDlg, Page);
             }

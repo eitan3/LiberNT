@@ -173,6 +173,16 @@ static struct device *find_device_in_cache( const GUID *guid )
     return NULL;
 }
 
+/* A device name keeps its GUID, so the registry is read once per process for it */
+static struct device *find_device_in_cache_by_name( const char *name, EDataFlow flow )
+{
+    struct device *dev;
+
+    LIST_FOR_EACH_ENTRY( dev, &devices_cache, struct device, entry )
+        if (dev->flow == flow && !strcmp( dev->name, name )) return dev;
+    return NULL;
+}
+
 BOOL get_device_name_from_guid( const GUID *guid, char **name, EDataFlow *flow )
 {
     struct device *dev;
@@ -258,6 +268,13 @@ static void get_device_guid( EDataFlow flow, const char *dev_name, GUID *guid )
     HKEY key = NULL;
     LSTATUS status;
     int len;
+    struct device *cached;
+
+    if ((cached = find_device_in_cache_by_name( dev_name, flow )))
+    {
+        *guid = cached->guid;
+        return;
+    }
 
     /* Low-integrity audio clients may only read the endpoint registry.  Keep
      * a process-independent identity even when no value can be persisted. */
