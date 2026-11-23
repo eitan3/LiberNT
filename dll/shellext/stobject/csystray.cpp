@@ -24,6 +24,7 @@ const int g_NumIcons = _countof(g_IconHandlers);
 
 SysTrayIconHandlers_t g_StandaloneHandlers[] = {
     { MOUSE_SERVICE_FLAG, MouseKeys_Init, MouseKeys_Shutdown, MouseKeys_Update, MouseKeys_Message },
+    { MICROPHONE_SERVICE_FLAG, Microphone_Init, Microphone_Shutdown, Microphone_Update, Microphone_Message },
 };
 
 CSysTray::CSysTray() : dwServicesEnabled(0)
@@ -108,11 +109,8 @@ void CSysTray::ConfigurePollTimer()
     // FIXME: VOLUME_SERVICE_FLAG should use mixerOpen(CALLBACK_WINDOW)
     // FIXME: POWER_SERVICE_FLAG should use WM_DEVICECHANGE, WM_POWERBROADCAST
 
-    DWORD fNeedsTimer = VOLUME_SERVICE_FLAG | POWER_SERVICE_FLAG;
-    if (this->dwServicesEnabled & fNeedsTimer)
-        SetTimer(POLL_TIMER_ID, 2000, NULL);
-    else
-        KillTimer(POLL_TIMER_ID);
+    /* The microphone icon has no notification of capture streams to wait on and is always on */
+    SetTimer(POLL_TIMER_ID, 2000, NULL);
 }
 
 HRESULT CSysTray::InitNetShell()
@@ -383,7 +381,10 @@ BOOL CSysTray::ProcessWindowMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 
     case WM_TIMER:
         if (wParam == POLL_TIMER_ID)
+        {
             UpdateIcons();
+            Microphone_Update(this);
+        }
         else
             ProcessIconMessage(uMsg, wParam, lParam, lResult);
         return TRUE;

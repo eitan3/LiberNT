@@ -75,6 +75,8 @@ static const PageInfo Pages[] =
       L"dateandtime" },
     { PageId::Language, IDS_PAGE_LANGUAGE, L"local_language_20_regular", PageId::Time, BuildLanguage,
       L"regionlanguage;regionformatting;keyboard" },
+    { PageId::Microphone, IDS_PAGE_MICROPHONE, L"mic_20_regular", PageId::Privacy, BuildMicrophone,
+      L"privacy-microphone" },
 };
 
 const PageInfo *

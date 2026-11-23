@@ -80,6 +80,7 @@ enum class PageId
     Controller,
     Accessibility,
     Privacy,
+    Microphone,
     Update,
     Search,
     Legacy,
@@ -421,6 +422,7 @@ void BuildGaming(PageBuilder &page);
 void BuildController(PageBuilder &page);
 void BuildAccessibility(PageBuilder &page);
 void BuildPrivacy(PageBuilder &page);
+void BuildMicrophone(PageBuilder &page);
 void BuildUpdate(PageBuilder &page);
 
 extern HINSTANCE Instance;

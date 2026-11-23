@@ -38,6 +38,7 @@ extern HINSTANCE g_hInstance;
 #define ID_ICON_POWER   (WM_APP + 0x4CD)
 #define ID_ICON_MOUSE   (WM_APP + 0x4CE)
 #define ID_ICON_BLUETOOTH (WM_APP + 0x4CF)
+#define ID_ICON_MICROPHONE (WM_APP + 0x4D0)
 
 #define POWER_SERVICE_FLAG    0x00000001
 #define HOTPLUG_SERVICE_FLAG  0x00000002
@@ -46,6 +47,7 @@ extern HINSTANCE g_hInstance;
 #define SKEYS_SERVICE_FLAG    0x20000000
 #define FKEYS_SERVICE_FLAG    0x40000000
 #define MOUSE_SERVICE_FLAG    0x80000000
+#define MICROPHONE_SERVICE_FLAG 0x08000000
 #define STANDALONESERVICEMASK 0xF0000000
 
 #include "csystray.h"
@@ -73,6 +75,11 @@ extern HRESULT STDMETHODCALLTYPE Volume_Init(_In_ CSysTray * pSysTray);
 extern HRESULT STDMETHODCALLTYPE Volume_Shutdown(_In_ CSysTray * pSysTray);
 extern HRESULT STDMETHODCALLTYPE Volume_Update(_In_ CSysTray * pSysTray);
 extern HRESULT STDMETHODCALLTYPE Volume_Message(_In_ CSysTray * pSysTray, UINT uMsg, WPARAM wParam, LPARAM lParam, LRESULT &lResult);
+
+extern HRESULT STDMETHODCALLTYPE Microphone_Init(_In_ CSysTray * pSysTray);
+extern HRESULT STDMETHODCALLTYPE Microphone_Shutdown(_In_ CSysTray * pSysTray);
+extern HRESULT STDMETHODCALLTYPE Microphone_Update(_In_ CSysTray * pSysTray);
+extern HRESULT STDMETHODCALLTYPE Microphone_Message(_In_ CSysTray * pSysTray, UINT uMsg, WPARAM wParam, LPARAM lParam, LRESULT &lResult);
 
 extern HRESULT STDMETHODCALLTYPE Hotplug_Init(_In_ CSysTray * pSysTray);
 extern HRESULT STDMETHODCALLTYPE Hotplug_Shutdown(_In_ CSysTray * pSysTray);

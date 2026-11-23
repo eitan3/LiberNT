@@ -11,6 +11,7 @@ list(APPEND SOURCE
     stobject.cpp
     bluetooth.cpp
     hotplug.cpp
+    microphone.cpp
     mouse.cpp
     power.cpp
     volume.cpp

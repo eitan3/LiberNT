@@ -39,6 +39,7 @@
 #define IDI_VOLUME1_LIGHT         1233
 #define IDI_VOLUME3_LIGHT         1234
 #define IDI_BLUETOOTH_LIGHT       1235
+#define IDI_MICROPHONE            236
 
 #define IDS_VOL_VOLUME            252
 #define IDS_VOL_ADJUST            255
@@ -50,6 +51,9 @@
 #define IDS_BT_DEVICES            270
 #define IDS_BT_SHOW               271
 #define IDS_BT_SETTINGS           272
+
+#define IDS_MIC_IN_USE            280
+#define IDS_MIC_IN_USE_BY         281
 
 #define IDS_KEYS_STICKY           330
 #define IDS_KEYS_MOUSE            331

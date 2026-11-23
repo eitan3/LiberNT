@@ -53,4 +53,6 @@ BEGIN
     IDS_BT_DEVICES "Bluetooth Devices"
     IDS_BT_SHOW "Show Bluetooth &Devices"
     IDS_BT_SETTINGS "Open &Settings"
+    IDS_MIC_IN_USE "Your microphone is being used"
+    IDS_MIC_IN_USE_BY "%s is using your microphone"
 END

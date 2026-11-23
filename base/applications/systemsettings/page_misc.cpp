@@ -12,6 +12,8 @@
 #include <tlhelp32.h>
 #include <uxtheme.h>
 #include <uxundoc.h>
+#include <strsafe.h>
+#include <reactos/micconsent.h>
 
 #define WINDOWS_NT_KEY L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"
 #define ADVANCED_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"
@@ -572,6 +574,139 @@ BuildPrivacy(PageBuilder &page)
                 });
     page.Button(Str(IDS_CLEAR_RECENT), Str(IDS_CLEAR_RECENT_DESC), L"delete_20_regular", Str(IDS_CLEAR),
                 [](int) { SHAddToRecentDocs(SHARD_PIDL, NULL); });
+
+    page.Group(Str(IDS_APP_PERMISSIONS));
+    page.Navigate(Str(IDS_PAGE_MICROPHONE), Str(IDS_MICROPHONE_DESC), L"mic_20_regular", PageId::Microphone);
+}
+
+static void
+WriteConsent(LPCWSTR key, bool allow)
+{
+    WriteString(HKEY_CURRENT_USER, key, L"Value", allow ? L"Allow" : L"Deny");
+}
+
+/* Desktop apps the user listed under NonPackaged, as image paths */
+static std::vector<std::wstring>
+AllowedMicApps()
+{
+    std::vector<std::wstring> apps;
+    WCHAR name[MAX_PATH * 2];
+    HKEY key;
+
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, MIC_CONSENT_APPS_KEY, 0, KEY_READ, &key) != ERROR_SUCCESS)
+        return apps;
+    for (DWORD i = 0;; i++)
+    {
+        DWORD length = _countof(name);
+        if (RegEnumKeyExW(key, i, name, &length, NULL, NULL, NULL, NULL) != ERROR_SUCCESS)
+            break;
+        if (!MicConsentValueIs(key, name, L"Allow"))
+            continue;
+        std::wstring path(name);
+        std::replace(path.begin(), path.end(), L'#', L'\\');
+        apps.push_back(path);
+    }
+    RegCloseKey(key);
+    return apps;
+}
+
+static std::wstring
+MicAppKey(const std::wstring &path)
+{
+    WCHAR name[MAX_PATH * 2];
+
+    MicConsentAppKeyName(path.c_str(), name, _countof(name));
+    return std::wstring(MIC_CONSENT_APPS_KEY L"\\") + name;
+}
+
+static bool
+BrowseProgram(HWND owner, std::wstring &path)
+{
+    WCHAR file[MAX_PATH] = L"";
+    std::wstring filter = Str(IDS_MIC_APP_FILTER);
+    OPENFILENAMEW ofn = { sizeof(ofn) };
+
+    std::replace(filter.begin(), filter.end(), L'|', L'\0');
+    filter.push_back(L'\0');
+    ofn.hwndOwner = owner;
+    ofn.lpstrFilter = filter.c_str();
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = _countof(file);
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY;
+    if (!GetOpenFileNameW(&ofn))
+        return false;
+    path = file;
+    return true;
+}
+
+/* Windows 11 Settings, Privacy & security, Microphone, plus LiberNT's strict mode */
+void
+BuildMicrophone(PageBuilder &page)
+{
+    SettingsHost *host = page.Host;
+    bool access = !MicConsentValueIs(HKEY_CURRENT_USER, MIC_CONSENT_KEY, L"Deny");
+    bool apps = !MicConsentValueIs(HKEY_CURRENT_USER, MIC_CONSENT_APPS_KEY, L"Deny");
+    bool strict = MicConsentStrictMode() != FALSE;
+
+    page.Group();
+    if (MicConsentValueIs(HKEY_LOCAL_MACHINE, MIC_CONSENT_KEY, L"Deny"))
+        page.Text(Str(IDS_MIC_MACHINE_OFF));
+    page.Toggle(Str(IDS_MIC_ACCESS), Str(IDS_MIC_ACCESS_DESC), L"mic_20_regular", access,
+                [host](int on)
+                {
+                    WriteConsent(MIC_CONSENT_KEY, on != 0);
+                    host->Refresh();
+                });
+    if (!access)
+        return;
+
+    page.Toggle(Str(IDS_MIC_APPS), Str(IDS_MIC_APPS_DESC), L"apps_20_regular", apps,
+                [host](int on)
+                {
+                    WriteConsent(MIC_CONSENT_APPS_KEY, on != 0);
+                    host->Refresh();
+                });
+    if (!apps)
+        return;
+
+    page.Toggle(Str(IDS_MIC_STRICT), Str(IDS_MIC_STRICT_DESC), L"lock_closed_20_regular", strict,
+                [host](int on)
+                {
+                    WriteDword(HKEY_CURRENT_USER, MIC_CONSENT_STRICT_KEY, MIC_CONSENT_STRICT_VALUE, on != 0);
+                    host->Refresh();
+                });
+
+    if (strict)
+    {
+        std::vector<std::wstring> allowed = page.Indexing ? std::vector<std::wstring>() : AllowedMicApps();
+
+        page.Group(Str(IDS_MIC_ALLOWED_APPS));
+        if (allowed.empty())
+            page.Text(Str(IDS_MIC_NO_APPS));
+        for (size_t i = 0; i < allowed.size(); i++)
+        {
+            std::wstring path = allowed[i];
+            page.Button(PathFindFileNameW(path.c_str()), path, L"apps_20_regular", Str(IDS_MIC_REMOVE),
+                        [host, path](int)
+                        {
+                            RegDeleteKeyW(HKEY_CURRENT_USER, MicAppKey(path).c_str());
+                            host->Refresh();
+                        });
+        }
+        page.Button(Str(IDS_MIC_ADD_APP), Str(IDS_MIC_ADD_APP_DESC), L"add_circle_20_regular", Str(IDS_MIC_ADD),
+                    [host](int)
+                    {
+                        std::wstring path;
+                        if (!BrowseProgram(host->Window(), path))
+                            return;
+                        WriteConsent(MicAppKey(path).c_str(), true);
+                        host->Refresh();
+                    });
+    }
+
+    page.Group();
+    page.Text(Str(IDS_MIC_HELP));
+    page.Text(Str(IDS_MIC_HELP_LIMIT));
 }
 
 static std::wstring

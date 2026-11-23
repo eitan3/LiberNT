@@ -39,6 +39,11 @@
 
 #include "mmdevapi_private.h"
 
+#ifdef __REACTOS__
+#include <strsafe.h>
+#include <reactos/micconsent.h>
+#endif
+
 WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
 
 typedef struct tagLANGANDCODEPAGE
@@ -419,6 +424,18 @@ static HRESULT stream_init(struct audio_client *client, const BOOLEAN force_def_
 
     if (mode != AUDCLNT_SHAREMODE_SHARED && mode != AUDCLNT_SHAREMODE_EXCLUSIVE)
         return E_INVALIDARG;
+
+#ifdef __REACTOS__
+    /* The microphone privacy settings decide which programs may record (Settings, Privacy, Microphone) */
+    if (client->dataflow == eCapture) {
+        WCHAR image[MAX_PATH];
+
+        if (!GetModuleFileNameW(NULL, image, ARRAY_SIZE(image)) || !MicConsentCheck(image)) {
+            ERR("Microphone access denied for %s by the privacy settings.\n", debugstr_w(image));
+            return E_ACCESSDENIED;
+        }
+    }
+#endif
 
     if (mode == AUDCLNT_SHAREMODE_EXCLUSIVE) {
 #ifdef __REACTOS__
