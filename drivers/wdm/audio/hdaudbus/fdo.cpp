@@ -1,6 +1,8 @@
 #include "driver.h"
 #include "nhlt.h"
 #include "sof-tplg.h"
+#include <wmistr.h>
+#include <wmidata.h>
 
 EVT_WDF_DEVICE_PREPARE_HARDWARE Fdo_EvtDevicePrepareHardware;
 EVT_WDF_DEVICE_RELEASE_HARDWARE Fdo_EvtDeviceReleaseHardware;
@@ -34,7 +36,7 @@ Fdo_ReportNhlt(
         const NHLT_ENDPOINT_SUMMARY* Entry = &Summary->Endpoints[Index];
 
         SklHdAudBusReport(
-            "NHLT endpoint %u: %s vendor %04x device %04x revision %04x subsystem %08x device type %u direction %u instance %u bus %u, %u bytes\n",
+            "NHLT endpoint %u: %s vendor %04x device %04x revision %04x subsystem %08x device type %u direction %u instance %u bus %u, %u bytes, device config %u, %u formats, %u devices\n",
             Index,
             NhltLinkTypeName(Entry->LinkType),
             Entry->VendorId,
@@ -45,7 +47,10 @@ Fdo_ReportNhlt(
             Entry->Direction,
             Entry->InstanceId,
             Entry->VirtualBusId,
-            Entry->Length);
+            Entry->Length,
+            Entry->DeviceConfigSize,
+            Entry->FormatsCount,
+            Entry->DevicesCount);
     }
 
     SklHdAudBusReport(
@@ -111,35 +116,152 @@ fail:
 
 static
 VOID
+Fdo_ReadAudioPathOverride(
+    _In_ WDFDEVICE Device,
+    _Inout_ DSP_AUDIO_PATH_EVIDENCE* Evidence)
+{
+    DECLARE_CONST_UNICODE_STRING(SettingsName, L"Settings");
+    DECLARE_CONST_UNICODE_STRING(ValueName, L"DspAudioPathOverride");
+    WCHAR buffer[DSP_DMI_STRING_BYTES];
+    char narrow[DSP_DMI_STRING_BYTES];
+    WDFKEY deviceKey;
+    WDFKEY settingsKey;
+    ULONG type = 0, queried = 0, Index;
+    NTSTATUS status;
+
+    Evidence->OverrideSet = FALSE;
+    status = WdfDeviceOpenRegistryKey(Device, PLUGPLAY_REGKEY_DEVICE, KEY_READ, NULL, &deviceKey);
+    if (!NT_SUCCESS(status)) {
+        return;
+    }
+
+    status = WdfRegistryOpenKey(deviceKey, &SettingsName, KEY_READ, WDF_NO_OBJECT_ATTRIBUTES, &settingsKey);
+    WdfRegistryClose(deviceKey);
+    if (!NT_SUCCESS(status)) {
+        return;
+    }
+
+    status = WdfRegistryQueryValue(settingsKey, &ValueName, sizeof(buffer), buffer, &queried, &type);
+    WdfRegistryClose(settingsKey);
+    if (!NT_SUCCESS(status) || type != REG_SZ || queried < sizeof(WCHAR) || (queried & 1) != 0) {
+        return;
+    }
+
+    for (Index = 0; Index < queried / sizeof(WCHAR) && Index < DSP_DMI_STRING_BYTES - 1; Index++) {
+        if (buffer[Index] == 0) {
+            break;
+        }
+        if (buffer[Index] > 0x7F) {
+            return;
+        }
+        narrow[Index] = (char)buffer[Index];
+    }
+    narrow[Index] = 0;
+    Evidence->OverrideSet = DspAudioPathParseName(narrow, &Evidence->Override);
+}
+
+/* The raw SMBIOS table is a data block the kernel itself answers for (MSSmBios_RawSMBiosTables) */
+static
+DSP_DMI_STATUS
+Fdo_ReadDmi(
+    _Out_ DSP_DMI_STRINGS* Strings)
+{
+    PVOID DataBlockObject = NULL;
+    PWNODE_ALL_DATA AllData;
+    PUCHAR Instance;
+    DSP_DMI_STATUS dmiStatus = DmiNoData;
+    ULONG BufferSize = 0;
+    NTSTATUS status;
+
+    status = IoWMIOpenBlock(&MSSmBios_RawSMBiosTables_GUID, WMIGUID_QUERY, &DataBlockObject);
+    if (!NT_SUCCESS(status)) {
+        return DmiNoData;
+    }
+
+    status = IoWMIQueryAllData(DataBlockObject, &BufferSize, NULL);
+    if (status != STATUS_BUFFER_TOO_SMALL && !NT_SUCCESS(status)) {
+        IoWMIHandleClose(DataBlockObject);
+        return DmiNoData;
+    }
+    AllData = (PWNODE_ALL_DATA)ExAllocatePoolZero(PagedPool, BufferSize, SKLHDAUDBUS_POOL_TAG);
+    if (AllData == NULL) {
+        IoWMIHandleClose(DataBlockObject);
+        return DmiNoData;
+    }
+
+    status = IoWMIQueryAllData(DataBlockObject, &BufferSize, AllData);
+    IoWMIHandleClose(DataBlockObject);
+    if (!NT_SUCCESS(status)) {
+        ExFreePoolWithTag(AllData, SKLHDAUDBUS_POOL_TAG);
+        return DmiNoData;
+    }
+
+    if (AllData->InstanceCount >= 1 && (AllData->WnodeHeader.Flags & WNODE_FLAG_FIXED_INSTANCE_SIZE) &&
+        AllData->FixedInstanceSize >= DSP_DMI_RAW_HEADER_BYTES &&
+        (SIZE_T)AllData->DataBlockOffset + AllData->FixedInstanceSize <= BufferSize) {
+        Instance = (PUCHAR)AllData + AllData->DataBlockOffset;
+        dmiStatus = DmiParseRawSMBiosTables(Instance, AllData->FixedInstanceSize, Strings);
+    } else {
+        dmiStatus = DmiBadLength;
+    }
+    ExFreePoolWithTag(AllData, SKLHDAUDBUS_POOL_TAG);
+    return dmiStatus;
+}
+
+static
+VOID
 Fdo_ReportAudioPath(
     _In_ WDFDEVICE Device,
     _In_ PFDO_CONTEXT fdoCtx)
 {
     DSP_AUDIO_PATH_EVIDENCE evidence;
     DSP_AUDIO_PATH path;
+    DSP_DMI_STRINGS dmi;
+    DSP_DMI_STATUS dmiStatus;
+    const DSP_DMI_QUIRK* quirk;
     UINT16 codecMask = fdoCtx->codecMask;
 
     if (fdoCtx->UseSGPCCodec && fdoCtx->GraphicsCodecAddress < HDA_MAX_CODECS) {
         codecMask &= (UINT16)~(1UL << fdoCtx->GraphicsCodecAddress);
     }
 
+    RtlZeroMemory(&dmi, sizeof(dmi));
+    dmiStatus = Fdo_ReadDmi(&dmi);
+
     RtlZeroMemory(&evidence, sizeof(evidence));
     evidence.CodecMask = codecMask;
     evidence.NonHdaEndpoints = fdoCtx->nhltSummary.NonHdaEndpoints;
     evidence.DspPresent = (fdoCtx->ppcap != NULL);
     evidence.NhltTableValid = (fdoCtx->nhltStatus == NhltParseOk || fdoCtx->nhltStatus == NhltParseTruncated);
+    evidence.Dmi = (dmiStatus == DmiOk || dmiStatus == DmiTruncated) ? &dmi : NULL;
+    Fdo_ReadAudioPathOverride(Device, &evidence);
     path = DspAudioPathDecide(&evidence);
     fdoCtx->AudioPath = path;
 
+    quirk = DspAudioPathDmiMatch(evidence.Dmi);
     SklHdAudBusReport(
-        "audio path %s on PCI %04x:%04x: codec mask 0x%04x, DSP %s, NHLT %s, %u endpoints not on the HDA link\n",
+        "DMI %s: SMBIOS %u.%u DMI %u, vendor \"%s\" product \"%s\" version \"%s\" board \"%s\" \"%s\", quirk %s\n",
+        DmiStatusName(dmiStatus),
+        dmi.SmbiosMajorVersion,
+        dmi.SmbiosMinorVersion,
+        dmi.DmiRevision,
+        dmi.Strings[DSP_DMI_SYS_VENDOR],
+        dmi.Strings[DSP_DMI_SYS_PRODUCT],
+        dmi.Strings[DSP_DMI_SYS_VERSION],
+        dmi.Strings[DSP_DMI_BOARD_VENDOR],
+        dmi.Strings[DSP_DMI_BOARD_NAME],
+        quirk != NULL ? DspAudioPathName(quirk->Path) : "none");
+
+    SklHdAudBusReport(
+        "audio path %s on PCI %04x:%04x: codec mask 0x%04x, DSP %s, NHLT %s, %u endpoints not on the HDA link%s\n",
         DspAudioPathName(path),
         fdoCtx->venId,
         fdoCtx->devId,
         codecMask,
         evidence.DspPresent ? "present" : "absent",
         NhltParseStatusName(fdoCtx->nhltStatus),
-        evidence.NonHdaEndpoints);
+        evidence.NonHdaEndpoints,
+        evidence.OverrideSet ? ", forced by Settings\\DspAudioPathOverride" : "");
 
     Fdo_WriteAudioPath(Device, path);
 }
@@ -1421,6 +1543,7 @@ Fdo_EvtDeviceSelfManagedIoInit(
 #endif
 
     fdoCtx->dspInterruptCallback = NULL;
+    /* TODO: P2 gates the DSP child on the PP capability and BAR4 instead of the PCI subclass, so a class-0403 controller (8086:7F50) gets one too */
     if (fdoCtx->m_BAR4.Base.Base && fdoCtx->subClass == PCI_SUBCLASS_MM_AUDIO_DEV) { //Populate ADSP if present
         PDO_IDENTIFICATION_DESCRIPTION description;
         //

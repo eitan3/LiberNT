@@ -9,6 +9,7 @@ list(APPEND SOURCE
     hdaudio.cpp
     nhlt.cpp
     policy.c
+    policy_dmi.c
     sgpc.cpp
     sklhdaudbus.cpp
     sof-tplg.cpp)
