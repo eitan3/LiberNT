@@ -32,6 +32,9 @@ reactos_shared_render_create(
     UINT32 *buffer_frames);
 void
 reactos_shared_render_release(struct reactos_shared_render_client *client);
+/* S_OK and the format a live shared engine runs at for endpoint_index; S_FALSE when no engine is live */
+HRESULT
+reactos_shared_render_live_format(DWORD endpoint_index, WAVEFORMATEXTENSIBLE *format);
 HRESULT
 reactos_shared_render_start(struct reactos_shared_render_client *client);
 HRESULT

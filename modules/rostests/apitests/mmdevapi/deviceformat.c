@@ -76,10 +76,36 @@ FindOtherFormat(IMMDevice *Device, const WAVEFORMATEX *Mix, WAVEFORMATEXTENSIBLE
     return Found;
 }
 
+/* Open a shared stream on the device at the mix format and keep it open */
+static HRESULT
+OpenSharedStream(IMMDevice *Device, IAudioClient **Client)
+{
+    WAVEFORMATEX *Mix;
+    HRESULT hr;
+
+    *Client = NULL;
+    hr = IMMDevice_Activate(Device, &IID_IAudioClient, CLSCTX_INPROC_SERVER, NULL, (void **)Client);
+    if (FAILED(hr))
+        return hr;
+    hr = IAudioClient_GetMixFormat(*Client, &Mix);
+    if (SUCCEEDED(hr))
+    {
+        hr = IAudioClient_Initialize(*Client, AUDCLNT_SHAREMODE_SHARED, 0, 1000000, 0, Mix, NULL);
+        CoTaskMemFree(Mix);
+    }
+    if (FAILED(hr))
+    {
+        IAudioClient_Release(*Client);
+        *Client = NULL;
+    }
+    return hr;
+}
+
 static VOID
 TestEndpoint(IMMDevice *Device, EDataFlow Flow)
 {
     IPropertyStore *Store = NULL;
+    IAudioClient *First = NULL, *Second = NULL;
     PROPVARIANT Saved, Value;
     WAVEFORMATEXTENSIBLE Other, Bogus;
     WAVEFORMATEX *Mix = NULL, *NewMix = NULL;
@@ -105,7 +131,8 @@ TestEndpoint(IMMDevice *Device, EDataFlow Flow)
     }
     PropVariantInit(&Saved);
     hr = IPropertyStore_GetValue(Store, &DeviceFormatKey, &Saved);
-    ok(hr == S_OK && Saved.vt == VT_BLOB, "PKEY_AudioEngine_DeviceFormat: hr 0x%08lx, vt %u\n", hr, Saved.vt);
+    ok(hr == S_OK, "GetValue(PKEY_AudioEngine_DeviceFormat) returned 0x%08lx\n", hr);
+    ok(Saved.vt == VT_BLOB, "PKEY_AudioEngine_DeviceFormat: vt %u\n", Saved.vt);
 
     PropVariantInit(&Value);
     Value.vt = VT_BLOB;
@@ -130,6 +157,47 @@ TestEndpoint(IMMDevice *Device, EDataFlow Flow)
         NewMix = NULL;
     }
 
+    /* A stream keeps the format it opened with; a stream opened after a change runs on that engine */
+    SetPcmFormat(&Other, Mix->nSamplesPerSec, 16, Mix->nChannels);
+    Value.blob.pBlobData = (BYTE *)&Other;
+    ok(IPropertyStore_SetValue(Store, &DeviceFormatKey, &Value) == S_OK, "SetValue failed\n");
+    hr = OpenSharedStream(Device, &First);
+    ok(hr == S_OK, "a shared stream before the change returned 0x%08lx\n", hr);
+    if (SUCCEEDED(hr))
+    {
+        SetPcmFormat(&Other, Mix->nSamplesPerSec == 48000 ? 44100 : 48000, 16, Mix->nChannels);
+        Value.blob.pBlobData = (BYTE *)&Other;
+        ok(IPropertyStore_SetValue(Store, &DeviceFormatKey, &Value) == S_OK, "SetValue failed\n");
+
+        hr = GetMix(Device, &NewMix);
+        ok(hr == S_OK, "GetMixFormat under an open stream returned 0x%08lx\n", hr);
+        if (SUCCEEDED(hr))
+        {
+            /* The engine serves the first stream, so new streams run on its format */
+            ok(NewMix->nSamplesPerSec != Other.Format.nSamplesPerSec,
+               "a format change under an open stream moved the engine: %lu Hz\n", NewMix->nSamplesPerSec);
+            CoTaskMemFree(NewMix);
+            NewMix = NULL;
+        }
+        hr = OpenSharedStream(Device, &Second);
+        ok(hr == S_OK, "a second shared stream after a format change returned 0x%08lx\n", hr);
+        if (SUCCEEDED(hr))
+            IAudioClient_Release(Second);
+        IAudioClient_Release(First);
+        First = NULL;
+
+        /* Without the stream the new format applies */
+        hr = GetMix(Device, &NewMix);
+        ok(hr == S_OK, "GetMixFormat after the stream closed returned 0x%08lx\n", hr);
+        if (SUCCEEDED(hr))
+        {
+            ok(NewMix->nSamplesPerSec == Other.Format.nSamplesPerSec,
+               "the new format did not apply after the stream closed: %lu Hz\n", NewMix->nSamplesPerSec);
+            CoTaskMemFree(NewMix);
+            NewMix = NULL;
+        }
+    }
+
     /* A format the device does not offer leaves the driver's choice in force */
     SetPcmFormat(&Bogus, 12345, 16, Other.Format.nChannels);
     Value.blob.pBlobData = (BYTE *)&Bogus;
@@ -138,11 +206,18 @@ TestEndpoint(IMMDevice *Device, EDataFlow Flow)
     {
         ok(NewMix->nSamplesPerSec != 12345, "the unsupported rate became the mix rate\n");
         CoTaskMemFree(NewMix);
+        NewMix = NULL;
     }
 
 done:
     if (Saved.vt == VT_BLOB)
         IPropertyStore_SetValue(Store, &DeviceFormatKey, &Saved);
+    else
+    {
+        /* Leave nothing behind on an endpoint that had no format of its own */
+        PropVariantInit(&Value);
+        IPropertyStore_SetValue(Store, &DeviceFormatKey, &Value);
+    }
     PropVariantClear(&Saved);
     IPropertyStore_Release(Store);
     CoTaskMemFree(Mix);

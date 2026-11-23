@@ -266,7 +266,7 @@ BEGIN
     LTEXT "Select the sample rate and bit depth to be used when running in shared mode.", -1, 15, 20, 222, 18
     COMBOBOX IDC_EP_FORMAT, 15, 42, 222, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     PUSHBUTTON "&Restore Defaults", IDC_EP_RESTORE, 167, 58, 70, 14
-    LTEXT "Programs that are already playing or recording use the new format the next time they open the device.", -1, 15, 84, 222, 18
+    LTEXT "Programs that are already playing or recording keep the current format until they close the device. Programs started afterwards use the new format as soon as they are the only ones using the device.", -1, 15, 84, 222, 30
 END
 
 STRINGTABLE

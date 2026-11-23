@@ -1103,6 +1103,97 @@ find_local_endpoint(DWORD endpoint_index, const WAVEFORMATEXTENSIBLE *format)
     return NULL;
 }
 
+/* Whether a slot of a region that may be read only belongs to a live process */
+static BOOL
+slot_is_alive(const struct shared_render_slot *slot, const FILETIME *current_process_start_time)
+{
+    return slot->occupied && process_record_is_alive(slot->process_id, &slot->process_start_time, current_process_start_time);
+}
+
+/* The format the endpoint's shared engine runs at right now, while any process has a client or owns it */
+HRESULT
+reactos_shared_render_live_format(DWORD endpoint_index, WAVEFORMATEXTENSIBLE *format)
+{
+    WCHAR mapping_name[96], mutex_name[104];
+    struct local_render_endpoint *endpoint = NULL;
+    struct shared_render_region *region = NULL;
+    FILETIME process_start_time;
+    HANDLE mapping = NULL, mutex = NULL;
+    HRESULT hr = S_FALSE;
+    BOOL locked = FALSE, live = FALSE;
+    UINT32 i;
+
+    if (!format || FAILED(ensure_endpoint_list()))
+        return E_FAIL;
+    ZeroMemory(&process_start_time, sizeof(process_start_time));
+    get_current_process_start_time(&process_start_time);
+
+    EnterCriticalSection(&endpoint_list_lock);
+    for (endpoint = endpoint_list; endpoint; endpoint = endpoint->next)
+    {
+        if (endpoint->endpoint_index == endpoint_index)
+            break;
+    }
+    if (endpoint)
+    {
+        region = endpoint->region;
+        if (lock_endpoint(endpoint))
+        {
+            locked = TRUE;
+            remove_stale_clients_locked(endpoint);
+        }
+    }
+    LeaveCriticalSection(&endpoint_list_lock);
+
+    if (!region)
+    {
+        swprintf(mapping_name, ARRAY_SIZE(mapping_name), L"Local\\ReactOS.CoreAudio.Render.%lu.v3", endpoint_index);
+        swprintf(mutex_name, ARRAY_SIZE(mutex_name), L"%s.Lock", mapping_name);
+        mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, mapping_name);
+        mutex = OpenMutexW(SYNCHRONIZE, FALSE, mutex_name);
+        if (mapping && mutex)
+            region = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(*region));
+        if (region)
+        {
+            DWORD wait = WaitForSingleObject(mutex, 200);
+
+            locked = wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED;
+        }
+    }
+
+    if (region && locked && region->magic == RENDER_REGION_MAGIC && region->version == RENDER_REGION_VERSION)
+    {
+        for (i = 0; i < RENDER_CLIENT_CAPACITY; ++i)
+        {
+            if (slot_is_alive(&region->clients[i], &process_start_time))
+            {
+                live = TRUE;
+                break;
+            }
+        }
+        live = live || (region->owner_process_id &&
+                        process_record_is_alive(region->owner_process_id, &region->owner_process_start_time,
+                                                &process_start_time));
+        if (live)
+        {
+            *format = region->format;
+            hr = S_OK;
+        }
+    }
+
+    if (endpoint && locked)
+        unlock_endpoint(endpoint);
+    else if (region && locked)
+        ReleaseMutex(mutex);
+    if (region && !endpoint)
+        UnmapViewOfFile(region);
+    if (mapping)
+        CloseHandle(mapping);
+    if (mutex)
+        CloseHandle(mutex);
+    return hr;
+}
+
 HRESULT
 reactos_shared_render_create(
     DWORD endpoint_index,

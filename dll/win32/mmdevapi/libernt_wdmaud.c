@@ -907,6 +907,9 @@ static DWORD channel_mask_from_count(WORD channels)
 
 static void set_pcm_format(WAVEFORMATEXTENSIBLE *fmt, DWORD samples_per_sec, WORD bits_per_sample, WORD channels);
 static BOOL is_pcm_format(const WAVEFORMATEX *fmt);
+static HRESULT validate_pcm_format(const WAVEFORMATEX *fmt);
+static BOOL fill_mix_format(const char *device, EDataFlow flow, WAVEFORMATEXTENSIBLE *fmt);
+static BOOL fill_shared_mix_format(const char *device, EDataFlow flow, WAVEFORMATEXTENSIBLE *fmt);
 
 /* The format the driver prefers for an endpoint, before the user's choice */
 static BOOL fill_driver_format(EDataFlow flow, DWORD index, WAVEFORMATEXTENSIBLE *fmt, DWORD *formats, WORD *max_channels)
@@ -979,6 +982,32 @@ static BOOL fill_mix_format(const char *device, EDataFlow flow, WAVEFORMATEXTENS
     {
         set_pcm_format(fmt, user.Format.nSamplesPerSec, user.Format.wBitsPerSample, user.Format.nChannels);
     }
+    return TRUE;
+}
+
+/*
+ * The mix format of a shared stream: a shared engine that is already running
+ * keeps its format for the streams it serves, so streams opened from now on
+ * run on that engine until the last of them goes away instead of failing to
+ * open; the user's format applies again to the next engine of the endpoint.
+ */
+static BOOL fill_shared_mix_format(const char *device, EDataFlow flow, WAVEFORMATEXTENSIBLE *fmt)
+{
+    WAVEFORMATEXTENSIBLE live;
+    EDataFlow parsed_flow = flow;
+    DWORD index = 0;
+    HRESULT hr = S_FALSE;
+
+    if (!fill_mix_format(device, flow, fmt))
+        return FALSE;
+    if (device)
+        parse_device_name(device, &parsed_flow, &index);
+    if (parsed_flow == eRender)
+        hr = reactos_shared_render_live_format(index, &live);
+    else if (parsed_flow == eCapture)
+        hr = reactos_shared_capture_live_format(index, &live);
+    if (hr == S_OK && validate_pcm_format(&live.Format) == S_OK)
+        *fmt = live;
     return TRUE;
 }
 
@@ -2951,7 +2980,7 @@ static NTSTATUS reactos_create_stream(struct create_stream_params *params)
     {
         BOOL conversion;
 
-        if (!fill_mix_format(params->device, params->flow, &mix) ||
+        if (!fill_shared_mix_format(params->device, params->flow, &mix) ||
             !shared_render_conversion_supported(params->fmt, &mix.Format,
                                                 (params->flags & AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM) != 0))
         {
@@ -3095,7 +3124,7 @@ static NTSTATUS reactos_create_stream(struct create_stream_params *params)
     {
         if (flow == eCapture)
         {
-            if (!fill_mix_format(params->device, params->flow, &mix))
+            if (!fill_shared_mix_format(params->device, params->flow, &mix))
             {
                 params->result = AUDCLNT_E_UNSUPPORTED_FORMAT;
                 goto failed;
@@ -3111,7 +3140,7 @@ static NTSTATUS reactos_create_stream(struct create_stream_params *params)
         {
             WAVEFORMATEXTENSIBLE engine_format;
 
-            if (!fill_mix_format(params->device, params->flow, &mix))
+            if (!fill_shared_mix_format(params->device, params->flow, &mix))
             {
                 params->result = AUDCLNT_E_UNSUPPORTED_FORMAT;
                 goto failed;
@@ -4427,7 +4456,7 @@ static NTSTATUS reactos_is_format_supported(struct is_format_supported_params *p
         WAVEFORMATEXTENSIBLE mix;
 
         params->result =
-            fill_mix_format(params->device, params->flow, &mix) &&
+            fill_shared_mix_format(params->device, params->flow, &mix) &&
             shared_render_conversion_supported(params->fmt_in, &mix.Format, FALSE) ?
                 S_OK : AUDCLNT_E_UNSUPPORTED_FORMAT;
         return STATUS_SUCCESS;
@@ -4478,7 +4507,7 @@ static NTSTATUS reactos_get_loopback_capture_device(struct get_loopback_capture_
 
 static NTSTATUS reactos_get_mix_format(struct get_mix_format_params *params)
 {
-    fill_mix_format(params->device, params->flow, params->fmt);
+    fill_shared_mix_format(params->device, params->flow, params->fmt);
     float_mix_format_from_device(params->fmt);
     params->result = S_OK;
     return STATUS_SUCCESS;

@@ -362,6 +362,88 @@ release_endpoint(struct reactos_shared_capture_sink *endpoint)
     destroy_endpoint(endpoint);
 }
 
+/* The format the endpoint's shared engine runs at right now, while any process has a client or owns it */
+HRESULT
+reactos_shared_capture_live_format(DWORD endpoint_index, WAVEFORMATEXTENSIBLE *format)
+{
+    WCHAR mapping_name[96], mutex_name[104];
+    struct reactos_shared_capture_sink *endpoint;
+    struct shared_capture_region *region = NULL;
+    HANDLE mapping = NULL, mutex = NULL;
+    HRESULT hr = S_FALSE;
+    BOOL locked = FALSE, live = FALSE;
+    UINT32 index;
+
+    if (!format || !InitOnceExecuteOnce(&endpoint_list_init_once, initialize_endpoint_list, NULL, NULL))
+        return E_FAIL;
+
+    EnterCriticalSection(&endpoint_list_lock);
+    for (endpoint = endpoint_list; endpoint; endpoint = endpoint->next)
+    {
+        if (endpoint->endpoint_index == endpoint_index && !endpoint->loopback)
+            break;
+    }
+    if (endpoint)
+        region = endpoint->region;
+    LeaveCriticalSection(&endpoint_list_lock);
+
+    if (region)
+    {
+        locked = lock_region(endpoint);
+    }
+    else
+    {
+        swprintf(mapping_name, ARRAY_SIZE(mapping_name), L"Local\\LiberNT.CoreAudio.Capture.%lu.v1", endpoint_index);
+        swprintf(mutex_name, ARRAY_SIZE(mutex_name), L"%s.Lock", mapping_name);
+        mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, mapping_name);
+        mutex = OpenMutexW(SYNCHRONIZE, FALSE, mutex_name);
+        if (mapping && mutex)
+            region = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(*region));
+        if (region)
+        {
+            DWORD wait = WaitForSingleObject(mutex, 200);
+
+            locked = wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED;
+        }
+    }
+
+    if (region && locked && region->magic == CAPTURE_REGION_MAGIC && region->version == CAPTURE_REGION_VERSION)
+    {
+        for (index = 0; index < CAPTURE_CLIENT_CAPACITY; ++index)
+        {
+            const struct shared_capture_slot *slot = &region->clients[index];
+
+            if (slot->occupied && process_record_is_alive(slot->process_id, &slot->process_start_time))
+            {
+                live = TRUE;
+                break;
+            }
+        }
+        live = live || (region->owner_process_id &&
+                        process_record_is_alive(region->owner_process_id, &region->owner_process_start_time));
+        if (live)
+        {
+            *format = region->format;
+            hr = S_OK;
+        }
+    }
+
+    if (region && locked)
+    {
+        if (endpoint)
+            unlock_region(endpoint);
+        else
+            ReleaseMutex(mutex);
+    }
+    if (region && !endpoint)
+        UnmapViewOfFile(region);
+    if (mapping)
+        CloseHandle(mapping);
+    if (mutex)
+        CloseHandle(mutex);
+    return hr;
+}
+
 HRESULT
 reactos_shared_capture_open_exclusive(
     DWORD endpoint_index,

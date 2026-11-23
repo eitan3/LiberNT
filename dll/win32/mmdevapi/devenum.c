@@ -407,6 +407,13 @@ static HRESULT MMDevice_SetPropValue(const GUID *devguid, DWORD flow, REFPROPERT
                id->Data4[4], id->Data4[5], id->Data4[6], id->Data4[7], key->pid );
     switch (pv->vt)
     {
+        case VT_EMPTY:
+        {
+            ret = RegDeleteValueW(regkey, buffer);
+            if (ret == ERROR_FILE_NOT_FOUND)
+                ret = ERROR_SUCCESS;
+            break;
+        }
         case VT_UI4:
         {
             ret = RegSetValueExW(regkey, buffer, 0, REG_DWORD, (const BYTE*)&pv->ulVal, sizeof(DWORD));
@@ -432,6 +439,8 @@ static HRESULT MMDevice_SetPropValue(const GUID *devguid, DWORD flow, REFPROPERT
     }
     RegCloseKey(regkey);
     TRACE("Writing %s returned %lu\n", debugstr_w(buffer), ret);
+    if (SUCCEEDED(hr) && ret)
+        hr = HRESULT_FROM_WIN32(ret);
     return hr;
 }
 
