@@ -586,6 +586,111 @@ static void test_shared_blocks_exclusive(const WAVEFORMATEX *mix)
     close_client(&client);
 }
 
+/*
+ * Capture at the depths the legacy flags cannot describe: a shared 24-in-32
+ * or 32-bit client is served from whatever the device runs at, and an
+ * exclusive stream takes the client's format when the driver takes it.
+ */
+static void test_depth_formats(const WAVEFORMATEX *mix)
+{
+    static const WORD depths[][2] = { {32, 24}, {32, 32} };
+    WAVEFORMATEXTENSIBLE format;
+    struct capture_client shared;
+    IAudioCaptureClient *capture = NULL;
+    IAudioClient *client = NULL;
+    REFERENCE_TIME period = 100000;
+    UINT32 frames = 0, packet, d;
+    HANDLE event = NULL;
+    DWORD flags;
+    BYTE *data;
+    HRESULT hr;
+    unsigned accepted = 0;
+    int i;
+
+    hr = IMMDevice_Activate(capture_device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&client);
+    ok(hr == S_OK, "Activate: %#lx\n", hr);
+    if (FAILED(hr))
+        return;
+    for (d = 0; d < ARRAY_SIZE(depths); ++d)
+    {
+        ZeroMemory(&format, sizeof(format));
+        format.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+        format.Format.nChannels = mix->nChannels;
+        format.Format.nSamplesPerSec = mix->nSamplesPerSec;
+        format.Format.wBitsPerSample = depths[d][0];
+        format.Format.nBlockAlign = mix->nChannels * (depths[d][0] / 8);
+        format.Format.nAvgBytesPerSec = mix->nSamplesPerSec * format.Format.nBlockAlign;
+        format.Format.cbSize = sizeof(format) - sizeof(format.Format);
+        format.Samples.wValidBitsPerSample = depths[d][1];
+        format.dwChannelMask = mix->nChannels == 1 ? SPEAKER_FRONT_CENTER : SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+        format.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+
+        /* A shared client at this depth: the engine converts from the device format */
+        if (open_client(&shared, &format.Format, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM))
+        {
+            UINT32 packets = 0;
+
+            hr = IAudioClient_Start(shared.client);
+            ok(hr == S_OK, "shared %u-in-%u Start: %#lx\n", depths[d][1], depths[d][0], hr);
+            for (i = 0; i < 4 && read_packet(&shared, &flags); ++i)
+                ++packets;
+            ok(packets > 0, "shared %u-in-%u: no packets\n", depths[d][1], depths[d][0]);
+            IAudioClient_Stop(shared.client);
+            close_client(&shared);
+        }
+        else
+            close_client(&shared);
+
+        /* An exclusive stream at this depth: the device runs the client's format */
+        hr = IAudioClient_IsFormatSupported(client, AUDCLNT_SHAREMODE_EXCLUSIVE, &format.Format, NULL);
+        trace("capture exclusive %u-in-%u: IsFormatSupported %#lx\n", depths[d][1], depths[d][0], hr);
+        if (hr != S_OK)
+            continue;
+        accepted++;
+        hr = IAudioClient_Initialize(client, AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                                     period, period, &format.Format, NULL);
+        ok(hr == S_OK || hr == AUDCLNT_E_DEVICE_IN_USE, "exclusive %u-in-%u Initialize: %#lx\n", depths[d][1], depths[d][0], hr);
+        if (FAILED(hr))
+            continue;
+        hr = IAudioClient_GetBufferSize(client, &frames);
+        ok(hr == S_OK && frames, "GetBufferSize: %#lx\n", hr);
+        event = CreateEventW(NULL, FALSE, FALSE, NULL);
+        hr = IAudioClient_SetEventHandle(client, event);
+        ok(hr == S_OK, "SetEventHandle: %#lx\n", hr);
+        hr = IAudioClient_GetService(client, &IID_IAudioCaptureClient, (void **)&capture);
+        ok(hr == S_OK, "GetService: %#lx\n", hr);
+        hr = IAudioClient_Start(client);
+        ok(hr == S_OK, "exclusive %u-in-%u Start: %#lx\n", depths[d][1], depths[d][0], hr);
+        for (i = 0; SUCCEEDED(hr) && i < 4; ++i)
+        {
+            ok(WaitForSingleObject(event, WAIT_MILLISECONDS) == WAIT_OBJECT_0, "exclusive %u-in-%u: no event %d\n", depths[d][1], depths[d][0], i);
+            hr = IAudioCaptureClient_GetBuffer(capture, &data, &packet, &flags, NULL, NULL);
+            ok(hr == S_OK || hr == AUDCLNT_S_BUFFER_EMPTY, "GetBuffer %d: %#lx\n", i, hr);
+            if (hr != S_OK)
+                continue;
+            ok(packet == frames, "exclusive %u-in-%u packet %d has %u frames, buffer %u\n", depths[d][1], depths[d][0], i, packet, frames);
+            hr = IAudioCaptureClient_ReleaseBuffer(capture, packet);
+            ok(hr == S_OK, "ReleaseBuffer: %#lx\n", hr);
+        }
+        IAudioClient_Stop(client);
+        if (capture) IAudioCaptureClient_Release(capture);
+        capture = NULL;
+        if (event) CloseHandle(event);
+        event = NULL;
+        IAudioClient_Release(client);
+        client = NULL;
+        hr = IMMDevice_Activate(capture_device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&client);
+        ok(hr == S_OK, "Activate: %#lx\n", hr);
+        if (FAILED(hr))
+            break;
+    }
+    if (!accepted)
+        skip("the capture driver takes neither 24-in-32 nor 32-bit; the depth path is not exercised\n");
+    if (capture) IAudioCaptureClient_Release(capture);
+    if (event) CloseHandle(event);
+    if (client) IAudioClient_Release(client);
+}
+
 static void test_loopback(void)
 {
     IAudioClient *loopback = NULL, *render = NULL, *exclusive = NULL;
@@ -745,6 +850,7 @@ START_TEST(capturestream)
     test_loopback();
     test_shared_blocks_exclusive(format);
     test_exclusive_event(format);
+    test_depth_formats(format);
 
     CoTaskMemFree(format);
     IMMDevice_Release(capture_device);

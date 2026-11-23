@@ -156,7 +156,8 @@ region_format_matches(const struct shared_capture_region *region, const WAVEFORM
     return region->format.Format.nSamplesPerSec == format->Format.nSamplesPerSec &&
            region->format.Format.nChannels == format->Format.nChannels &&
            region->format.Format.wBitsPerSample == format->Format.wBitsPerSample &&
-           region->format.Format.nBlockAlign == format->Format.nBlockAlign;
+           region->format.Format.nBlockAlign == format->Format.nBlockAlign &&
+           region->format.Samples.wValidBitsPerSample == format->Samples.wValidBitsPerSample;
 }
 
 static BOOL
