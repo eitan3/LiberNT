@@ -679,6 +679,7 @@ CFunctionGroupNode::GetAmplifierGainMute(
     IN ULONG NodeId,
     IN ULONG Input,
     IN ULONG Right,
+    IN ULONG Index,
     OUT PUCHAR Mute,
     OUT PUCHAR Gain)
 {
@@ -687,7 +688,8 @@ CFunctionGroupNode::GetAmplifierGainMute(
     NTSTATUS Status;
 
     Verb = (m_CodecAddress << 28) | (NodeId << 20) | (AC_VERB_GET_AMP_GAIN_MUTE << 8) |
-    (Input ? AC_AMP_GET_INPUT : AC_AMP_GET_OUTPUT) | (Right ? AC_AMP_GET_RIGHT : AC_AMP_GET_LEFT);
+    (Input ? AC_AMP_GET_INPUT : AC_AMP_GET_OUTPUT) | (Right ? AC_AMP_GET_RIGHT : AC_AMP_GET_LEFT) |
+    (Input ? ((Index << 0) & AC_AMP_GET_INDEX) : 0);
     Status = m_Adapter->TransferVerb(Verb, &Response);
     if (!NT_SUCCESS(Status))
     {
@@ -705,6 +707,7 @@ CFunctionGroupNode::SetAmplifierGainMute(
     IN ULONG NodeId,
     IN ULONG Input,
     IN ULONG Right,
+    IN ULONG Index,
     IN UCHAR Mute,
     IN UCHAR Gain)
 {
@@ -714,7 +717,7 @@ CFunctionGroupNode::SetAmplifierGainMute(
 
     Verb = (m_CodecAddress << 28) | (NodeId << 20) | (AC_VERB_SET_AMP_GAIN_MUTE << 8) |
     (Input ? AC_AMP_SET_INPUT : AC_AMP_SET_OUTPUT) | (Right ? AC_AMP_SET_RIGHT : AC_AMP_SET_LEFT) |
-    (Mute ? AC_AMP_MUTE : 0) | (Gain & AC_AMP_GAIN);
+    (Input ? ((Index << AC_AMP_SET_INDEX_SHIFT) & AC_AMP_SET_INDEX) : 0) | (Mute ? AC_AMP_MUTE : 0) | (Gain & AC_AMP_GAIN);
     Status = m_Adapter->TransferVerb(Verb, &Response);
     if (!NT_SUCCESS(Status))
     {

@@ -369,8 +369,8 @@ class CFunctionGroupNode
     NTSTATUS NTAPI AddNode(ULONG NodeId);
     PNODE_CONTEXT NTAPI FindNodeId(ULONG NodeId);
     NTSTATUS NTAPI GetAmplifierDetails(IN ULONG NodeId, IN ULONG Input, OUT PAMPLIFIER_CAPABILITIES Caps);
-    NTSTATUS NTAPI GetAmplifierGainMute(IN ULONG NodeId, IN ULONG Input, IN ULONG Right, OUT PUCHAR Mute, OUT PUCHAR Gain);
-    NTSTATUS NTAPI SetAmplifierGainMute(IN ULONG NodeId, IN ULONG Input, IN ULONG Right, IN UCHAR Mute, IN UCHAR Gain);
+    NTSTATUS NTAPI GetAmplifierGainMute(IN ULONG NodeId, IN ULONG Input, IN ULONG Right, IN ULONG Index, OUT PUCHAR Mute, OUT PUCHAR Gain);
+    NTSTATUS NTAPI SetAmplifierGainMute(IN ULONG NodeId, IN ULONG Input, IN ULONG Right, IN ULONG Index, IN UCHAR Mute, IN UCHAR Gain);
     NTSTATUS NTAPI ActivateAmplifier(IN ULONG NodeId, IN ULONG Input, IN ULONG Index);
     NTSTATUS NTAPI GetPinCapabilities(IN ULONG NodeId, OUT PPIN_CAPABILITIES PinCaps);
     NTSTATUS NTAPI GetPinSense(IN ULONG NodeId, IN PULONG DevicePresent);
@@ -467,7 +467,7 @@ class CMiniportTopology : public CUnknownImpl<IMiniportTopology>
         CFunctionGroupNode *Node,
         CAdapterCommon *Adapter,
         PPCFILTER_DESCRIPTOR Filter)
-        : m_Port(0), m_Node(Node), m_FilterDescription(Filter), m_PinCount(0)
+        : m_Port(0), m_Node(Node), m_Adapter(Adapter), m_FilterDescription(Filter), m_PinCount(0)
     {
         for (ULONG Index = 0; Index < AssociatedPinCount && Index < ARRAYSIZE(m_PinIds); Index++)
             m_PinIds[m_PinCount++] = AssociatedPinIds[Index];
@@ -482,6 +482,12 @@ class CMiniportTopology : public CUnknownImpl<IMiniportTopology>
         return m_Node;
     }
 
+    CAdapterCommon*
+    GetAdapter()
+    {
+        return m_Adapter;
+    }
+
     PPORTTOPOLOGY
     GetPort()
     {
@@ -494,6 +500,16 @@ class CMiniportTopology : public CUnknownImpl<IMiniportTopology>
         return m_PinCount;
     }
 
+    /* Whether this topology serves a capture jack, so its volume and mute act on the input amplifiers */
+    BOOLEAN
+    IsCaptureTopology()
+    {
+        PIN_CAPABILITIES PinCaps;
+
+        return m_PinCount && m_Node && NT_SUCCESS(m_Node->GetPinCapabilities(m_PinIds[0], &PinCaps)) &&
+               PinCaps.InputCapable;
+    }
+
     ULONG
     GetPinId(ULONG Index)
     {
@@ -503,6 +519,7 @@ class CMiniportTopology : public CUnknownImpl<IMiniportTopology>
   private:
     PPORTTOPOLOGY m_Port;
     CFunctionGroupNode *m_Node;
+    CAdapterCommon *m_Adapter;
     PPCFILTER_DESCRIPTOR m_FilterDescription;
     ULONG m_PinCount;
     ULONG m_PinIds[16];

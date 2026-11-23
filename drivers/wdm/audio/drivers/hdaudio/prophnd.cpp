@@ -224,6 +224,179 @@ HdaGetMasterAmps(
     return STATUS_SUCCESS;
 }
 
+/*
+ * The input amplifiers of the capture path of a capture topology: the input
+ * converters whose connection, directly or through a selector, reaches the
+ * topology's jack pin (HDA 7.3.4.1: the input amp of the converter carries the
+ * capture gain and mute). The caller frees Nids and Indices with TAG_HDAUDIO.
+ */
+static
+NTSTATUS
+HdaGetCaptureAmps(
+    IN CMiniportTopology *Miniport,
+    IN CFunctionGroupNode *Node,
+    OUT PULONG *Nids,
+    OUT PULONG *Indices,
+    OUT PULONG Count,
+    OUT PAMPLIFIER_CAPABILITIES Caps)
+{
+    PULONG Adcs = NULL, Pins = NULL, FoundNids = NULL, FoundIndices = NULL;
+    ULONG AdcCount = 0, PinCount = 0, Found = 0, AdcIndex, ConnectionIndex, PinId, Reachable;
+    AMPLIFIER_CAPABILITIES Probe;
+    PNODE_CONTEXT AdcContext;
+    NTSTATUS Status;
+
+    if (!Miniport->GetPinCount())
+        return STATUS_NOT_SUPPORTED;
+    PinId = Miniport->GetPinId(0);
+
+    Status = Node->GetNodesWithType(0x02, &AdcCount, &Adcs);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    Status = Node->GetNodesWithType(0x04, &PinCount, &Pins);
+    if (!NT_SUCCESS(Status))
+        goto Done;
+
+    FoundNids = (PULONG)ExAllocatePoolZero(NonPagedPool, sizeof(ULONG) * AdcCount, TAG_HDAUDIO);
+    FoundIndices = (PULONG)ExAllocatePoolZero(NonPagedPool, sizeof(ULONG) * AdcCount, TAG_HDAUDIO);
+    if (!FoundNids || !FoundIndices)
+    {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Done;
+    }
+
+    for (AdcIndex = 0; AdcIndex < AdcCount; AdcIndex++)
+    {
+        if (!NT_SUCCESS(Node->GetAmplifierDetails(Adcs[AdcIndex], 1, &Probe)))
+            continue;
+
+        AdcContext = Node->FindNodeId(Adcs[AdcIndex]);
+        if (!AdcContext)
+            continue;
+
+        /* The converter's connection that leads to the jack, directly or through a selector */
+        for (ConnectionIndex = 0; ConnectionIndex < AdcContext->ConnectionCount; ConnectionIndex++)
+        {
+            ULONG Connection = AdcContext->Connections[ConnectionIndex];
+
+            if (Connection == PinId)
+            {
+                Reachable = 1;
+            }
+            else
+            {
+                PNODE_CONTEXT Connected = Node->FindNodeId(Connection);
+
+                if (!Connected)
+                    continue;
+                Status = Miniport->GetAdapter()->IsInputNodeConnectedToPin(
+                    (PVOID)Node, AdcContext->Digital, Connection, PinId, PinCount, &Reachable);
+                if (!NT_SUCCESS(Status))
+                    goto Done;
+            }
+            if (!Reachable)
+                continue;
+
+            if (!Found)
+                *Caps = Probe;
+            FoundNids[Found] = Adcs[AdcIndex];
+            FoundIndices[Found] = ConnectionIndex;
+            Found++;
+            break;
+        }
+    }
+
+    if (!Found)
+    {
+        Status = STATUS_NOT_SUPPORTED;
+        goto Done;
+    }
+
+    *Nids = FoundNids;
+    *Indices = FoundIndices;
+    *Count = Found;
+    Status = STATUS_SUCCESS;
+    FoundNids = NULL;
+    FoundIndices = NULL;
+
+Done:
+    if (FoundIndices)
+        ExFreePoolWithTag(FoundIndices, TAG_HDAUDIO);
+    if (FoundNids)
+        ExFreePoolWithTag(FoundNids, TAG_HDAUDIO);
+    if (Pins)
+        ExFreePoolWithTag(Pins, TAG_HDAUDIO);
+    if (Adcs)
+        ExFreePoolWithTag(Adcs, TAG_HDAUDIO);
+    return Status;
+}
+
+/* The amplifiers a topology's volume and mute act on: the DACs' output amps, or the capture amps */
+typedef struct _HDA_AMP_SET
+{
+    PULONG Nids;
+    PULONG Indices;
+    ULONG Count;
+    AMPLIFIER_CAPABILITIES Caps;
+    BOOLEAN Input;
+} HDA_AMP_SET, *PHDA_AMP_SET;
+
+static
+NTSTATUS
+HdaGetTopologyAmps(
+    IN CMiniportTopology *Miniport,
+    IN CFunctionGroupNode *Node,
+    OUT PHDA_AMP_SET Set)
+{
+    RtlZeroMemory(Set, sizeof(*Set));
+
+    if (Miniport->IsCaptureTopology())
+    {
+        Set->Input = TRUE;
+        return HdaGetCaptureAmps(Miniport, Node, &Set->Nids, &Set->Indices, &Set->Count, &Set->Caps);
+    }
+
+    return HdaGetMasterAmps(Node, &Set->Nids, &Set->Count, &Set->Caps);
+}
+
+static
+VOID
+HdaFreeAmpSet(
+    IN PHDA_AMP_SET Set)
+{
+    if (Set->Indices)
+        ExFreePoolWithTag(Set->Indices, TAG_HDAUDIO);
+    if (Set->Nids)
+        ExFreePoolWithTag(Set->Nids, TAG_HDAUDIO);
+    RtlZeroMemory(Set, sizeof(*Set));
+}
+
+static
+NTSTATUS
+HdaGetAmp(
+    IN CFunctionGroupNode *Node,
+    IN PHDA_AMP_SET Set,
+    IN ULONG Index,
+    IN ULONG Right,
+    OUT PUCHAR Mute,
+    OUT PUCHAR Gain)
+{
+    return Node->GetAmplifierGainMute(Set->Nids[Index], Set->Input, Right, Set->Input ? Set->Indices[Index] : 0, Mute, Gain);
+}
+
+static
+NTSTATUS
+HdaSetAmp(
+    IN CFunctionGroupNode *Node,
+    IN PHDA_AMP_SET Set,
+    IN ULONG Index,
+    IN ULONG Right,
+    IN UCHAR Mute,
+    IN UCHAR Gain)
+{
+    return Node->SetAmplifierGainMute(Set->Nids[Index], Set->Input, Right, Set->Input ? Set->Indices[Index] : 0, Mute, Gain);
+}
+
 static
 LONG
 HdaGetRequestChannel(IN PPCPROPERTY_REQUEST PropertyRequest)
@@ -340,13 +513,13 @@ HDAUDIO_RestoreMasterSettings(
         {
             UCHAR CurrentMute, Gain;
 
-            if (!NT_SUCCESS(Node->GetAmplifierGainMute(Nids[Index], 0, Right, &CurrentMute, &Gain)))
+            if (!NT_SUCCESS(Node->GetAmplifierGainMute(Nids[Index], 0, Right, 0, &CurrentMute, &Gain)))
                 continue;
             if (HaveLevel && Caps.NumSteps)
                 Gain = HdaGainFromLevel((LONG)Level, &Caps);
             if (Caps.MuteCapable)
                 CurrentMute = (HaveMute && Mute) ? 1 : 0;
-            Node->SetAmplifierGainMute(Nids[Index], 0, Right, CurrentMute, Gain);
+            Node->SetAmplifierGainMute(Nids[Index], 0, Right, 0, CurrentMute, Gain);
         }
     }
 
@@ -379,24 +552,22 @@ PropertyHandler_Volume(IN PPCPROPERTY_REQUEST PropertyRequest)
         return STATUS_INVALID_PARAMETER;
     }
 
-    PULONG Nids = NULL;
-    ULONG Count = 0, Index, Right;
-    AMPLIFIER_CAPABILITIES Caps;
-    Status = HdaGetMasterAmps(Node, &Nids, &Count, &Caps);
-    if (!NT_SUCCESS(Status) || !Caps.NumSteps)
+    HDA_AMP_SET Amps;
+    Status = HdaGetTopologyAmps(Miniport, Node, &Amps);
+    if (!NT_SUCCESS(Status) || !Amps.Caps.NumSteps)
     {
-        if (NT_SUCCESS(Status))
-            ExFreePoolWithTag(Nids, TAG_HDAUDIO);
+        HdaFreeAmpSet(&Amps);
         Miniport->Release();
         return STATUS_NOT_SUPPORTED;
     }
 
-    LONG Step = ((LONG)Caps.Steps + 1) * 0x4000;
+    PAMPLIFIER_CAPABILITIES Caps = &Amps.Caps;
+    LONG Step = ((LONG)Caps->Steps + 1) * 0x4000;
     LONG Channel = HdaGetRequestChannel(PropertyRequest);
 
     if (Channel > 0 || Channel < -1)
     {
-        ExFreePoolWithTag(Nids, TAG_HDAUDIO);
+        HdaFreeAmpSet(&Amps);
         Miniport->Release();
         return STATUS_INVALID_PARAMETER;
     }
@@ -427,8 +598,8 @@ PropertyHandler_Volume(IN PPCPROPERTY_REQUEST PropertyRequest)
                 Members->Flags = KSPROPERTY_MEMBER_FLAG_BASICSUPPORT_UNIFORM;
                 Range->SteppingDelta = Step;
                 Range->Reserved = 0;
-                Range->Bounds.SignedMinimum = -(LONG)Caps.Offset * Step;
-                Range->Bounds.SignedMaximum = ((LONG)Caps.NumSteps - (LONG)Caps.Offset) * Step;
+                Range->Bounds.SignedMinimum = -(LONG)Caps->Offset * Step;
+                Range->Bounds.SignedMaximum = ((LONG)Caps->NumSteps - (LONG)Caps->Offset) * Step;
                 PropertyRequest->ValueSize = Desc->DescriptionSize;
             }
             else
@@ -447,38 +618,39 @@ PropertyHandler_Volume(IN PPCPROPERTY_REQUEST PropertyRequest)
     {
         UCHAR Mute, Gain;
 
-        Status = Node->GetAmplifierGainMute(Nids[0], 0, 0, &Mute, &Gain);
+        Status = HdaGetAmp(Node, &Amps, 0, 0, &Mute, &Gain);
         if (NT_SUCCESS(Status))
         {
-            *(PLONG)PropertyRequest->Value = ((LONG)Gain - (LONG)Caps.Offset) * Step;
+            *(PLONG)PropertyRequest->Value = ((LONG)Gain - (LONG)Caps->Offset) * Step;
             PropertyRequest->ValueSize = sizeof(LONG);
         }
     }
     else if (PropertyRequest->Verb & KSPROPERTY_TYPE_SET)
     {
-        UCHAR Gain = HdaGainFromLevel(*(PLONG)PropertyRequest->Value, &Caps);
+        UCHAR Gain = HdaGainFromLevel(*(PLONG)PropertyRequest->Value, Caps);
 
         Status = STATUS_SUCCESS;
-        for (Index = 0; Index < Count; Index++)
+        for (ULONG Index = 0; Index < Amps.Count; Index++)
         {
-            for (Right = 0; Right < 2; Right++)
+            for (ULONG Right = 0; Right < 2; Right++)
             {
                 UCHAR Mute, Current;
 
-                if (!NT_SUCCESS(Node->GetAmplifierGainMute(Nids[Index], 0, Right, &Mute, &Current)))
+                if (!NT_SUCCESS(HdaGetAmp(Node, &Amps, Index, Right, &Mute, &Current)))
                     Mute = 0;
-                Status = Node->SetAmplifierGainMute(Nids[Index], 0, Right, Mute, Gain);
+                Status = HdaSetAmp(Node, &Amps, Index, Right, Mute, Gain);
             }
         }
         if (NT_SUCCESS(Status))
-            HdaSaveSetting(Miniport, L"MasterLevel", (ULONG)(((LONG)Gain - (LONG)Caps.Offset) * Step));
+            HdaSaveSetting(Miniport, Amps.Input ? L"CaptureLevel" : L"MasterLevel",
+                           (ULONG)(((LONG)Gain - (LONG)Caps->Offset) * Step));
     }
     else
     {
         Status = STATUS_NOT_SUPPORTED;
     }
 
-    ExFreePoolWithTag(Nids, TAG_HDAUDIO);
+    HdaFreeAmpSet(&Amps);
     Miniport->Release();
     return Status;
 }
@@ -509,23 +681,21 @@ PropertyHandler_Mute(IN PPCPROPERTY_REQUEST PropertyRequest)
         return STATUS_INVALID_PARAMETER;
     }
 
-    PULONG Nids = NULL;
-    ULONG Count = 0, Index, Right;
-    AMPLIFIER_CAPABILITIES Caps;
-    Status = HdaGetMasterAmps(Node, &Nids, &Count, &Caps);
-    if (!NT_SUCCESS(Status) || !Caps.MuteCapable)
+    HDA_AMP_SET Amps;
+    Status = HdaGetTopologyAmps(Miniport, Node, &Amps);
+    if (!NT_SUCCESS(Status) || !Amps.Caps.MuteCapable)
     {
-        if (NT_SUCCESS(Status))
-            ExFreePoolWithTag(Nids, TAG_HDAUDIO);
+        HdaFreeAmpSet(&Amps);
         Miniport->Release();
         return STATUS_NOT_SUPPORTED;
     }
 
+    PAMPLIFIER_CAPABILITIES Caps = &Amps.Caps;
     LONG Channel = HdaGetRequestChannel(PropertyRequest);
 
     if (Channel > 0 || Channel < -1)
     {
-        ExFreePoolWithTag(Nids, TAG_HDAUDIO);
+        HdaFreeAmpSet(&Amps);
         Miniport->Release();
         return STATUS_INVALID_PARAMETER;
     }
@@ -540,7 +710,7 @@ PropertyHandler_Mute(IN PPCPROPERTY_REQUEST PropertyRequest)
     {
         UCHAR Mute, Gain;
 
-        Status = Node->GetAmplifierGainMute(Nids[0], 0, 0, &Mute, &Gain);
+        Status = HdaGetAmp(Node, &Amps, 0, 0, &Mute, &Gain);
         if (NT_SUCCESS(Status))
         {
             *(PBOOL)PropertyRequest->Value = Mute ? TRUE : FALSE;
@@ -552,26 +722,26 @@ PropertyHandler_Mute(IN PPCPROPERTY_REQUEST PropertyRequest)
         UCHAR Mute = *(PBOOL)PropertyRequest->Value ? 1 : 0;
 
         Status = STATUS_SUCCESS;
-        for (Index = 0; Index < Count; Index++)
+        for (ULONG Index = 0; Index < Amps.Count; Index++)
         {
-            for (Right = 0; Right < 2; Right++)
+            for (ULONG Right = 0; Right < 2; Right++)
             {
                 UCHAR Current, Gain;
 
-                if (!NT_SUCCESS(Node->GetAmplifierGainMute(Nids[Index], 0, Right, &Current, &Gain)))
-                    Gain = Caps.Offset;
-                Status = Node->SetAmplifierGainMute(Nids[Index], 0, Right, Mute, Gain);
+                if (!NT_SUCCESS(HdaGetAmp(Node, &Amps, Index, Right, &Current, &Gain)))
+                    Gain = Caps->Offset;
+                Status = HdaSetAmp(Node, &Amps, Index, Right, Mute, Gain);
             }
         }
         if (NT_SUCCESS(Status))
-            HdaSaveSetting(Miniport, L"MasterMute", Mute);
+            HdaSaveSetting(Miniport, Amps.Input ? L"CaptureMute" : L"MasterMute", Mute);
     }
     else
     {
         Status = STATUS_NOT_SUPPORTED;
     }
 
-    ExFreePoolWithTag(Nids, TAG_HDAUDIO);
+    HdaFreeAmpSet(&Amps);
     Miniport->Release();
     return Status;
 }
