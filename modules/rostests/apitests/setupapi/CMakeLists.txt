@@ -14,6 +14,7 @@ list(APPEND SOURCE
     PackageRootDevice.c
     DriverFeatureScore.c
     DriverFilesNeedReboot.c
+    DriverPackageFinishInstall.c
     DriverPackageSignerScore.c
     HalDeviceIds.c
     DevicePdoName.c

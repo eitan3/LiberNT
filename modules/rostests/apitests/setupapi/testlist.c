@@ -16,6 +16,7 @@ extern void func_KmdfServiceSection(void);
 extern void func_PackageRootDevice(void);
 extern void func_DriverFeatureScore(void);
 extern void func_DriverFilesNeedReboot(void);
+extern void func_DriverPackageFinishInstall(void);
 extern void func_DriverPackageSignerScore(void);
 extern void func_DevicePdoName(void);
 extern void func_DeviceDisablePersist(void);
@@ -70,6 +71,7 @@ const struct test winetest_testlist[] =
     { "PackageRootDevice", func_PackageRootDevice },
     { "DriverFeatureScore", func_DriverFeatureScore },
     { "DriverFilesNeedReboot", func_DriverFilesNeedReboot },
+    { "DriverPackageFinishInstall", func_DriverPackageFinishInstall },
     { "DriverPackageSignerScore", func_DriverPackageSignerScore },
     { "DevicePdoName", func_DevicePdoName },
     { "DeviceDisablePersist", func_DeviceDisablePersist },
