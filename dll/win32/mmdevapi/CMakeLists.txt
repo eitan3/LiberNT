@@ -21,6 +21,7 @@ list(APPEND SOURCE
     reactos_render_engine.h
     libernt_wdmaud.c
     mmdevapi_private.h
+    pcm_sample.h
     unixlib.h
     precomp.h
     ${CMAKE_CURRENT_BINARY_DIR}/mmdevapi_stubs.c)

@@ -63,28 +63,6 @@ MMixerGetWaveInfoByIndexAndType(
 }
 
 static
-DWORD
-MMixerChannelMaskFromCount(
-    IN ULONG Channels)
-{
-    switch (Channels)
-    {
-        case 1:
-            return KSAUDIO_SPEAKER_MONO;
-        case 2:
-            return KSAUDIO_SPEAKER_STEREO;
-        case 4:
-            return KSAUDIO_SPEAKER_QUAD;
-        case 6:
-            return KSAUDIO_SPEAKER_5POINT1;
-        case 8:
-            return KSAUDIO_SPEAKER_7POINT1;
-        default:
-            return KSAUDIO_SPEAKER_DIRECTOUT;
-    }
-}
-
-static
 MIXER_STATUS
 MMixerValidateWaveFormat(
     IN LPWAVEFORMATEX WaveFormat)
@@ -359,65 +337,6 @@ MMixerCheckFormat(
     DPRINT("Format %lx bInput %u\n", Result, bInput);
 }
 
-static
-MIXER_STATUS
-MMixerAudioRangeToWaveFormat(
-    IN PKSDATARANGE_AUDIO DataRangeAudio,
-    OUT PWAVEFORMATEXTENSIBLE Format)
-{
-    ULONG Channels, ValidBits, ContainerBits, BlockAlign, SampleRate;
-
-    Channels = DataRangeAudio->MaximumChannels;
-    ValidBits = DataRangeAudio->MaximumBitsPerSample;
-    if (!Channels || Channels > MAXUSHORT || !ValidBits || ValidBits > MAXUSHORT)
-        return MM_STATUS_UNSUCCESSFUL;
-
-    BlockAlign = DataRangeAudio->DataRange.SampleSize;
-    if (BlockAlign)
-    {
-        if (BlockAlign > MAXUSHORT || BlockAlign % Channels)
-            return MM_STATUS_UNSUCCESSFUL;
-
-        ContainerBits = (BlockAlign / Channels) * 8;
-    }
-    else
-    {
-        ContainerBits = (ValidBits + 7) & ~7;
-        BlockAlign = Channels * (ContainerBits / 8);
-        if (!BlockAlign || BlockAlign > MAXUSHORT)
-            return MM_STATUS_UNSUCCESSFUL;
-    }
-
-    if (ContainerBits < ValidBits || ContainerBits > MAXUSHORT)
-        return MM_STATUS_UNSUCCESSFUL;
-
-    if (DataRangeAudio->MinimumSampleFrequency <= 48000 &&
-        DataRangeAudio->MaximumSampleFrequency >= 48000)
-    {
-        SampleRate = 48000;
-    }
-    else
-    {
-        SampleRate = DataRangeAudio->MaximumSampleFrequency;
-    }
-
-    if (!SampleRate || SampleRate > MAXULONG / BlockAlign)
-        return MM_STATUS_UNSUCCESSFUL;
-
-    RtlZeroMemory(Format, sizeof(*Format));
-    Format->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
-    Format->Format.nChannels = (WORD)Channels;
-    Format->Format.nSamplesPerSec = SampleRate;
-    Format->Format.nAvgBytesPerSec = SampleRate * BlockAlign;
-    Format->Format.nBlockAlign = (WORD)BlockAlign;
-    Format->Format.wBitsPerSample = (WORD)ContainerBits;
-    Format->Format.cbSize = sizeof(*Format) - sizeof(Format->Format);
-    Format->Samples.wValidBitsPerSample = (WORD)ValidBits;
-    Format->dwChannelMask = MMixerChannelMaskFromCount(Channels);
-    Format->SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
-    return MM_STATUS_SUCCESS;
-}
-
 MIXER_STATUS
 MMixerInitializeWaveInfo(
     IN PMIXER_CONTEXT MixerContext,
@@ -517,7 +436,7 @@ MMixerInitializeWaveInfo(
 
     /* Keep the native pin format for clients which are not representable by
        the legacy WAVE_FORMAT_* capability flags. */
-    MMixerAudioRangeToWaveFormat(DataRangeAudio, &WaveInfo->PreferredFormat);
+    RosSoundAudioRangeToPreferredFormat(DataRangeAudio, &WaveInfo->PreferredFormat);
     WaveInfo->DataRange = *DataRangeAudio;
 
     /* free dataranges buffer */

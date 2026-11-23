@@ -16,6 +16,7 @@
 #include <ddk/ntstrsafe.h>
 
 #include "hda_verbs.h"
+#include "hdaudio_format.h"
 #include "tables.h"
 
 #define TAG_HDAUDIO 'UADH'

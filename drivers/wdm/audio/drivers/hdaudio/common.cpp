@@ -628,7 +628,6 @@ CAdapterCommon::BuildWaveFormat(
     ULONG MaximumSampleFrequency = 0;
     ULONG AudioFormatIndex;
     UCHAR FormatPCMSupported = 0;
-    UCHAR FormatFloatSupported = 0;
     UCHAR FormatAC3Supported = 0;
     NTSTATUS Status;
 
@@ -751,10 +750,6 @@ CAdapterCommon::BuildWaveFormat(
             {
                 FormatPCMSupported = TRUE;
             }
-            if (NodePcmRates.Float32FormatSupported)
-            {
-                FormatFloatSupported = TRUE;
-            }
 
             if (NodePcmRates.AC3FormatSupported)
             {
@@ -798,7 +793,9 @@ CAdapterCommon::BuildWaveFormat(
     DPRINT("MinimumSampleFrequency %u\n", MinimumSampleFrequency);
     DPRINT("MaximumSampleFrequency %u\n", MaximumSampleFrequency);
 
-    ULONG FormatsSupported = FormatPCMSupported + FormatFloatSupported + FormatAC3Supported;
+    /* The validator and the stream format word carry PCM only, so a float
+       range the codec reports is not offered: the pin would refuse it. */
+    ULONG FormatsSupported = FormatPCMSupported + FormatAC3Supported;
     DPRINT("FormatsSupported %u\n", FormatsSupported);
     if (FormatsSupported == 0)
     {
@@ -830,12 +827,6 @@ CAdapterCommon::BuildWaveFormat(
             DPRINT("AC3\n");
             DataRange[AudioFormatIndex].DataRange.SubFormat = {KSDATAFORMAT_SUBTYPE_DOLBY_AC3_SPDIF};
             FormatAC3Supported = FALSE;
-        }
-        else if (FormatFloatSupported)
-        {
-            DPRINT("Float\n");
-            DataRange[AudioFormatIndex].DataRange.SubFormat = {KSDATAFORMAT_SUBTYPE_IEEE_FLOAT};
-            FormatFloatSupported = FALSE;
         }
 
         DataRange[AudioFormatIndex].MaximumChannels = MaximumChannels;

@@ -7,7 +7,11 @@
 #define ROS_AUDIO_WAVEFMT_H
 
 #include <windef.h>
+#include <limits.h>
 #include <mmsystem.h>
+#include <mmreg.h>
+#include <ks.h>
+#include <ksmedia.h>
 
 typedef struct _ROS_SOUND_LEGACY_WAVE_FORMAT
 {
@@ -160,6 +164,95 @@ RosSoundChooseBestLegacyFormat(
     }
 
     return 0;
+}
+
+/*
+ * The size of the container a PCM sample of ValidBits is carried in on the
+ * device: 8, 16 or 32 bits. 20- and 24-bit samples go in a 32-bit container,
+ * left-justified with the unused low bits zero, as the HD Audio controller
+ * and the audio engine read them; a packed 3-byte container stays a client
+ * format the engine converts from.
+ */
+static inline WORD
+RosSoundPcmContainerBits(
+    _In_ WORD ValidBits)
+{
+    if (ValidBits <= 8)
+        return 8;
+    if (ValidBits <= 16)
+        return 16;
+    return 32;
+}
+
+static inline DWORD
+RosSoundChannelMaskFromCount(
+    _In_ WORD Channels)
+{
+    switch (Channels)
+    {
+        case 1:
+            return KSAUDIO_SPEAKER_MONO;
+        case 2:
+            return KSAUDIO_SPEAKER_STEREO;
+        case 4:
+            return KSAUDIO_SPEAKER_QUAD;
+        case 6:
+            return KSAUDIO_SPEAKER_5POINT1;
+        case 8:
+            return KSAUDIO_SPEAKER_7POINT1;
+        default:
+            return KSAUDIO_SPEAKER_DIRECTOUT;
+    }
+}
+
+/*
+ * The PCM format a pin's data range describes at its widest: the most
+ * channels, the most valid bits in their container, at 48 kHz when the range
+ * covers it, else at the range's top rate. Returns FALSE when the range
+ * yields no format the WAVEFORMATEX fields can hold.
+ */
+static inline BOOL
+RosSoundAudioRangeToPreferredFormat(
+    _In_ const KSDATARANGE_AUDIO *DataRangeAudio,
+    _Out_ WAVEFORMATEXTENSIBLE *Format)
+{
+    ULONG Channels = DataRangeAudio->MaximumChannels;
+    ULONG ValidBits = DataRangeAudio->MaximumBitsPerSample;
+    ULONG ContainerBits, BlockAlign, SampleRate;
+
+    if (!Channels || Channels > USHRT_MAX || !ValidBits || ValidBits > USHRT_MAX)
+        return FALSE;
+
+    ContainerBits = RosSoundPcmContainerBits((WORD)ValidBits);
+    BlockAlign = Channels * (ContainerBits / 8);
+    if (!BlockAlign || BlockAlign > USHRT_MAX)
+        return FALSE;
+
+    if (DataRangeAudio->MinimumSampleFrequency <= 48000 &&
+        DataRangeAudio->MaximumSampleFrequency >= 48000)
+    {
+        SampleRate = 48000;
+    }
+    else
+    {
+        SampleRate = DataRangeAudio->MaximumSampleFrequency;
+    }
+
+    if (!SampleRate || SampleRate > ULONG_MAX / BlockAlign)
+        return FALSE;
+
+    RtlZeroMemory(Format, sizeof(*Format));
+    Format->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    Format->Format.nChannels = (WORD)Channels;
+    Format->Format.nSamplesPerSec = SampleRate;
+    Format->Format.nAvgBytesPerSec = SampleRate * BlockAlign;
+    Format->Format.nBlockAlign = (WORD)BlockAlign;
+    Format->Format.wBitsPerSample = (WORD)ContainerBits;
+    Format->Format.cbSize = sizeof(*Format) - sizeof(Format->Format);
+    Format->Samples.wValidBitsPerSample = (WORD)ValidBits;
+    Format->dwChannelMask = RosSoundChannelMaskFromCount((WORD)Channels);
+    Format->SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+    return TRUE;
 }
 
 #endif /* ROS_AUDIO_WAVEFMT_H */

@@ -302,7 +302,8 @@ HDAUDIO_ValidateDataFormat(
         !ValidBits ||
         ValidBits > ContainerBits ||
         ValidBits < PinRange->MinimumBitsPerSample ||
-        ValidBits > PinRange->MaximumBitsPerSample)
+        ValidBits > PinRange->MaximumBitsPerSample ||
+        ContainerBits != HDAUDIO_SampleContainerBits(ValidBits))
     {
         return STATUS_NOT_SUPPORTED;
     }
