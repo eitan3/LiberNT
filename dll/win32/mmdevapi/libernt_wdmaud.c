@@ -1234,6 +1234,14 @@ static HRESULT validate_format(const char *device, EDataFlow flow, const WAVEFOR
     if (device)
         parse_device_name(device, &parsed_flow, &index);
 
+    /* An exclusive stream is what the application and the device exchange
+       directly: any format the driver accepts goes, at any depth. */
+    hr = query_wave_format_supported(parsed_flow, index, fmt);
+    if (hr == S_OK)
+        return S_OK;
+    if (hr == AUDCLNT_E_UNSUPPORTED_FORMAT)
+        return hr;
+
     if (!query_device_caps(parsed_flow, index, &caps))
         return AUDCLNT_E_DEVICE_INVALIDATED;
 

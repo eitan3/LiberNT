@@ -446,6 +446,162 @@ static void test_unequal_duration(IMMDevice *device, const WAVEFORMATEX *format,
     IAudioClient_Release(client);
 }
 
+static void init_extensible_format(WAVEFORMATEXTENSIBLE *format, DWORD rate, WORD container_bits, WORD valid_bits)
+{
+    ZeroMemory(format, sizeof(*format));
+    format->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+    format->Format.nChannels = 2;
+    format->Format.nSamplesPerSec = rate;
+    format->Format.wBitsPerSample = container_bits;
+    format->Format.nBlockAlign = format->Format.nChannels * container_bits / 8;
+    format->Format.nAvgBytesPerSec = rate * format->Format.nBlockAlign;
+    format->Format.cbSize = sizeof(*format) - sizeof(format->Format);
+    format->Samples.wValidBitsPerSample = valid_bits;
+    format->dwChannelMask = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;
+    format->SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
+}
+
+/* A 1 kHz tone whose samples sit in the top valid bits of their container */
+static void fill_tone(BYTE *data, UINT32 frames, UINT32 stride, WORD container_bits, WORD valid_bits, DWORD rate)
+{
+    UINT32 i;
+    WORD channel;
+
+    for (i = 0; i < frames; ++i, ++tone_frame)
+    {
+        double value = 0.25 * sin(2.0 * 3.14159265358979 * 1000.0 * tone_frame / rate);
+        INT32 sample = value * (container_bits == 24 ? 8388607.0 : 2147483647.0);
+        INT32 word = container_bits == 24 ? sample >> 8 : sample;
+
+        if (valid_bits < container_bits)
+            word &= ~(INT32)((1u << (container_bits - valid_bits)) - 1);
+        for (channel = 0; channel < 2; ++channel)
+        {
+            BYTE *out = data + (SIZE_T)i * stride + channel * (container_bits / 8);
+
+            if (container_bits == 24)
+            {
+                out[0] = (BYTE)word;
+                out[1] = (BYTE)((UINT32)word >> 8);
+                out[2] = (BYTE)((UINT32)word >> 16);
+            }
+            else
+            {
+                memcpy(out, &word, sizeof(word));
+            }
+        }
+    }
+}
+
+static BOOL write_tone_at_depth(IAudioRenderClient *render, UINT32 frames, const WAVEFORMATEXTENSIBLE *format,
+                                const char *when)
+{
+    BYTE *data;
+    HRESULT hr;
+
+    hr = IAudioRenderClient_GetBuffer(render, frames, &data);
+    ok(hr == S_OK, "%s: GetBuffer(%u) %#lx\n", when, frames, hr);
+    if (FAILED(hr)) return FALSE;
+    fill_tone(data, frames, format->Format.nBlockAlign, format->Format.wBitsPerSample,
+              format->Samples.wValidBitsPerSample, format->Format.nSamplesPerSec);
+    hr = IAudioRenderClient_ReleaseBuffer(render, frames, 0);
+    ok(hr == S_OK, "%s: ReleaseBuffer(%u) %#lx\n", when, frames, hr);
+    return SUCCEEDED(hr);
+}
+
+/*
+ * Exclusive mode passes the application's format to the device: a depth the
+ * legacy flags cannot describe is taken when the driver takes it, and is
+ * refused with AUDCLNT_E_UNSUPPORTED_FORMAT when the driver refuses it.
+ */
+static void test_depth_streams(IMMDevice *device, REFERENCE_TIME period)
+{
+    static const WORD depths[][2] = { {32, 24}, {32, 32}, {24, 24} };
+    WAVEFORMATEXTENSIBLE format, refused;
+    IAudioClient *probe = NULL, *client;
+    IAudioRenderClient *render;
+    WAVEFORMATEX *mix = NULL;
+    HANDLE event;
+    UINT32 frames;
+    HRESULT hr;
+    unsigned d, events;
+    DWORD start;
+
+    if (FAILED(IMMDevice_Activate(device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&probe)) ||
+        FAILED(IAudioClient_GetMixFormat(probe, &mix)))
+    {
+        skip("Cannot probe the mix format\n");
+        if (probe) IAudioClient_Release(probe);
+        return;
+    }
+    for (d = 0; d < ARRAY_SIZE(depths); ++d)
+    {
+        init_extensible_format(&format, mix->nSamplesPerSec, depths[d][0], depths[d][1]);
+        hr = IAudioClient_IsFormatSupported(probe, AUDCLNT_SHAREMODE_EXCLUSIVE, &format.Format, NULL);
+        trace("exclusive %u bit in %u-bit container: IsFormatSupported %#lx\n", depths[d][1], depths[d][0], hr);
+        if (hr != S_OK)
+        {
+            if (depths[d][0] != depths[d][1])
+                skip("the driver takes neither %u-in-%u\n", depths[d][1], depths[d][0]);
+            else
+                ok(hr == AUDCLNT_E_UNSUPPORTED_FORMAT, "a packed 24-bit exclusive format: %#lx\n", hr);
+            continue;
+        }
+
+        client = NULL;
+        hr = IMMDevice_Activate(device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&client);
+        ok(hr == S_OK, "Activate %#lx\n", hr);
+        if (FAILED(hr)) continue;
+        hr = IAudioClient_Initialize(client, AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
+                                     period, period, &format.Format, NULL);
+        ok(hr == S_OK || hr == AUDCLNT_E_DEVICE_IN_USE, "Initialize exclusive %u-in-%u %#lx\n", depths[d][1], depths[d][0], hr);
+        if (FAILED(hr) || hr == AUDCLNT_E_DEVICE_IN_USE)
+        {
+            IAudioClient_Release(client);
+            continue;
+        }
+        hr = IAudioClient_GetBufferSize(client, &frames);
+        ok(hr == S_OK && frames != 0, "GetBufferSize %#lx, %u\n", hr, frames);
+        render = NULL;
+        hr = IAudioClient_GetService(client, &IID_IAudioRenderClient, (void **)&render);
+        ok(hr == S_OK, "Render service %#lx\n", hr);
+        event = CreateEventW(NULL, FALSE, FALSE, NULL);
+        ok(event != NULL, "CreateEvent failed %lu\n", GetLastError());
+        if (SUCCEEDED(hr) && event && SUCCEEDED(hr = IAudioClient_SetEventHandle(client, event)) &&
+            write_tone_at_depth(render, frames, &format, "prefill") && SUCCEEDED(hr = IAudioClient_Start(client)))
+        {
+            events = 0;
+            start = GetTickCount();
+            while (GetTickCount() - start < 300)
+            {
+                if (WaitForSingleObject(event, 2000) != WAIT_OBJECT_0)
+                    break;
+                ++events;
+                if (!write_tone_at_depth(render, frames, &format, "refill"))
+                    break;
+            }
+            trace("exclusive %u-in-%u: %u events\n", depths[d][1], depths[d][0], events);
+            ok(events >= 1, "exclusive %u-in-%u: only %u events\n", depths[d][1], depths[d][0], events);
+            IAudioClient_Stop(client);
+        }
+        else
+        {
+            ok(0, "exclusive %u-in-%u: event stream setup %#lx\n", depths[d][1], depths[d][0], hr);
+        }
+        if (event) CloseHandle(event);
+        if (render) IAudioRenderClient_Release(render);
+        IAudioClient_Release(client);
+    }
+
+    /* Depths no HDA controller carries: a 3-byte container, alone or holding 20 bits.
+       A driver of another bus may answer differently for its own hardware. */
+    init_extensible_format(&refused, mix->nSamplesPerSec, 24, 20);
+    hr = IAudioClient_IsFormatSupported(probe, AUDCLNT_SHAREMODE_EXCLUSIVE, &refused.Format, NULL);
+    ok(hr == AUDCLNT_E_UNSUPPORTED_FORMAT, "20 valid bits in a 24-bit container: %#lx\n", hr);
+    CoTaskMemFree(mix);
+    IAudioClient_Release(probe);
+}
+
 START_TEST(exclusivestream)
 {
     IMMDeviceEnumerator *enumerator = NULL;
@@ -503,6 +659,7 @@ START_TEST(exclusivestream)
     test_stream(device, &format, minimum_period);
     test_held_endpoint(device, &format, default_period);
     test_exclusive_beside_shared(device, &format, default_period);
+    test_depth_streams(device, default_period);
 
 done:
     if (device) IMMDevice_Release(device);
