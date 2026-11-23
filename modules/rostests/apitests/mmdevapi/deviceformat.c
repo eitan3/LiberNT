@@ -35,6 +35,13 @@ SetPcmFormat(WAVEFORMATEXTENSIBLE *Format, DWORD Rate, WORD Bits, WORD Channels)
     Format->SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
 }
 
+static VOID
+SetPcmFormatValid(WAVEFORMATEXTENSIBLE *Format, DWORD Rate, WORD ContainerBits, WORD ValidBits, WORD Channels)
+{
+    SetPcmFormat(Format, Rate, ContainerBits, Channels);
+    Format->Samples.wValidBitsPerSample = ValidBits;
+}
+
 static HRESULT
 GetMix(IMMDevice *Device, WAVEFORMATEX **Mix)
 {
@@ -99,6 +106,70 @@ OpenSharedStream(IMMDevice *Device, IAudioClient **Client)
         *Client = NULL;
     }
     return hr;
+}
+
+/*
+ * A depth the legacy capability flags cannot describe: 24 valid bits in a
+ * 32-bit container, or 32-bit, becomes the device's format when the driver
+ * accepts it, and a depth it does not accept is ignored. GetMixFormat stays
+ * the float mix format at the chosen rate and channel count.
+ */
+static VOID
+TestDepth(IMMDevice *Device, IPropertyStore *Store, EDataFlow Flow, DWORD Rate, WORD Channels)
+{
+    IAudioClient *Client = NULL;
+    PROPVARIANT Value;
+    WAVEFORMATEXTENSIBLE Depth, Refused;
+    WAVEFORMATEX *Mix = NULL;
+    HRESULT hr;
+    static const WORD Depths[][2] = { {32, 24}, {32, 32} };
+    UINT d, accepted = 0;
+
+    if (FAILED(IMMDevice_Activate(Device, &IID_IAudioClient, CLSCTX_INPROC_SERVER, NULL, (void **)&Client)))
+        return;
+    for (d = 0; d < ARRAYSIZE(Depths); d++)
+    {
+        SetPcmFormatValid(&Depth, Rate, Depths[d][0], Depths[d][1], Channels);
+        hr = IAudioClient_IsFormatSupported(Client, AUDCLNT_SHAREMODE_EXCLUSIVE, &Depth.Format, NULL);
+        trace("Flow %u: %u bit in %u-bit container at %lu Hz: IsFormatSupported 0x%08lx\n", Flow, Depths[d][1], Depths[d][0], Rate, hr);
+        if (hr != S_OK)
+            continue;
+        accepted++;
+
+        PropVariantInit(&Value);
+        Value.vt = VT_BLOB;
+        Value.blob.cbSize = sizeof(Depth);
+        Value.blob.pBlobData = (BYTE *)&Depth;
+        ok(IPropertyStore_SetValue(Store, &DeviceFormatKey, &Value) == S_OK, "SetValue failed\n");
+
+        hr = GetMix(Device, &Mix);
+        ok(hr == S_OK, "GetMixFormat at %u-in-%u returned 0x%08lx\n", Depths[d][1], Depths[d][0], hr);
+        if (SUCCEEDED(hr))
+        {
+            ok(Mix->nSamplesPerSec == Rate, "mix rate %lu, expected %lu\n", Mix->nSamplesPerSec, Rate);
+            ok(Mix->nChannels == Channels, "mix channels %u, expected %u\n", Mix->nChannels, Channels);
+            CoTaskMemFree(Mix);
+            Mix = NULL;
+        }
+    }
+    if (!accepted)
+        skip("Flow %u: the driver accepts neither 24-in-32 nor 32-bit; the depth path is not exercised\n", Flow);
+
+    /* A depth the driver refuses leaves the driver's choice in force */
+    SetPcmFormatValid(&Refused, Rate, 32, 20, Channels);
+    hr = IAudioClient_IsFormatSupported(Client, AUDCLNT_SHAREMODE_EXCLUSIVE, &Refused.Format, NULL);
+    IAudioClient_Release(Client);
+    if (hr == S_OK)
+        return;
+    PropVariantInit(&Value);
+    Value.vt = VT_BLOB;
+    Value.blob.cbSize = sizeof(Refused);
+    Value.blob.pBlobData = (BYTE *)&Refused;
+    ok(IPropertyStore_SetValue(Store, &DeviceFormatKey, &Value) == S_OK, "SetValue failed\n");
+    hr = GetMix(Device, &Mix);
+    ok(hr == S_OK, "GetMixFormat returned 0x%08lx\n", hr);
+    if (SUCCEEDED(hr))
+        CoTaskMemFree(Mix);
 }
 
 static VOID
@@ -208,6 +279,8 @@ TestEndpoint(IMMDevice *Device, EDataFlow Flow)
         CoTaskMemFree(NewMix);
         NewMix = NULL;
     }
+
+    TestDepth(Device, Store, Flow, Other.Format.nSamplesPerSec, (WORD)Mix->nChannels);
 
 done:
     if (Saved.vt == VT_BLOB)

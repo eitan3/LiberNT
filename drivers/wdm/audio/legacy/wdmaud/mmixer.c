@@ -225,6 +225,11 @@ Control(
         /* operation succeeded */
         return MM_STATUS_SUCCESS;
     }
+    else if (Status == STATUS_NOT_SUPPORTED || Status == STATUS_NO_MATCH)
+    {
+        /* the driver answered and said no */
+        return MM_STATUS_NOT_IMPLEMENTED;
+    }
     else
     {
         DPRINT("Failed with %lx\n", Status);
@@ -800,8 +805,10 @@ WdmAudQueryWaveFormat(
                                           sizeof(WAVEFORMATEXTENSIBLE));
     if (Status == MM_STATUS_INVALID_PARAMETER)
         return SetIrpIoStatus(Irp, STATUS_INVALID_PARAMETER, 0);
-    if (Status != MM_STATUS_SUCCESS && Status != MM_STATUS_MORE_ENTRIES)
+    if (Status == MM_STATUS_NOT_IMPLEMENTED)
         return SetIrpIoStatus(Irp, STATUS_NOT_SUPPORTED, 0);
+    if (Status != MM_STATUS_SUCCESS && Status != MM_STATUS_MORE_ENTRIES)
+        return SetIrpIoStatus(Irp, STATUS_INVALID_DEVICE_REQUEST, 0);
 
     DeviceInfo->Flags = 1;
     return SetIrpIoStatus(Irp, STATUS_SUCCESS, sizeof(WDMAUD_DEVICE_INFO));

@@ -485,8 +485,10 @@ typedef struct
 /// Note:       DeviceType and DeviceIndex must identify a wave endpoint and
 ///             u.WaveFormatExtensible holds the format to query
 /// Result:     Flags is 1 when the driver accepts the format, else 0
-/// ReturnCode: STATUS_SUCCESS indicates the query was answered,
-///             STATUS_NOT_SUPPORTED a device which cannot be asked
+/// ReturnCode: STATUS_SUCCESS and Flags 1 when the driver accepts the format,
+///             STATUS_NOT_SUPPORTED when the driver refuses it,
+///             STATUS_INVALID_PARAMETER a malformed format or device and
+///             STATUS_INVALID_DEVICE_REQUEST a device that cannot be asked
 
 #define IOCTL_QUERY_WAVE_FORMAT \
     CTL_CODE(FILE_DEVICE_SOUND, \

@@ -180,6 +180,21 @@ static void TestDevice(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index)
     else
         ok(Answer == 0, "Type %u index %lu: 32-bit accepted although the range stops at %lu bits, answer %d\n", Type, Index, Range.MaximumBitsPerSample, Answer);
 
+    /* A packed 24-bit container never reaches the hardware: the controller has no 3-byte word */
+    SetPcmFormat(&Format, Rate, 24, 24, Channels);
+    Answer = QueryWaveFormat(Wdmaud, Type, Index, &Format);
+    ok(Answer == 0, "Type %u index %lu: a packed 24-bit container was accepted, answer %d\n", Type, Index, Answer);
+
+    /* 20 valid bits in a 32-bit container: accepted exactly when the range covers 20 bits */
+    SetPcmFormat(&Format, Rate, 32, 20, Channels);
+    Answer = QueryWaveFormat(Wdmaud, Type, Index, &Format);
+    trace("Type %u index %lu: 20 bit in 32-bit container answer %d\n", Type, Index, Answer);
+    if (Range.MinimumBitsPerSample <= 20 && Range.MaximumBitsPerSample >= 20)
+        ok(Answer == 1, "Type %u index %lu: 20-in-32 refused although the range covers 20 bits, answer %d error %lu\n", Type, Index, Answer, GetLastError());
+    else
+        ok(Answer == 0, "Type %u index %lu: 20-in-32 accepted although the range is %lu..%lu bits, answer %d\n", Type, Index,
+           Range.MinimumBitsPerSample, Range.MaximumBitsPerSample, Answer);
+
     /* A format the no driver can carry: valid bits beyond the container */
     SetPcmFormat(&Format, Rate, 16, 24, Channels);
     Answer = QueryWaveFormat(Wdmaud, Type, Index, &Format);

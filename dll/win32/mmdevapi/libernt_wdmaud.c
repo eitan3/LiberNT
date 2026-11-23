@@ -785,6 +785,43 @@ static BOOL query_preferred_wave_format(EDataFlow flow, DWORD index,
     return TRUE;
 }
 
+/*
+ * Whether the driver accepts an exact format, asked through the KS data
+ * intersection. S_OK when it does, S_FALSE when it refuses it and a failure
+ * code when it cannot be asked (an older wdmaud without the IOCTL): callers
+ * fall back to the legacy capability flags then.
+ */
+static HRESULT query_wave_format_supported(EDataFlow flow, DWORD index,
+                                           const WAVEFORMATEX *format)
+{
+    WDMAUD_DEVICE_INFO info;
+    WORD cbSize;
+
+    if (!format)
+        return E_INVALIDARG;
+    cbSize = format->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
+             format->cbSize >= sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX) ?
+                 sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX) : 0;
+
+    ZeroMemory(&info, sizeof(info));
+    info.DeviceType = device_type_from_flow(flow);
+    info.DeviceIndex = index;
+    memcpy(&info.u.WaveFormatExtensible, format, sizeof(WAVEFORMATEX));
+    if (cbSize)
+        memcpy((BYTE *)&info.u.WaveFormatExtensible + sizeof(WAVEFORMATEX),
+               (const BYTE *)format + sizeof(WAVEFORMATEX), cbSize);
+    info.u.WaveFormatEx.cbSize = cbSize;
+
+    if (!wdmaud_ioctl(IOCTL_QUERY_WAVE_FORMAT, &info))
+    {
+        DWORD error = GetLastError();
+
+        return error == ERROR_NOT_SUPPORTED ? AUDCLNT_E_UNSUPPORTED_FORMAT :
+               HRESULT_FROM_WIN32(error ? error : ERROR_GEN_FAILURE);
+    }
+    return info.Flags ? S_OK : AUDCLNT_E_UNSUPPORTED_FORMAT;
+}
+
 static DWORD query_endpoint_state(EDataFlow flow, DWORD index)
 {
     WDMAUD_DEVICE_INFO info;
@@ -916,6 +953,7 @@ static BOOL is_pcm_format(const WAVEFORMATEX *fmt);
 static HRESULT validate_pcm_format(const WAVEFORMATEX *fmt);
 static BOOL fill_mix_format(const char *device, EDataFlow flow, WAVEFORMATEXTENSIBLE *fmt);
 static BOOL fill_shared_mix_format(const char *device, EDataFlow flow, WAVEFORMATEXTENSIBLE *fmt);
+static void copy_wdmaud_format(WAVEFORMATEXTENSIBLE *dst, const WAVEFORMATEX *src);
 
 /* The format the driver prefers for an endpoint, before the user's choice */
 static BOOL fill_driver_format(EDataFlow flow, DWORD index, WAVEFORMATEXTENSIBLE *fmt, DWORD *formats, WORD *max_channels)
@@ -974,6 +1012,7 @@ static BOOL fill_mix_format(const char *device, EDataFlow flow, WAVEFORMATEXTENS
     EDataFlow parsed_flow = flow;
     WORD max_channels;
     char name[64];
+    HRESULT hr;
 
     if (device)
         parse_device_name(device, &parsed_flow, &index);
@@ -981,12 +1020,27 @@ static BOOL fill_mix_format(const char *device, EDataFlow flow, WAVEFORMATEXTENS
     fill_driver_format(parsed_flow, index, fmt, &formats, &max_channels);
 
     format_device_name(parsed_flow, index, name, sizeof(name));
-    if (reactos_user_device_format(parsed_flow, name, &user) && is_pcm_format(&user.Format) &&
-        user.Format.nChannels <= max_channels &&
-        (flag = RosSoundWaveFormatFieldsToLegacyFlag(user.Format.nSamplesPerSec, user.Format.wBitsPerSample,
-                                                     user.Format.nChannels)) && (formats & flag))
+    if (!reactos_user_device_format(parsed_flow, name, &user) ||
+        FAILED(validate_pcm_format(&user.Format)) ||
+        user.Format.nChannels > max_channels)
     {
-        set_pcm_format(fmt, user.Format.nSamplesPerSec, user.Format.wBitsPerSample, user.Format.nChannels);
+        return TRUE;
+    }
+
+    /* The driver's answer covers every depth and rate; the legacy flags are
+       the fallback for a wdmaud that cannot be asked. */
+    hr = query_wave_format_supported(parsed_flow, index, &user.Format);
+    if (hr == S_OK)
+    {
+        copy_wdmaud_format(fmt, &user.Format);
+        return TRUE;
+    }
+    if (FAILED(hr) && hr != AUDCLNT_E_UNSUPPORTED_FORMAT)
+    {
+        flag = RosSoundWaveFormatFieldsToLegacyFlag(user.Format.nSamplesPerSec, user.Format.wBitsPerSample,
+                                                    user.Format.nChannels);
+        if (flag && (formats & flag))
+            set_pcm_format(fmt, user.Format.nSamplesPerSec, user.Format.wBitsPerSample, user.Format.nChannels);
     }
     return TRUE;
 }
