@@ -784,7 +784,7 @@ BOOL reactos_user_device_format(EDataFlow flow, const char *device, WAVEFORMATEX
 
     get_device_guid(flow, device, &guid);
     StringFromGUID2(&guid, guidstr, ARRAY_SIZE(guidstr));
-    swprintf(endpoint_id, ARRAY_SIZE(endpoint_id), L"{0.0.%u.00000000}.%ls", flow, guidstr);
+    swprintf(endpoint_id, ARRAY_SIZE(endpoint_id), L"{0.0.%u.00000000}.%ls", (unsigned)flow, guidstr);
     if (MMDevGetDeviceFormat(endpoint_id, fmt) == ERROR_SUCCESS)
         return TRUE;
     if (SUCCEEDED(MMDevice_GetPropValue(&guid, flow, &PKEY_AudioEngine_DeviceFormat, &pv)) &&

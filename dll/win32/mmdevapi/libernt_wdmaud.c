@@ -993,7 +993,7 @@ static BOOL fill_mix_format(const char *device, EDataFlow flow, WAVEFORMATEXTENS
  */
 static BOOL fill_shared_mix_format(const char *device, EDataFlow flow, WAVEFORMATEXTENSIBLE *fmt)
 {
-    WAVEFORMATEXTENSIBLE live;
+    WAVEFORMATEXTENSIBLE live = { { 0 } };
     EDataFlow parsed_flow = flow;
     DWORD index = 0;
     HRESULT hr = S_FALSE;
