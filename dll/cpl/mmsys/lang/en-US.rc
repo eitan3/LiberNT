@@ -252,6 +252,18 @@ BEGIN
     PUSHBUTTON "&Properties", IDC_EP_PROPERTIES, 175, 170, 62, 14
 END
 
+IDD_ENDPOINT_ADVANCED DIALOGEX 0, 0, 252, 218
+STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Advanced"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    GROUPBOX "Default Format", -1, 7, 7, 238, 70
+    LTEXT "Select the sample rate and bit depth to be used when running in shared mode.", -1, 15, 20, 222, 18
+    COMBOBOX IDC_EP_FORMAT, 15, 42, 222, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON "&Restore Defaults", IDC_EP_RESTORE, 167, 58, 70, 14
+    LTEXT "Programs that are already playing or recording use the new format the next time they open the device.", -1, 15, 84, 222, 18
+END
+
 STRINGTABLE
 BEGIN
     IDS_CPLNAME "Sound and Audio Devices"
@@ -268,6 +280,10 @@ BEGIN
     IDS_FORMFACTOR_HANDSET "Handset"
     IDS_FORMFACTOR_SPDIF "Digital output (S/PDIF)"
     IDS_FORMFACTOR_HDMI "Digital display audio (HDMI)"
+    IDS_FORMAT_TEMPLATE "%u channel, %u bit, %u Hz"
+    IDS_FORMAT_CD "(CD Quality)"
+    IDS_FORMAT_DVD "(DVD Quality)"
+    IDS_FORMAT_SAVE_FAILED "The format could not be saved. Changing the format of a device requires administrator rights."
     IDS_SPEAKER_VOLUME "Speaker Volume"
     IDS_SPEAKER_LEFT "&Left:"
     IDS_SPEAKER_RIGHT "&Right:"

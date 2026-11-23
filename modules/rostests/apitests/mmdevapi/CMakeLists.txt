@@ -28,6 +28,7 @@ add_executable(mmdevapi_apitest
     capturestream.c
     defaultdevice.c
     deviceenum.c
+    deviceformat.c
     devicetopology.c
     endpointdriver.c
     exclusivestream.c

@@ -29,6 +29,7 @@
 #define IDD_MULTICHANNEL   4909
 #define IDD_SETUP2         4912
 #define IDD_ENDPOINT_GENERAL 4920
+#define IDD_ENDPOINT_ADVANCED 4921
 
 /* Controls */
 #define IDC_VOLUME_TRACKBAR       5000
@@ -76,6 +77,8 @@
 #define IDC_EP_VERSION            5105
 #define IDC_EP_DATE               5106
 #define IDC_EP_PROPERTIES         5107
+#define IDC_EP_FORMAT             5108
+#define IDC_EP_RESTORE            5109
 
 #define IDI_SPEAKIMG  4624
 #define IDC_SPEAKIMG  4625
@@ -111,6 +114,11 @@
 #define IDS_FORMFACTOR_HANDSET    1016
 #define IDS_FORMFACTOR_SPDIF      1017
 #define IDS_FORMFACTOR_HDMI       1018
+
+#define IDS_FORMAT_TEMPLATE       1020
+#define IDS_FORMAT_CD             1021
+#define IDS_FORMAT_DVD            1022
+#define IDS_FORMAT_SAVE_FAILED    1023
 
 /* Sounds Image List */
 #define IMAGE_SOUND_SECTION  0

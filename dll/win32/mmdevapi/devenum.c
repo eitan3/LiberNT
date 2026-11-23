@@ -740,6 +740,74 @@ HRESULT load_devices_from_reg(void)
     return S_OK;
 }
 
+#ifdef __REACTOS__
+/* The format the user chose for an endpoint (PKEY_AudioEngine_DeviceFormat), if any */
+BOOL reactos_user_device_format(EDataFlow flow, const char *device, WAVEFORMATEXTENSIBLE *fmt)
+{
+    PROPVARIANT pv = { VT_EMPTY };
+    GUID guid;
+    BOOL ret = FALSE;
+
+    get_device_guid(flow, device, &guid);
+    if (SUCCEEDED(MMDevice_GetPropValue(&guid, flow, &PKEY_AudioEngine_DeviceFormat, &pv)) &&
+        pv.vt == VT_BLOB && pv.blob.cbSize >= sizeof(WAVEFORMATEX))
+    {
+        ZeroMemory(fmt, sizeof(*fmt));
+        memcpy(fmt, pv.blob.pBlobData, min(pv.blob.cbSize, sizeof(*fmt)));
+        ret = TRUE;
+    }
+    PropVariantClear(&pv);
+    return ret;
+}
+
+static BOOL is_pcm_blob(const PROPVARIANT *pv)
+{
+    const WAVEFORMATEXTENSIBLE *ext = (const WAVEFORMATEXTENSIBLE *)pv->blob.pBlobData;
+
+    if (pv->vt != VT_BLOB || pv->blob.cbSize < sizeof(WAVEFORMATEX))
+        return FALSE;
+    if (ext->Format.wFormatTag == WAVE_FORMAT_PCM)
+        return TRUE;
+    return ext->Format.wFormatTag == WAVE_FORMAT_EXTENSIBLE && pv->blob.cbSize >= sizeof(*ext) &&
+           IsEqualGUID(&ext->SubFormat, &KSDATAFORMAT_SUBTYPE_PCM);
+}
+
+/*
+ * Windows keeps the driver's default format in PKEY_AudioEngine_OEMFormat and
+ * the format the endpoint runs at in PKEY_AudioEngine_DeviceFormat, which the
+ * user changes on the device's Advanced page: only set it when it holds no PCM
+ * format (missing, or the float mix format earlier builds stored there).
+ */
+static HRESULT set_format(MMDevice *dev)
+{
+    WAVEFORMATEXTENSIBLE fmt;
+    PROPVARIANT pv = { VT_EMPTY }, current;
+    char *name;
+    EDataFlow flow;
+    BOOL found;
+
+    if (!get_device_name_from_guid(&dev->devguid, &name, &flow))
+        return E_FAIL;
+    found = reactos_driver_device_format(name, flow, &fmt);
+    free(name);
+    if (!found)
+        return E_FAIL;
+
+    pv.vt = VT_BLOB;
+    pv.blob.cbSize = sizeof(fmt);
+    pv.blob.pBlobData = (BYTE *)&fmt;
+    MMDevice_SetPropValue(&dev->devguid, dev->flow, &PKEY_AudioEngine_OEMFormat, &pv);
+
+    PropVariantInit(&current);
+    if (SUCCEEDED(MMDevice_GetPropValue(&dev->devguid, dev->flow, &PKEY_AudioEngine_DeviceFormat, &current)) &&
+        !is_pcm_blob(&current))
+    {
+        MMDevice_SetPropValue(&dev->devguid, dev->flow, &PKEY_AudioEngine_DeviceFormat, &pv);
+    }
+    PropVariantClear(&current);
+    return S_OK;
+}
+#else
 static HRESULT set_format(MMDevice *dev)
 {
     HRESULT hr;
@@ -784,6 +852,7 @@ static HRESULT set_format(MMDevice *dev)
 
     return S_OK;
 }
+#endif
 
 HRESULT load_driver_devices(EDataFlow flow)
 {

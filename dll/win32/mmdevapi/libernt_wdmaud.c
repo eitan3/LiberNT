@@ -905,37 +905,85 @@ static DWORD channel_mask_from_count(WORD channels)
     }
 }
 
-static BOOL fill_mix_format(const char *device, EDataFlow flow, WAVEFORMATEXTENSIBLE *fmt)
+static void set_pcm_format(WAVEFORMATEXTENSIBLE *fmt, DWORD samples_per_sec, WORD bits_per_sample, WORD channels);
+static BOOL is_pcm_format(const WAVEFORMATEX *fmt);
+
+/* The format the driver prefers for an endpoint, before the user's choice */
+static BOOL fill_driver_format(EDataFlow flow, DWORD index, WAVEFORMATEXTENSIBLE *fmt, DWORD *formats, WORD *max_channels)
 {
     WDMAUD_DEVICE_INFO caps;
-    DWORD index = 0, formats = 0, preferred;
+    DWORD preferred;
     DWORD samples_per_sec = 48000;
     WORD bits_per_sample = 16, channels = 2;
+
+    *formats = 0;
+    *max_channels = 0;
+    if (query_device_caps(flow, index, &caps))
+    {
+        if (flow == eCapture && caps.u.WaveInCaps.wChannels)
+        {
+            channels = caps.u.WaveInCaps.wChannels;
+            *formats = caps.u.WaveInCaps.dwFormats;
+        }
+        else if (flow == eRender && caps.u.WaveOutCaps.wChannels)
+        {
+            channels = caps.u.WaveOutCaps.wChannels;
+            *formats = caps.u.WaveOutCaps.dwFormats;
+        }
+        *max_channels = channels;
+    }
+
+    preferred = RosSoundChooseBestLegacyFormat(*formats);
+    if (preferred)
+        RosSoundLegacyFlagToWaveFormatFields(preferred, &samples_per_sec, &bits_per_sample, &channels);
+    else if (query_preferred_wave_format(flow, index, fmt))
+        return TRUE;
+
+    set_pcm_format(fmt, samples_per_sec, bits_per_sample, channels);
+    return TRUE;
+}
+
+BOOL reactos_driver_device_format(const char *device, EDataFlow flow, WAVEFORMATEXTENSIBLE *fmt)
+{
+    DWORD index = 0, formats;
     EDataFlow parsed_flow = flow;
+    WORD max_channels;
+
+    if (!device || !parse_device_name(device, &parsed_flow, &index) || is_loopback_device_name(device))
+        return FALSE;
+    return fill_driver_format(parsed_flow, index, fmt, &formats, &max_channels);
+}
+
+/*
+ * Windows 11 mixes in the "Default Format" the user picked for the endpoint
+ * (PKEY_AudioEngine_DeviceFormat) when the device still offers it.
+ */
+static BOOL fill_mix_format(const char *device, EDataFlow flow, WAVEFORMATEXTENSIBLE *fmt)
+{
+    WAVEFORMATEXTENSIBLE user;
+    DWORD index = 0, formats, flag;
+    EDataFlow parsed_flow = flow;
+    WORD max_channels;
+    char name[64];
 
     if (device)
         parse_device_name(device, &parsed_flow, &index);
 
-    if (query_device_caps(parsed_flow, index, &caps))
+    fill_driver_format(parsed_flow, index, fmt, &formats, &max_channels);
+
+    format_device_name(parsed_flow, index, name, sizeof(name));
+    if (reactos_user_device_format(parsed_flow, name, &user) && is_pcm_format(&user.Format) &&
+        user.Format.nChannels <= max_channels &&
+        (flag = RosSoundWaveFormatFieldsToLegacyFlag(user.Format.nSamplesPerSec, user.Format.wBitsPerSample,
+                                                     user.Format.nChannels)) && (formats & flag))
     {
-        if (parsed_flow == eCapture && caps.u.WaveInCaps.wChannels)
-        {
-            channels = caps.u.WaveInCaps.wChannels;
-            formats = caps.u.WaveInCaps.dwFormats;
-        }
-        else if (parsed_flow == eRender && caps.u.WaveOutCaps.wChannels)
-        {
-            channels = caps.u.WaveOutCaps.wChannels;
-            formats = caps.u.WaveOutCaps.dwFormats;
-        }
+        set_pcm_format(fmt, user.Format.nSamplesPerSec, user.Format.wBitsPerSample, user.Format.nChannels);
     }
+    return TRUE;
+}
 
-    preferred = RosSoundChooseBestLegacyFormat(formats);
-    if (preferred)
-        RosSoundLegacyFlagToWaveFormatFields(preferred, &samples_per_sec, &bits_per_sample, &channels);
-    else if (query_preferred_wave_format(parsed_flow, index, fmt))
-        return TRUE;
-
+static void set_pcm_format(WAVEFORMATEXTENSIBLE *fmt, DWORD samples_per_sec, WORD bits_per_sample, WORD channels)
+{
     ZeroMemory(fmt, sizeof(*fmt));
     fmt->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
     fmt->Format.nChannels = (WORD)channels;
@@ -947,8 +995,6 @@ static BOOL fill_mix_format(const char *device, EDataFlow flow, WAVEFORMATEXTENS
     fmt->Samples.wValidBitsPerSample = fmt->Format.wBitsPerSample;
     fmt->dwChannelMask = channel_mask_from_count(channels);
     fmt->SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
-
-    return TRUE;
 }
 
 static WORD valid_bits_from_format(const WAVEFORMATEX *fmt)
