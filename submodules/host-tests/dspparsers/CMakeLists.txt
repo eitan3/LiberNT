@@ -10,6 +10,7 @@ target_include_directories(dspparsers_common INTERFACE
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/nhlt
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/sofipc4
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/disco
+    ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/softplg
     ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/hdaudbus
     ${REACTOS_HOST_SOURCE_ROOT}/modules/rostests/kmtests/hdaudbus)
 
@@ -26,3 +27,6 @@ endfunction()
 
 dspparsers_test(sofipc4 t_sofipc4.c ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/sofipc4/sofipc4.c)
 dspparsers_test(disco t_disco.c ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/disco/disco.c)
+dspparsers_test(softplg t_softplg.c ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/softplg/softplg.c)
+target_compile_definitions(softplg PRIVATE
+    SOFTPLG_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
