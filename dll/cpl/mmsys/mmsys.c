@@ -700,7 +700,7 @@ MmSysApplet(HWND hwnd,
             LPARAM wParam,
             LPARAM lParam)
 {
-    PROPSHEETPAGEW psp[5];
+    PROPSHEETPAGEW psp[6];
     PROPSHEETHEADERW psh; // = { 0 };
     INT nPage = 0;
 
@@ -720,11 +720,13 @@ MmSysApplet(HWND hwnd,
     psh.ppsp = psp;
     psh.pfnCallback = PropSheetProc;
 
-    InitPropSheetPage(&psp[0], IDD_VOLUME, VolumeDlgProc);
-    InitPropSheetPage(&psp[1], IDD_SOUNDS, SoundsDlgProc);
-    InitPropSheetPage(&psp[2], IDD_AUDIO, AudioDlgProc);
-    InitPropSheetPage(&psp[3], IDD_VOICE, VoiceDlgProc);
-    InitPropSheetPage(&psp[4], IDD_HARDWARE, HardwareDlgProc);
+    /* Windows 7 and later open the Sound applet on its Playback, Recording and Sounds pages */
+    InitPropSheetPage(&psp[0], IDD_PLAYBACK, PlaybackDlgProc);
+    InitPropSheetPage(&psp[1], IDD_RECORDING, RecordingDlgProc);
+    InitPropSheetPage(&psp[2], IDD_SOUNDS, SoundsDlgProc);
+    InitPropSheetPage(&psp[3], IDD_VOLUME, VolumeDlgProc);
+    InitPropSheetPage(&psp[4], IDD_AUDIO, AudioDlgProc);
+    InitPropSheetPage(&psp[5], IDD_HARDWARE, HardwareDlgProc);
 
     if (nPage != 0 && nPage <= psh.nPages)
         psh.nStartPage = nPage;
@@ -827,7 +829,7 @@ ShowFullControlPanel(HWND hwnd,
                      LPSTR lpszCmd,
                      int nCmdShow)
 {
-    PROPSHEETPAGEW psp[5];
+    PROPSHEETPAGEW psp[6];
     PROPSHEETHEADERW psh;
 
     DPRINT("ShowFullControlPanel()\n");
@@ -843,11 +845,12 @@ ShowFullControlPanel(HWND hwnd,
     psh.ppsp = psp;
     psh.pfnCallback = PropSheetProc;
 
-    InitPropSheetPage(&psp[0], IDD_VOLUME, VolumeDlgProc);
-    InitPropSheetPage(&psp[1], IDD_SOUNDS, SoundsDlgProc);
-    InitPropSheetPage(&psp[2], IDD_AUDIO, AudioDlgProc);
-    InitPropSheetPage(&psp[3], IDD_VOICE, VoiceDlgProc);
-    InitPropSheetPage(&psp[4], IDD_HARDWARE, HardwareDlgProc);
+    InitPropSheetPage(&psp[0], IDD_PLAYBACK, PlaybackDlgProc);
+    InitPropSheetPage(&psp[1], IDD_RECORDING, RecordingDlgProc);
+    InitPropSheetPage(&psp[2], IDD_SOUNDS, SoundsDlgProc);
+    InitPropSheetPage(&psp[3], IDD_VOLUME, VolumeDlgProc);
+    InitPropSheetPage(&psp[4], IDD_AUDIO, AudioDlgProc);
+    InitPropSheetPage(&psp[5], IDD_HARDWARE, HardwareDlgProc);
 
     PropertySheetW(&psh);
 }

@@ -75,13 +75,19 @@ VolumeDlgProc(HWND hwndDlg,
               WPARAM wParam,
               LPARAM lParam);
 
-/* voice.c */
+/* devicelist.c */
 
 INT_PTR CALLBACK
-VoiceDlgProc(HWND hwndDlg,
-             UINT uMsg,
-             WPARAM wParam,
-             LPARAM lParam);
+PlaybackDlgProc(HWND hwndDlg,
+                UINT uMsg,
+                WPARAM wParam,
+                LPARAM lParam);
+
+INT_PTR CALLBACK
+RecordingDlgProc(HWND hwndDlg,
+                 UINT uMsg,
+                 WPARAM wParam,
+                 LPARAM lParam);
 
 /* audio.c */
 

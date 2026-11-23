@@ -7,8 +7,8 @@ list(APPEND SOURCE
     speakervolume.c
     volume.c
     audio.c
+    devicelist.c
     endpointprops.c
-    voice.c
     mmsys.h)
 
 file(GLOB mmsys_rc_deps resources/*.*)

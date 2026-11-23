@@ -76,27 +76,6 @@ BEGIN
     AUTOCHECKBOX "&Лише пристрої за замовчуванням", IDC_DEFAULT_DEV_CHECKBOX, 7, 212, 140, 10, WS_GROUP | WS_TABSTOP
 END
 
-IDD_VOICE DIALOGEX 0, 0, 246, 228
-STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
-CAPTION "Мовлення"
-FONT 8, "MS Shell Dlg"
-BEGIN
-    LTEXT "Ці параметри керують гучністю та додатковою настройкою вибраних пристроїв відтворення або запису мовлення.", -1, 8, 7, 230, 40
-    GROUPBOX "Відтворення мовлення", -1, 7, 37, 230, 60, WS_GROUP
-    ICON IDI_CPLICON, IDI_CPLICON, 15, 50, 32, 32
-    LTEXT "Пристрій &за замовчуванням:", -1, 50, 50, 140, 17
-    COMBOBOX IDC_DEVICE_VOICE_LIST, 50, 60, 180, 46, CBS_DROPDOWNLIST | WS_TABSTOP
-    PUSHBUTTON "&Гучність...", IDC_VOLUME4_BTN, 85, 77, 70, 15
-    PUSHBUTTON "&Додатково...", IDC_ADV4_BTN, 160, 77, 70, 15
-    GROUPBOX "Запис мовлення", -1, 7, 105, 230, 60, WS_GROUP
-    ICON IDI_MICROPHONE_ICON, IDI_MICROPHONE_ICON, 15, 118, 32, 32
-    LTEXT "Пр&истрій за замовчуванням:", -1, 50, 118, 140, 17
-    COMBOBOX IDC_DEVICE_VOICE_REC_LIST, 50, 128, 180, 46, CBS_DROPDOWNLIST | WS_TABSTOP
-    PUSHBUTTON "Гу&чність...", IDC_VOLUME5_BTN, 85, 145, 70, 15
-    PUSHBUTTON "Дод&атково...", IDC_ADV5_BTN, 160, 145, 70, 15
-    PUSHBUTTON "&Перевірка...", IDC_TEST_HARDWARE, 160, 175, 70, 15, WS_GROUP | WS_TABSTOP
-END
-
 IDD_HARDWARE DIALOGEX 0, 0, 246, 228
 STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "Обладнання"

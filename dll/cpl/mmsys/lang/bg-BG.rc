@@ -67,27 +67,6 @@ BEGIN
     AUTOCHECKBOX "Из&ползване само на подразбирани устройства", IDC_DEFAULT_DEV_CHECKBOX, 7, 212, 220, 10, WS_GROUP | WS_TABSTOP
 END
 
-IDD_VOICE DIALOGEX 0, 0, 246, 228
-STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
-CAPTION "Глас"
-FONT 8, "MS Shell Dlg"
-BEGIN
-    LTEXT "Тези настройки са за за силата и другите възможности на избраното устройството за възпроизвеждане или запис на глас.", -1, 8, 7, 230, 40
-    GROUPBOX "Възпроизвеждане на глас", -1, 7, 37, 230, 60, WS_GROUP
-    ICON IDI_CPLICON, IDI_CPLICON, 15, 50, 32, 32
-    LTEXT "Под&разбрано устройство:", -1, 50, 50, 170, 17
-    COMBOBOX IDC_DEVICE_VOICE_LIST, 50, 60, 180, 46, CBS_DROPDOWNLIST | WS_TABSTOP
-    PUSHBUTTON "&Сила...", IDC_VOLUME4_BTN, 85, 77, 70, 15
-    PUSHBUTTON "Разши&рени...", IDC_ADV4_BTN, 160, 77, 70, 15
-    GROUPBOX "Запис на глас", -1, 7, 105, 230, 60, WS_GROUP
-    ICON IDI_MICROPHONE_ICON, IDI_MICROPHONE_ICON, 15, 118, 32, 32
-    LTEXT "&Подразбрано устройство:", -1, 50, 118, 170, 17
-    COMBOBOX IDC_DEVICE_VOICE_REC_LIST, 50, 128, 180, 46, CBS_DROPDOWNLIST | WS_TABSTOP
-    PUSHBUTTON "С&ила...", IDC_VOLUME5_BTN, 85, 145, 70, 15
-    PUSHBUTTON "Разшир&ени...", IDC_ADV5_BTN, 160, 145, 70, 15
-    PUSHBUTTON "&Проба на оборудването...", IDC_TEST_HARDWARE, 130, 175, 100, 15, WS_GROUP | WS_TABSTOP
-END
-
 IDD_HARDWARE DIALOGEX 0, 0, 246, 228
 STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "Оборудване"

@@ -75,27 +75,6 @@ BEGIN
     AUTOCHECKBOX "&Utilizar apenas dispositivos predefinidos", IDC_DEFAULT_DEV_CHECKBOX, 7, 212, 140, 10, WS_GROUP | WS_TABSTOP
 END
 
-IDD_VOICE DIALOGEX 0, 0, 246, 228
-STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
-CAPTION "Voz"
-FONT 8, "MS Shell Dlg"
-BEGIN
-    LTEXT "Estas definições controlam o volume e opções avançadas para o dispositivo de reprodução ou gravação que seleccionou.", -1, 8, 7, 230, 40
-    GROUPBOX "Reprodução de voz", -1, 7, 37, 230, 60, WS_GROUP
-    ICON IDI_CPLICON, IDI_CPLICON, 15, 50, 32, 32
-    LTEXT "&Dispositivo predefinido:", -1, 50, 50, 80, 9
-    COMBOBOX IDC_DEVICE_VOICE_LIST, 50, 60, 180, 46, CBS_DROPDOWNLIST | WS_TABSTOP
-    PUSHBUTTON "&Volume...", IDC_VOLUME4_BTN, 85, 77, 70, 15
-    PUSHBUTTON "Ava&nçadas...", IDC_ADV4_BTN, 160, 77, 70, 15
-    GROUPBOX "Gravação de voz", -1, 7, 105, 230, 60, WS_GROUP
-    ICON IDI_MICROPHONE_ICON, IDI_MICROPHONE_ICON, 15, 118, 32, 32
-    LTEXT "D&ispositivo predefinido:", -1, 50, 118, 80, 9
-    COMBOBOX IDC_DEVICE_VOICE_REC_LIST, 50, 128, 180, 46, CBS_DROPDOWNLIST | WS_TABSTOP
-    PUSHBUTTON "V&olume...", IDC_VOLUME5_BTN, 85, 145, 70, 15
-    PUSHBUTTON "Avan&çadas...", IDC_ADV5_BTN, 160, 145, 70, 15
-    PUSHBUTTON "&Testar hardware...", IDC_TEST_HARDWARE, 160, 175, 70, 15, WS_GROUP | WS_TABSTOP
-END
-
 IDD_HARDWARE DIALOGEX 0, 0, 246, 228
 STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "Hardware"

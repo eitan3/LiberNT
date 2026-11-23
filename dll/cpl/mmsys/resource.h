@@ -19,7 +19,6 @@
 #define IDD_VOLUME   101
 #define IDD_SOUNDS   102
 #define IDD_AUDIO    103
-#define IDD_VOICE    104
 
 #define IDD_SAVE_SCHEME_AS 4877
 #define IDD_SPEAKERS       4897
@@ -30,6 +29,8 @@
 #define IDD_SETUP2         4912
 #define IDD_ENDPOINT_GENERAL 4920
 #define IDD_ENDPOINT_ADVANCED 4921
+#define IDD_PLAYBACK          4922
+#define IDD_RECORDING         4923
 
 /* Controls */
 #define IDC_VOLUME_TRACKBAR       5000
@@ -44,8 +45,6 @@
 #define IDC_DEVICE_PLAY_LIST      5009
 #define IDC_DEVICE_REC_LIST       5010
 #define IDC_DEVICE_MIDI_LIST      5011
-#define IDC_DEVICE_VOICE_LIST     5012
-#define IDC_DEVICE_VOICE_REC_LIST 5013
 #define IDC_TEXT_SOUND            5014
 #define IDC_PLAY_SOUND            5015
 #define IDC_BROWSE_SOUND          5016
@@ -60,11 +59,6 @@
 #define IDC_ADV1_BTN              5025
 #define IDC_VOLUME3_BTN           5026
 #define IDC_ADV3_BTN              5027
-#define IDC_VOLUME4_BTN           5028
-#define IDC_ADV4_BTN              5029
-#define IDC_VOLUME5_BTN           5030
-#define IDC_ADV5_BTN              5031
-#define IDC_TEST_HARDWARE         5032
 #define IDC_SAVEAS_BTN            5033
 #define IDC_DELETE_BTN            5034
 
@@ -79,6 +73,13 @@
 #define IDC_EP_PROPERTIES         5107
 #define IDC_EP_FORMAT             5108
 #define IDC_EP_RESTORE            5109
+
+/* Playback and Recording pages */
+#define IDC_DEVLIST_LIST          5110
+#define IDC_DEVLIST_DEFAULT       5111
+#define IDC_DEVLIST_PROPERTIES    5112
+#define IDC_DEVLIST_METER         5113
+#define IDC_DEVLIST_EMPTY         5114
 
 #define IDI_SPEAKIMG  4624
 #define IDC_SPEAKIMG  4625
@@ -103,7 +104,8 @@
 #define IDS_CPLDESCRIPTION 1001
 #define IDS_NO_SOUND       1002
 #define IDS_NO_DEVICES     1003
-#define IDS_UNKNOWN_VALUE  1004
+/* Kept out of the 992-1007 string block, which the translations define without these */
+#define IDS_UNKNOWN_VALUE  1019
 
 #define IDS_FORMFACTOR_UNKNOWN    1010
 #define IDS_FORMFACTOR_SPEAKERS   1011
@@ -119,6 +121,12 @@
 #define IDS_FORMAT_CD             1021
 #define IDS_FORMAT_DVD            1022
 #define IDS_FORMAT_SAVE_FAILED    1023
+
+#define IDS_DEVICE_COLUMN_NAME    1024
+#define IDS_DEVICE_COLUMN_ADAPTER 1025
+#define IDS_DEVICE_COLUMN_STATUS  1026
+#define IDS_DEVICE_DEFAULT        1027
+#define IDS_DEVICE_READY          1028
 
 /* Sounds Image List */
 #define IMAGE_SOUND_SECTION  0

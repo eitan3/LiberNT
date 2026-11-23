@@ -81,27 +81,6 @@ BEGIN
     AUTOCHECKBOX "&Użyj tylko domyślnych urządzeń ", IDC_DEFAULT_DEV_CHECKBOX, 7, 212, 140, 10, WS_GROUP | WS_TABSTOP
 END
 
-IDD_VOICE DIALOGEX 0, 0, 246, 228
-STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
-CAPTION "Głos"
-FONT 8, "MS Shell Dlg"
-BEGIN
-    LTEXT "Te ustawienia regulują głośność i zaawansowaną konfigurację dla odwtarzania i nagrywania głosu za pomocą wybranych urządzeń.", -1, 8, 7, 230, 40
-    GROUPBOX "Odtwarzanie głosu", -1, 7, 37, 230, 60, WS_GROUP
-    ICON IDI_CPLICON, IDI_CPLICON, 15, 50, 32, 32
-    LTEXT "&Urządzenie domyślne:", -1, 50, 50, 80, 17
-    COMBOBOX IDC_DEVICE_VOICE_LIST, 50, 60, 180, 46, CBS_DROPDOWNLIST | WS_TABSTOP
-    PUSHBUTTON "&Głośność...", IDC_VOLUME4_BTN, 85, 77, 70, 15
-    PUSHBUTTON "&Zaawansowane...", IDC_ADV4_BTN, 160, 77, 70, 15
-    GROUPBOX "Nagrywanie głosu", -1, 7, 105, 230, 60, WS_GROUP
-    ICON IDI_MICROPHONE_ICON, IDI_MICROPHONE_ICON, 15, 118, 32, 32
-    LTEXT "U&rządzenie domyślne:", -1, 50, 118, 80, 17
-    COMBOBOX IDC_DEVICE_VOICE_REC_LIST, 50, 128, 180, 46, CBS_DROPDOWNLIST | WS_TABSTOP
-    PUSHBUTTON "Gł&ośność...", IDC_VOLUME5_BTN, 85, 145, 70, 15
-    PUSHBUTTON "Zaa&wansowane...", IDC_ADV5_BTN, 160, 145, 70, 15
-    PUSHBUTTON "&Testowanie sprzętu...", IDC_TEST_HARDWARE, 150, 175, 80, 15, WS_GROUP | WS_TABSTOP
-END
-
 IDD_HARDWARE DIALOGEX 0, 0, 246, 228
 STYLE DS_SHELLFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "Sprzęt"
