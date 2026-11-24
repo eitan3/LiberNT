@@ -625,6 +625,97 @@ Fdo_EvtInterruptDisable(
     return STATUS_SUCCESS;
 }
 
+/* Intel controllers whose DSP lives in PCI BAR4 behind the ACE register block and that Linux drives with IPC4 through the shared hda_dsp_probe: sound/soc/sof/intel/pci-mtl.c (HDA_MTL 0x7e28, HDA_ARL_S 0x7f50, HDA_ARL 0x7728), pci-lnl.c (HDA_LNL_P 0xa828) and pci-ptl.c (HDA_PTL 0xe428, HDA_PTL_H 0xe328); studied under LICENSING.md rule 7 */
+static const UINT16 Fdo_AdspControllers[] =
+{
+    0x7E28, 0x7F50, 0x7728, 0xA828, 0xE428, 0xE328
+};
+
+static
+BOOLEAN
+Fdo_ResourceIsPciBar4(
+    _In_ PFDO_CONTEXT fdoCtx,
+    _In_ PHYSICAL_ADDRESS Start)
+{
+    /* A memory BAR decodes as the in-tree PCI bus driver reads it (drivers/bus/pci/pdo.c): bit 0 clear, bits 2:1 the width, the address above bit 3, the next register as the high half of a 64-bit BAR */
+    PCI_COMMON_HEADER Header;
+    ULONGLONG Base;
+    ULONG Bar;
+
+    RtlZeroMemory(&Header, sizeof(Header));
+    if (fdoCtx->BusInterface.GetBusData == NULL ||
+        fdoCtx->BusInterface.GetBusData(fdoCtx->BusInterface.Context, PCI_WHICHSPACE_CONFIG, &Header, 0,
+            sizeof(Header)) != sizeof(Header))
+        return FALSE;
+    Bar = Header.u.type0.BaseAddresses[4];
+    fdoCtx->Bar4Register = Bar;
+    if ((Bar & PCI_ADDRESS_IO_SPACE) != 0 || (Bar & PCI_ADDRESS_MEMORY_TYPE_MASK) == PCI_TYPE_20BIT)
+        return FALSE;
+    Base = Bar & PCI_ADDRESS_MEMORY_ADDRESS_MASK;
+    if ((Bar & PCI_ADDRESS_MEMORY_TYPE_MASK) == PCI_TYPE_64BIT)
+        Base |= (ULONGLONG)Header.u.type0.BaseAddresses[5] << 32;
+    return Base == (ULONGLONG)Start.QuadPart;
+}
+
+static
+BOOLEAN
+Fdo_PpCapSane(
+    _In_ PVOID Ppcap)
+{
+    /* The capability header names the capability and its version, PPCTL holds the global processing enable (hda_registers.h HDA_CAP_HDR_* and HDA_REG_PP_PPCTL, Intel HD Audio specification) */
+    UINT32 Header = read32(Ppcap);
+    UINT32 PpCtl = read32((PVOID)((UINT8*)Ppcap + HDA_REG_PP_PPCTL));
+
+    return Header != 0 && Header != 0xffffffff && PpCtl != 0xffffffff &&
+        ((Header & HDA_CAP_HDR_ID_MASK) >> HDA_CAP_HDR_ID_OFF) == HDA_PP_CAP_ID;
+}
+
+/* The DSP child is created only for a controller whose DSP the intcdsp driver knows, whose BAR4 is really the PCI BAR4 resource and whose processing capabilities answer */
+static
+BOOLEAN
+Fdo_WantsAdspChild(
+    _In_ PFDO_CONTEXT fdoCtx)
+{
+    const char* Reason = NULL;
+    ULONG Index;
+
+    if (fdoCtx->venId != VEN_INTEL)
+        Reason = "not an Intel controller";
+    else
+    {
+        for (Index = 0; Index < RTL_NUMBER_OF(Fdo_AdspControllers) && Fdo_AdspControllers[Index] != fdoCtx->devId; Index++)
+            ;
+        if (Index == RTL_NUMBER_OF(Fdo_AdspControllers))
+            Reason = "not an ACE-era Intel controller";
+        else if (!fdoCtx->m_BAR4.Base.Base)
+            Reason = "no BAR4 resource";
+        else if (!fdoCtx->Bar4IsPciBar4)
+            Reason = "the second memory resource is not the PCI BAR4 resource";
+        else if (!fdoCtx->ppcap || !fdoCtx->PpCapSane)
+            Reason = "no readable processing capabilities";
+    }
+    if (Reason)
+    {
+        SklHdAudBusReport(
+            "ADSP child not created on PCI %04x:%04x (subclass %02x): %s\n",
+            fdoCtx->venId,
+            fdoCtx->devId,
+            fdoCtx->subClass,
+            Reason);
+        return FALSE;
+    }
+    SklHdAudBusReport(
+        "ADSP child created on PCI %04x:%04x (subclass %02x): BAR4 register 0x%08x, 0x%lx bytes mapped at %p, processing capabilities at BAR0 +0x%I64x\n",
+        fdoCtx->venId,
+        fdoCtx->devId,
+        fdoCtx->subClass,
+        fdoCtx->Bar4Register,
+        fdoCtx->m_BAR4.Len,
+        fdoCtx->m_BAR4.Base.Base,
+        (ULONGLONG)(fdoCtx->ppcap - fdoCtx->m_BAR0.Base.baseptr));
+    return TRUE;
+}
+
 NTSTATUS
 NTAPI
 Fdo_EvtDevicePrepareHardware(
@@ -882,6 +973,14 @@ Fdo_EvtDevicePrepareHardware(
                 bar4Descriptor->u.Memory.Start.QuadPart,
                 fdoCtx->m_BAR4.Len,
                 fdoCtx->m_BAR4.Base.Base);
+            fdoCtx->Bar4IsPciBar4 = Fdo_ResourceIsPciBar4(fdoCtx, bar4Descriptor->u.Memory.Start);
+            if (!fdoCtx->Bar4IsPciBar4)
+            {
+                SklHdAudBusPrint(DEBUG_LEVEL_ERROR, DBG_PNP,
+                    "The second memory resource 0x%I64x is not the resource of PCI BAR4 (register 0x%08x); the ADSP child is not created\n",
+                    bar4Descriptor->u.Memory.Start.QuadPart,
+                    fdoCtx->Bar4Register);
+            }
         }
         else
         {
@@ -939,6 +1038,7 @@ Fdo_EvtDevicePrepareHardware(
                 SklHdAudBusPrint(DEBUG_LEVEL_INFO, DBG_INIT,
                     "Found PP capability offset=%x\n", offset);
                 fdoCtx->ppcap = fdoCtx->m_BAR0.Base.baseptr + offset;
+                fdoCtx->PpCapSane = Fdo_PpCapSane(fdoCtx->ppcap);
                 break;
 
             case HDA_SPB_CAP_ID:
@@ -1185,10 +1285,13 @@ Fdo_EvtDeviceReleaseHardware(
         MmUnmapIoSpace(fdoCtx->m_BAR4.Base.Base, fdoCtx->m_BAR4.Len);
         fdoCtx->m_BAR4.Base.Base = NULL;
         fdoCtx->m_BAR4.Len = 0;
+        fdoCtx->Bar4IsPciBar4 = FALSE;
+        fdoCtx->Bar4Register = 0;
     }
 
     fdoCtx->mlcap = NULL;
     fdoCtx->ppcap = NULL;
+    fdoCtx->PpCapSane = FALSE;
     fdoCtx->spbcap = NULL;
     fdoCtx->InterruptConnected = FALSE;
     fdoCtx->InterruptResourcePresent = FALSE;
@@ -1543,8 +1646,7 @@ Fdo_EvtDeviceSelfManagedIoInit(
 #endif
 
     fdoCtx->dspInterruptCallback = NULL;
-    /* TODO: P2 gates the DSP child on the PP capability and BAR4 instead of the PCI subclass, so a class-0403 controller (8086:7F50) gets one too */
-    if (fdoCtx->m_BAR4.Base.Base && fdoCtx->subClass == PCI_SUBCLASS_MM_AUDIO_DEV) { //Populate ADSP if present
+    if (Fdo_WantsAdspChild(fdoCtx)) { //Populate ADSP if present
         PDO_IDENTIFICATION_DESCRIPTION description;
         //
         // Initialize the description with the information about the detected codec.

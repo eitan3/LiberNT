@@ -123,6 +123,9 @@ typedef struct _FDO_CONTEXT
 
     PCI_BAR m_BAR0; //required
     PCI_BAR m_BAR4; //Intel AudioDSP
+    BOOLEAN Bar4IsPciBar4; //the second memory resource sits at the PCI BAR4 register
+    ULONG Bar4Register; //the raw PCI BAR4 register
+    BOOLEAN PpCapSane; //the processing capabilities header and PPCTL read back
     BUS_INTERFACE_STANDARD BusInterface; //PCI Bus Interface
     WDFINTERRUPT Interrupt;
     BOOLEAN InterruptResourcePresent;
