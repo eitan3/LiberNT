@@ -143,10 +143,10 @@ IntcDspBoot(
         IntcDspLog("controller %04x has no register map; the DSP is left alone\n", Dev->DevId);
         return STATUS_SUCCESS;
     }
-    if (!Dev->AdspBar.Base.Base || Dev->AdspBar.Len < INTCDSP_BAR4_MIN_BYTES)
+    if (!Dev->AdspBar.Base.Base || Dev->AdspBar.Len < INTCDSP_BAR4_MIN_BYTES || !Dev->Ppcap)
     {
-        IntcDspLog("BAR4 (%p, 0x%lx bytes) is shorter than the 0x%x bytes the ACE 1.0 map needs; the DSP is left alone\n",
-                   Dev->AdspBar.Base.Base, Dev->AdspBar.Len, INTCDSP_BAR4_MIN_BYTES);
+        IntcDspLog("BAR4 (%p, 0x%lx bytes, needs 0x%x) or the processing capabilities (%p) are missing; the DSP is left alone\n",
+                   Dev->AdspBar.Base.Base, Dev->AdspBar.Len, INTCDSP_BAR4_MIN_BYTES, Dev->Ppcap);
         return STATUS_SUCCESS;
     }
 

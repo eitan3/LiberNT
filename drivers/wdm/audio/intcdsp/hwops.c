@@ -51,6 +51,8 @@ IntcDspOpRead32(
         Base = Dev->HdaBar.Base.BasePtr;
         break;
     case FWLOAD_BAR_PP:
+        if (!Dev->Ppcap)
+            return 0xFFFFFFFF;
         Base = Dev->Ppcap;
         break;
     case FWLOAD_BAR_DSP:
@@ -83,6 +85,8 @@ IntcDspOpWrite32(
         Base = Dev->HdaBar.Base.BasePtr;
         break;
     case FWLOAD_BAR_PP:
+        if (!Dev->Ppcap)
+            return;
         Base = Dev->Ppcap;
         break;
     case FWLOAD_BAR_DSP:
