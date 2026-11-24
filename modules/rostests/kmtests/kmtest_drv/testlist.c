@@ -186,6 +186,7 @@ KMT_TESTFUNC Test_Policy;
 KMT_TESTFUNC Test_SofIpc4;
 KMT_TESTFUNC Test_Disco;
 KMT_TESTFUNC Test_Softplg;
+KMT_TESTFUNC Test_Fwload;
 KMT_TESTFUNC Test_KsCreateItemSlot;
 KMT_TESTFUNC Test_KsDispatchFileObject;
 KMT_TESTFUNC Test_HalRealTimeClock;
@@ -645,6 +646,7 @@ const KMT_TEST TestList[] =
     { "SofIpc4",                            Test_SofIpc4 },
     { "Disco",                              Test_Disco },
     { "Softplg",                            Test_Softplg },
+    { "Fwload",                             Test_Fwload },
     { "KsCreateItemSlot",                   Test_KsCreateItemSlot },
     { "KsDispatchFileObject",               Test_KsDispatchFileObject },
     { "HalRealTimeClock",                   Test_HalRealTimeClock },
