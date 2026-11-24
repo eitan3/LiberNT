@@ -44,7 +44,7 @@
 #include "mmdevapi_private.h"
 #include "devpkey.h"
 #ifdef __REACTOS__
-#include <reactos/mmdevdefault.h>
+#include <libernt/mmdevdefault.h>
 #endif
 
 WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);

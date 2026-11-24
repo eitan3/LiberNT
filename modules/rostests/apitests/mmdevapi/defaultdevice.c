@@ -10,7 +10,7 @@
 #include <windows.h>
 #include <objbase.h>
 #include <mmdeviceapi.h>
-#include <reactos/mmdevdefault.h>
+#include <libernt/mmdevdefault.h>
 
 typedef struct _DEFAULT_WATCH
 {

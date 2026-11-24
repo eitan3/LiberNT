@@ -12,7 +12,7 @@
 #include <strsafe.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
-#include <reactos/micconsent.h>
+#include <libernt/micconsent.h>
 
 typedef struct _SAVED_VALUE
 {

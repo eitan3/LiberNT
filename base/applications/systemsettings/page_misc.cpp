@@ -13,7 +13,7 @@
 #include <uxtheme.h>
 #include <uxundoc.h>
 #include <strsafe.h>
-#include <reactos/micconsent.h>
+#include <libernt/micconsent.h>
 
 #define WINDOWS_NT_KEY L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"
 #define ADVANCED_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced"

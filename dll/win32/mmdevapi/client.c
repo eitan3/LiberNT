@@ -41,7 +41,7 @@
 
 #ifdef __REACTOS__
 #include <strsafe.h>
-#include <reactos/micconsent.h>
+#include <libernt/micconsent.h>
 #endif
 
 WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);

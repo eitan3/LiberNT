@@ -10,7 +10,7 @@
 #include <objbase.h>
 #include <commctrl.h>
 #include <mmdeviceapi.h>
-#include <reactos/mmdevdefault.h>
+#include <libernt/mmdevdefault.h>
 #include <initguid.h>
 #include <endpointvolume.h>
 

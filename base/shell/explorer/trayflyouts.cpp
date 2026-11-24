@@ -3463,7 +3463,7 @@ VOID TrayFlyouts_Destroy(VOID)
 #include <mmdeviceapi.h>
 #include <audiopolicy.h>
 #include <endpointvolume.h>
-#include <reactos/mmdevdefault.h>
+#include <libernt/mmdevdefault.h>
 
 struct TFYVOLUME
 {

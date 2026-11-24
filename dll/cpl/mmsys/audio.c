@@ -14,7 +14,7 @@
 #include <objbase.h>
 #include <initguid.h>
 #include <mmdeviceapi.h>
-#include <reactos/mmdevdefault.h>
+#include <libernt/mmdevdefault.h>
 
 /* mmddk.h; mmsys.h already defines the DRVM_MAPPER messages that header would redefine */
 #define DRV_QUERYFUNCTIONINSTANCEID (DRV_RESERVED + 17)

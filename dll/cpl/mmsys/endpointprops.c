@@ -19,7 +19,7 @@
 #include <mmreg.h>
 #include <ks.h>
 #include <ksmedia.h>
-#include <reactos/mmdevdefault.h>
+#include <libernt/mmdevdefault.h>
 
 int WINAPI
 DevicePropertiesW(HWND hWndParent,
