@@ -131,7 +131,7 @@ IntcDspBoot(
     HDAUDIO_STREAM_FORMAT Format;
     PHYSICAL_ADDRESS Low, High, Boundary;
     const SOFIPC4_FW_REGS* Registers;
-    PVOID Bdl;
+    PVOID Bdl = NULL;
     SIZE_T Entries;
     FWLOAD_STATUS Status;
     NTSTATUS NtStatus;
@@ -192,6 +192,13 @@ IntcDspBoot(
                                    (int)Entries, &Bdl);
     if (!NT_SUCCESS(NtStatus))
         goto Fail;
+    if (!Bdl)
+    {
+        IntcDspLog("stream %u: the bus prepared it without a descriptor list\n", Dev->StreamTag);
+        NtStatus = STATUS_DEVICE_PROTOCOL_ERROR;
+        goto Fail;
+    }
+    Dev->StreamPrepared = TRUE;
 
     Dev->Fw = ExAllocatePoolWithTag(NonPagedPool, sizeof(FWLOAD_CONTEXT), INTCDSP_POOL_TAG);
     if (!Dev->Fw)
@@ -212,7 +219,6 @@ IntcDspBoot(
     Dma.StreamFormat = FWLOAD_CL_STREAM_FORMAT;
     FwloadDefaultTimeouts(&Timeouts);
     FwloadInitContext(Dev->Fw, IntcDspOpsTable(), Dev, Platform, &Dev->Ri, &Dma, &Timeouts);
-    Dev->StreamPrepared = TRUE;
     Dev->IntEnableOffset = IntcDspInterruptEnableOffset(Dev);
 
     NtStatus = Dev->Bus.SetDSPPowerState(Dev->Bus.Context, PowerDeviceD0);
