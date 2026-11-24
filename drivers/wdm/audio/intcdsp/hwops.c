@@ -305,7 +305,7 @@ VOID
 IntcDspMaskInterrupts(
     _In_ PINTCDSP_DEVICE Dev)
 {
-    /* Linux's hardirq handler masks the IPC interrupt before its thread handles the message (hda-dsp.c hda_dsp_ipc_irq_handler); the passive-level poll that acknowledges it would be starved by a level-triggered line left asserted */
+    /* Linux masks the IPC interrupt by clearing the ADSPIC bit (hda-dsp.c hda_dsp_ipc_int_disable) and its IRQ thread acknowledges the message (mtl.c mtl_ipc_irq_thread); here the passive-level poll does the acknowledging, and a level-triggered line left asserted would starve it */
     if (Dev->IntEnableOffset != 0xFFFFFFFF)
         IntcDspWrite32(Dev, Dev->IntEnableOffset,
             IntcDspRead32(Dev, Dev->IntEnableOffset) & ~INTCDSP_INTEN_HOST_IPC);
