@@ -242,7 +242,7 @@ IntcDspOpLog(
     const char* Text)
 {
     UNREFERENCED_PARAMETER(Context);
-    IntcDspLog("%s", Text);
+    IntcDspLog("%s\n", Text);
 }
 
 static const FWLOAD_OPS IntcDspOps =
