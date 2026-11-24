@@ -59,17 +59,15 @@ static int Failures;
 #define HOP_READ32          0
 #define HOP_WRITE32         1
 #define HOP_READMEMORY      2
-#define HOP_WRITEMEMORY     3
-#define HOP_NOWUS           4
-#define HOP_DELAYUS         5
-#define HOP_STREAMSUBMIT    6
-#define HOP_STREAMTRIGGER   7
-#define HOP_STREAMRELEASE   8
-#define HOP_IPCINCOMING     9
-#define HOP_LOG             10
-#define HOP_COUNT           11
-/* WriteMemory is the one operation the boot never makes */
-#define HARNESS_OPS_BOOTED  (((1u << HOP_COUNT) - 1) & ~(1u << HOP_WRITEMEMORY))
+#define HOP_NOWUS           3
+#define HOP_DELAYUS         4
+#define HOP_STREAMSUBMIT    5
+#define HOP_STREAMTRIGGER   6
+#define HOP_STREAMRELEASE   7
+#define HOP_IPCINCOMING     8
+#define HOP_LOG             9
+#define HOP_COUNT           10
+#define HARNESS_OPS_BOOTED  ((1u << HOP_COUNT) - 1)
 
 typedef struct _HARNESS
 {
@@ -154,19 +152,6 @@ HReadMemory(
     HARNESS* H = HarnessEnter(Context, HOP_READMEMORY, "ReadMemory");
 
     return H != NULL ? FakeDspOps()->ReadMemory(H->Dsp, Offset, Buffer, Bytes) : FALSE;
-}
-
-static
-BOOLEAN
-HWriteMemory(
-    PVOID Context,
-    UINT32 Offset,
-    const UINT8* Buffer,
-    SIZE_T Bytes)
-{
-    HARNESS* H = HarnessEnter(Context, HOP_WRITEMEMORY, "WriteMemory");
-
-    return H != NULL ? FakeDspOps()->WriteMemory(H->Dsp, Offset, Buffer, Bytes) : FALSE;
 }
 
 static
@@ -264,7 +249,6 @@ static const FWLOAD_OPS HarnessOps =
     HRead32,
     HWrite32,
     HReadMemory,
-    HWriteMemory,
     HNowUs,
     HDelayUs,
     HStreamSubmit,
@@ -1518,7 +1502,6 @@ CheckOpsContext(
         CHECK_EQ(HarnessOps.Read32(Bad[Index], FWLOAD_BAR_DSP, 0), 0xFFFFFFFF);
         HarnessOps.Write32(Bad[Index], FWLOAD_BAR_DSP, 0, 0);
         CHECK(!HarnessOps.ReadMemory(Bad[Index], 0, Buffer, sizeof(Buffer)));
-        CHECK(!HarnessOps.WriteMemory(Bad[Index], 0, Buffer, sizeof(Buffer)));
         CHECK_EQ(HarnessOps.NowUs(Bad[Index]), 0);
         HarnessOps.DelayUs(Bad[Index], 1000);
         CHECK_EQ(HarnessOps.StreamSubmit(Bad[Index], &Dma), FwloadBadState);

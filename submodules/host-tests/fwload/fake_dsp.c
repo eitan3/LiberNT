@@ -729,27 +729,6 @@ FakeDspReadMemory(
 }
 
 static
-BOOLEAN
-FakeDspWriteMemory(
-    PVOID Context,
-    UINT32 Offset,
-    const UINT8* Buffer,
-    SIZE_T Bytes)
-{
-    PFAKE_DSP Dsp = (PFAKE_DSP)Context;
-
-    FakeDspAdvance(Dsp);
-    if (Offset < Dsp->Platform->Window0Offset ||
-        Offset - Dsp->Platform->Window0Offset + Bytes > FAKE_DSP_WINDOW_BYTES)
-    {
-        Dsp->UnexpectedAccesses++;
-        return FALSE;
-    }
-    FakeDspCopy(Dsp->Window + (Offset - Dsp->Platform->Window0Offset), Buffer, Bytes);
-    return TRUE;
-}
-
-static
 UINT64
 FakeDspNowUs(
     PVOID Context)
@@ -899,7 +878,6 @@ static const FWLOAD_OPS FakeDspOpsTable =
     FakeDspRead32,
     FakeDspWrite32,
     FakeDspReadMemory,
-    FakeDspWriteMemory,
     FakeDspNowUs,
     FakeDspDelayUs,
     FakeDspStreamSubmit,

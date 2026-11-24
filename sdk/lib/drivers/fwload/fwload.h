@@ -429,7 +429,6 @@ typedef struct _FWLOAD_OPS
     UINT32 (*Read32)(PVOID Context, UINT32 Bar, UINT32 Offset);
     VOID (*Write32)(PVOID Context, UINT32 Bar, UINT32 Offset, UINT32 Value);
     BOOLEAN (*ReadMemory)(PVOID Context, UINT32 Offset, UINT8* Buffer, SIZE_T Bytes);
-    BOOLEAN (*WriteMemory)(PVOID Context, UINT32 Offset, const UINT8* Buffer, SIZE_T Bytes);
     UINT64 (*NowUs)(PVOID Context);
     VOID (*DelayUs)(PVOID Context, UINT32 Microseconds);
     FWLOAD_STATUS (*StreamSubmit)(PVOID Context, PFWLOAD_CL_DMA Dma);

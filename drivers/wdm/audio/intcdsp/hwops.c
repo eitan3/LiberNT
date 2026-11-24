@@ -123,28 +123,6 @@ IntcDspOpReadMemory(
 }
 
 static
-BOOLEAN
-IntcDspOpWriteMemory(
-    PVOID Context,
-    UINT32 Offset,
-    const UINT8* Buffer,
-    SIZE_T Bytes)
-{
-    PINTCDSP_DEVICE Dev = Context;
-    volatile ULONG* Target;
-    const ULONG* Source;
-    SIZE_T Index;
-
-    if ((Bytes & (sizeof(ULONG) - 1)) != 0 || Offset > Dev->AdspBar.Len || Bytes > Dev->AdspBar.Len - Offset)
-        return FALSE;
-    Target = (volatile ULONG*)(Dev->AdspBar.Base.BasePtr + Offset);
-    Source = (const ULONG*)Buffer;
-    for (Index = 0; Index < Bytes / sizeof(ULONG); Index++)
-        WRITE_REGISTER_ULONG(Target + Index, Source[Index]);
-    return TRUE;
-}
-
-static
 UINT64
 IntcDspOpNowUs(
     PVOID Context)
@@ -254,7 +232,6 @@ static const FWLOAD_OPS IntcDspOps =
     IntcDspOpRead32,
     IntcDspOpWrite32,
     IntcDspOpReadMemory,
-    IntcDspOpWriteMemory,
     IntcDspOpNowUs,
     IntcDspOpDelayUs,
     IntcDspOpStreamSubmit,
