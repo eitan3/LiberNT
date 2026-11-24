@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT host-native tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The firmware loader boots a DSP model from the real sof-arl-s.ri and from a synthetic image, times out or reports every fault the model injects, powers down from every state, and never trusts a malformed image or descriptor list
+ * PURPOSE:     The firmware loader boots a DSP model from the real sof-arl-s.ri and from a synthetic image, times out or reports every fault the model injects, powers down from every state, never trusts a malformed image or descriptor list, and reaches the model only through the harness it was given
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -53,11 +53,29 @@ static int Failures;
 #define STREAM_BDL_ENTRIES  256
 #define HARNESS_BDL_ENTRIES 1024
 
+#define HARNESS_SIGNATURE   0x4841524E45535321ULL
+
+/* Bits of the operations the harness table carries, in the order of FWLOAD_OPS */
+#define HOP_READ32          0
+#define HOP_WRITE32         1
+#define HOP_READMEMORY      2
+#define HOP_WRITEMEMORY     3
+#define HOP_NOWUS           4
+#define HOP_DELAYUS         5
+#define HOP_STREAMSUBMIT    6
+#define HOP_STREAMTRIGGER   7
+#define HOP_STREAMRELEASE   8
+#define HOP_IPCINCOMING     9
+#define HOP_LOG             10
+#define HOP_COUNT           11
+/* WriteMemory is the one operation the boot never makes */
+#define HARNESS_OPS_BOOTED  (((1u << HOP_COUNT) - 1) & ~(1u << HOP_WRITEMEMORY))
+
 typedef struct _HARNESS
 {
+    UINT64 Signature;
     FAKE_DSP* Dsp;
     FWLOAD_CONTEXT* Ctx;
-    FWLOAD_OPS Ops;
     UINT8* Virtual;
     SIZE_T Bytes;
     FWLOAD_DMA_SEGMENT Segment[8];
@@ -69,9 +87,35 @@ typedef struct _HARNESS
     UINT32 CancelAfterDelays;
     UINT32 Delays;
     UINT32 StreamTag;
+    UINT32 OpsSeen;
     CHAR Logs[8][48];
     UINT32 LogCount;
 } HARNESS;
+
+/* Calls made without the harness as their context: the detector case expects them, anywhere else they abort the run */
+static UINT32 ContextFaults;
+static UINT32 ContextFaultsExpected;
+
+static
+HARNESS*
+HarnessEnter(
+    PVOID Context,
+    UINT32 Operation,
+    const char* Name)
+{
+    HARNESS* H = (HARNESS*)Context;
+
+    if (Context != NULL && H->Signature == HARNESS_SIGNATURE)
+    {
+        H->OpsSeen |= 1u << Operation;
+        return H;
+    }
+    ContextFaults++;
+    if (ContextFaultsExpected)
+        return NULL;
+    fprintf(stderr, "t_fwload.c: FAIL: the loader called %s with context %p, not the harness\n", Name, Context);
+    abort();
+}
 
 static
 UINT32
@@ -80,9 +124,9 @@ HRead32(
     UINT32 Bar,
     UINT32 Offset)
 {
-    HARNESS* H = (HARNESS*)Context;
+    HARNESS* H = HarnessEnter(Context, HOP_READ32, "Read32");
 
-    return H->Dsp->Ops.Read32(H->Dsp, Bar, Offset);
+    return H != NULL ? FakeDspOps()->Read32(H->Dsp, Bar, Offset) : 0xFFFFFFFF;
 }
 
 static
@@ -93,9 +137,10 @@ HWrite32(
     UINT32 Offset,
     UINT32 Value)
 {
-    HARNESS* H = (HARNESS*)Context;
+    HARNESS* H = HarnessEnter(Context, HOP_WRITE32, "Write32");
 
-    H->Dsp->Ops.Write32(H->Dsp, Bar, Offset, Value);
+    if (H != NULL)
+        FakeDspOps()->Write32(H->Dsp, Bar, Offset, Value);
 }
 
 static
@@ -106,9 +151,9 @@ HReadMemory(
     UINT8* Buffer,
     SIZE_T Bytes)
 {
-    HARNESS* H = (HARNESS*)Context;
+    HARNESS* H = HarnessEnter(Context, HOP_READMEMORY, "ReadMemory");
 
-    return H->Dsp->Ops.ReadMemory(H->Dsp, Offset, Buffer, Bytes);
+    return H != NULL ? FakeDspOps()->ReadMemory(H->Dsp, Offset, Buffer, Bytes) : FALSE;
 }
 
 static
@@ -119,9 +164,9 @@ HWriteMemory(
     const UINT8* Buffer,
     SIZE_T Bytes)
 {
-    HARNESS* H = (HARNESS*)Context;
+    HARNESS* H = HarnessEnter(Context, HOP_WRITEMEMORY, "WriteMemory");
 
-    return H->Dsp->Ops.WriteMemory(H->Dsp, Offset, Buffer, Bytes);
+    return H != NULL ? FakeDspOps()->WriteMemory(H->Dsp, Offset, Buffer, Bytes) : FALSE;
 }
 
 static
@@ -129,9 +174,9 @@ UINT64
 HNowUs(
     PVOID Context)
 {
-    HARNESS* H = (HARNESS*)Context;
+    HARNESS* H = HarnessEnter(Context, HOP_NOWUS, "NowUs");
 
-    return H->Dsp->Ops.NowUs(H->Dsp);
+    return H != NULL ? FakeDspOps()->NowUs(H->Dsp) : 0;
 }
 
 /* the one injected operation: the clock advance, after which a cancellation can be requested */
@@ -141,9 +186,11 @@ HDelayUs(
     PVOID Context,
     UINT32 Microseconds)
 {
-    HARNESS* H = (HARNESS*)Context;
+    HARNESS* H = HarnessEnter(Context, HOP_DELAYUS, "DelayUs");
 
-    H->Dsp->Ops.DelayUs(H->Dsp, Microseconds);
+    if (H == NULL)
+        return;
+    FakeDspOps()->DelayUs(H->Dsp, Microseconds);
     H->Delays++;
     if (H->CancelAfterDelays != 0 && H->Delays >= H->CancelAfterDelays)
         H->Ctx->Cancel = TRUE;
@@ -155,9 +202,9 @@ HStreamSubmit(
     PVOID Context,
     PFWLOAD_CL_DMA Dma)
 {
-    HARNESS* H = (HARNESS*)Context;
+    HARNESS* H = HarnessEnter(Context, HOP_STREAMSUBMIT, "StreamSubmit");
 
-    return H->Dsp->Ops.StreamSubmit(H->Dsp, Dma);
+    return H != NULL ? FakeDspOps()->StreamSubmit(H->Dsp, Dma) : FwloadBadState;
 }
 
 static
@@ -166,9 +213,9 @@ HStreamTrigger(
     PVOID Context,
     BOOLEAN Start)
 {
-    HARNESS* H = (HARNESS*)Context;
+    HARNESS* H = HarnessEnter(Context, HOP_STREAMTRIGGER, "StreamTrigger");
 
-    return H->Dsp->Ops.StreamTrigger(H->Dsp, Start);
+    return H != NULL ? FakeDspOps()->StreamTrigger(H->Dsp, Start) : FwloadBadState;
 }
 
 static
@@ -176,9 +223,10 @@ VOID
 HStreamRelease(
     PVOID Context)
 {
-    HARNESS* H = (HARNESS*)Context;
+    HARNESS* H = HarnessEnter(Context, HOP_STREAMRELEASE, "StreamRelease");
 
-    H->Dsp->Ops.StreamRelease(H->Dsp);
+    if (H != NULL)
+        FakeDspOps()->StreamRelease(H->Dsp);
 }
 
 static
@@ -187,9 +235,9 @@ HIpcIncoming(
     PVOID Context,
     PSOFIPC4_MSG Message)
 {
-    HARNESS* H = (HARNESS*)Context;
+    HARNESS* H = HarnessEnter(Context, HOP_IPCINCOMING, "IpcIncoming");
 
-    return H->Dsp->Ops.IpcIncoming(H->Dsp, Message);
+    return H != NULL ? FakeDspOps()->IpcIncoming(H->Dsp, Message) : FALSE;
 }
 
 static
@@ -198,8 +246,10 @@ HLog(
     PVOID Context,
     const char* Text)
 {
-    HARNESS* H = (HARNESS*)Context;
+    HARNESS* H = HarnessEnter(Context, HOP_LOG, "Log");
 
+    if (H == NULL)
+        return;
     if (H->LogCount < 8)
     {
         strncpy(H->Logs[H->LogCount], Text, sizeof(H->Logs[0]) - 1);
@@ -208,12 +258,29 @@ HLog(
     }
 }
 
+/* The driver's shape: one const table of functions, and the harness reaches them as the context of every call */
+static const FWLOAD_OPS HarnessOps =
+{
+    HRead32,
+    HWrite32,
+    HReadMemory,
+    HWriteMemory,
+    HNowUs,
+    HDelayUs,
+    HStreamSubmit,
+    HStreamTrigger,
+    HStreamRelease,
+    HIpcIncoming,
+    HLog
+};
+
 static
 void
 HarnessInit(
     HARNESS* H)
 {
     memset(H, 0, sizeof(*H));
+    H->Signature = HARNESS_SIGNATURE;
     H->Dsp = (FAKE_DSP*)calloc(1, sizeof(FAKE_DSP));
     H->Ctx = (FWLOAD_CONTEXT*)calloc(1, sizeof(FWLOAD_CONTEXT));
     H->Virtual = (UINT8*)calloc(1, REAL_PAYLOAD_BYTES + 0x10000);
@@ -225,18 +292,6 @@ HarnessInit(
     H->SegmentCount = 1;
     H->BdlCapacity = STREAM_BDL_ENTRIES;
     FwloadDefaultTimeouts(&H->Timeouts);
-    H->Ops.Read32 = HRead32;
-    H->Ops.Write32 = HWrite32;
-    H->Ops.ReadMemory = HReadMemory;
-    H->Ops.WriteMemory = HWriteMemory;
-    H->Ops.NowUs = HNowUs;
-    H->Ops.DelayUs = HDelayUs;
-    H->Ops.StreamSubmit = HStreamSubmit;
-    H->Ops.StreamTrigger = HStreamTrigger;
-    H->Ops.StreamRelease = HStreamRelease;
-    H->Ops.IpcIncoming = HIpcIncoming;
-    H->Ops.Log = HLog;
-    H->Ops.Context = H;
 }
 
 static
@@ -259,9 +314,10 @@ HarnessBoot(
     Dma.BdlBytes = H->BdlCapacity * sizeof(FWLOAD_BDL_ENTRY);
     Dma.EntryBoundary = H->EntryBoundary;
     Dma.StreamTag = (UINT8)H->StreamTag;
-    FwloadInitContext(H->Ctx, &H->Ops, FwloadPlatformArlS(), Image, &Dma, &H->Timeouts);
+    FwloadInitContext(H->Ctx, &HarnessOps, H, FwloadPlatformArlS(), Image, &Dma, &H->Timeouts);
     H->Delays = 0;
     H->LogCount = 0;
+    H->OpsSeen = 0;
 }
 
 static
@@ -1363,33 +1419,33 @@ CheckDma(
     Dma.SegmentCount = 1;
     Status = FwloadClDmaPrepare(&Dma, Data + Image->PayloadOffset, Image->PayloadBytes);
     CHECK_EQ(Status, FwloadOk);
-    CHECK_EQ(H->Dsp->Ops.StreamSubmit(H->Dsp, &Dma), FwloadOk);
+    CHECK_EQ(FakeDspOps()->StreamSubmit(H->Dsp, &Dma), FwloadOk);
     Dma.Bdl[0].InterruptOnCompletion = 1;
-    CHECK_EQ(H->Dsp->Ops.StreamSubmit(H->Dsp, &Dma), FwloadHardwareFault);
+    CHECK_EQ(FakeDspOps()->StreamSubmit(H->Dsp, &Dma), FwloadHardwareFault);
     CHECK_EQ(H->Dsp->DmaErrors & FAKE_DSP_DMA_IOC, FAKE_DSP_DMA_IOC);
     Dma.Bdl[0].InterruptOnCompletion = 0;
     Dma.StreamTag = 0;
-    CHECK_EQ(H->Dsp->Ops.StreamSubmit(H->Dsp, &Dma), FwloadHardwareFault);
+    CHECK_EQ(FakeDspOps()->StreamSubmit(H->Dsp, &Dma), FwloadHardwareFault);
     CHECK_EQ(H->Dsp->DmaErrors & FAKE_DSP_DMA_TAG, FAKE_DSP_DMA_TAG);
     Dma.StreamTag = 1;
     Dma.StreamFormat = 0x20;
-    CHECK_EQ(H->Dsp->Ops.StreamSubmit(H->Dsp, &Dma), FwloadHardwareFault);
+    CHECK_EQ(FakeDspOps()->StreamSubmit(H->Dsp, &Dma), FwloadHardwareFault);
     CHECK_EQ(H->Dsp->DmaErrors & FAKE_DSP_DMA_FORMAT, FAKE_DSP_DMA_FORMAT);
     Dma.StreamFormat = 0x40;
     Dma.Spib = 0;
-    CHECK_EQ(H->Dsp->Ops.StreamSubmit(H->Dsp, &Dma), FwloadHardwareFault);
+    CHECK_EQ(FakeDspOps()->StreamSubmit(H->Dsp, &Dma), FwloadHardwareFault);
     CHECK_EQ(H->Dsp->DmaErrors & FAKE_DSP_DMA_SPIB, FAKE_DSP_DMA_SPIB);
     Dma.Spib = Dma.Bytes;
     Dma.LastValidIndex = 1;
-    CHECK_EQ(H->Dsp->Ops.StreamSubmit(H->Dsp, &Dma), FwloadHardwareFault);
+    CHECK_EQ(FakeDspOps()->StreamSubmit(H->Dsp, &Dma), FwloadHardwareFault);
     CHECK_EQ(H->Dsp->DmaErrors & FAKE_DSP_DMA_LVI, FAKE_DSP_DMA_LVI);
     Dma.LastValidIndex = 0;
     Dma.Bdl[0].Bytes -= 16;
-    CHECK_EQ(H->Dsp->Ops.StreamSubmit(H->Dsp, &Dma), FwloadHardwareFault);
+    CHECK_EQ(FakeDspOps()->StreamSubmit(H->Dsp, &Dma), FwloadHardwareFault);
     CHECK_EQ(H->Dsp->DmaErrors & FAKE_DSP_DMA_BYTES, FAKE_DSP_DMA_BYTES);
     Dma.Bdl[0].Bytes += 16;
     Dma.Bdl[0].AddressLow += 0x100;
-    CHECK_EQ(H->Dsp->Ops.StreamSubmit(H->Dsp, &Dma), FwloadHardwareFault);
+    CHECK_EQ(FakeDspOps()->StreamSubmit(H->Dsp, &Dma), FwloadHardwareFault);
     CHECK(H->Dsp->DmaErrors & (FAKE_DSP_DMA_COVERAGE | FAKE_DSP_DMA_BYTES));
 }
 
@@ -1424,6 +1480,58 @@ CheckNames(
     CHECK_EQ(FwloadPlatformArlS()->UplinkOffset, 0x181000);
 }
 
+static
+void
+CheckOpsContext(
+    HARNESS* H,
+    const SOF_RI_IMAGE* Image)
+{
+    FWLOAD_CL_DMA Dma;
+    SOFIPC4_MSG Message;
+    UINT8 Buffer[16];
+    PVOID Bad[2];
+    UINT32 Before, Index;
+
+    /* a boot hands the harness to every operation it makes */
+    HarnessBoot(H, Image, NULL);
+    CHECK(H->Ctx->Ops == &HarnessOps && H->Ctx->OpsContext == H);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK_EQ(H->OpsSeen, HARNESS_OPS_BOOTED);
+    /* a boot without the harness stops before its first operation */
+    HarnessBoot(H, Image, NULL);
+    H->Ctx->OpsContext = NULL;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadBadState);
+    CHECK_EQ(H->Ctx->State, FwloadStateOff);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(ContextFaults, 0);
+    CHECK(H->OpsSeen == 0 && H->Dsp->Clock == 0 && H->Dsp->WriteCount == 0 && H->Dsp->StreamSubmits == 0);
+    /* the detector itself: with NULL and with the model as the context, every operation is refused */
+    memset(&Dma, 0, sizeof(Dma));
+    memset(&Message, 0, sizeof(Message));
+    memset(Buffer, 0, sizeof(Buffer));
+    Bad[0] = NULL;
+    Bad[1] = H->Dsp;
+    ContextFaultsExpected = 1;
+    Before = ContextFaults;
+    for (Index = 0; Index < 2; Index++)
+    {
+        CHECK_EQ(HarnessOps.Read32(Bad[Index], FWLOAD_BAR_DSP, 0), 0xFFFFFFFF);
+        HarnessOps.Write32(Bad[Index], FWLOAD_BAR_DSP, 0, 0);
+        CHECK(!HarnessOps.ReadMemory(Bad[Index], 0, Buffer, sizeof(Buffer)));
+        CHECK(!HarnessOps.WriteMemory(Bad[Index], 0, Buffer, sizeof(Buffer)));
+        CHECK_EQ(HarnessOps.NowUs(Bad[Index]), 0);
+        HarnessOps.DelayUs(Bad[Index], 1000);
+        CHECK_EQ(HarnessOps.StreamSubmit(Bad[Index], &Dma), FwloadBadState);
+        CHECK_EQ(HarnessOps.StreamTrigger(Bad[Index], TRUE), FwloadBadState);
+        HarnessOps.StreamRelease(Bad[Index]);
+        CHECK(!HarnessOps.IpcIncoming(Bad[Index], &Message));
+        HarnessOps.Log(Bad[Index], "refused");
+    }
+    ContextFaultsExpected = 0;
+    CHECK_EQ(ContextFaults - Before, 2 * HOP_COUNT);
+    CHECK(H->OpsSeen == 0 && H->Dsp->Clock == 0 && H->Dsp->WriteCount == 0 && H->Delays == 0 && H->LogCount == 0);
+}
+
 int
 main(
     int argc,
@@ -1442,6 +1550,7 @@ main(
     Data = LoadRealImage();
     CheckRealImage(Data, Image, Modules);
     CheckHappyPath(&H, Image);
+    CheckOpsContext(&H, Image);
     CheckTimeouts(&H, Image);
     CheckRomErrors(&H, Image);
     CheckFirmwareFaults(&H, Image);
@@ -1456,6 +1565,8 @@ main(
     free(Image);
     free(Modules);
     HarnessFrees(&H);
+    /* the detector case's calls are the only ones ever made without the harness */
+    CHECK_EQ(ContextFaults, 2 * HOP_COUNT);
     printf("fwload: %d checks, %d failures\n", Checks, Failures);
     return Failures ? 1 : 0;
 }

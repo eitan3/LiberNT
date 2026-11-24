@@ -251,7 +251,6 @@ IntcDspOpLog(
 
 static const FWLOAD_OPS IntcDspOps =
 {
-    NULL,
     IntcDspOpRead32,
     IntcDspOpWrite32,
     IntcDspOpReadMemory,

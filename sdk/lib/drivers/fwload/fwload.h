@@ -421,10 +421,11 @@ typedef struct _FWLOAD_CONTEXT FWLOAD_CONTEXT, *PFWLOAD_CONTEXT;
  * Everything the boot code does to the outside world. The hardware operations table of P2b
  * implements it with MMIO, the DMA adapter and the hdaudbus stream interface; the host tests
  * implement it with a DSP model. Time is injected too: NowUs is monotonic, DelayUs advances it.
+ * The table holds functions only, so it can stay static const: every call receives the context
+ * FwloadInitContext was given.
  */
 typedef struct _FWLOAD_OPS
 {
-    PVOID Context;
     UINT32 (*Read32)(PVOID Context, UINT32 Bar, UINT32 Offset);
     VOID (*Write32)(PVOID Context, UINT32 Bar, UINT32 Offset, UINT32 Value);
     BOOLEAN (*ReadMemory)(PVOID Context, UINT32 Offset, UINT8* Buffer, SIZE_T Bytes);
@@ -465,6 +466,7 @@ typedef struct _FWLOAD_FW_CONFIG
 struct _FWLOAD_CONTEXT
 {
     const FWLOAD_OPS* Ops;
+    PVOID OpsContext;
     const FWLOAD_PLATFORM* Platform;
     const SOF_RI_IMAGE* Image;
     FWLOAD_CL_DMA Dma;
@@ -519,6 +521,7 @@ VOID
 FwloadInitContext(
     _Out_ PFWLOAD_CONTEXT Context,
     const FWLOAD_OPS* Ops,
+    PVOID OpsContext,
     const FWLOAD_PLATFORM* Platform,
     const SOF_RI_IMAGE* Image,
     const FWLOAD_CL_DMA* Dma,

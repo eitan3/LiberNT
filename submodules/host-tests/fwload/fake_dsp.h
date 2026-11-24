@@ -110,7 +110,6 @@ typedef struct _FAKE_DSP
 {
     FAKE_DSP_FAULTS Faults;
     const FWLOAD_PLATFORM* Platform;
-    FWLOAD_OPS Ops;
     UINT64 Clock;
     UINT32 SubsystemControl;
     UINT32 CoreControl;
@@ -174,7 +173,7 @@ typedef struct _FAKE_DSP
 
 const FAKE_DSP_FAULTS* FakeDspDefaultFaults(VOID);
 VOID FakeDspInit(PFAKE_DSP Dsp, const FWLOAD_PLATFORM* Platform, const FAKE_DSP_FAULTS* Faults);
-const FWLOAD_OPS* FakeDspOps(PFAKE_DSP Dsp);
+const FWLOAD_OPS* FakeDspOps(VOID);
 BOOLEAN FakeDspPowerEventSeen(const FAKE_DSP* Dsp, UINT32 Event);
 UINT32 FakeDspEventTime(const FAKE_DSP* Dsp, UINT32 Event);
 UINT32 FakeDspWriteCount(const FAKE_DSP* Dsp, UINT32 Bar, UINT32 Offset);

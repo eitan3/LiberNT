@@ -52,7 +52,7 @@ FwloadRead(
     UINT32 Bar,
     UINT32 Offset)
 {
-    return Context->Ops->Read32(Context->Ops->Context, Bar, Offset);
+    return Context->Ops->Read32(Context->OpsContext, Bar, Offset);
 }
 
 static
@@ -63,7 +63,7 @@ FwloadWrite(
     UINT32 Offset,
     UINT32 Value)
 {
-    Context->Ops->Write32(Context->Ops->Context, Bar, Offset, Value);
+    Context->Ops->Write32(Context->OpsContext, Bar, Offset, Value);
 }
 
 static
@@ -85,7 +85,7 @@ UINT64
 FwloadNow(
     const FWLOAD_CONTEXT* Context)
 {
-    return Context->Ops->NowUs(Context->Ops->Context);
+    return Context->Ops->NowUs(Context->OpsContext);
 }
 
 static
@@ -95,7 +95,7 @@ FwloadLog(
     const char* Text)
 {
     if (Context->Ops->Log != NULL)
-        Context->Ops->Log(Context->Ops->Context, Text);
+        Context->Ops->Log(Context->OpsContext, Text);
 }
 
 /* One poll interval, or the cancellation of the boot */
@@ -104,7 +104,7 @@ FWLOAD_STATUS
 FwloadPause(
     const FWLOAD_CONTEXT* Context)
 {
-    Context->Ops->DelayUs(Context->Ops->Context, Context->Timeouts.PollIntervalUs);
+    Context->Ops->DelayUs(Context->OpsContext, Context->Timeouts.PollIntervalUs);
     return Context->Cancel ? FwloadCancelled : FwloadOk;
 }
 
@@ -113,7 +113,7 @@ FWLOAD_STATUS
 FwloadSettle(
     const FWLOAD_CONTEXT* Context)
 {
-    Context->Ops->DelayUs(Context->Ops->Context, Context->Timeouts.PowerSettleUs);
+    Context->Ops->DelayUs(Context->OpsContext, Context->Timeouts.PowerSettleUs);
     return Context->Cancel ? FwloadCancelled : FwloadOk;
 }
 
@@ -333,7 +333,7 @@ FwloadPrepareStream(
     Status = FwloadClDmaPrepare(&Context->Dma, Image->Data + Image->PayloadOffset, Image->PayloadBytes);
     if (Status != FwloadOk)
         return Status;
-    Status = Context->Ops->StreamSubmit(Context->Ops->Context, &Context->Dma);
+    Status = Context->Ops->StreamSubmit(Context->OpsContext, &Context->Dma);
     if (Status != FwloadOk)
         return Status;
     Context->StreamSubmitted = TRUE;
@@ -347,7 +347,7 @@ FwloadCopyFirmware(
 {
     FWLOAD_STATUS Status, Status2;
 
-    Status = Context->Ops->StreamTrigger(Context->Ops->Context, TRUE);
+    Status = Context->Ops->StreamTrigger(Context->OpsContext, TRUE);
     if (Status == FwloadOk)
     {
         switch (FwloadRomStatus(Context, FWLOAD_FSR_FW_ENTERED, Context->Timeouts.BaseFwUs))
@@ -364,12 +364,12 @@ FwloadCopyFirmware(
                 Status = FwloadTimeoutBaseFw;
                 break;
         }
-        Status2 = Context->Ops->StreamTrigger(Context->Ops->Context, FALSE);
+        Status2 = Context->Ops->StreamTrigger(Context->OpsContext, FALSE);
         if (Status == FwloadOk)
             Status = Status2;
     }
     /* the code-loader stream is given back once the copy is over, whichever way it ended */
-    Context->Ops->StreamRelease(Context->Ops->Context);
+    Context->Ops->StreamRelease(Context->OpsContext);
     Context->StreamSubmitted = FALSE;
     return Status;
 }
@@ -478,7 +478,7 @@ FwloadWaitFwReady(
 
     for (;;)
     {
-        if (Context->Ops->IpcIncoming(Context->Ops->Context, &Message))
+        if (Context->Ops->IpcIncoming(Context->OpsContext, &Message))
         {
             if (SofIpc4IsFwReady(&Message))
                 break;
@@ -495,7 +495,7 @@ FwloadWaitFwReady(
             return FwloadTimeoutFwReady;
         FwloadPause(Context);
     }
-    if (!Context->Ops->ReadMemory(Context->Ops->Context, Platform->Window0Offset, Window, sizeof(Window)))
+    if (!Context->Ops->ReadMemory(Context->OpsContext, Platform->Window0Offset, Window, sizeof(Window)))
         return FwloadHardwareFault;
     if (SofIpc4ParseFwRegisters(Window, sizeof(Window), &Context->FwConfig.Registers) != SofIpc4ParseOk)
         return FwloadAbiMismatch;
@@ -522,7 +522,7 @@ FwloadQueryFwConfig(
     FwloadWrite(Context, FWLOAD_BAR_DSP, Platform->IpcRequest, Message.Primary | FWLOAD_IPC_BUSY);
     for (;;)
     {
-        if (Context->Ops->IpcIncoming(Context->Ops->Context, &Reply))
+        if (Context->Ops->IpcIncoming(Context->OpsContext, &Reply))
         {
             if (FwloadIsCrash(&Reply))
             {
@@ -544,7 +544,7 @@ FwloadQueryFwConfig(
     Context->LastIpcStatus = Status;
     if (Status != SofIpc4Success)
         return FwloadIpcError;
-    if (!Context->Ops->ReadMemory(Context->Ops->Context, Platform->UplinkOffset,
+    if (!Context->Ops->ReadMemory(Context->OpsContext, Platform->UplinkOffset,
             Context->Mailbox, FWLOAD_MAILBOX_BYTES))
         return FwloadHardwareFault;
     Result = FwloadParseFwConfig(Context, Context->Mailbox, FWLOAD_MAILBOX_BYTES);
@@ -573,8 +573,8 @@ FwloadPowerOff(
         Status = Result;
     if (Context->StreamSubmitted)
     {
-        Context->Ops->StreamTrigger(Context->Ops->Context, FALSE);
-        Context->Ops->StreamRelease(Context->Ops->Context);
+        Context->Ops->StreamTrigger(Context->OpsContext, FALSE);
+        Context->Ops->StreamRelease(Context->OpsContext);
         Context->StreamSubmitted = FALSE;
     }
     if (Context->CoreOn)
@@ -783,6 +783,7 @@ VOID
 FwloadInitContext(
     PFWLOAD_CONTEXT Context,
     const FWLOAD_OPS* Ops,
+    PVOID OpsContext,
     const FWLOAD_PLATFORM* Platform,
     const SOF_RI_IMAGE* Image,
     const FWLOAD_CL_DMA* Dma,
@@ -793,6 +794,7 @@ FwloadInitContext(
 
     *Context = Empty;
     Context->Ops = Ops;
+    Context->OpsContext = OpsContext;
     Context->Platform = Platform;
     Context->Image = Image;
     if (Dma != NULL)
@@ -812,8 +814,8 @@ FwloadBoot(
 {
     FWLOAD_STATUS Status, Status2;
 
-    if (Context->State != FwloadStateOff || Context->Ops == NULL || Context->Platform == NULL ||
-        Context->Image == NULL || Context->Image->Data == NULL)
+    if (Context->State != FwloadStateOff || Context->Ops == NULL || Context->OpsContext == NULL ||
+        Context->Platform == NULL || Context->Image == NULL || Context->Image->Data == NULL)
         return FwloadBadState;
     Context->BootUs = FwloadNow(Context);
     Context->Attempt = 0;

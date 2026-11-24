@@ -894,9 +894,8 @@ FakeDspLogOp(
     Dsp->TextLogCount++;
 }
 
-static const FWLOAD_OPS FakeDspOpsTemplate =
+static const FWLOAD_OPS FakeDspOpsTable =
 {
-    NULL,
     FakeDspRead32,
     FakeDspWrite32,
     FakeDspReadMemory,
@@ -933,16 +932,14 @@ FakeDspInit(
     FakeDspSet((UINT8*)Dsp, 0, sizeof(*Dsp));
     Dsp->Faults = Faults != NULL ? *Faults : FakeDspDefaults;
     Dsp->Platform = Platform;
-    Dsp->Ops = FakeDspOpsTemplate;
-    Dsp->Ops.Context = Dsp;
     Dsp->RomStatus = FWLOAD_FSR_INIT;
 }
 
 const FWLOAD_OPS*
 FakeDspOps(
-    PFAKE_DSP Dsp)
+    VOID)
 {
-    return &Dsp->Ops;
+    return &FakeDspOpsTable;
 }
 
 BOOLEAN

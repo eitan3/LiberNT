@@ -211,7 +211,7 @@ IntcDspBoot(
     Dma.StreamTag = Dev->StreamTag;
     Dma.StreamFormat = FWLOAD_CL_STREAM_FORMAT;
     FwloadDefaultTimeouts(&Timeouts);
-    FwloadInitContext(Dev->Fw, IntcDspOpsTable(), Platform, &Dev->Ri, &Dma, &Timeouts);
+    FwloadInitContext(Dev->Fw, IntcDspOpsTable(), Dev, Platform, &Dev->Ri, &Dma, &Timeouts);
     Dev->StreamPrepared = TRUE;
     Dev->IntEnableOffset = IntcDspInterruptEnableOffset(Dev);
 

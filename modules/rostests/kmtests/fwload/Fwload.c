@@ -72,7 +72,7 @@ BootWith(
     FWLOAD_STATE ExpectedState)
 {
     FakeDspInit(Dsp, FwloadPlatformArlS(), Faults);
-    FwloadInitContext(Context, FakeDspOps(Dsp), FwloadPlatformArlS(), Parsed, Dma, NULL);
+    FwloadInitContext(Context, FakeDspOps(), Dsp, FwloadPlatformArlS(), Parsed, Dma, NULL);
     ok_eq_int(FwloadBoot(Context), Expected);
     ok_eq_uint(Context->State, ExpectedState);
     ok_eq_uint(Dsp->UnexpectedAccesses, 0);
@@ -143,6 +143,15 @@ START_TEST(Fwload)
     ok_eq_uint(Context->Dma.FragmentCount, 1);
     ok_eq_uint(Context->Dma.StreamTag, FWLOAD_CL_STREAM_TAG);
 
+    /* a boot without the operations context stops before the model sees a single access */
+    FakeDspInit(Dsp, FwloadPlatformArlS(), NULL);
+    FwloadInitContext(Context, FakeDspOps(), NULL, FwloadPlatformArlS(), &Parsed, &Dma, NULL);
+    ok_eq_int(FwloadBoot(Context), FwloadBadState);
+    ok_eq_uint(Context->State, FwloadStateOff);
+    ok_eq_ulonglong(Dsp->Clock, 0);
+    ok_eq_uint(Dsp->WriteCount, 0);
+    ok_eq_uint(Dsp->StreamSubmits, 0);
+
     Faults = *FakeDspDefaultFaults();
     Faults.NeverAckRom = TRUE;
     BootWith(Dsp, Context, &Parsed, &Dma, &Faults, FwloadTimeoutRomInit, FwloadStateFailed);
@@ -181,7 +190,7 @@ START_TEST(Fwload)
     ok_eq_int(FwloadClDmaPrepare(&Dma, Image + Parsed.PayloadOffset, Parsed.PayloadBytes), FwloadOk);
     ok_eq_uint(Dma.FragmentCount, 1);
     Dma.Bdl[0].Bytes -= 16;
-    ok_eq_int(Dsp->Ops.StreamSubmit(Dsp, &Dma), FwloadHardwareFault);
+    ok_eq_int(FakeDspOps()->StreamSubmit(Dsp, &Dma), FwloadHardwareFault);
     ok((Dsp->DmaErrors & FAKE_DSP_DMA_BYTES) != 0, "short descriptor list accepted\n");
     ok_eq_int(FwloadClDmaEntryCount(&Segment, 1, Parsed.PayloadBytes, 0x1000), 10);
     ok_eq_int(FwloadClDmaEntryCount(&Segment, 1, Parsed.PayloadBytes, 0), 1);
