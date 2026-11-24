@@ -35,6 +35,13 @@
 #define FAKE_DSP_DMA_IOC       0x00000040UL
 #define FAKE_DSP_DMA_BYTES     0x00000080UL
 
+/* Violations of the IPC receive protocol the model found */
+#define FAKE_DSP_IPC_ACK_WITHOUT_DONE    0x00000001UL /* the done bit was written back while it was not set */
+#define FAKE_DSP_IPC_ACK_BEFORE_READ     0x00000002UL /* a reply was acknowledged before its uplink mailbox, or FW_READY before its register window, was read */
+#define FAKE_DSP_IPC_ACK_WITHOUT_BUSY    0x00000004UL /* the target busy bit was written back while it was not set */
+#define FAKE_DSP_IPC_REPLY_LEFT_PENDING  0x00000008UL /* a reply is still waiting for its done bit */
+#define FAKE_DSP_IPC_NOTIFY_LEFT_BUSY    0x00000010UL /* a notification is still waiting for its acknowledgement */
+
 /* Power events, in the order the loader causes them */
 #define FAKE_POWER_INTERRUPTS_OFF 1
 #define FAKE_POWER_STREAM_RELEASE 2
@@ -118,6 +125,9 @@ typedef struct _FAKE_DSP
     UINT32 IpcRequest;
     UINT32 IpcRequestData;
     UINT32 IpcReply;
+    UINT32 IpcTarget;
+    UINT32 IpcTargetData;
+    UINT32 IpcTargetAck;
     UINT32 IpcControl;
     UINT32 RomStatus;
     UINT32 RomError;
@@ -133,8 +143,6 @@ typedef struct _FAKE_DSP
     BOOLEAN RomStarted;
     BOOLEAN RomRequestPending;
     BOOLEAN FirmwareEntered;
-    SOFIPC4_MSG Incoming;
-    BOOLEAN IncomingValid;
     UINT16 Version[4];
     UINT32 DmaErrors;
     UINT32 UnexpectedAccesses;
@@ -162,6 +170,17 @@ typedef struct _FAKE_DSP
     UINT32 PowerEvents;
     UINT32 PowerOrder[16];
     UINT32 PowerOrderCount;
+    /* what the model posted into the receive registers, and what the loader read and acknowledged */
+    UINT32 Replies;
+    UINT32 Notifications;
+    UINT32 UplinkReads;
+    UINT32 WindowReads;
+    UINT32 UplinkReadsAtReply;
+    UINT32 WindowReadsAtNotification;
+    UINT32 IpcProtocolErrors;
+    BOOLEAN ReplyPending;
+    BOOLEAN NotificationPending;
+    BOOLEAN NotificationIsFwReady;
     FAKE_DSP_WRITE WriteLog[FAKE_DSP_WRITE_LOG];
     UINT32 WriteCount;
     UINT32 EventLog[FAKE_DSP_EVENT_LOG];
@@ -178,5 +197,6 @@ BOOLEAN FakeDspPowerEventSeen(const FAKE_DSP* Dsp, UINT32 Event);
 UINT32 FakeDspEventTime(const FAKE_DSP* Dsp, UINT32 Event);
 UINT32 FakeDspWriteCount(const FAKE_DSP* Dsp, UINT32 Bar, UINT32 Offset);
 const FAKE_DSP_WRITE* FakeDspWriteFind(const FAKE_DSP* Dsp, UINT32 Bar, UINT32 Offset, UINT32 ValueMask);
+UINT32 FakeDspIpcErrors(const FAKE_DSP* Dsp);
 
 #endif

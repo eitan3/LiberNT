@@ -407,6 +407,7 @@ FakeDspFire(
             Dsp->RomStarted = FALSE;
             Dsp->RomRequestPending = FALSE;
             Dsp->IpcReply &= ~FAKE_DSP_IPC_DONE;
+            Dsp->ReplyPending = FALSE;
             Dsp->RomStatus = FWLOAD_FSR_INIT;
             break;
         case FAKE_EVENT_ROM_ACK:
@@ -439,17 +440,25 @@ FakeDspFire(
             Message.Primary = Dsp->Faults.CrashNotification != 0 ?
                 (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
                     (Dsp->Faults.CrashNotification << SOFIPC4_NOTIFICATION_TYPE_SHIFT) : SOFIPC4_FW_READY_PRIMARY;
-            Message.Extension = 0;
-            Dsp->Incoming = Message;
-            Dsp->IncomingValid = TRUE;
+            /* a notification the firmware posts: the target register goes busy with the header, the data register carries the extension, the target acknowledgement its busy bit */
+            Dsp->IpcTarget = FAKE_DSP_IPC_BUSY | Message.Primary;
+            Dsp->IpcTargetData = 0;
+            Dsp->IpcTargetAck |= FAKE_DSP_IPC_BUSY;
+            Dsp->NotificationPending = TRUE;
+            Dsp->NotificationIsFwReady = Dsp->Faults.CrashNotification == 0;
+            Dsp->WindowReadsAtNotification = Dsp->WindowReads;
+            Dsp->Notifications++;
             break;
         case FAKE_EVENT_IPC_REPLY:
             FakeDspWriteFwConfig(Dsp);
             Message.Primary = (SofIpc4ModConfigGet << SOFIPC4_TYPE_SHIFT) | SOFIPC4_RSP_BIT |
                 SOFIPC4_MSG_TGT_BIT | (Value & SOFIPC4_PRIMARY_PAYLOAD_MASK);
-            Message.Extension = 0;
-            Dsp->Incoming = Message;
-            Dsp->IncomingValid = TRUE;
+            /* a reply to a host request: the reply register goes done with the header, the data register carries the extension */
+            Dsp->IpcReply = FAKE_DSP_IPC_DONE | Message.Primary;
+            Dsp->IpcTargetData = 0;
+            Dsp->ReplyPending = TRUE;
+            Dsp->UplinkReadsAtReply = Dsp->UplinkReads;
+            Dsp->Replies++;
             break;
         case FAKE_EVENT_HALT:
             Dsp->RomError = Value;
@@ -555,6 +564,12 @@ FakeDspRead32(
             return Dsp->IpcRequestData;
         if (Offset == Platform->IpcReply)
             return Dsp->IpcReply;
+        if (Offset == Platform->IpcTarget)
+            return Dsp->IpcTarget;
+        if (Offset == Platform->IpcTargetData)
+            return Dsp->IpcTargetData;
+        if (Offset == Platform->IpcTargetAck)
+            return Dsp->IpcTargetAck;
         if (Offset == Platform->IpcControl)
             return Dsp->IpcControl;
         if (Offset == Platform->RomStatus)
@@ -659,8 +674,35 @@ FakeDspWrite32(
         }
         if (Offset == Platform->IpcReply)
         {
+            /* the done bit is write-1-to-clear; the header beside it stays readable until the next reply */
             if (Value & FAKE_DSP_IPC_DONE)
+            {
+                if (!(Dsp->IpcReply & FAKE_DSP_IPC_DONE))
+                    Dsp->IpcProtocolErrors |= FAKE_DSP_IPC_ACK_WITHOUT_DONE;
+                if (Dsp->ReplyPending && Dsp->UplinkReads == Dsp->UplinkReadsAtReply)
+                    Dsp->IpcProtocolErrors |= FAKE_DSP_IPC_ACK_BEFORE_READ;
+                Dsp->ReplyPending = FALSE;
                 Dsp->IpcReply &= ~FAKE_DSP_IPC_DONE;
+            }
+            return;
+        }
+        if (Offset == Platform->IpcTarget)
+        {
+            /* the host-done sequence writes the busy bit back */
+            if (Value & FAKE_DSP_IPC_BUSY)
+            {
+                if (!(Dsp->IpcTarget & FAKE_DSP_IPC_BUSY))
+                    Dsp->IpcProtocolErrors |= FAKE_DSP_IPC_ACK_WITHOUT_BUSY;
+                if (Dsp->NotificationPending && Dsp->NotificationIsFwReady && Dsp->WindowReads == Dsp->WindowReadsAtNotification)
+                    Dsp->IpcProtocolErrors |= FAKE_DSP_IPC_ACK_BEFORE_READ;
+                Dsp->NotificationPending = FALSE;
+                Dsp->IpcTarget &= ~FAKE_DSP_IPC_BUSY;
+            }
+            return;
+        }
+        if (Offset == Platform->IpcTargetAck)
+        {
+            Dsp->IpcTargetAck = Value;
             return;
         }
         if (Offset == Platform->IpcRequest)
@@ -716,6 +758,11 @@ FakeDspReadMemory(
     PFAKE_DSP Dsp = (PFAKE_DSP)Context;
 
     FakeDspAdvance(Dsp);
+    /* a read the loader attempts counts, whether or not the injected fault lets it succeed */
+    if (Offset == Dsp->Platform->UplinkOffset)
+        Dsp->UplinkReads++;
+    if (Offset == Dsp->Platform->Window0Offset)
+        Dsp->WindowReads++;
     if (Dsp->Faults.MemoryReadFails)
         return FALSE;
     if (Offset < Dsp->Platform->Window0Offset ||
@@ -841,22 +888,6 @@ FakeDspStreamRelease(
 }
 
 static
-BOOLEAN
-FakeDspIpcIncoming(
-    PVOID Context,
-    PSOFIPC4_MSG Message)
-{
-    PFAKE_DSP Dsp = (PFAKE_DSP)Context;
-
-    FakeDspAdvance(Dsp);
-    if (!Dsp->IncomingValid)
-        return FALSE;
-    *Message = Dsp->Incoming;
-    Dsp->IncomingValid = FALSE;
-    return TRUE;
-}
-
-static
 VOID
 FakeDspLogOp(
     PVOID Context,
@@ -883,7 +914,6 @@ static const FWLOAD_OPS FakeDspOpsTable =
     FakeDspStreamSubmit,
     FakeDspStreamTrigger,
     FakeDspStreamRelease,
-    FakeDspIpcIncoming,
     FakeDspLogOp
 };
 
@@ -969,4 +999,18 @@ FakeDspWriteFind(
             (Dsp->WriteLog[Index].Value & ValueMask) == ValueMask)
             return &Dsp->WriteLog[Index];
     return NULL;
+}
+
+/* The protocol violations the model saw, and a message the loader left without its acknowledgement */
+UINT32
+FakeDspIpcErrors(
+    const FAKE_DSP* Dsp)
+{
+    UINT32 Errors = Dsp->IpcProtocolErrors;
+
+    if (Dsp->IpcReply & FAKE_DSP_IPC_DONE)
+        Errors |= FAKE_DSP_IPC_REPLY_LEFT_PENDING;
+    if (Dsp->IpcTarget & FAKE_DSP_IPC_BUSY)
+        Errors |= FAKE_DSP_IPC_NOTIFY_LEFT_BUSY;
+    return Errors;
 }

@@ -42,18 +42,7 @@
 #define INTCDSP_CAP_VERSION_SHIFT 28
 #define INTCDSP_CAP_NEXT_MASK     0xFFFF
 
-/* The done bit of the IPC reply register, Linux v6.12 sound/soc/sof/intel/mtl.h MTL_DSP_REG_HFIPCXIDA_DONE (studied under LICENSING.md rule 7) */
-#define INTCDSP_XIDA_DONE         0x80000000UL
-
-/* The DSP-to-host message registers of the ACE 1.0 family: mtl.h MTL_DSP_REG_HFIPCXTDR, HFIPCXTDA and HFIPCXTDDY with their busy bits; the host acknowledges a message with mtl.c mtl_ipc_host_done (rule 7) */
-#define INTCDSP_XTDR              0x73200
-#define INTCDSP_XTDR_BUSY         0x80000000UL
-#define INTCDSP_XTDR_MSG_MASK     0x7FFFFFFFUL
-#define INTCDSP_XTDA              0x73204
-#define INTCDSP_XTDA_BUSY         0x80000000UL
-#define INTCDSP_XTDDY             0x73300
-
-/* Interrupt enables of the host IPC: the bit of the register the interrupt pointer names (mtl.h MTL_IRQ_INTEN_L_HOST_IPC_MASK), of HfHIPCIE (MTL_DSP_REG_HfHIPCIE_IE_MASK) and of HFIPCXCTL (MTL_DSP_REG_HFIPCXCTL_BUSY, _DONE) */
+/* Interrupt enables of the host IPC: the bit of the register the interrupt pointer names (mtl.h MTL_IRQ_INTEN_L_HOST_IPC_MASK), of HfHIPCIE (MTL_DSP_REG_HfHIPCIE_IE_MASK) and of HFIPCXCTL (MTL_DSP_REG_HFIPCXCTL_BUSY, _DONE); the reply and target registers and their busy and done bits are the fwload platform table's */
 #define INTCDSP_INTEN_HOST_IPC    0x00000001UL
 #define INTCDSP_HIPCIE_IE         0x00000001UL
 #define INTCDSP_IPCCTL_BUSY_INT   0x00000001UL

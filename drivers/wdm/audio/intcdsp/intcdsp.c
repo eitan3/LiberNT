@@ -239,10 +239,10 @@ IntcDspBoot(
     Status = FwloadBoot(Dev->Fw);
     Dev->InterruptArmed = FALSE;
     Dev->LastStatus = Status;
-    IntcDspLog("boot %s after %I64u us: state %s, failed in %s (%s), ROM status 0x%08x %s, ROM error 0x%08x %s, IPC status %u, attempt %u, %ld DSP interrupts, cleanup %s\n",
+    IntcDspLog("boot %s after %I64u us: state %s, failed in %s (%s), ROM status 0x%08x %s, ROM error 0x%08x %s, IPC status %u, last DSP message 0x%08x|0x%08x, attempt %u, %ld DSP interrupts, cleanup %s\n",
                FwloadStatusName(Status), Dev->Fw->BootUs, FwloadStateName(Dev->Fw->State), FwloadStateName(Dev->Fw->FailedState),
                FwloadStatusName(Dev->Fw->Status), Dev->Fw->RomStatus, FwloadFsrStateName(Dev->Fw->RomStatus & FWLOAD_FSR_STATE_MASK),
-               Dev->Fw->RomError, FwloadRomErrorName(Dev->Fw->RomError), Dev->Fw->LastIpcStatus, Dev->Fw->Attempt,
+               Dev->Fw->RomError, FwloadRomErrorName(Dev->Fw->RomError), Dev->Fw->LastIpcStatus, Dev->Fw->LastIpcPrimary, Dev->Fw->LastIpcExtension, Dev->Fw->Attempt,
                Dev->Interrupts, FwloadStatusName(Dev->Fw->CleanupStatus));
     if (Status == FwloadOk)
     {

@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT Intel Smart Sound DSP driver
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The hardware side of the firmware loader's operations table: BAR4 register and window access, the clock, the hdaudbus code-loader stream, the DSP-to-host IPC receive path and the interrupt callback
+ * PURPOSE:     The hardware side of the firmware loader's operations table: BAR4 register and window access, the clock, the hdaudbus code-loader stream and the interrupt callback
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -194,29 +194,6 @@ IntcDspOpStreamRelease(
     IntcDspReleaseStream((PINTCDSP_DEVICE)Context);
 }
 
-/* The receive path of a DSP-to-host message on ACE 1.0: the done bit of the request is acknowledged, then a busy target register yields the primary and the extension (mtl.c mtl_ipc_irq_thread, mtl_ipc_dsp_done, mtl_ipc_host_done; studied under LICENSING.md rule 7) */
-static
-BOOLEAN
-IntcDspOpIpcIncoming(
-    PVOID Context,
-    PSOFIPC4_MSG Message)
-{
-    PINTCDSP_DEVICE Dev = Context;
-    UINT32 Xtdr;
-
-    if (IntcDspRead32(Dev, Dev->Platform->IpcReply) & INTCDSP_XIDA_DONE)
-        IntcDspWrite32(Dev, Dev->Platform->IpcReply, INTCDSP_XIDA_DONE);
-    Xtdr = IntcDspRead32(Dev, INTCDSP_XTDR);
-    if (!(Xtdr & INTCDSP_XTDR_BUSY))
-        return FALSE;
-    Message->Extension = IntcDspRead32(Dev, INTCDSP_XTDDY);
-    Message->Primary = Xtdr & INTCDSP_XTDR_MSG_MASK;
-    IntcDspWrite32(Dev, INTCDSP_XTDR, Xtdr | INTCDSP_XTDR_BUSY);
-    IntcDspWrite32(Dev, INTCDSP_XTDA, IntcDspRead32(Dev, INTCDSP_XTDA) & ~INTCDSP_XTDA_BUSY);
-    IntcDspLog("DSP message 0x%08x|0x%08x\n", Message->Primary, Message->Extension);
-    return TRUE;
-}
-
 static
 VOID
 IntcDspOpLog(
@@ -237,7 +214,6 @@ static const FWLOAD_OPS IntcDspOps =
     IntcDspOpStreamSubmit,
     IntcDspOpStreamTrigger,
     IntcDspOpStreamRelease,
-    IntcDspOpIpcIncoming,
     IntcDspOpLog
 };
 
@@ -269,8 +245,8 @@ IntcDspInterruptCallback(
     if (!Dev->InterruptArmed)
         return FALSE;
     Xida = IntcDspRead32(Dev, Dev->Platform->IpcReply);
-    Xtdr = IntcDspRead32(Dev, INTCDSP_XTDR);
-    if (!(Xida & INTCDSP_XIDA_DONE) && !(Xtdr & INTCDSP_XTDR_BUSY))
+    Xtdr = IntcDspRead32(Dev, Dev->Platform->IpcTarget);
+    if (!(Xida & FWLOAD_IPC_DONE) && !(Xtdr & FWLOAD_IPC_BUSY))
         return FALSE;
     InterlockedIncrement(&Dev->Interrupts);
     IntcDspMaskInterrupts(Dev);

@@ -32,10 +32,8 @@
 #define FWLOAD_HIPCIE_IE            0x00000001UL
 #define FWLOAD_IPCCTL_BUSY_INT      0x00000001UL
 #define FWLOAD_IPCCTL_DONE_INT      0x00000002UL
-/* mtl.h MTL_DSP_REG_HFIPCXIDR_BUSY and MTL_DSP_REG_HFIPCXIDA_DONE are both bit 31 */
-#define FWLOAD_IPC_BUSY             0x80000000UL
-#define FWLOAD_IPC_DONE             0x80000000UL
 #define FWLOAD_FW_REGS_WINDOW_BYTES 0x40
+
 
 typedef enum _FWLOAD_OUTCOME
 {
@@ -97,6 +95,19 @@ FwloadLog(
     if (Context->Ops->Log != NULL)
         Context->Ops->Log(Context->OpsContext, Text);
 }
+
+static
+BOOLEAN
+FwloadIpcReceive(
+    FWLOAD_CONTEXT* Context,
+    PSOFIPC4_MSG Message,
+    PBOOLEAN FromReply);
+
+static
+VOID
+FwloadIpcDone(
+    const FWLOAD_CONTEXT* Context,
+    BOOLEAN FromReply);
 
 /* One poll interval, or the cancellation of the boot */
 static
@@ -304,7 +315,7 @@ FwloadRomInit(
         FWLOAD_IPC_DONE, Context->Timeouts.RomInitUs), FwloadTimeoutRomInit);
     if (Status != FwloadOk)
         return Status;
-    FwloadUpdate(Context, FWLOAD_BAR_DSP, Platform->IpcReply, FWLOAD_IPC_DONE, FWLOAD_IPC_DONE);
+    FwloadIpcDone(Context, TRUE);
     Status = FwloadInterruptsEnable(Context, TRUE);
     if (Status != FwloadOk)
         return Status;
@@ -466,6 +477,58 @@ FwloadIsCrash(
         SofIpc4NotificationType(Message) == SOFIPC4_NOTIFY_WATCHDOG_TIMEOUT;
 }
 
+/*
+ * The receive path of a DSP-to-host message on ACE 1.0, the order of mtl.c mtl_ipc_irq_thread: a done
+ * bit in the reply register is looked at first and carries a reply (header = the register without the
+ * done bit, extension = the target data register, mtl.h MTL_DSP_REG_HFIPCXTDDY); a busy bit in the
+ * target register carries a notification the same way. Nothing is acknowledged here: the caller
+ * consumes the message first and then acknowledges it, as the irq thread runs the message handlers
+ * before mtl_ipc_dsp_done and mtl_ipc_host_done.
+ */
+static
+BOOLEAN
+FwloadIpcReceive(
+    FWLOAD_CONTEXT* Context,
+    PSOFIPC4_MSG Message,
+    PBOOLEAN FromReply)
+{
+    const FWLOAD_PLATFORM* Platform = Context->Platform;
+    UINT32 Header = FwloadRead(Context, FWLOAD_BAR_DSP, Platform->IpcReply);
+
+    if (Header & FWLOAD_IPC_DONE)
+        *FromReply = TRUE;
+    else
+    {
+        Header = FwloadRead(Context, FWLOAD_BAR_DSP, Platform->IpcTarget);
+        if (!(Header & FWLOAD_IPC_BUSY))
+            return FALSE;
+        *FromReply = FALSE;
+    }
+    Message->Primary = Header & FWLOAD_IPC_MSG_MASK;
+    Message->Extension = FwloadRead(Context, FWLOAD_BAR_DSP, Platform->IpcTargetData);
+    Context->LastIpcPrimary = Message->Primary;
+    Context->LastIpcExtension = Message->Extension;
+    return TRUE;
+}
+
+/* The acknowledgement of a received message once its payload was read: a reply's done bit is written back (mtl.c mtl_ipc_dsp_done), a notification's busy bit is written back and the target acknowledgement cleared (mtl_ipc_host_done) */
+static
+VOID
+FwloadIpcDone(
+    const FWLOAD_CONTEXT* Context,
+    BOOLEAN FromReply)
+{
+    const FWLOAD_PLATFORM* Platform = Context->Platform;
+
+    if (FromReply)
+    {
+        FwloadWrite(Context, FWLOAD_BAR_DSP, Platform->IpcReply, FWLOAD_IPC_DONE);
+        return;
+    }
+    FwloadUpdate(Context, FWLOAD_BAR_DSP, Platform->IpcTarget, FWLOAD_IPC_BUSY, FWLOAD_IPC_BUSY);
+    FwloadUpdate(Context, FWLOAD_BAR_DSP, Platform->IpcTargetAck, FWLOAD_IPC_BUSY, 0);
+}
+
 static
 FWLOAD_STATUS
 FwloadWaitFwReady(
@@ -474,15 +537,23 @@ FwloadWaitFwReady(
     const FWLOAD_PLATFORM* Platform = Context->Platform;
     UINT8 Window[FWLOAD_FW_REGS_WINDOW_BYTES];
     SOFIPC4_MSG Message;
+    BOOLEAN FromReply, WindowRead;
     UINT64 Start = FwloadNow(Context);
 
     for (;;)
     {
-        if (Context->Ops->IpcIncoming(Context->OpsContext, &Message))
+        if (FwloadIpcReceive(Context, &Message, &FromReply))
         {
-            if (SofIpc4IsFwReady(&Message))
+            /* the firmware's register window is read before the notification is acknowledged */
+            if (!FromReply && SofIpc4IsFwReady(&Message))
+            {
+                WindowRead = Context->Ops->ReadMemory(Context->OpsContext, Platform->Window0Offset, Window, sizeof(Window));
+                FwloadIpcDone(Context, FromReply);
                 break;
-            if (FwloadIsCrash(&Message))
+            }
+            /* a crash notification fails the boot; anything else, a reply nobody asked for, is acknowledged and skipped */
+            FwloadIpcDone(Context, FromReply);
+            if (!FromReply && FwloadIsCrash(&Message))
             {
                 Context->RomError = SofIpc4NotificationType(&Message);
                 return FwloadFwCrash;
@@ -495,7 +566,7 @@ FwloadWaitFwReady(
             return FwloadTimeoutFwReady;
         FwloadPause(Context);
     }
-    if (!Context->Ops->ReadMemory(Context->OpsContext, Platform->Window0Offset, Window, sizeof(Window)))
+    if (!WindowRead)
         return FwloadHardwareFault;
     if (SofIpc4ParseFwRegisters(Window, sizeof(Window), &Context->FwConfig.Registers) != SofIpc4ParseOk)
         return FwloadAbiMismatch;
@@ -512,6 +583,7 @@ FwloadQueryFwConfig(
 {
     const FWLOAD_PLATFORM* Platform = Context->Platform;
     SOFIPC4_MSG Message, Reply;
+    BOOLEAN FromReply, Parsed, MailboxRead;
     UINT64 Start = FwloadNow(Context);
     UINT32 Status = 0;
     FWLOAD_STATUS Result;
@@ -522,16 +594,18 @@ FwloadQueryFwConfig(
     FwloadWrite(Context, FWLOAD_BAR_DSP, Platform->IpcRequest, Message.Primary | FWLOAD_IPC_BUSY);
     for (;;)
     {
-        if (Context->Ops->IpcIncoming(Context->OpsContext, &Reply))
+        if (FwloadIpcReceive(Context, &Reply, &FromReply))
         {
+            /* the reply ends the wait; a crash notification fails the boot; anything else is acknowledged and skipped */
+            if (FromReply)
+                break;
+            FwloadIpcDone(Context, FALSE);
             if (FwloadIsCrash(&Reply))
             {
                 Context->RomError = SofIpc4NotificationType(&Reply);
                 return FwloadFwCrash;
             }
-            if (SofIpc4IsNotification(&Reply))
-                continue;
-            break;
+            continue;
         }
         if (Context->Cancel)
             return FwloadCancelled;
@@ -539,13 +613,17 @@ FwloadQueryFwConfig(
             return FwloadTimeoutIpcReply;
         FwloadPause(Context);
     }
-    if (!SofIpc4ParseReply(&Reply, SofIpc4ModConfigGet, SOFIPC4_TARGET_MODULE_MSG, &Status))
+    /* the header is parsed and the payload read before the done bit is written back, whatever the reply says */
+    Parsed = SofIpc4ParseReply(&Reply, SofIpc4ModConfigGet, SOFIPC4_TARGET_MODULE_MSG, &Status);
+    MailboxRead = Context->Ops->ReadMemory(Context->OpsContext, Platform->UplinkOffset,
+        Context->Mailbox, FWLOAD_MAILBOX_BYTES);
+    FwloadIpcDone(Context, TRUE);
+    if (!Parsed)
         return FwloadIpcBadReply;
     Context->LastIpcStatus = Status;
     if (Status != SofIpc4Success)
         return FwloadIpcError;
-    if (!Context->Ops->ReadMemory(Context->OpsContext, Platform->UplinkOffset,
-            Context->Mailbox, FWLOAD_MAILBOX_BYTES))
+    if (!MailboxRead)
         return FwloadHardwareFault;
     Result = FwloadParseFwConfig(Context, Context->Mailbox, FWLOAD_MAILBOX_BYTES);
     if (Result != FwloadOk)
@@ -644,6 +722,9 @@ FwloadPlatformArlS(
         0x73380,    /* MTL_DSP_REG_HFIPCXIDDY */
         0x73214,    /* MTL_DSP_REG_HFIPCXIDA */
         0x73228,    /* MTL_DSP_REG_HFIPCXCTL */
+        0x73200,    /* MTL_DSP_REG_HFIPCXTDR */
+        0x73204,    /* MTL_DSP_REG_HFIPCXTDA */
+        0x73300,    /* MTL_DSP_REG_HFIPCXTDDY */
         0x163200,   /* MTL_DSP_REG_HFFLGPXQWY */
         0x163204,   /* MTL_DSP_REG_HFFLGPXQWY_ERROR */
         0x180000,   /* MTL_SRAM_WINDOW_OFFSET(0) */

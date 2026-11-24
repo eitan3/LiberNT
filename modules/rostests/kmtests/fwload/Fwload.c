@@ -76,6 +76,8 @@ BootWith(
     ok_eq_int(FwloadBoot(Context), Expected);
     ok_eq_uint(Context->State, ExpectedState);
     ok_eq_uint(Dsp->UnexpectedAccesses, 0);
+    /* every message the firmware posted was acknowledged before the boot ended */
+    ok_eq_uint(FakeDspIpcErrors(Dsp), 0);
     ok_eq_uint(Dsp->StreamSubmits, Dsp->StreamReleases);
     ok(FakeDspPowerEventSeen(Dsp, FAKE_POWER_GPROCEN_ON) != FALSE, "GPROCEN never enabled\n");
     if (ExpectedState != FwloadStateReady)

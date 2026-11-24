@@ -64,9 +64,8 @@ static int Failures;
 #define HOP_STREAMSUBMIT    5
 #define HOP_STREAMTRIGGER   6
 #define HOP_STREAMRELEASE   7
-#define HOP_IPCINCOMING     8
-#define HOP_LOG             9
-#define HOP_COUNT           10
+#define HOP_LOG             8
+#define HOP_COUNT           9
 #define HARNESS_OPS_BOOTED  ((1u << HOP_COUNT) - 1)
 
 typedef struct _HARNESS
@@ -215,17 +214,6 @@ HStreamRelease(
 }
 
 static
-BOOLEAN
-HIpcIncoming(
-    PVOID Context,
-    PSOFIPC4_MSG Message)
-{
-    HARNESS* H = HarnessEnter(Context, HOP_IPCINCOMING, "IpcIncoming");
-
-    return H != NULL ? FakeDspOps()->IpcIncoming(H->Dsp, Message) : FALSE;
-}
-
-static
 VOID
 HLog(
     PVOID Context,
@@ -254,7 +242,6 @@ static const FWLOAD_OPS HarnessOps =
     HStreamSubmit,
     HStreamTrigger,
     HStreamRelease,
-    HIpcIncoming,
     HLog
 };
 
@@ -387,6 +374,8 @@ CheckFailedBootIsOff(
     CHECK_EQ(Dsp->StreamSubmits, Dsp->StreamReleases);
     CHECK_EQ(Dsp->StreamSubmits, Dsp->StreamStops);
     CHECK(Dsp->StreamStarts <= Dsp->StreamStops);
+    /* every message the DSP posted was consumed and acknowledged before the boot gave up */
+    CHECK_EQ(FakeDspIpcErrors(Dsp), 0);
     if (FailedState != FwloadStatePoweringUp)
         CHECK(FakeDspPowerEventSeen(Dsp, FAKE_POWER_INTERRUPTS_OFF));
     /* the failed context can still be powered down to off */
@@ -646,6 +635,89 @@ CheckTimeouts(
     CHECK_EQ(FwloadBoot(H->Ctx), FwloadTimeoutRomInit);
     CHECK_EQ(H->Dsp->RomRequests, 1);
     CHECK_EQ(H->Ctx->Attempt, 1);
+}
+
+/*
+ * The first reply of a booted firmware (the p2b2 image's D1): the done register carries the header, the target data
+ * register the extension, no notification is pending; the reply reaches the parser and the tuple walk, the payload is
+ * read before the done bit is written back, and the model sees no protocol violation
+ */
+static
+void
+CheckFwConfigReply(
+    HARNESS* H,
+    const SOF_RI_IMAGE* Image)
+{
+    const FWLOAD_PLATFORM* Platform = FwloadPlatformArlS();
+    FAKE_DSP_FAULTS Faults;
+    UINT32 Index, Query = 0xFFFFFFFF, Acks = 0, LastAck = 0;
+
+    HarnessBoot(H, Image, NULL);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    /* the model posted FW_READY into the target register and the reply into the done register, and nothing else */
+    CHECK_EQ(H->Dsp->Notifications, 1);
+    CHECK_EQ(H->Dsp->Replies, 1);
+    CHECK_EQ(H->Dsp->LastIpcPrimary, 0xC1000000UL);
+    /* the receive path took the header from the done register without its bit and the extension from the target data register */
+    CHECK_EQ(H->Ctx->LastIpcPrimary, 0x61000000UL);
+    CHECK_EQ(H->Ctx->LastIpcExtension, 0);
+    /* the reply reached SofIpc4ParseReply: its status came out of the header */
+    CHECK_EQ(H->Ctx->LastIpcStatus, SofIpc4Success);
+    /* and the tuple walk ran over the uplink mailbox, which was read exactly once */
+    CHECK_EQ(H->Dsp->UplinkReads, 1);
+    CHECK_EQ(H->Ctx->FwConfig.TupleCount, 8);
+    CHECK(H->Ctx->FwConfig.HasVersion && H->Ctx->FwConfig.Major == Image->Major && H->Ctx->FwConfig.Build == Image->Build);
+    CHECK_EQ(H->Dsp->WindowReads, 1);
+    /* the done bit went back once for the reply after once for the ROM's acknowledgement, and after the query; the busy bit and its acknowledgement once each */
+    for (Index = 0; Index < H->Dsp->WriteCount; Index++)
+    {
+        const FAKE_DSP_WRITE* Write = &H->Dsp->WriteLog[Index];
+
+        if (Write->Offset == Platform->IpcRequest && (Write->Value & 0x40000000UL))
+            Query = Index;
+        if (Write->Offset == Platform->IpcReply && (Write->Value & FWLOAD_IPC_DONE))
+        {
+            Acks++;
+            LastAck = Index;
+        }
+    }
+    CHECK_EQ(Acks, 2);
+    CHECK(Query != 0xFFFFFFFF && LastAck > Query);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, Platform->IpcTarget), 1);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, Platform->IpcTargetAck), 1);
+    /* nothing was acknowledged before its payload was read, and nothing was left unacknowledged */
+    CHECK_EQ(FakeDspIpcErrors(H->Dsp), 0);
+    CHECK((H->Dsp->IpcReply & FWLOAD_IPC_DONE) == 0 && (H->Dsp->IpcTarget & FWLOAD_IPC_BUSY) == 0);
+    CHECK((H->Dsp->IpcTargetAck & FWLOAD_IPC_BUSY) == 0);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(FakeDspIpcErrors(H->Dsp), 0);
+
+    /* the acknowledgement follows the reply whatever the boot decides about it: a refused query, a bad header, malformed tuples, a shifted version */
+    Faults = *FakeDspDefaultFaults();
+    Faults.IpcStatus = SofIpc4Busy;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadIpcError);
+    CheckFailedBootIsOff(H, FwloadIpcError, FwloadStateConfiguring);
+    CHECK_EQ(H->Ctx->LastIpcPrimary, 0x61000004UL);
+    Faults = *FakeDspDefaultFaults();
+    Faults.TupleFault = FAKE_DSP_TUPLES_NO_VERSION;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadIpcBadReply);
+    CheckFailedBootIsOff(H, FwloadIpcBadReply, FwloadStateConfiguring);
+    Faults = *FakeDspDefaultFaults();
+    Faults.ReportedVersionShift = 1;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadVersionMismatch);
+    CheckFailedBootIsOff(H, FwloadVersionMismatch, FwloadStateConfiguring);
+    CHECK_EQ(H->Ctx->LastIpcPrimary, 0x61000000UL);
+    /* a crash notification while the reply is waited for is acknowledged too */
+    Faults = *FakeDspDefaultFaults();
+    Faults.CrashNotification = SOFIPC4_NOTIFY_EXCEPTION_CAUGHT;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadFwCrash);
+    CheckFailedBootIsOff(H, FwloadFwCrash, FwloadStateFwReady);
+    CHECK_EQ(H->Ctx->LastIpcPrimary, (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
+        (SOFIPC4_NOTIFY_EXCEPTION_CAUGHT << SOFIPC4_NOTIFICATION_TYPE_SHIFT));
 }
 
 static
@@ -1471,7 +1543,6 @@ CheckOpsContext(
     const SOF_RI_IMAGE* Image)
 {
     FWLOAD_CL_DMA Dma;
-    SOFIPC4_MSG Message;
     UINT8 Buffer[16];
     PVOID Bad[2];
     UINT32 Before, Index;
@@ -1491,7 +1562,6 @@ CheckOpsContext(
     CHECK(H->OpsSeen == 0 && H->Dsp->Clock == 0 && H->Dsp->WriteCount == 0 && H->Dsp->StreamSubmits == 0);
     /* the detector itself: with NULL and with the model as the context, every operation is refused */
     memset(&Dma, 0, sizeof(Dma));
-    memset(&Message, 0, sizeof(Message));
     memset(Buffer, 0, sizeof(Buffer));
     Bad[0] = NULL;
     Bad[1] = H->Dsp;
@@ -1507,7 +1577,6 @@ CheckOpsContext(
         CHECK_EQ(HarnessOps.StreamSubmit(Bad[Index], &Dma), FwloadBadState);
         CHECK_EQ(HarnessOps.StreamTrigger(Bad[Index], TRUE), FwloadBadState);
         HarnessOps.StreamRelease(Bad[Index]);
-        CHECK(!HarnessOps.IpcIncoming(Bad[Index], &Message));
         HarnessOps.Log(Bad[Index], "refused");
     }
     ContextFaultsExpected = 0;
@@ -1535,6 +1604,7 @@ main(
     CheckHappyPath(&H, Image);
     CheckOpsContext(&H, Image);
     CheckTimeouts(&H, Image);
+    CheckFwConfigReply(&H, Image);
     CheckRomErrors(&H, Image);
     CheckFirmwareFaults(&H, Image);
     CheckRetry(&H, Image);

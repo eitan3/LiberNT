@@ -52,8 +52,10 @@
  * mtl_dsp_core_power_down, mtl_power_down_dsp, mtl_enable_interrupts), mtl.h (the register
  * offsets and the ROM state codes of the ACE 1.0 family), hda.h (the FSR layout, the ROM error
  * codes, the code-loader stream constants) and ipc4-loader.c (sof_ipc4_fw_parse_ext_man,
- * sof_ipc4_query_fw_configuration), studied under LICENSING.md rule 7: own declarations,
- * own comments, no text copied. The Arrow Lake-S descriptor (arl_s_chip_info in pci-mtl.c)
+ * sof_ipc4_query_fw_configuration); the DSP-to-host receive path was learned from mtl.c
+ * (mtl_ipc_irq_thread, mtl_ipc_dsp_done, mtl_ipc_host_done) with its registers from mtl.h.
+ * All studied under LICENSING.md rule 7: own declarations, own comments, no text copied.
+ * The Arrow Lake-S descriptor (arl_s_chip_info in pci-mtl.c)
  * selects mtl_dsp_cl_init, mtl_power_down_dsp, the HFIPCX registers and the HFFLGPXQWY status
  * register used here.
  */
@@ -180,6 +182,11 @@ extern "C" {
 #define FWLOAD_PARAM_ID_FW_CONFIG           7
 #define FWLOAD_PARAM_ID_SHIFT               20
 #define FWLOAD_MAILBOX_BYTES                4096
+
+/* The busy and done bits of the IPC registers, Linux mtl.h MTL_DSP_REG_HFIPCXIDR_BUSY, MTL_DSP_REG_HFIPCXIDA_DONE, MTL_DSP_REG_HFIPCXTDR_BUSY and MTL_DSP_REG_HFIPCXTDA_BUSY: bit 31 of each; the header of a received message is its register without that bit */
+#define FWLOAD_IPC_BUSY                    0x80000000UL
+#define FWLOAD_IPC_DONE                    0x80000000UL
+#define FWLOAD_IPC_MSG_MASK                0x7FFFFFFFUL
 
 /* Firmware configuration tuples, Linux sof_ipc4_fw_config_params and sof_ipc4_tuple */
 #define FWLOAD_TUPLE_HEADER_BYTES           8
@@ -392,6 +399,9 @@ typedef struct _FWLOAD_PLATFORM
     UINT32 IpcRequestData;
     UINT32 IpcReply;                /* done bit 31 */
     UINT32 IpcControl;              /* interrupt enable for busy bit 0 and done bit 1 */
+    UINT32 IpcTarget;               /* DSP-to-host primary of a notification, busy bit 31 */
+    UINT32 IpcTargetAck;            /* the host-done acknowledgement, busy bit 31 */
+    UINT32 IpcTargetData;           /* DSP-to-host extension, of a reply and of a notification */
     UINT32 RomStatus;
     UINT32 RomError;
     UINT32 Window0Offset;
@@ -421,6 +431,8 @@ typedef struct _FWLOAD_CONTEXT FWLOAD_CONTEXT, *PFWLOAD_CONTEXT;
  * Everything the boot code does to the outside world. The hardware operations table of P2b
  * implements it with MMIO, the DMA adapter and the hdaudbus stream interface; the host tests
  * implement it with a DSP model. Time is injected too: NowUs is monotonic, DelayUs advances it.
+ * The DSP-to-host IPC is not an operation: the library receives and acknowledges it through the
+ * register operations, so the state machine and the receive path cannot disagree.
  * The table holds functions only, so it can stay static const: every call receives the context
  * FwloadInitContext was given.
  */
@@ -434,7 +446,6 @@ typedef struct _FWLOAD_OPS
     FWLOAD_STATUS (*StreamSubmit)(PVOID Context, PFWLOAD_CL_DMA Dma);
     FWLOAD_STATUS (*StreamTrigger)(PVOID Context, BOOLEAN Start);
     VOID (*StreamRelease)(PVOID Context);
-    BOOLEAN (*IpcIncoming)(PVOID Context, PSOFIPC4_MSG Message);
     VOID (*Log)(PVOID Context, const char* Text);
 } FWLOAD_OPS, *PFWLOAD_OPS;
 
@@ -477,6 +488,9 @@ struct _FWLOAD_CONTEXT
     UINT32 RomStatus;
     UINT32 RomError;
     UINT32 LastIpcStatus;
+    /* the last DSP-to-host message the receive path saw, reply or notification */
+    UINT32 LastIpcPrimary;
+    UINT32 LastIpcExtension;
     UINT32 Attempt;
     UINT64 BootUs;
     BOOLEAN Cancel;
