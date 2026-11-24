@@ -11,7 +11,7 @@
 
 #include "shim.h"
 
-#include <reactos/libs/sound/wavefmt.h>
+#include <libernt/libs/sound/wavefmt.h>
 #include "../../../drivers/wdm/audio/drivers/hdaudio/hdaudio_format.h"
 #include "../../../dll/win32/mmdevapi/pcm_sample.h"
 
