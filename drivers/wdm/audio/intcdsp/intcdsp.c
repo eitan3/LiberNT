@@ -226,9 +226,10 @@ IntcDspBoot(
         goto Fail;
     Dev->IdleHeld = TRUE;
 
-    IntcDspLog("booting: firmware '%s' %u.%u.%u.%u, %I64u payload bytes in %u descriptors on stream %u, BAR4 %p\n",
+    IntcDspLog("booting: firmware '%s' %u.%u.%u.%u, %I64u payload bytes in %u descriptors on stream %u, BAR4 %p, clock %I64u us at %I64u Hz\n",
                Dev->Ri.Name, Dev->Ri.Major, Dev->Ri.Minor, Dev->Ri.Hotfix, Dev->Ri.Build, (ULONGLONG)Dev->Ri.PayloadBytes,
-               (ULONG)Entries, Dev->StreamTag, Dev->AdspBar.Base.Base);
+               (ULONG)Entries, Dev->StreamTag, Dev->AdspBar.Base.Base, (ULONGLONG)IntcDspOpsTable()->NowUs(Dev),
+               IntcDspClockFrequency());
 
     Dev->InterruptArmed = TRUE;
     NtStatus = Dev->Bus.RegisterInterrupt(Dev->Bus.Context, IntcDspInterruptRoutine(), Dev);
@@ -239,8 +240,8 @@ IntcDspBoot(
     Status = FwloadBoot(Dev->Fw);
     Dev->InterruptArmed = FALSE;
     Dev->LastStatus = Status;
-    IntcDspLog("boot %s after %I64u us: state %s, failed in %s (%s), ROM status 0x%08x %s, ROM error 0x%08x %s, IPC status %u, last DSP message 0x%08x|0x%08x, attempt %u, %ld DSP interrupts, cleanup %s\n",
-               FwloadStatusName(Status), Dev->Fw->BootUs, FwloadStateName(Dev->Fw->State), FwloadStateName(Dev->Fw->FailedState),
+    IntcDspLog("boot %s after %I64u us (clock %I64u us): state %s, failed in %s (%s), ROM status 0x%08x %s, ROM error 0x%08x %s, IPC status %u, last DSP message 0x%08x|0x%08x, attempt %u, %ld DSP interrupts, cleanup %s\n",
+               FwloadStatusName(Status), Dev->Fw->BootUs, (ULONGLONG)IntcDspOpsTable()->NowUs(Dev), FwloadStateName(Dev->Fw->State), FwloadStateName(Dev->Fw->FailedState),
                FwloadStatusName(Dev->Fw->Status), Dev->Fw->RomStatus, FwloadFsrStateName(Dev->Fw->RomStatus & FWLOAD_FSR_STATE_MASK),
                Dev->Fw->RomError, FwloadRomErrorName(Dev->Fw->RomError), Dev->Fw->LastIpcStatus, Dev->Fw->LastIpcPrimary, Dev->Fw->LastIpcExtension, Dev->Fw->Attempt,
                Dev->Interrupts, FwloadStatusName(Dev->Fw->CleanupStatus));

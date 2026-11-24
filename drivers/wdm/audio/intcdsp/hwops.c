@@ -131,7 +131,8 @@ IntcDspOpNowUs(
     LONGLONG Ticks, Frequency;
 
     UNREFERENCED_PARAMETER(Context);
-    KeQueryPerformanceCounter(&Now);
+    /* the counter is the return value; the out parameter, when given, receives the frequency instead */
+    Now = KeQueryPerformanceCounter(NULL);
     Ticks = Now.QuadPart;
     Frequency = (LONGLONG)IntcDspFrequency;
     return (UINT64)(Ticks / Frequency) * 1000000ULL + (UINT64)(Ticks % Frequency) * 1000000ULL / IntcDspFrequency;
@@ -230,8 +231,16 @@ IntcDspInitClock(
 {
     LARGE_INTEGER Frequency;
 
+    /* the out parameter is where the HAL reports the frequency */
     KeQueryPerformanceCounter(&Frequency);
     IntcDspFrequency = (UINT64)Frequency.QuadPart;
+}
+
+UINT64
+IntcDspClockFrequency(
+    VOID)
+{
+    return IntcDspFrequency;
 }
 
 static

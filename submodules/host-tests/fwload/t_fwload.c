@@ -85,6 +85,8 @@ typedef struct _HARNESS
     UINT32 Delays;
     UINT32 StreamTag;
     UINT32 OpsSeen;
+    /* a clock that reports the same instant whatever the delays: the model still runs, the loader's budgets cannot expire */
+    BOOLEAN ClockStalled;
     CHAR Logs[8][48];
     UINT32 LogCount;
 } HARNESS;
@@ -160,7 +162,9 @@ HNowUs(
 {
     HARNESS* H = HarnessEnter(Context, HOP_NOWUS, "NowUs");
 
-    return H != NULL ? FakeDspOps()->NowUs(H->Dsp) : 0;
+    if (H == NULL)
+        return 0;
+    return H->ClockStalled ? 0 : FakeDspOps()->NowUs(H->Dsp);
 }
 
 /* the one injected operation: the clock advance, after which a cancellation can be requested */
@@ -289,6 +293,7 @@ HarnessBoot(
     H->Delays = 0;
     H->LogCount = 0;
     H->OpsSeen = 0;
+    H->ClockStalled = FALSE;
 }
 
 static
@@ -718,6 +723,109 @@ CheckFwConfigReply(
     CheckFailedBootIsOff(H, FwloadFwCrash, FwloadStateFwReady);
     CHECK_EQ(H->Ctx->LastIpcPrimary, (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
         (SOFIPC4_NOTIFY_EXCEPTION_CAUGHT << SOFIPC4_NOTIFICATION_TYPE_SHIFT));
+}
+
+/* The polls after which a budget that is still running is reported as a stalled clock: twice what the budget needs at the poll interval; the power-down of a failed boot adds its two settles */
+#define STALLED_POLLS(TimeoutUs) (2 * (UINT64)(TimeoutUs) / FWLOAD_POLL_INTERVAL_US)
+
+/*
+ * A clock that does not advance (the p2b2 image's D2): the model keeps running, so the DSP's silence is what the
+ * budget must bound; every budget ends as a stalled clock after the polls it needs, never as a timeout, never as a hang
+ */
+static
+void
+CheckStalledClock(
+    HARNESS* H,
+    const SOF_RI_IMAGE* Image)
+{
+    FAKE_DSP_FAULTS Faults;
+    FWLOAD_STATUS Status;
+
+    /* the subsystem never reports power active: the 50 ms power-up budget */
+    Faults = *FakeDspDefaultFaults();
+    Faults.SubsystemNeverPowers = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    H->ClockStalled = TRUE;
+    Status = FwloadBoot(H->Ctx);
+    CHECK_EQ(Status, FwloadClockStalled);
+    CheckFailedBootIsOff(H, FwloadClockStalled, FwloadStatePoweringUp);
+    /* the two settles of the subsystem and 100 polls for 50 ms at 500 us */
+    CHECK_EQ(H->Delays, STALLED_POLLS(H->Timeouts.PowerUpUs) + 2);
+    CHECK_EQ(H->Ctx->BootUs, 0);
+    CHECK_EQ(H->Dsp->CorePowerUps, 0);
+    CHECK_EQ(H->Dsp->RomRequests, 0);
+    CHECK_STR(H->Logs[0], "subsystem powered");
+
+    /* the ROM never acknowledges: three attempts, each stalled after the 500 ms ROM init budget, the core power-cycled between them */
+    Faults = *FakeDspDefaultFaults();
+    Faults.NeverAckRom = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    H->ClockStalled = TRUE;
+    Status = FwloadBoot(H->Ctx);
+    CHECK_EQ(Status, FwloadClockStalled);
+    CheckFailedBootIsOff(H, FwloadClockStalled, FwloadStateRomInit);
+    /* the subsystem settle, then per attempt a core settle and 1000 polls, between attempts a core settle, at the end two settles */
+    CHECK_EQ(H->Delays, 3 * STALLED_POLLS(H->Timeouts.RomInitUs) + 8);
+    CHECK_EQ(H->Ctx->Attempt, 3);
+    CHECK_EQ(H->Dsp->RomRequests, 3);
+    CHECK_EQ(H->Dsp->CorePowerUps, 3);
+    CHECK_EQ(H->LogCount, 3);
+    CHECK_STR(H->Logs[1], "ROM init attempt failed");
+
+    /* the ROM never reaches INIT_DONE: the 300 ms ROM status budget, three attempts */
+    Faults = *FakeDspDefaultFaults();
+    Faults.NeverRomReady = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    H->ClockStalled = TRUE;
+    Status = FwloadBoot(H->Ctx);
+    CHECK_EQ(Status, FwloadClockStalled);
+    CheckFailedBootIsOff(H, FwloadClockStalled, FwloadStateRomInit);
+    CHECK_EQ(H->Delays, 3 * STALLED_POLLS(H->Timeouts.RomStatusUs) + 8);
+    CHECK_EQ(H->Ctx->RomStatus & FWLOAD_FSR_STATE_MASK, FWLOAD_FSR_ROM_PURGE_BOOT);
+
+    /* the firmware never reports entered: the 3 s base firmware budget */
+    Faults = *FakeDspDefaultFaults();
+    Faults.NeverFwEntered = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    H->ClockStalled = TRUE;
+    Status = FwloadBoot(H->Ctx);
+    CHECK_EQ(Status, FwloadClockStalled);
+    CheckFailedBootIsOff(H, FwloadClockStalled, FwloadStateLoading);
+    /* two settles, 6000 polls, two settles */
+    CHECK_EQ(H->Delays, STALLED_POLLS(H->Timeouts.BaseFwUs) + 4);
+    CHECK_EQ(H->Dsp->StreamStops, 1);
+
+    /* the firmware never announces itself: the 1 s FW_READY budget */
+    Faults = *FakeDspDefaultFaults();
+    Faults.NeverFwReady = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    H->ClockStalled = TRUE;
+    Status = FwloadBoot(H->Ctx);
+    CHECK_EQ(Status, FwloadClockStalled);
+    CheckFailedBootIsOff(H, FwloadClockStalled, FwloadStateFwReady);
+    /* two settles, four polls to FW_ENTERED, 2000 polls, two settles */
+    CHECK_EQ(H->Delays, STALLED_POLLS(H->Timeouts.FwReadyUs) + 8);
+
+    /* the firmware never answers the configuration query: the 500 ms IPC reply budget */
+    Faults = *FakeDspDefaultFaults();
+    Faults.NeverIpcReply = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    H->ClockStalled = TRUE;
+    Status = FwloadBoot(H->Ctx);
+    CHECK_EQ(Status, FwloadClockStalled);
+    CheckFailedBootIsOff(H, FwloadClockStalled, FwloadStateConfiguring);
+    /* as FW_READY plus one poll to FW_READY */
+    CHECK_EQ(H->Delays, STALLED_POLLS(H->Timeouts.IpcReplyUs) + 9);
+    CHECK_EQ(H->Dsp->IpcRequests, 1);
+    CHECK_EQ(H->Ctx->LastIpcPrimary, SOFIPC4_FW_READY_PRIMARY);
+
+    /* with a clock that advances the same silence is a timeout after half the polls */
+    Faults = *FakeDspDefaultFaults();
+    Faults.NeverIpcReply = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadTimeoutIpcReply);
+    CheckFailedBootIsOff(H, FwloadTimeoutIpcReply, FwloadStateConfiguring);
+    CHECK_EQ(H->Delays, H->Timeouts.IpcReplyUs / FWLOAD_POLL_INTERVAL_US + 9);
 }
 
 static
@@ -1605,6 +1713,7 @@ main(
     CheckOpsContext(&H, Image);
     CheckTimeouts(&H, Image);
     CheckFwConfigReply(&H, Image);
+    CheckStalledClock(&H, Image);
     CheckRomErrors(&H, Image);
     CheckFirmwareFaults(&H, Image);
     CheckRetry(&H, Image);

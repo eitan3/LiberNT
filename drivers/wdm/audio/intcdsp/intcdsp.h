@@ -169,6 +169,11 @@ VOID
 IntcDspInitClock(
     VOID);
 
+/* The performance counter frequency the clock was initialised with, in ticks per second */
+UINT64
+IntcDspClockFrequency(
+    VOID);
+
 PADSP_INTERRUPT_CALLBACK
 IntcDspInterruptRoutine(
     VOID);

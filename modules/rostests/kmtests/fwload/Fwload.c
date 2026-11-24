@@ -17,6 +17,25 @@
 #define FWLOAD_TEST_TAG     'dlFw'
 #define FWLOAD_TEST_PAYLOAD 0xA000
 
+/* The performance counter the driver's clock is built from (the p2b2 image's D2): the counter is the return value, the out parameter receives the frequency; the counter advances over a stall */
+static
+VOID
+CheckPerformanceCounter(
+    VOID)
+{
+    LARGE_INTEGER Frequency, Before, After;
+
+    Frequency.QuadPart = 0;
+    Before = KeQueryPerformanceCounter(&Frequency);
+    KeStallExecutionProcessor(1000);
+    After = KeQueryPerformanceCounter(NULL);
+    ok(Frequency.QuadPart > 0, "KeQueryPerformanceCounter reported frequency %I64d\n", Frequency.QuadPart);
+    ok(After.QuadPart > Before.QuadPart, "the counter did not advance over a stall: %I64d, %I64d\n", Before.QuadPart, After.QuadPart);
+    if (Frequency.QuadPart > 0)
+        ok(After.QuadPart - Before.QuadPart >= Frequency.QuadPart / 1000, "the counter advanced %I64d ticks over a 1 ms stall at %I64d Hz\n",
+           After.QuadPart - Before.QuadPart, Frequency.QuadPart);
+}
+
 static
 VOID
 CheckImage(
@@ -118,6 +137,7 @@ START_TEST(Fwload)
     }
 
     CheckImage(Image);
+    CheckPerformanceCounter();
     FwloadCaseBuildImage(Image);
     ok_eq_int(SofRiParse(Image, FWLOAD_CASE_IMAGE_BYTES, Modules, 4, &Parsed), FwloadOk);
 

@@ -34,13 +34,16 @@
 #define FWLOAD_IPCCTL_DONE_INT      0x00000002UL
 #define FWLOAD_FW_REGS_WINDOW_BYTES 0x40
 
+/* A wait whose clock does not advance would never reach its budget: after this many times the polls the budget needs, it is reported as a stalled clock */
+#define FWLOAD_STALLED_POLL_FACTOR  2
 
 typedef enum _FWLOAD_OUTCOME
 {
     FwloadOutcomeDone = 0,
     FwloadOutcomePending,
     FwloadOutcomeHalted,
-    FwloadOutcomeCancelled
+    FwloadOutcomeCancelled,
+    FwloadOutcomeStalled
 } FWLOAD_OUTCOME;
 
 static
@@ -128,6 +131,18 @@ FwloadSettle(
     return Context->Cancel ? FwloadCancelled : FwloadOk;
 }
 
+/* The polls after which a wait that is still inside its budget has a clock that does not advance: twice the polls the budget takes at the poll interval */
+static
+UINT64
+FwloadStallPolls(
+    const FWLOAD_CONTEXT* Context,
+    UINT32 TimeoutUs)
+{
+    UINT64 Interval = Context->Timeouts.PollIntervalUs;
+
+    return FWLOAD_STALLED_POLL_FACTOR * (UINT64)TimeoutUs / (Interval != 0 ? Interval : 1);
+}
+
 static
 FWLOAD_OUTCOME
 FwloadWaitMask(
@@ -138,6 +153,7 @@ FwloadWaitMask(
     UINT32 TimeoutUs)
 {
     UINT64 Start = FwloadNow(Context);
+    UINT64 Polls = 0, StallPolls = FwloadStallPolls(Context, TimeoutUs);
 
     for (;;)
     {
@@ -149,11 +165,14 @@ FwloadWaitMask(
             return FwloadOutcomeCancelled;
         if (FwloadNow(Context) - Start >= TimeoutUs)
             return FwloadOutcomePending;
+        if (Polls >= StallPolls)
+            return FwloadOutcomeStalled;
         FwloadPause(Context);
+        Polls++;
     }
 }
 
-/* A cancelled wait and a timed-out wait are told apart by the cancellation flag */
+/* A cancelled wait, a timed-out wait and a stalled clock are told apart by the outcome and the cancellation flag */
 static
 FWLOAD_STATUS
 FwloadWaitStatus(
@@ -163,6 +182,8 @@ FwloadWaitStatus(
 {
     if (Outcome == FwloadOutcomeDone)
         return FwloadOk;
+    if (Outcome == FwloadOutcomeStalled)
+        return FwloadClockStalled;
     return Context->Cancel ? FwloadCancelled : Timeout;
 }
 
@@ -175,6 +196,7 @@ FwloadRomStatus(
     UINT32 TimeoutUs)
 {
     UINT64 Start = FwloadNow(Context);
+    UINT64 Polls = 0, StallPolls = FwloadStallPolls(Context, TimeoutUs);
 
     for (;;)
     {
@@ -192,7 +214,10 @@ FwloadRomStatus(
             return FwloadOutcomeCancelled;
         if (FwloadNow(Context) - Start >= TimeoutUs)
             return FwloadOutcomePending;
+        if (Polls >= StallPolls)
+            return FwloadOutcomeStalled;
         FwloadPause(Context);
+        Polls++;
     }
 }
 
@@ -327,6 +352,8 @@ FwloadRomInit(
             return FwloadRomError;
         case FwloadOutcomeCancelled:
             return FwloadCancelled;
+        case FwloadOutcomeStalled:
+            return FwloadClockStalled;
         default:
             return FwloadTimeoutRomStatus;
     }
@@ -370,6 +397,9 @@ FwloadCopyFirmware(
                 break;
             case FwloadOutcomeCancelled:
                 Status = FwloadCancelled;
+                break;
+            case FwloadOutcomeStalled:
+                Status = FwloadClockStalled;
                 break;
             default:
                 Status = FwloadTimeoutBaseFw;
@@ -539,6 +569,7 @@ FwloadWaitFwReady(
     SOFIPC4_MSG Message;
     BOOLEAN FromReply, WindowRead;
     UINT64 Start = FwloadNow(Context);
+    UINT64 Polls = 0, StallPolls = FwloadStallPolls(Context, Context->Timeouts.FwReadyUs);
 
     for (;;)
     {
@@ -564,7 +595,10 @@ FwloadWaitFwReady(
             return FwloadCancelled;
         if (FwloadNow(Context) - Start >= Context->Timeouts.FwReadyUs)
             return FwloadTimeoutFwReady;
+        if (Polls >= StallPolls)
+            return FwloadClockStalled;
         FwloadPause(Context);
+        Polls++;
     }
     if (!WindowRead)
         return FwloadHardwareFault;
@@ -585,6 +619,7 @@ FwloadQueryFwConfig(
     SOFIPC4_MSG Message, Reply;
     BOOLEAN FromReply, Parsed, MailboxRead;
     UINT64 Start = FwloadNow(Context);
+    UINT64 Polls = 0, StallPolls = FwloadStallPolls(Context, Context->Timeouts.IpcReplyUs);
     UINT32 Status = 0;
     FWLOAD_STATUS Result;
 
@@ -611,7 +646,10 @@ FwloadQueryFwConfig(
             return FwloadCancelled;
         if (FwloadNow(Context) - Start >= Context->Timeouts.IpcReplyUs)
             return FwloadTimeoutIpcReply;
+        if (Polls >= StallPolls)
+            return FwloadClockStalled;
         FwloadPause(Context);
+        Polls++;
     }
     /* the header is parsed and the payload read before the done bit is written back, whatever the reply says */
     Parsed = SofIpc4ParseReply(&Reply, SofIpc4ModConfigGet, SOFIPC4_TARGET_MODULE_MSG, &Status);
@@ -745,7 +783,7 @@ FwloadStatusName(
     {
         "ok", "no data", "bad signature", "bad length", "truncated", "unsupported", "too many modules",
         "cancelled", "power-up timeout", "ROM init timeout", "ROM status timeout", "base firmware timeout",
-        "FW_READY timeout", "IPC reply timeout", "ROM error", "firmware crash", "ABI mismatch", "version mismatch",
+        "FW_READY timeout", "IPC reply timeout", "clock stalled", "ROM error", "firmware crash", "ABI mismatch", "version mismatch",
         "IPC error", "bad IPC reply", "too many DMA fragments", "DMA buffer too small",
         "hardware fault", "bad state"
     };

@@ -235,6 +235,7 @@ typedef enum _FWLOAD_STATUS
     FwloadTimeoutBaseFw,
     FwloadTimeoutFwReady,
     FwloadTimeoutIpcReply,
+    FwloadClockStalled,
     FwloadRomError,
     FwloadFwCrash,
     FwloadAbiMismatch,
