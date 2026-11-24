@@ -99,12 +99,12 @@ static inline void udelay(LONG usec) {
 #define SklHdAudBusDebugLevel DEBUG_LEVEL_ERROR
 #define SklHdAudBusDebugCategories (DBG_INIT | DBG_PNP | DBG_IOCTL)
 
+/* DbgPrint is filtered as the DEFAULT component at INFO level, which the default masks hide; the IHVAUDIO component at ERROR level stays visible */
 #define SklHdAudBusPrint(dbglevel, dbgcategory, fmt, ...) {          \
     if (SklHdAudBusDebugLevel >= dbglevel &&                         \
         (SklHdAudBusDebugCategories & dbgcategory))                 \
 		    {                                                           \
-        DbgPrint(DRIVERNAME);                                   \
-        DbgPrint(fmt, ##__VA_ARGS__);                             \
+        DbgPrintEx(DPFLTR_IHVAUDIO_ID, DPFLTR_ERROR_LEVEL, DRIVERNAME fmt, ##__VA_ARGS__);                             \
 		    }                                                           \
 }
 #else
@@ -114,8 +114,7 @@ static inline void udelay(LONG usec) {
 
 #if DBG
 #define SklHdAudBusReport(fmt, ...) {            \
-    DbgPrint(DRIVERNAME);                       \
-    DbgPrint(fmt, ##__VA_ARGS__);               \
+    DbgPrintEx(DPFLTR_IHVAUDIO_ID, DPFLTR_ERROR_LEVEL, DRIVERNAME fmt, ##__VA_ARGS__);               \
     }
 #else
 #define SklHdAudBusReport(fmt, ...) {           \
