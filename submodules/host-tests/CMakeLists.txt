@@ -38,6 +38,7 @@ option(HOST_TEST_APPLEAGX "Build native Apple graphics firmware data tests" ON)
 option(HOST_TEST_AUDIOFMT "Build native audio format rule tests" ON)
 option(HOST_TEST_DSPPATH "Build native Intel SST audio path rule tests" ON)
 option(HOST_TEST_DSPPARSERS "Build native Intel SST IPC4 and DisCo parser tests" ON)
+option(HOST_TEST_FWLOAD "Build native Intel SST firmware loader boot tests" ON)
 
 if(BUILD_TESTING AND HOST_TEST_DHCPCSVC)
     add_subdirectory(dhcpcsvc)
@@ -90,6 +91,10 @@ endif()
 
 if(BUILD_TESTING AND HOST_TEST_DSPPARSERS)
     add_subdirectory(dspparsers)
+endif()
+
+if(BUILD_TESTING AND HOST_TEST_FWLOAD)
+    add_subdirectory(fwload)
 endif()
 
 if(BUILD_TESTING AND HOST_TEST_NDIS)
