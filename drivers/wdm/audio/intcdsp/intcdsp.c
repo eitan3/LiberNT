@@ -269,6 +269,10 @@ IntcDspBoot(
     }
     else
     {
+        /* the tuple walk says which tuple it refused (D3): a length that is not a multiple of four, a tuple without a value, or a type the firmware does not define */
+        if (Dev->Fw->FwConfig.BadTuple)
+            IntcDspLog("firmware configuration: tuple type 0x%x at offset 0x%Ix of the reply is malformed\n",
+                       Dev->Fw->FwConfig.BadTupleType, Dev->Fw->FwConfig.BadTupleOffset);
         IntcDspPowerDown(Dev);
     }
 

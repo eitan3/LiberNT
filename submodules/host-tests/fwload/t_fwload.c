@@ -985,6 +985,56 @@ CheckFirmwareFaults(
     CHECK_EQ(FwloadBoot(H->Ctx), FwloadTruncated);
     CheckFailedBootIsOff(H, FwloadTruncated, FwloadStateConfiguring);
 
+    /* D3 of the p2b3 simulator rerun: a tuple length that is not a multiple of four desynchronised the walk and a version-only reply ended in boot ok with 0-byte mailboxes */
+    Faults.TupleFault = FAKE_DSP_TUPLES_LENGTH_THREE;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadIpcBadReply);
+    CheckFailedBootIsOff(H, FwloadIpcBadReply, FwloadStateConfiguring);
+    CHECK(H->Ctx->FwConfig.BadTuple);
+    CHECK_EQ(H->Ctx->FwConfig.BadTupleType, 1);
+    CHECK_EQ(H->Ctx->FwConfig.BadTupleOffset, 16);
+    CHECK_EQ(H->Ctx->FwConfig.TupleCount, 1);
+    /* a tuple without a value, and one of a type the firmware does not define */
+    Faults.TupleFault = FAKE_DSP_TUPLES_LENGTH_ZERO;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadIpcBadReply);
+    CheckFailedBootIsOff(H, FwloadIpcBadReply, FwloadStateConfiguring);
+    CHECK(H->Ctx->FwConfig.BadTuple && H->Ctx->FwConfig.BadTupleType == 1 && H->Ctx->FwConfig.BadTupleOffset == 16);
+    Faults.TupleFault = FAKE_DSP_TUPLES_UNKNOWN_TYPE;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadIpcBadReply);
+    CheckFailedBootIsOff(H, FwloadIpcBadReply, FwloadStateConfiguring);
+    CHECK(H->Ctx->FwConfig.BadTuple && H->Ctx->FwConfig.BadTupleType == 0x700 && H->Ctx->FwConfig.BadTupleOffset == 16);
+    /* truncated-reply: the version alone ends the list before the mailboxes */
+    Faults.TupleFault = FAKE_DSP_TUPLES_VERSION_ONLY;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadTruncated);
+    CheckFailedBootIsOff(H, FwloadTruncated, FwloadStateConfiguring);
+    CHECK(!H->Ctx->FwConfig.BadTuple);
+    CHECK(H->Ctx->FwConfig.HasVersion && !H->Ctx->FwConfig.HasDownlinkMailbox);
+    CHECK_EQ(H->Ctx->FwConfig.TupleCount, 1);
+    /* mailboxes of zero bytes are not a configuration the host can use; a list that ends before the uplink size is cut short */
+    Faults.TupleFault = FAKE_DSP_TUPLES_ZERO_MAILBOXES;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadIpcBadReply);
+    CheckFailedBootIsOff(H, FwloadIpcBadReply, FwloadStateConfiguring);
+    CHECK(!H->Ctx->FwConfig.BadTuple);
+    CHECK(H->Ctx->FwConfig.HasDownlinkMailbox && H->Ctx->FwConfig.DownlinkMailboxBytes == 0);
+    CHECK(H->Ctx->FwConfig.HasUplinkMailbox && H->Ctx->FwConfig.UplinkMailboxBytes == 0);
+    CHECK_EQ(H->Ctx->FwConfig.TupleCount, 8);
+    Faults.TupleFault = FAKE_DSP_TUPLES_NO_MAILBOXES;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadTruncated);
+    CheckFailedBootIsOff(H, FwloadTruncated, FwloadStateConfiguring);
+    CHECK(!H->Ctx->FwConfig.HasDownlinkMailbox && !H->Ctx->FwConfig.HasUplinkMailbox);
+    CHECK_EQ(H->Ctx->FwConfig.TupleCount, 6);
+    /* the model's own reply, with the tuple the loader does not read, is still accepted */
+    Faults.TupleFault = FAKE_DSP_TUPLES_GOOD;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK(!H->Ctx->FwConfig.BadTuple);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+
     /* the configuration query is refused */
     Faults = *FakeDspDefaultFaults();
     Faults.IpcStatus = SofIpc4Busy;

@@ -22,11 +22,17 @@
 #define FAKE_DSP_HALT_AFTER_PURGE   1
 #define FAKE_DSP_HALT_DURING_LOAD   2
 
-/* Malformed firmware configuration replies */
+/* Malformed firmware configuration replies; LENGTH_THREE is the qemu-ace-dsp fault bad-tuples (a length that is not a multiple of four), VERSION_ONLY its truncated-reply */
 #define FAKE_DSP_TUPLES_GOOD            0
 #define FAKE_DSP_TUPLES_LENGTH_OVERRUN  1
 #define FAKE_DSP_TUPLES_NO_VERSION      2
 #define FAKE_DSP_TUPLES_NO_TERMINATOR   3
+#define FAKE_DSP_TUPLES_LENGTH_THREE    4
+#define FAKE_DSP_TUPLES_LENGTH_ZERO     5
+#define FAKE_DSP_TUPLES_UNKNOWN_TYPE    6
+#define FAKE_DSP_TUPLES_VERSION_ONLY    7
+#define FAKE_DSP_TUPLES_ZERO_MAILBOXES  8
+#define FAKE_DSP_TUPLES_NO_MAILBOXES    9
 
 /* Contract violations of the code-loader stream the model found */
 #define FAKE_DSP_DMA_TAG       0x00000001UL

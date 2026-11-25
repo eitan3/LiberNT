@@ -607,14 +607,25 @@ FwloadTupleValue(
     }
 }
 
-/* sof_tlv: type, length in bytes, value; a zero header ends the reply, the rest of the mailbox is untouched */
+/* The types the firmware defines for its configuration reply (SOF base_fw.h enum ipc4_fw_config_params); most of them this loader does not read, and a reply may carry them */
+static
+BOOLEAN
+FwloadTupleTypeKnown(
+    UINT32 Type)
+{
+    return Type <= FWLOAD_TUPLE_TYPE_MAX || Type == FWLOAD_TUPLE_MIN_HOST_BUFFER_PERIODS ||
+        Type == FWLOAD_TUPLE_FW_SOF_INFO;
+}
+
+/* sof_tlv: type, length in bytes, value; a zero header ends the reply, the rest of the mailbox is untouched. A tuple that runs past the reply is a truncated list; one whose length is not a multiple of four (sof/tlv.h tlv_next stops at it), that has no value, or whose type the firmware does not define is a bad reply, and the walk says which */
 static
 FWLOAD_STATUS
 FwloadParseFwConfig(
-    PFWLOAD_CONTEXT Context,
+    FWLOAD_CONTEXT* Context,
     const UINT8* Data,
     SIZE_T Bytes)
 {
+    PFWLOAD_FW_CONFIG Config = &Context->FwConfig;
     SIZE_T Offset = 0;
 
     while (Offset + FWLOAD_TUPLE_HEADER_BYTES <= Bytes)
@@ -628,11 +639,18 @@ FwloadParseFwConfig(
             break;
         if (Length > Bytes - Offset - FWLOAD_TUPLE_HEADER_BYTES)
             return FwloadTruncated;
-        FwloadTupleValue(&Context->FwConfig, Type, Data + Offset + FWLOAD_TUPLE_HEADER_BYTES, Length);
-        Context->FwConfig.TupleCount++;
+        if (Length == 0 || (Length & (sizeof(UINT32) - 1)) != 0 || !FwloadTupleTypeKnown(Type))
+        {
+            Config->BadTuple = TRUE;
+            Config->BadTupleType = Type;
+            Config->BadTupleOffset = Offset;
+            return FwloadIpcBadReply;
+        }
+        FwloadTupleValue(Config, Type, Data + Offset + FWLOAD_TUPLE_HEADER_BYTES, Length);
+        Config->TupleCount++;
         Offset += FWLOAD_TUPLE_HEADER_BYTES + Length;
     }
-    return Context->FwConfig.TupleCount ? FwloadOk : FwloadIpcBadReply;
+    return Config->TupleCount ? FwloadOk : FwloadIpcBadReply;
 }
 
 /* A firmware exception or watchdog notification while the host waits for the firmware */
@@ -819,6 +837,11 @@ FwloadQueryFwConfig(
         Context->FwConfig.Hotfix != Context->Image->Hotfix ||
         Context->FwConfig.Build != Context->Image->Build)
         return FwloadVersionMismatch;
+    /* the host sends into the downlink mailbox and reads the uplink one from here on: a reply that ends before both sizes is cut short, one that reports a size of zero is not a configuration the host can use */
+    if (!Context->FwConfig.HasDownlinkMailbox || !Context->FwConfig.HasUplinkMailbox)
+        return FwloadTruncated;
+    if (Context->FwConfig.DownlinkMailboxBytes == 0 || Context->FwConfig.UplinkMailboxBytes == 0)
+        return FwloadIpcBadReply;
     return FwloadOk;
 }
 

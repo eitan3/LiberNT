@@ -245,6 +245,15 @@ START_TEST(Fwload)
     Faults = *FakeDspDefaultFaults();
     Faults.ReportedVersionShift = 1;
     BootWith(Dsp, Context, &Parsed, &Dma, &Faults, FwloadVersionMismatch, FwloadStateFailed);
+    /* D3 of the p2b3 simulator rerun: a tuple length that is not a multiple of four and a version-only reply are named failures, not a boot with 0-byte mailboxes */
+    Faults = *FakeDspDefaultFaults();
+    Faults.TupleFault = FAKE_DSP_TUPLES_LENGTH_THREE;
+    BootWith(Dsp, Context, &Parsed, &Dma, &Faults, FwloadIpcBadReply, FwloadStateFailed);
+    ok(Context->FwConfig.BadTuple != FALSE, "the refused tuple was not named\n");
+    ok_eq_uint(Context->FwConfig.BadTupleOffset, 16);
+    Faults.TupleFault = FAKE_DSP_TUPLES_VERSION_ONLY;
+    BootWith(Dsp, Context, &Parsed, &Dma, &Faults, FwloadTruncated, FwloadStateFailed);
+    ok_eq_uint(Context->FwConfig.TupleCount, 1);
     Faults = *FakeDspDefaultFaults();
     Faults.SubsystemNeverPowers = TRUE;
     BootWith(Dsp, Context, &Parsed, &Dma, &Faults, FwloadTimeoutPowerUp, FwloadStateFailed);

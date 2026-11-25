@@ -191,7 +191,7 @@ extern "C" {
 #define FWLOAD_IPC_DONE                    0x80000000UL
 #define FWLOAD_IPC_MSG_MASK                0x7FFFFFFFUL
 
-/* Firmware configuration tuples, Linux sof_ipc4_fw_config_params and sof_ipc4_tuple */
+/* Firmware configuration tuples, SOF src/include/sof/tlv.h (sof_tlv: type, length in bytes, value) and src/include/ipc4/base_fw.h (enum ipc4_fw_config_params), both at the revision named above */
 #define FWLOAD_TUPLE_HEADER_BYTES           8
 #define FWLOAD_TUPLE_FW_VERSION             0
 #define FWLOAD_TUPLE_DL_MAILBOX_BYTES       6
@@ -200,6 +200,10 @@ extern "C" {
 #define FWLOAD_TUPLE_MAX_PPL_COUNT          9
 #define FWLOAD_TUPLE_MAX_LIBS_COUNT         17
 #define FWLOAD_TUPLE_FW_CONTEXT_SAVE        29
+/* The firmware's list of tuple types is closed: 0 to FWLOAD_TUPLE_TYPE_MAX, then FWLOAD_TUPLE_MIN_HOST_BUFFER_PERIODS and FWLOAD_TUPLE_FW_SOF_INFO; a reply that names another type is not the configuration reply */
+#define FWLOAD_TUPLE_TYPE_MAX               29
+#define FWLOAD_TUPLE_MIN_HOST_BUFFER_PERIODS 33
+#define FWLOAD_TUPLE_FW_SOF_INFO            35
 
 /* Container layout, rimage manifest.h and cavs_ext_manifest.h */
 #define SOF_RI_EXT_MAN_MAGIC            0x31454124UL /* "$AE1" */
@@ -481,6 +485,10 @@ typedef struct _FWLOAD_FW_CONFIG
     BOOLEAN HasContextSave;
     UINT32 ContextSave;
     UINT32 TupleCount;
+    /* the tuple the walk refused: its type and its offset in the reply */
+    BOOLEAN BadTuple;
+    UINT32 BadTupleType;
+    SIZE_T BadTupleOffset;
 } FWLOAD_FW_CONFIG, *PFWLOAD_FW_CONFIG;
 
 /* The interrupt registers of the host IPC at one moment, for the service routine's first interrupt and for the driver's log */

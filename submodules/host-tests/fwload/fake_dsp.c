@@ -48,6 +48,9 @@
 #define FAKE_TUPLE_MAX_PPL          9
 #define FAKE_TUPLE_MAX_LIBS         17
 #define FAKE_TUPLE_CONTEXT_SAVE     29
+/* The second tuple of the model's reply: the firmware's memory-reclaimed flag (base_fw.h IPC4_MEMORY_RECLAIMED_FW_CFG), which the loader does not read; the faults change its length, empty it or give it a type the firmware does not define */
+#define FAKE_TUPLE_MEMORY_RECLAIMED    1
+#define FAKE_DSP_TUPLE_UNKNOWN         0x700
 #define FAKE_DSP_SUBSYSTEM_CPA 0x01000000UL
 #define FAKE_DSP_SUBSYSTEM_SPA 0x00010000UL
 #define FAKE_DSP_CORE_CPA       0x00000100UL
@@ -344,30 +347,36 @@ FakeDspWriteFwConfig(
     PFAKE_DSP Dsp)
 {
     UINT32 At = 0;
+    UINT32 Fault = Dsp->Faults.TupleFault;
+    UINT8* Window = Dsp->Window + (Dsp->Platform->UplinkOffset - Dsp->Platform->Window0Offset);
 
-    FakeDspSet(Dsp->Window + (Dsp->Platform->UplinkOffset - Dsp->Platform->Window0Offset), 0, FWLOAD_MAILBOX_BYTES);
-    if (Dsp->Faults.TupleFault != FAKE_DSP_TUPLES_NO_VERSION)
+    FakeDspSet(Window, 0, FWLOAD_MAILBOX_BYTES);
+    if (Fault != FAKE_DSP_TUPLES_NO_VERSION)
         FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_FW_VERSION,
             (UINT32)Dsp->Version[0] | ((UINT32)Dsp->Version[1] << 16), 8);
-    FakeDspPutTuple(Dsp, &At, 1, 1, 4);
-    FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_DL_MAILBOX, FWLOAD_MAILBOX_BYTES, 4);
-    FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_UL_MAILBOX, FWLOAD_MAILBOX_BYTES, 4);
-    FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_TRACE_LOG, 0x2000, 4);
-    FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_MAX_PPL, 32, 4);
-    FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_MAX_LIBS, 16, 4);
-    FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_CONTEXT_SAVE, 0, 4);
-    if (Dsp->Faults.TupleFault == FAKE_DSP_TUPLES_LENGTH_OVERRUN)
+    /* truncated-reply: the version tuple alone, then the terminator */
+    if (Fault != FAKE_DSP_TUPLES_VERSION_ONLY)
     {
-        UINT8* Window = Dsp->Window + (Dsp->Platform->UplinkOffset - Dsp->Platform->Window0Offset);
-
+        /* the tuple the loader does not read: whole, three bytes long, empty, or of a type the firmware does not define */
+        FakeDspPutTuple(Dsp, &At, Fault == FAKE_DSP_TUPLES_UNKNOWN_TYPE ? FAKE_DSP_TUPLE_UNKNOWN : FAKE_TUPLE_MEMORY_RECLAIMED, 1,
+            Fault == FAKE_DSP_TUPLES_LENGTH_THREE ? 3 : Fault == FAKE_DSP_TUPLES_LENGTH_ZERO ? 0 : 4);
+        if (Fault != FAKE_DSP_TUPLES_NO_MAILBOXES)
+        {
+            FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_DL_MAILBOX, Fault == FAKE_DSP_TUPLES_ZERO_MAILBOXES ? 0 : FWLOAD_MAILBOX_BYTES, 4);
+            FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_UL_MAILBOX, Fault == FAKE_DSP_TUPLES_ZERO_MAILBOXES ? 0 : FWLOAD_MAILBOX_BYTES, 4);
+        }
+        FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_TRACE_LOG, 0x2000, 4);
+        FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_MAX_PPL, 32, 4);
+        FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_MAX_LIBS, 16, 4);
+        FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_CONTEXT_SAVE, 0, 4);
+    }
+    if (Fault == FAKE_DSP_TUPLES_LENGTH_OVERRUN)
+    {
         FakeDspPut32(Window + At, 0x55);
         FakeDspPut32(Window + At + 4, 0x7FFFFFF0);
     }
-    else if (Dsp->Faults.TupleFault == FAKE_DSP_TUPLES_NO_TERMINATOR)
-    {
-        FakeDspSet(Dsp->Window + (Dsp->Platform->UplinkOffset - Dsp->Platform->Window0Offset) + At, 0xFF,
-            FWLOAD_MAILBOX_BYTES - At);
-    }
+    else if (Fault == FAKE_DSP_TUPLES_NO_TERMINATOR)
+        FakeDspSet(Window + At, 0xFF, FWLOAD_MAILBOX_BYTES - At);
 }
 
 static
