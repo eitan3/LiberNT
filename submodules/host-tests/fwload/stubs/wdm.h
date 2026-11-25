@@ -16,5 +16,16 @@ typedef enum _DEVICE_POWER_STATE
     PowerDeviceD0,
     PowerDeviceD3
 } DEVICE_POWER_STATE, *PDEVICE_POWER_STATE;
+/* an MDL and an event object as the stream members of the bus interface pass them: opaque to the code compiled on the host */
+typedef struct _MDL
+{
+    UCHAR Opaque[16];
+} MDL, *PMDL;
+typedef struct _KEVENT
+{
+    /* the fake bus: whether a period set it, and how often */
+    BOOLEAN Signaled;
+    UINT32 Signals;
+} KEVENT, *PKEVENT;
 
 #endif

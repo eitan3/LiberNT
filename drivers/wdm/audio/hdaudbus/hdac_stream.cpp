@@ -176,3 +176,238 @@ void hdac_stream_setup(PHDAC_STREAM stream) {
 
 	stream->fifoSize = stream_read16(stream, SD_FIFOSIZE) + 1;
 }
+
+/*
+ * Pages for a cyclic buffer, the descriptor list over them and the stream
+ * set up for it: one descriptor per page, the interrupt on completion at the
+ * end of the buffer, or of each of its two halves when two notifications are
+ * asked for (the halves start on a 128-byte frame boundary). The stream is
+ * reset and set up, and stays stopped.
+ */
+NTSTATUS hdac_stream_allocate_buffer(PHDAC_STREAM stream, ULONG notificationCount, SIZE_T requestedBufferSize, PMDL* bufferMdl, SIZE_T* allocatedBufferSize, SIZE_T* offsetFromFirstPage, UCHAR* streamId, PULONG fifoSize) {
+	if (KeGetCurrentIrql() > PASSIVE_LEVEL) {
+		return STATUS_UNSUCCESSFUL;
+	}
+
+	if (stream->running) {
+		return STATUS_INVALID_DEVICE_REQUEST;
+	}
+
+	if (stream->mdlBuf) {
+		return STATUS_INVALID_DEVICE_REQUEST;
+	}
+
+	PHYSICAL_ADDRESS zeroAddr;
+	zeroAddr.QuadPart = 0;
+	PHYSICAL_ADDRESS maxAddr;
+	maxAddr.QuadPart = stream->FdoContext->is64BitOK ? MAXULONG64 : MAXULONG32;
+
+	UINT32 bufferSize = (UINT32)min(requestedBufferSize, (SIZE_T)HDA_MAX_BDL_ENTRIES * PAGE_SIZE);
+	UINT32 allocOffset = 0;
+	UINT32 halfSize = 0;
+	if (notificationCount == 2) {
+		UINT32 frameSize = (stream->streamFormat.ContainerSize / 8) * stream->streamFormat.NumberOfChannels;
+		UINT32 align = 128;
+		while (frameSize && align % frameSize)
+			align += 128;
+		UINT32 maxHalf = (HDA_MAX_BDL_ENTRIES / 2) * PAGE_SIZE / align * align;
+		halfSize = (UINT32)min(requestedBufferSize / 2, (SIZE_T)maxHalf);
+		halfSize = min((halfSize + align - 1) / align * align, maxHalf);
+		bufferSize = halfSize * 2;
+		allocOffset = PAGE_SIZE - (halfSize % PAGE_SIZE);
+	}
+	UINT32 allocSize = bufferSize + allocOffset;
+
+	PMDL mdl = MmAllocatePagesForMdl(zeroAddr, maxAddr, zeroAddr, allocSize);
+	if (!mdl) {
+		return STATUS_NO_MEMORY;
+	}
+	if (MmGetMdlByteCount(mdl) < allocSize) {
+		MmFreePagesFromMdl(mdl);
+		ExFreePool(mdl);
+		return STATUS_INSUFFICIENT_RESOURCES;
+	}
+
+	WdfInterruptAcquireLock(stream->FdoContext->Interrupt);
+	stream->mdlBuf = mdl;
+	stream->bufSz = bufferSize;
+
+	*bufferMdl = mdl;
+	*allocatedBufferSize = bufferSize;
+	*offsetFromFirstPage = allocOffset;
+	*streamId = stream->streamTag;
+
+	{
+		UINT16 numBlocks = 0;
+		UINT16 pageNum = 0;
+
+		//Set up the BDL
+		PHDAC_BDLENTRY bdl = stream->bdl;
+		UINT32 size = bufferSize;
+
+		PPFN_NUMBER pfnArray = MmGetMdlPfnArray(mdl);
+		UINT32 offset = allocOffset;
+		while (halfSize > 0) {
+			if (numBlocks >= HDA_MAX_BDL_ENTRIES) {
+				SklHdAudBusPrint(DEBUG_LEVEL_ERROR, DBG_IOCTL, "%s Too many BDL entries!\n", __func__);
+				numBlocks = HDA_MAX_BDL_ENTRIES;
+				break;
+			}
+
+			UINT32 pageOff = offset % PAGE_SIZE;
+			UINT32 chunk = (pageOff == 0) ? PAGE_SIZE : (PAGE_SIZE - pageOff);
+			if (halfSize < chunk)
+				chunk = halfSize;
+
+			PFN_NUMBER pfn = pfnArray[pageNum];
+			PHYSICAL_ADDRESS addr = { 0 };
+			addr.QuadPart = pfn << PAGE_SHIFT;
+
+			bdl->lowAddr = addr.LowPart + pageOff;
+			bdl->highAddr = addr.HighPart;
+			bdl->len = chunk;
+
+			halfSize -= chunk;
+			size -= chunk;
+
+			//Program interrupt for when buffer is halfway
+			bdl->ioc = (halfSize > 0) ? 0 : 1;
+			bdl++;
+			numBlocks++;
+			offset += chunk;
+			if ((offset % PAGE_SIZE) == 0)
+				pageNum++; //Only increment page num if we go past page boundary
+		}
+
+		while (size > 0) {
+			if (numBlocks >= HDA_MAX_BDL_ENTRIES) {
+				SklHdAudBusPrint(DEBUG_LEVEL_ERROR, DBG_IOCTL, "%s Too many BDL entries!\n", __func__);
+				numBlocks = HDA_MAX_BDL_ENTRIES;
+				break;
+			}
+
+			UINT32 pageOff = offset % PAGE_SIZE;
+			UINT32 chunk = (pageOff == 0) ? PAGE_SIZE : (PAGE_SIZE - pageOff);
+			if (size < chunk)
+				chunk = size;
+
+			PFN_NUMBER pfn = pfnArray[pageNum];
+			PHYSICAL_ADDRESS addr = { 0 };
+			addr.QuadPart = pfn << PAGE_SHIFT;
+			bdl->lowAddr = addr.LowPart + pageOff;
+			bdl->highAddr = addr.HighPart;
+			bdl->len = chunk;
+
+			size -= chunk;
+			//Program interrupt for when buffer ends
+			bdl->ioc = (size > 0) ? 0 : 1;
+			bdl++;
+			numBlocks++;
+			offset += chunk;
+			if ((offset % PAGE_SIZE) == 0)
+				pageNum++; //Only increment page num if we go past page boundary
+		}
+		stream->numBlocks = numBlocks;
+	}
+
+	WdfInterruptReleaseLock(stream->FdoContext->Interrupt);
+
+	hdac_stream_reset(stream);
+	hdac_stream_setup(stream);
+
+	*fifoSize = stream->fifoSize;
+	return STATUS_SUCCESS;
+}
+
+/* The pages of a buffer the stream no longer uses: the descriptor list address and the control register are cleared, as the codec stream's are */
+NTSTATUS hdac_stream_free_buffer(PHDAC_STREAM stream) {
+	if (KeGetCurrentIrql() > PASSIVE_LEVEL) {
+		return STATUS_UNSUCCESSFUL;
+	}
+
+	if (stream->running) {
+		return STATUS_INVALID_DEVICE_REQUEST;
+	}
+
+	if (!stream->mdlBuf) {
+		return STATUS_INVALID_DEVICE_REQUEST;
+	}
+
+	WdfInterruptAcquireLock(stream->FdoContext->Interrupt);
+
+	stream_write32(stream, SD_BDLPL, 0);
+	stream_write32(stream, SD_BDLPU, 0);
+	stream_write32(stream, SD_CTL, 0);
+
+	PMDL mdl = stream->mdlBuf;
+	stream->mdlBuf = NULL;
+
+	WdfInterruptReleaseLock(stream->FdoContext->Interrupt);
+
+	MmFreePagesFromMdl(mdl);
+	ExFreePool(mdl);
+
+	return STATUS_SUCCESS;
+}
+
+/*
+ * Run: the stream is set up once more and started. Pause and stop: it is
+ * stopped and a period that was still pending is forgotten. Reset: a stream
+ * that is not running is reset and set up.
+ */
+NTSTATUS hdac_stream_set_state(PHDAC_STREAM stream, HDAUDIO_STREAM_STATE streamState) {
+	WdfInterruptAcquireLock(stream->FdoContext->Interrupt);
+
+	if (streamState == RunState && !stream->running) {
+		InterlockedExchange(&stream->notificationPending, FALSE);
+		hdac_stream_setup(stream);
+		hdac_stream_start(stream);
+		stream->running = TRUE;
+	}
+	else if ((streamState == PauseState || streamState == StopState) && stream->running) {
+		hdac_stream_stop(stream);
+		stream->running = FALSE;
+		InterlockedExchange(&stream->notificationPending, FALSE);
+	}
+	else if (streamState == ResetState) {
+		if (!stream->running) {
+			hdac_stream_reset(stream);
+			hdac_stream_setup(stream);
+		}
+	}
+
+	WdfInterruptReleaseLock(stream->FdoContext->Interrupt);
+
+	return STATUS_SUCCESS;
+}
+
+/* A period's event of the stream, among the MAX_NOTIF_EVENTS the stream holds; the interrupt's DPC sets it */
+BOOLEAN hdac_stream_register_event(PHDAC_STREAM stream, PKEVENT notificationEvent) {
+	for (int i = 0; i < MAX_NOTIF_EVENTS; i++) {
+		if (stream->registeredEvents[i])
+			continue;
+		stream->registeredEvents[i] = notificationEvent;
+		return TRUE;
+	}
+	return FALSE;
+}
+
+BOOLEAN hdac_stream_unregister_event(PHDAC_STREAM stream, PKEVENT notificationEvent) {
+	for (int i = 0; i < MAX_NOTIF_EVENTS; i++) {
+		if (stream->registeredEvents[i] != notificationEvent)
+			continue;
+		stream->registeredEvents[i] = NULL;
+		return TRUE;
+	}
+	return FALSE;
+}
+
+PULONG hdac_stream_position_register(PHDAC_STREAM stream) {
+	return (ULONG*)(stream->sdAddr + HDA_REG_SD_LPIBA);
+}
+
+/* HDA_REG_VS_SDXDPIB_XBASE: one read-only register per stream, by the stream's index in the controller */
+PULONG hdac_stream_dma_position_register(PHDAC_STREAM stream) {
+	return (ULONG*)(stream->FdoContext->m_BAR0.Base.baseptr + HDA_REG_VS_SDXDPIB_XBASE +
+		(HDA_REG_VS_SDXDPIB_XINTERVAL * (ULONG)stream->idx));
+}

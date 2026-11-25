@@ -370,27 +370,7 @@ HDA_SetDmaEngineState(
 			return STATUS_INVALID_HANDLE;
 		}
 
-		WdfInterruptAcquireLock(devData->FdoContext->Interrupt);
-
-		if (StreamState == RunState && !stream->running) {
-			InterlockedExchange(&stream->notificationPending, FALSE);
-			hdac_stream_setup(stream);
-			hdac_stream_start(stream);
-			stream->running = TRUE;
-		}
-		else if ((StreamState == PauseState || StreamState == StopState) && stream->running) {
-			hdac_stream_stop(stream);
-			stream->running = FALSE;
-			InterlockedExchange(&stream->notificationPending, FALSE);
-		}
-		else if (StreamState == ResetState) {
-			if (!stream->running) {
-				hdac_stream_reset(stream);
-				hdac_stream_setup(stream);
-			}
-		}
-
-		WdfInterruptReleaseLock(devData->FdoContext->Interrupt);
+		hdac_stream_set_state(stream, StreamState);
 	}
 
 	return STATUS_SUCCESS;
@@ -427,7 +407,7 @@ HDA_GetLinkPositionRegister(
 		return STATUS_INVALID_HANDLE;
 	}
 
-	*Position = (ULONG*)(stream->sdAddr + HDA_REG_SD_LPIBA);
+	*Position = hdac_stream_position_register(stream);
 
 	return STATUS_SUCCESS;
 }
@@ -561,10 +541,6 @@ HDA_AllocateDmaBufferWithNotification(
 	_Out_ PUCHAR StreamId,
 	_Out_ PULONG FifoSize
 ) {
-	if (KeGetCurrentIrql() > PASSIVE_LEVEL) {
-		return STATUS_UNSUCCESSFUL;
-	}
-
 	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
 	if (!devData->FdoContext) {
 		return STATUS_NO_SUCH_DEVICE;
@@ -575,134 +551,8 @@ HDA_AllocateDmaBufferWithNotification(
 		return STATUS_INVALID_HANDLE;
 	}
 
-	if (stream->running) {
-		return STATUS_INVALID_DEVICE_REQUEST;
-	}
-
-	if (stream->mdlBuf) {
-		return STATUS_INVALID_DEVICE_REQUEST;
-	}
-
-	PHYSICAL_ADDRESS zeroAddr;
-	zeroAddr.QuadPart = 0;
-	PHYSICAL_ADDRESS maxAddr;
-	maxAddr.QuadPart = devData->FdoContext->is64BitOK ? MAXULONG64 : MAXULONG32;
-
-	UINT32 bufferSize = (UINT32)min(RequestedBufferSize, (SIZE_T)HDA_MAX_BDL_ENTRIES * PAGE_SIZE);
-	UINT32 allocOffset = 0;
-	UINT32 halfSize = 0;
-	if (NotificationCount == 2) {
-		UINT32 frameSize = (stream->streamFormat.ContainerSize / 8) * stream->streamFormat.NumberOfChannels;
-		UINT32 align = 128;
-		while (frameSize && align % frameSize)
-			align += 128;
-		UINT32 maxHalf = (HDA_MAX_BDL_ENTRIES / 2) * PAGE_SIZE / align * align;
-		halfSize = (UINT32)min(RequestedBufferSize / 2, (SIZE_T)maxHalf);
-		halfSize = min((halfSize + align - 1) / align * align, maxHalf);
-		bufferSize = halfSize * 2;
-		allocOffset = PAGE_SIZE - (halfSize % PAGE_SIZE);
-	}
-	UINT32 allocSize = bufferSize + allocOffset;
-
-	PMDL mdl = MmAllocatePagesForMdl(zeroAddr, maxAddr, zeroAddr, allocSize);
-	if (!mdl) {
-		return STATUS_NO_MEMORY;
-	}
-	if (MmGetMdlByteCount(mdl) < allocSize) {
-		MmFreePagesFromMdl(mdl);
-		ExFreePool(mdl);
-		return STATUS_INSUFFICIENT_RESOURCES;
-	}
-
-	WdfInterruptAcquireLock(devData->FdoContext->Interrupt);
-	stream->mdlBuf = mdl;
-	stream->bufSz = bufferSize;
-
-	*BufferMdl = mdl;
-	*AllocatedBufferSize = bufferSize;
-	*OffsetFromFirstPage = allocOffset;
-	*StreamId = stream->streamTag;
-
-	{
-		UINT16 numBlocks = 0;
-		UINT16 pageNum = 0;
-
-		//Set up the BDL
-		PHDAC_BDLENTRY bdl = stream->bdl;
-		UINT32 size = bufferSize;
-
-		PPFN_NUMBER pfnArray = MmGetMdlPfnArray(mdl);
-		UINT32 offset = allocOffset;
-		while (halfSize > 0) {
-			if (numBlocks >= HDA_MAX_BDL_ENTRIES) {
-				SklHdAudBusPrint(DEBUG_LEVEL_ERROR, DBG_IOCTL, "%s Too many BDL entries!\n", __func__);
-				numBlocks = HDA_MAX_BDL_ENTRIES;
-				break;
-			}
-
-			UINT32 pageOff = offset % PAGE_SIZE;
-			UINT32 chunk = (pageOff == 0) ? PAGE_SIZE : (PAGE_SIZE - pageOff);
-			if (halfSize < chunk)
-				chunk = halfSize;
-
-			PFN_NUMBER pfn = pfnArray[pageNum];
-			PHYSICAL_ADDRESS addr = { 0 };
-			addr.QuadPart = pfn << PAGE_SHIFT;
-
-			bdl->lowAddr = addr.LowPart + pageOff;
-			bdl->highAddr = addr.HighPart;
-			bdl->len = chunk;
-
-			halfSize -= chunk;
-			size -= chunk;
-
-			//Program interrupt for when buffer is halfway
-			bdl->ioc = (halfSize > 0) ? 0 : 1;
-			bdl++;
-			numBlocks++;
-			offset += chunk;
-			if ((offset % PAGE_SIZE) == 0)
-				pageNum++; //Only increment page num if we go past page boundary
-		}
-
-		while (size > 0) {
-			if (numBlocks >= HDA_MAX_BDL_ENTRIES) {
-				SklHdAudBusPrint(DEBUG_LEVEL_ERROR, DBG_IOCTL, "%s Too many BDL entries!\n", __func__);
-				numBlocks = HDA_MAX_BDL_ENTRIES;
-				break;
-			}
-
-			UINT32 pageOff = offset % PAGE_SIZE;
-			UINT32 chunk = (pageOff == 0) ? PAGE_SIZE : (PAGE_SIZE - pageOff);
-			if (size < chunk)
-				chunk = size;
-
-			PFN_NUMBER pfn = pfnArray[pageNum];
-			PHYSICAL_ADDRESS addr = { 0 };
-			addr.QuadPart = pfn << PAGE_SHIFT;
-			bdl->lowAddr = addr.LowPart + pageOff;
-			bdl->highAddr = addr.HighPart;
-			bdl->len = chunk;
-
-			size -= chunk;
-			//Program interrupt for when buffer ends
-			bdl->ioc = (size > 0) ? 0 : 1;
-			bdl++;
-			numBlocks++;
-			offset += chunk;
-			if ((offset % PAGE_SIZE) == 0)
-				pageNum++; //Only increment page num if we go past page boundary
-		}
-		stream->numBlocks = numBlocks;
-	}
-
-	WdfInterruptReleaseLock(devData->FdoContext->Interrupt);
-
-	hdac_stream_reset(stream);
-	hdac_stream_setup(stream);
-
-	*FifoSize = stream->fifoSize;
-	return STATUS_SUCCESS;
+	return hdac_stream_allocate_buffer(stream, NotificationCount, RequestedBufferSize, BufferMdl, AllocatedBufferSize,
+		OffsetFromFirstPage, StreamId, FifoSize);
 }
 
 NTSTATUS
@@ -716,10 +566,6 @@ HDA_FreeDmaBufferWithNotification(
 	UNREFERENCED_PARAMETER(BufferMdl);
 	UNREFERENCED_PARAMETER(BufferSize);
 
-	if (KeGetCurrentIrql() > PASSIVE_LEVEL) {
-		return STATUS_UNSUCCESSFUL;
-	}
-
 	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
 	if (!devData->FdoContext) {
 		return STATUS_NO_SUCH_DEVICE;
@@ -730,29 +576,7 @@ HDA_FreeDmaBufferWithNotification(
 		return STATUS_INVALID_HANDLE;
 	}
 
-	if (stream->running) {
-		return STATUS_INVALID_DEVICE_REQUEST;
-	}
-
-	if (!stream->mdlBuf) {
-		return STATUS_INVALID_DEVICE_REQUEST;
-	}
-
-	WdfInterruptAcquireLock(devData->FdoContext->Interrupt);
-
-	stream_write32(stream, SD_BDLPL, 0);
-	stream_write32(stream, SD_BDLPU, 0);
-	stream_write32(stream, SD_CTL, 0);
-
-	PMDL mdl = stream->mdlBuf;
-	stream->mdlBuf = NULL;
-
-	WdfInterruptReleaseLock(devData->FdoContext->Interrupt);
-
-	MmFreePagesFromMdl(mdl);
-	ExFreePool(mdl);
-
-	return STATUS_SUCCESS;
+	return hdac_stream_free_buffer(stream);
 }
 
 NTSTATUS
@@ -806,17 +630,7 @@ HDA_RegisterNotificationEvent(
 		return STATUS_INVALID_HANDLE;
 	}
 
-	BOOL registered = FALSE;
-
-	for (int i = 0; i < MAX_NOTIF_EVENTS; i++) {
-		if (stream->registeredEvents[i])
-			continue;
-		stream->registeredEvents[i] = NotificationEvent;
-		registered = true;
-		break;
-	}
-
-	return registered ? STATUS_SUCCESS : STATUS_INSUFFICIENT_RESOURCES;
+	return hdac_stream_register_event(stream, NotificationEvent) ? STATUS_SUCCESS : STATUS_INSUFFICIENT_RESOURCES;
 }
 
 NTSTATUS
@@ -836,17 +650,7 @@ HDA_UnregisterNotificationEvent(
 		return STATUS_INVALID_HANDLE;
 	}
 
-	BOOL registered = FALSE;
-
-	for (int i = 0; i < MAX_NOTIF_EVENTS; i++) {
-		if (stream->registeredEvents[i] != NotificationEvent)
-			continue;
-		stream->registeredEvents[i] = NULL;
-		registered = true;
-		break;
-	}
-
-	return registered ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
+	return hdac_stream_unregister_event(stream, NotificationEvent) ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
 }
 
 NTSTATUS

@@ -428,6 +428,127 @@ NTSTATUS ADSPGetTopologySources(_In_ PVOID _context, _Out_ PADSP_TOPOLOGY_SOURCE
 	return STATUS_SUCCESS;
 }
 
+/* The DSP stream's buffer, through the codec stream's routine: the pages, the descriptors and the stream's setup */
+NTSTATUS ADSPAllocateDmaBuffer(_In_ PVOID _context, _In_ HANDLE Handle, _In_ ULONG NotificationCount, _In_ SIZE_T RequestedBufferSize, _Out_ PMDL* BufferMdl, _Out_ PSIZE_T AllocatedBufferSize, _Out_ PSIZE_T OffsetFromFirstPage, _Out_ PUCHAR StreamId, _Out_ PULONG FifoSize) {
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+	if (!devData->FdoContext) {
+		return STATUS_NO_SUCH_DEVICE;
+	}
+
+	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
+	if (!stream || stream->PdoContext != devData) {
+		return STATUS_INVALID_HANDLE;
+	}
+
+	return hdac_stream_allocate_buffer(stream, NotificationCount, RequestedBufferSize, BufferMdl, AllocatedBufferSize,
+		OffsetFromFirstPage, StreamId, FifoSize);
+}
+
+NTSTATUS ADSPFreeDmaBuffer(_In_ PVOID _context, _In_ HANDLE Handle, _In_ PMDL BufferMdl, _In_ SIZE_T BufferSize) {
+	UNREFERENCED_PARAMETER(BufferMdl);
+	UNREFERENCED_PARAMETER(BufferSize);
+
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+	if (!devData->FdoContext) {
+		return STATUS_NO_SUCH_DEVICE;
+	}
+
+	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
+	if (!stream || stream->PdoContext != devData) {
+		return STATUS_INVALID_HANDLE;
+	}
+
+	return hdac_stream_free_buffer(stream);
+}
+
+NTSTATUS ADSPSetDmaEngineState(_In_ PVOID _context, _In_ HANDLE Handle, _In_ HDAUDIO_STREAM_STATE StreamState) {
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+	if (!devData->FdoContext) {
+		return STATUS_NO_SUCH_DEVICE;
+	}
+
+	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
+	if (!stream || stream->PdoContext != devData) {
+		return STATUS_INVALID_HANDLE;
+	}
+
+	return hdac_stream_set_state(stream, StreamState);
+}
+
+/* The stream's LPIB, for the audio engine to read */
+NTSTATUS ADSPGetLinkPositionRegister(_In_ PVOID _context, _In_ HANDLE Handle, _Out_ PULONG* Position) {
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+	if (!devData->FdoContext) {
+		return STATUS_NO_SUCH_DEVICE;
+	}
+
+	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
+	if (!stream || stream->PdoContext != devData) {
+		return STATUS_INVALID_HANDLE;
+	}
+
+	*Position = hdac_stream_position_register(stream);
+	return STATUS_SUCCESS;
+}
+
+/* The controller's extended DMA-position register of the stream: Intel's vendor-specific block (hda_registers.h HDA_REG_VS_SDXDPIB_XBASE) */
+NTSTATUS ADSPGetPositionRegister(_In_ PVOID _context, _In_ HANDLE Handle, _Out_ PULONG* Position) {
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+	if (!devData->FdoContext) {
+		return STATUS_NO_SUCH_DEVICE;
+	}
+
+	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
+	if (!stream || stream->PdoContext != devData) {
+		return STATUS_INVALID_HANDLE;
+	}
+
+	if (devData->FdoContext->venId != VEN_INTEL) {
+		*Position = NULL;
+		return STATUS_NOT_SUPPORTED;
+	}
+
+	*Position = hdac_stream_dma_position_register(stream);
+	return STATUS_SUCCESS;
+}
+
+void ADSPGetWallClockRegister(_In_ PVOID _context, _Out_ PULONG* Wallclock) {
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+	if (!devData->FdoContext) {
+		*Wallclock = NULL;
+		return;
+	}
+	*Wallclock = (ULONG*)(devData->FdoContext->m_BAR0.Base.baseptr + HDA_REG_WALLCLKA);
+}
+
+NTSTATUS ADSPRegisterNotificationEvent(_In_ PVOID _context, _In_ HANDLE Handle, _In_ PKEVENT NotificationEvent) {
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+	if (!devData->FdoContext) {
+		return STATUS_NO_SUCH_DEVICE;
+	}
+
+	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
+	if (!stream || stream->PdoContext != devData) {
+		return STATUS_INVALID_HANDLE;
+	}
+
+	return hdac_stream_register_event(stream, NotificationEvent) ? STATUS_SUCCESS : STATUS_INSUFFICIENT_RESOURCES;
+}
+
+NTSTATUS ADSPUnregisterNotificationEvent(_In_ PVOID _context, _In_ HANDLE Handle, _In_ PKEVENT NotificationEvent) {
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+	if (!devData->FdoContext) {
+		return STATUS_NO_SUCH_DEVICE;
+	}
+
+	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
+	if (!stream || stream->PdoContext != devData) {
+		return STATUS_INVALID_HANDLE;
+	}
+
+	return hdac_stream_unregister_event(stream, NotificationEvent) ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
+}
+
 ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
 	ADSP_BUS_INTERFACE busInterface;
 	RtlZeroMemory(&busInterface, sizeof(ADSP_BUS_INTERFACE));
@@ -460,6 +581,14 @@ ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
 	busInterface.ReleaseInterruptLock = ADSPReleaseInterruptLock;
 	busInterface.GetPlatformInfo = ADSPGetPlatformInfo;
 	busInterface.GetTopologySources = ADSPGetTopologySources;
+	busInterface.AllocateDmaBufferWithNotification = ADSPAllocateDmaBuffer;
+	busInterface.FreeDmaBufferWithNotification = ADSPFreeDmaBuffer;
+	busInterface.SetDmaEngineState = ADSPSetDmaEngineState;
+	busInterface.GetLinkPositionRegister = ADSPGetLinkPositionRegister;
+	busInterface.GetPositionRegister = ADSPGetPositionRegister;
+	busInterface.GetWallClockRegister = ADSPGetWallClockRegister;
+	busInterface.RegisterNotificationEvent = ADSPRegisterNotificationEvent;
+	busInterface.UnregisterNotificationEvent = ADSPUnregisterNotificationEvent;
 
 	return busInterface;
 }

@@ -17,6 +17,16 @@ IntcDspBusComplete(
         Bus->DSPEnableSPIB && Bus->AcquireInterruptLock && Bus->ReleaseInterruptLock;
 }
 
+BOOLEAN
+IntcDspBusStreams(
+    _In_ const ADSP_BUS_INTERFACE* Bus)
+{
+    /* the last of the stream members: a bus that reports through it has room for all of them */
+    return INTCDSP_BUS_HAS(Bus, UnregisterNotificationEvent) && INTCDSP_BUS_HAS(Bus, AllocateDmaBufferWithNotification) &&
+        INTCDSP_BUS_HAS(Bus, FreeDmaBufferWithNotification) && INTCDSP_BUS_HAS(Bus, SetDmaEngineState) &&
+        INTCDSP_BUS_HAS(Bus, RegisterNotificationEvent);
+}
+
 UINT64
 IntcDspDmaHighBound(
     _In_ const ADSP_BUS_INTERFACE* Bus)

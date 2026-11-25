@@ -50,6 +50,13 @@ typedef struct _ADSP_TOPOLOGY_SOURCES {
 	char MicTplg[ADSP_TOPOLOGY_NAME_BYTES];
 } ADSP_TOPOLOGY_SOURCES, * PADSP_TOPOLOGY_SOURCES;
 typedef _Must_inspect_result_ NTSTATUS (*PADSP_GET_TOPOLOGY_SOURCES) (_In_ PVOID _context, _Out_ PADSP_TOPOLOGY_SOURCES sources);
+/* Appended for the DSP driver's PCM streams: the codec interfaces' stream routines (hdaudio.cpp HDA_*) made available to a DSP stream through the one code path of hdac_stream.cpp. AllocateDmaBufferWithNotification gives the stream its pages and descriptors (NotificationCount 1 or 2) and sets it up; FreeDmaBufferWithNotification releases them; SetDmaEngineState runs, pauses or resets the one stream its handle names; GetLinkPositionRegister is the stream's LPIB and GetPositionRegister the controller's extended DMA-position register of it, both for the audio engine to read; GetWallClockRegister the 24 MHz wall clock; RegisterNotificationEvent and UnregisterNotificationEvent the period events the interrupt's DPC sets */
+typedef _Must_inspect_result_ NTSTATUS (*PADSP_ALLOCATE_DMA_BUFFER_WITH_NOTIFICATION) (_In_ PVOID _context, _In_ HANDLE Handle, _In_ ULONG NotificationCount, _In_ SIZE_T RequestedBufferSize, _Out_ PMDL* BufferMdl, _Out_ PSIZE_T AllocatedBufferSize, _Out_ PSIZE_T OffsetFromFirstPage, _Out_ PUCHAR StreamId, _Out_ PULONG FifoSize);
+typedef _Must_inspect_result_ NTSTATUS (*PADSP_FREE_DMA_BUFFER_WITH_NOTIFICATION) (_In_ PVOID _context, _In_ HANDLE Handle, _In_ PMDL BufferMdl, _In_ SIZE_T BufferSize);
+typedef _Must_inspect_result_ NTSTATUS (*PADSP_SET_DMA_ENGINE_STATE) (_In_ PVOID _context, _In_ HANDLE Handle, _In_ HDAUDIO_STREAM_STATE StreamState);
+typedef _Must_inspect_result_ NTSTATUS (*PADSP_GET_STREAM_POSITION_REGISTER) (_In_ PVOID _context, _In_ HANDLE Handle, _Out_ PULONG* Position);
+typedef VOID (*PADSP_GET_WALL_CLOCK_REGISTER) (_In_ PVOID _context, _Out_ PULONG* Wallclock);
+typedef _Must_inspect_result_ NTSTATUS (*PADSP_STREAM_NOTIFICATION_EVENT) (_In_ PVOID _context, _In_ HANDLE Handle, _In_ PKEVENT NotificationEvent);
 
 typedef struct _ADSP_BUS_INTERFACE
 {
@@ -90,6 +97,16 @@ typedef struct _ADSP_BUS_INTERFACE
 
     /* Appended for the DSP driver's topology selection: the machine's DMI strings and the controller's _DSD topology names; a driver built before it reads the structure through GetPlatformInfo */
     PADSP_GET_TOPOLOGY_SOURCES     GetTopologySources;
+
+    /* Appended for the DSP driver's PCM streams; a driver built before them reads the structure through GetTopologySources */
+    PADSP_ALLOCATE_DMA_BUFFER_WITH_NOTIFICATION AllocateDmaBufferWithNotification;
+    PADSP_FREE_DMA_BUFFER_WITH_NOTIFICATION     FreeDmaBufferWithNotification;
+    PADSP_SET_DMA_ENGINE_STATE                  SetDmaEngineState;
+    PADSP_GET_STREAM_POSITION_REGISTER          GetLinkPositionRegister;
+    PADSP_GET_STREAM_POSITION_REGISTER          GetPositionRegister;
+    PADSP_GET_WALL_CLOCK_REGISTER               GetWallClockRegister;
+    PADSP_STREAM_NOTIFICATION_EVENT             RegisterNotificationEvent;
+    PADSP_STREAM_NOTIFICATION_EVENT             UnregisterNotificationEvent;
 } ADSP_BUS_INTERFACE, * PADSP_BUS_INTERFACE;
 
 #ifndef ADSP_DECL

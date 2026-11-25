@@ -19,7 +19,7 @@ typedef int16_t INT16, *PINT16;
 typedef uint16_t UINT16, *PUINT16;
 typedef uint32_t UINT32, *PUINT32;
 typedef uint64_t UINT64, *PUINT64;
-typedef size_t SIZE_T;
+typedef size_t SIZE_T, *PSIZE_T;
 typedef char CHAR, *PCHAR;
 typedef unsigned char UCHAR, *PUCHAR, BOOLEAN, *PBOOLEAN;
 typedef void VOID, *PVOID;
@@ -38,6 +38,27 @@ typedef HANDLE* PHANDLE;
 #define STATUS_SUCCESS          ((NTSTATUS)0x00000000L)
 #define STATUS_NO_SUCH_DEVICE   ((NTSTATUS)0xC000000EL)
 #define STATUS_INVALID_BUFFER_SIZE ((NTSTATUS)0xC0000023L)
+/* the status codes the DSP driver's stream manager answers */
+#define STATUS_UNSUCCESSFUL         ((NTSTATUS)0xC0000001L)
+#define STATUS_INVALID_HANDLE       ((NTSTATUS)0xC0000008L)
+#define STATUS_INVALID_PARAMETER    ((NTSTATUS)0xC000000DL)
+#define STATUS_INVALID_DEVICE_REQUEST ((NTSTATUS)0xC0000010L)
+#define STATUS_NO_MEMORY            ((NTSTATUS)0xC0000017L)
+#define STATUS_OBJECT_NAME_NOT_FOUND ((NTSTATUS)0xC0000034L)
+#define STATUS_IO_TIMEOUT           ((NTSTATUS)0xC00000B5L)
+#define STATUS_NOT_SUPPORTED        ((NTSTATUS)0xC00000BBL)
+#define STATUS_DEVICE_NOT_READY     ((NTSTATUS)0xC00000A3L)
+#define STATUS_INSUFFICIENT_RESOURCES ((NTSTATUS)0xC000009AL)
+#define STATUS_INVALID_DEVICE_STATE ((NTSTATUS)0xC0000184L)
+#define STATUS_DEVICE_PROTOCOL_ERROR ((NTSTATUS)0xC0000186L)
+#define STATUS_NOT_FOUND            ((NTSTATUS)0xC0000225L)
+#define STATUS_CANCELLED            ((NTSTATUS)0xC0000120L)
+
+typedef int32_t INT32, *PINT32;
+typedef int64_t INT64, *PINT64;
+typedef uint64_t ULONGLONG, *PULONGLONG;
+typedef int64_t LONGLONG, *PLONGLONG;
+typedef ULONG* PULONG;
 
 #define _Must_inspect_result_
 #define FIELD_OFFSET(type, field)   offsetof(type, field)
@@ -72,3 +93,7 @@ typedef HANDLE* PHANDLE;
 #define _Inout_opt_
 #define _Out_writes_bytes_(x)
 #define _Out_writes_opt_(x)
+#define _In_reads_bytes_(x)
+#define _In_range_(a, b)
+#define _Printf_format_string_
+#define _Deref_out_opt_
