@@ -26,6 +26,8 @@ typedef _Must_inspect_result_ UINT32(*PDSP_STREAM_POSITION)(_In_ PVOID _context,
 typedef void (*PDSP_START_STOP_STREAM)(_In_ PVOID _context, _In_ HANDLE Handle, BOOL startStop);
 typedef void (*PDSP_ENABLE_SPIB)(_In_ PVOID _context, _In_ HANDLE Handle, UINT32 value);
 typedef void (*PDSP_DISABLE_SPIB)(_In_ PVOID _context, _In_ HANDLE Handle);
+/* The bus driver's interrupt spin lock (WdfInterruptAcquireLock), raised to DIRQL; hda_interrupt runs under it while it calls the DSP callback */
+typedef void (*PADSP_INTERRUPT_LOCK) (_In_ PVOID _context);
 
 typedef struct _ADSP_BUS_INTERFACE
 {
@@ -56,6 +58,10 @@ typedef struct _ADSP_BUS_INTERFACE
 
     PDSP_ENABLE_SPIB              DSPEnableSPIB;
     PDSP_DISABLE_SPIB             DSPDisableSPIB;
+
+    /* Appended for intcdsp: the interrupt lock its interrupt enable read-modify-writes are serialized with */
+    PADSP_INTERRUPT_LOCK          AcquireInterruptLock;
+    PADSP_INTERRUPT_LOCK          ReleaseInterruptLock;
 } ADSP_BUS_INTERFACE, * PADSP_BUS_INTERFACE;
 
 #ifndef ADSP_DECL

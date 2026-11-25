@@ -65,7 +65,9 @@ static int Failures;
 #define HOP_STREAMTRIGGER   6
 #define HOP_STREAMRELEASE   7
 #define HOP_LOG             8
-#define HOP_COUNT           9
+#define HOP_LOCK            9
+#define HOP_UNLOCK          10
+#define HOP_COUNT           11
 #define HARNESS_OPS_BOOTED  ((1u << HOP_COUNT) - 1)
 
 typedef struct _HARNESS
@@ -83,6 +85,8 @@ typedef struct _HARNESS
     UINT32 EntryBoundary;
     UINT32 CancelAfterDelays;
     UINT32 Delays;
+    /* the DSP interrupts the line raises per clock advance while a message is pending: the model has no line, the harness plays it */
+    UINT32 InterruptsPerDelay;
     UINT32 StreamTag;
     UINT32 OpsSeen;
     /* a clock that reports the same instant whatever the delays: the model still runs, the loader's budgets cannot expire */
@@ -94,6 +98,11 @@ typedef struct _HARNESS
 /* Calls made without the harness as their context: the detector case expects them, anywhere else they abort the run */
 static UINT32 ContextFaults;
 static UINT32 ContextFaultsExpected;
+
+static
+BOOLEAN
+HarnessInterrupt(
+    HARNESS* H);
 
 static
 HARNESS*
@@ -167,7 +176,7 @@ HNowUs(
     return H->ClockStalled ? 0 : FakeDspOps()->NowUs(H->Dsp);
 }
 
-/* the one injected operation: the clock advance, after which a cancellation can be requested */
+/* the one injected operation: the clock advance, after which a cancellation can be requested and the line raises the interrupts the case asked for */
 static
 VOID
 HDelayUs(
@@ -175,6 +184,7 @@ HDelayUs(
     UINT32 Microseconds)
 {
     HARNESS* H = HarnessEnter(Context, HOP_DELAYUS, "DelayUs");
+    UINT32 Index;
 
     if (H == NULL)
         return;
@@ -182,6 +192,8 @@ HDelayUs(
     H->Delays++;
     if (H->CancelAfterDelays != 0 && H->Delays >= H->CancelAfterDelays)
         H->Ctx->Cancel = TRUE;
+    for (Index = 0; Index < H->InterruptsPerDelay && FakeDspMessagePending(H->Dsp); Index++)
+        HarnessInterrupt(H);
 }
 
 static
@@ -235,6 +247,28 @@ HLog(
     }
 }
 
+static
+VOID
+HLock(
+    PVOID Context)
+{
+    HARNESS* H = HarnessEnter(Context, HOP_LOCK, "Lock");
+
+    if (H != NULL)
+        FakeDspOps()->Lock(H->Dsp);
+}
+
+static
+VOID
+HUnlock(
+    PVOID Context)
+{
+    HARNESS* H = HarnessEnter(Context, HOP_UNLOCK, "Unlock");
+
+    if (H != NULL)
+        FakeDspOps()->Unlock(H->Dsp);
+}
+
 /* The driver's shape: one const table of functions, and the harness reaches them as the context of every call */
 static const FWLOAD_OPS HarnessOps =
 {
@@ -246,8 +280,24 @@ static const FWLOAD_OPS HarnessOps =
     HStreamSubmit,
     HStreamTrigger,
     HStreamRelease,
-    HLog
+    HLog,
+    HLock,
+    HUnlock
 };
+
+/* The bus driver's interrupt service routine: the DSP callback under the interrupt lock, as hda_interrupt calls it */
+static
+BOOLEAN
+HarnessInterrupt(
+    HARNESS* H)
+{
+    BOOLEAN Claimed;
+
+    HarnessOps.Lock(H);
+    Claimed = FwloadInterruptService(H->Ctx);
+    HarnessOps.Unlock(H);
+    return Claimed;
+}
 
 static
 void
@@ -294,6 +344,7 @@ HarnessBoot(
     H->LogCount = 0;
     H->OpsSeen = 0;
     H->ClockStalled = FALSE;
+    H->InterruptsPerDelay = 0;
 }
 
 static
@@ -483,29 +534,32 @@ CheckHappyPath(
     CHECK_STR(H->Logs[1], "ROM ready for the firmware");
     CHECK_STR(H->Logs[2], "firmware entered");
     CHECK_STR(H->Logs[3], "FW_READY received");
-    CHECK_EQ(H->Dsp->PowerOrderCount, 4);
+    /* the boot polls: the three enables are masked right after the power-up and never set */
+    CHECK_EQ(H->Dsp->PowerOrderCount, 5);
     CHECK_EQ(H->Dsp->PowerOrder[0], FAKE_POWER_GPROCEN_ON);
     CHECK_EQ(H->Dsp->PowerOrder[1], FAKE_POWER_SUBSYSTEM_ON);
-    CHECK_EQ(H->Dsp->PowerOrder[2], FAKE_POWER_CORE_ON);
-    CHECK_EQ(H->Dsp->PowerOrder[3], FAKE_POWER_STREAM_RELEASE);
-    CHECK(!FakeDspPowerEventSeen(H->Dsp, FAKE_POWER_INTERRUPTS_OFF));
+    CHECK_EQ(H->Dsp->PowerOrder[2], FAKE_POWER_INTERRUPTS_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[3], FAKE_POWER_CORE_ON);
+    CHECK_EQ(H->Dsp->PowerOrder[4], FAKE_POWER_STREAM_RELEASE);
     CHECK(!FakeDspPowerEventSeen(H->Dsp, FAKE_POWER_CORE_OFF));
-    CHECK_EQ(H->Dsp->InterruptEnable, 1);
-    CHECK_EQ(H->Dsp->HostIpcEnable, 1);
-    CHECK_EQ(H->Dsp->IpcControl, 3);
+    CHECK_EQ(H->Dsp->InterruptEnable, 0);
+    CHECK_EQ(H->Dsp->HostIpcEnable, 0);
+    CHECK_EQ(H->Dsp->IpcControl, 0);
+    CHECK(!H->Ctx->InterruptsEnabled);
+    CHECK_EQ(H->Ctx->InterruptCount, 0);
     CheckBootWrites(H, 1);
 
-    /* power down from ready: interrupts, core, subsystem, GPROCEN, and nothing else */
+    /* power down from ready: the interrupts, core, subsystem, GPROCEN, and nothing else */
     Status = FwloadPowerDown(H->Ctx);
     CHECK_EQ(Status, FwloadOk);
     CHECK_EQ(H->Ctx->State, FwloadStateOff);
     CHECK_EQ(H->Ctx->Status, FwloadOk);
     CHECK_EQ(H->Ctx->CleanupStatus, FwloadOk);
-    CHECK_EQ(H->Dsp->PowerOrderCount, 8);
-    CHECK_EQ(H->Dsp->PowerOrder[4], FAKE_POWER_INTERRUPTS_OFF);
-    CHECK_EQ(H->Dsp->PowerOrder[5], FAKE_POWER_CORE_OFF);
-    CHECK_EQ(H->Dsp->PowerOrder[6], FAKE_POWER_SUBSYSTEM_OFF);
-    CHECK_EQ(H->Dsp->PowerOrder[7], FAKE_POWER_GPROCEN_OFF);
+    CHECK_EQ(H->Dsp->PowerOrderCount, 9);
+    CHECK_EQ(H->Dsp->PowerOrder[5], FAKE_POWER_INTERRUPTS_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[6], FAKE_POWER_CORE_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[7], FAKE_POWER_SUBSYSTEM_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[8], FAKE_POWER_GPROCEN_OFF);
     CHECK((H->Dsp->CoreControl & 0x100) == 0);
     CHECK((H->Dsp->SubsystemControl & 0x01000000) == 0);
     CHECK((H->Dsp->PpControl & FWLOAD_PPCTL_GPROCEN) == 0);
@@ -514,6 +568,11 @@ CheckHappyPath(
     CHECK_EQ(H->Dsp->IpcControl, 0);
     CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
     CHECK_EQ(H->Dsp->StreamReleases, 1);
+    /* both masks ran under the interrupt lock, one write per enable each, and nothing waited under it */
+    CHECK_EQ(H->Dsp->InterruptWritesLocked, 6);
+    CHECK_EQ(H->Dsp->InterruptWritesUnlocked, 0);
+    CHECK_EQ(H->Dsp->InterruptLockRecursions, 0);
+    CHECK_EQ(H->Dsp->InterruptLockDelays, 0);
     CheckBootWrites(H, 2);
     /* powering down twice is harmless; booting again after that boots again */
     CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
@@ -1007,26 +1066,183 @@ CheckInterruptPointer(
     CHECK_EQ(H->Dsp->InterruptPointerReads, 2);
     CHECK_EQ(H->Dsp->InterruptPointerReadsUnpowered, 2);
 
-    /* a pointer that names no 32-bit register once the DSP is powered: the interrupt is not enabled and nothing is written through it */
+    /* a pointer that names no 32-bit register once the DSP is powered: the host IPC interrupt enable is left alone, the other two are masked, nothing is written through the pointer and the polled boot is the model's */
     for (Index = 0; Index < sizeof(NoRegister) / sizeof(NoRegister[0]); Index++)
     {
         Faults = *FakeDspDefaultFaults();
         Faults.InterruptPointerOverride = TRUE;
         Faults.InterruptPointer = NoRegister[Index];
         HarnessBoot(H, Image, &Faults);
-        CHECK_EQ(FwloadBoot(H->Ctx), FwloadHardwareFault);
-        CHECK_EQ(H->Ctx->State, FwloadStateFailed);
-        CHECK_EQ(H->Ctx->FailedState, FwloadStateRomInit);
-        CHECK_EQ(H->Ctx->CleanupStatus, FwloadOk);
-        /* no register was written through the pointer, so the model never saw the interrupt go off */
-        CHECK(!FakeDspPowerEventSeen(H->Dsp, FAKE_POWER_INTERRUPTS_OFF));
-        CheckDspIsOff(H);
+        CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+        CHECK_EQ(H->Ctx->InterruptCount, 0);
         CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, FAKE_DSP_INTERRUPT_POINTER), 0);
         CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, NoRegister[Index] & 0x1FFFFF), 0);
-        CHECK_EQ(H->Dsp->InterruptEnable, 0);
+        /* no register was written through the pointer, so the model never saw the interrupt go off */
+        CHECK(!FakeDspPowerEventSeen(H->Dsp, FAKE_POWER_INTERRUPTS_OFF));
+        CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, Platform->HostIpcInterruptEnable), 1);
+        CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, Platform->IpcControl), 1);
         CHECK_EQ(H->Dsp->HostIpcEnable, 0);
         CHECK_EQ(H->Dsp->IpcControl, 0);
+        CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
+        CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+        CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, FAKE_DSP_INTERRUPT_POINTER), 0);
+        CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
     }
+
+    /* an interrupt that is asked for with a pointer that names no register cannot be enabled: the guard has nothing to gate the line with */
+    Faults = *FakeDspDefaultFaults();
+    Faults.InterruptPointerOverride = TRUE;
+    Faults.InterruptPointer = NoRegister[1];
+    HarnessBoot(H, Image, &Faults);
+    H->Ctx->UseInterrupts = TRUE;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadHardwareFault);
+    CHECK_EQ(H->Ctx->FailedState, FwloadStateRomInit);
+    CheckDspIsOff(H);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, FAKE_DSP_INTERRUPT_POINTER), 0);
+
+    /* a pointer inside BAR4 that names no register the model has: the loader cannot tell and writes the mask there; all ones never read back as cleared, so the boot stops at once where an enable would have read back as set */
+    Faults = *FakeDspDefaultFaults();
+    Faults.InterruptPointerOverride = TRUE;
+    Faults.InterruptPointer = 0x1234;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadInterruptTimeout);
+    CHECK_EQ(H->Ctx->State, FwloadStateFailed);
+    CHECK_EQ(H->Ctx->FailedState, FwloadStatePoweringUp);
+    CHECK_EQ(H->Ctx->CleanupStatus, FwloadInterruptTimeout);
+    CHECK(H->Ctx->BootUs >= 101000 && H->Ctx->BootUs < 103000);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, 0x1234), 2);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, FAKE_DSP_INTERRUPT_POINTER), 0);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, Platform->HostIpcInterruptEnable), 0);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, Platform->IpcControl), 0);
+    CHECK((H->Dsp->SubsystemControl & 0x01000000) == 0);
+    CHECK((H->Dsp->PpControl & FWLOAD_PPCTL_GPROCEN) == 0);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadInterruptTimeout);
+    CHECK_EQ(H->Ctx->State, FwloadStateOff);
+    CHECK_STR(FwloadStatusName(FwloadInterruptTimeout), "interrupt enable timeout");
+}
+
+/*
+ * R2 of the branch review: the first boot polls. The IPC interrupts are masked right after the power-up and never enabled; the service routine masks the three enables on a DSP
+ * interrupt and counts the ones no poll separates, and after FWLOAD_INTERRUPT_STORM_LIMIT of them it stops claiming the line and the boot's waits end with FwloadInterruptStorm.
+ * Every passive-level write to the enables runs under the interrupt lock, and nothing waits under it
+ */
+static
+void
+CheckInterruptService(
+    HARNESS* H,
+    const SOF_RI_IMAGE* Image)
+{
+    const FWLOAD_PLATFORM* Platform = FwloadPlatformArlS();
+    UINT32 Writes, Index;
+
+    /* a message pending with no boot: nothing is claimed while nothing is pending, then each claim masks the three enables under the lock the bus holds, the first one reads the registers for the driver's log, and the guard trips after FWLOAD_INTERRUPT_STORM_LIMIT */
+    HarnessBoot(H, Image, NULL);
+    CHECK(!HarnessInterrupt(H));
+    CHECK_EQ(H->Ctx->InterruptCount, 0);
+    H->Dsp->IpcTarget = FWLOAD_IPC_BUSY | SOFIPC4_FW_READY_PRIMARY;
+    CHECK(HarnessInterrupt(H));
+    CHECK_EQ(H->Ctx->InterruptCount, 1);
+    CHECK_EQ(H->Ctx->StormCount, 1);
+    CHECK_EQ(H->Ctx->FirstInterrupt.Pointer, FAKE_DSP_INTERRUPT_POINTER);
+    CHECK_EQ(H->Ctx->FirstInterrupt.Enable, 0);
+    CHECK_EQ(H->Ctx->FirstInterrupt.HostIpcEnable, 0);
+    CHECK_EQ(H->Ctx->FirstInterrupt.IpcControl, 0);
+    CHECK_EQ(H->Ctx->FirstInterrupt.SubsystemControl, 0);
+    for (Index = 2; Index < FWLOAD_INTERRUPT_STORM_LIMIT; Index++)
+        CHECK(HarnessInterrupt(H));
+    CHECK_EQ(H->Ctx->InterruptCount, FWLOAD_INTERRUPT_STORM_LIMIT - 1);
+    CHECK(!H->Ctx->InterruptStorm);
+    CHECK(HarnessInterrupt(H));
+    CHECK(H->Ctx->InterruptStorm);
+    CHECK_EQ(H->Ctx->InterruptCount, FWLOAD_INTERRUPT_STORM_LIMIT);
+    /* disarmed: the line is not claimed again and no register is touched */
+    Writes = H->Dsp->WriteCount;
+    CHECK(!HarnessInterrupt(H));
+    CHECK_EQ(H->Ctx->InterruptCount, FWLOAD_INTERRUPT_STORM_LIMIT);
+    CHECK_EQ(H->Dsp->WriteCount, Writes);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, FAKE_DSP_INTERRUPT_POINTER), FWLOAD_INTERRUPT_STORM_LIMIT);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, Platform->HostIpcInterruptEnable), FWLOAD_INTERRUPT_STORM_LIMIT);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, Platform->IpcControl), FWLOAD_INTERRUPT_STORM_LIMIT);
+    CHECK_EQ(H->Dsp->InterruptWritesLocked, 3 * FWLOAD_INTERRUPT_STORM_LIMIT);
+    CHECK_EQ(H->Dsp->InterruptWritesUnlocked, 0);
+    CHECK_EQ(H->Dsp->InterruptLockRecursions, 0);
+    CHECK_EQ(H->Dsp->InterruptLockDelays, 0);
+    CHECK_EQ(H->Dsp->InterruptLockUnderflows, 0);
+    CHECK_EQ(H->Dsp->InterruptLockDepth, 0);
+    /* the guard is a property of the context: a fresh one is armed again */
+    HarnessBoot(H, Image, NULL);
+    CHECK(!H->Ctx->InterruptStorm);
+    CHECK(!HarnessInterrupt(H));
+
+    /* one interrupt per message during a poll-only boot: the ROM's acknowledgement, FW_READY and the reply each raise the line once, the poll consumes the message and the count starts again: no storm, the boot is the model's */
+    HarnessBoot(H, Image, NULL);
+    H->InterruptsPerDelay = 1;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    H->InterruptsPerDelay = 0;
+    CHECK_EQ(H->Ctx->InterruptCount, 3);
+    CHECK_EQ(H->Ctx->StormCount, 0);
+    CHECK(!H->Ctx->InterruptStorm);
+    CHECK_EQ(H->Dsp->InterruptEnable, 0);
+    CHECK_EQ(H->Dsp->HostIpcEnable, 0);
+    CHECK_EQ(H->Dsp->IpcControl, 0);
+    CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+
+    /* FWLOAD_INTERRUPT_STORM_LIMIT interrupts short of the limit per message: as many as the limit less one, three times, never trip it */
+    HarnessBoot(H, Image, NULL);
+    H->InterruptsPerDelay = FWLOAD_INTERRUPT_STORM_LIMIT - 1;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    H->InterruptsPerDelay = 0;
+    CHECK_EQ(H->Ctx->InterruptCount, 3 * (FWLOAD_INTERRUPT_STORM_LIMIT - 1));
+    CHECK(!H->Ctx->InterruptStorm);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+
+    /* FWLOAD_INTERRUPT_STORM_LIMIT in a row, here on the ROM's acknowledgement: the guard trips and the routine stops claiming the line; the waits that are satisfied at once still pass, the next one that is not ends the boot as an interrupt storm, and the DSP is off */
+    HarnessBoot(H, Image, NULL);
+    H->InterruptsPerDelay = FWLOAD_INTERRUPT_STORM_LIMIT;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadInterruptStorm);
+    H->InterruptsPerDelay = 0;
+    CHECK_EQ(H->Ctx->InterruptCount, FWLOAD_INTERRUPT_STORM_LIMIT);
+    CheckFailedBootIsOff(H, FwloadInterruptStorm, FwloadStateLoading);
+
+    /* with a clock that does not advance the storm still wins: it is read before the poll bound */
+    HarnessBoot(H, Image, NULL);
+    H->InterruptsPerDelay = FWLOAD_INTERRUPT_STORM_LIMIT;
+    H->ClockStalled = TRUE;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadInterruptStorm);
+    H->InterruptsPerDelay = 0;
+    CheckFailedBootIsOff(H, FwloadInterruptStorm, FwloadStateLoading);
+
+    /* FWLOAD_CONTEXT.UseInterrupts, the later phases' mode: the enables are set once the ROM acknowledged and stay set until the power-down; every write to them is under the lock */
+    HarnessBoot(H, Image, NULL);
+    H->Ctx->UseInterrupts = TRUE;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK(H->Ctx->InterruptsEnabled);
+    CHECK_EQ(H->Dsp->InterruptEnable, 1);
+    CHECK_EQ(H->Dsp->HostIpcEnable, 1);
+    CHECK_EQ(H->Dsp->IpcControl, 3);
+    CHECK_EQ(H->Dsp->PowerOrderCount, 5);
+    CHECK_EQ(H->Dsp->PowerOrder[2], FAKE_POWER_INTERRUPTS_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[3], FAKE_POWER_CORE_ON);
+    CHECK_EQ(H->Dsp->PowerOrder[4], FAKE_POWER_STREAM_RELEASE);
+    /* the mask after the power-up and the enable after the ROM: three writes each */
+    CHECK_EQ(H->Dsp->InterruptWritesLocked, 6);
+    CHECK_EQ(H->Dsp->InterruptWritesUnlocked, 0);
+    CHECK_EQ(H->Dsp->InterruptLockRecursions, 0);
+    CHECK_EQ(H->Dsp->InterruptLockDelays, 0);
+    CheckBootWrites(H, 2);
+    /* in that mode too the routine's mask and the poll's acknowledging are serialized: one interrupt per message still boots */
+    H->Dsp->IpcTarget = FWLOAD_IPC_BUSY | SOFIPC4_FW_READY_PRIMARY;
+    CHECK(HarnessInterrupt(H));
+    CHECK_EQ(H->Ctx->InterruptCount, 1);
+    CHECK_EQ(H->Dsp->InterruptEnable, 0);
+    CHECK_EQ(H->Dsp->HostIpcEnable, 0);
+    CHECK_EQ(H->Dsp->IpcControl, 0);
+    CHECK_EQ(H->Dsp->InterruptWritesLocked, 9);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Dsp->InterruptWritesLocked, 12);
+    CHECK_EQ(H->Dsp->InterruptWritesUnlocked, 0);
+    CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
 }
 
 static
@@ -1703,10 +1919,10 @@ CheckNames(
 {
     UINT32 Index, Other;
 
-    for (Index = 0; Index <= (UINT32)FwloadBadState; Index++)
+    for (Index = 0; Index <= (UINT32)FwloadInterruptTimeout; Index++)
     {
         CHECK(FwloadStatusName((FWLOAD_STATUS)Index)[0] != 0);
-        for (Other = Index + 1; Other <= (UINT32)FwloadBadState; Other++)
+        for (Other = Index + 1; Other <= (UINT32)FwloadInterruptTimeout; Other++)
             CHECK(strcmp(FwloadStatusName((FWLOAD_STATUS)Index), FwloadStatusName((FWLOAD_STATUS)Other)) != 0);
     }
     for (Index = 0; Index <= (UINT32)FwloadStateFailed; Index++)
@@ -1715,6 +1931,7 @@ CheckNames(
     CHECK_STR(FwloadStatusName(FwloadRomError), "ROM error");
     CHECK_STR(FwloadStatusName(FwloadFwCrash), "firmware crash");
     CHECK_STR(FwloadStatusName(FwloadVersionMismatch), "version mismatch");
+    CHECK_STR(FwloadStatusName(FwloadInterruptStorm), "interrupt storm");
     CHECK_STR(FwloadStatusName((FWLOAD_STATUS)999), "unknown");
     CHECK_STR(FwloadStateName(FwloadStateReady), "ready");
     CHECK_STR(FwloadStateName(FwloadStateFailed), "failed");
@@ -1769,6 +1986,8 @@ CheckOpsContext(
         CHECK_EQ(HarnessOps.StreamTrigger(Bad[Index], TRUE), FwloadBadState);
         HarnessOps.StreamRelease(Bad[Index]);
         HarnessOps.Log(Bad[Index], "refused");
+        HarnessOps.Lock(Bad[Index]);
+        HarnessOps.Unlock(Bad[Index]);
     }
     ContextFaultsExpected = 0;
     CHECK_EQ(ContextFaults - Before, 2 * HOP_COUNT);
@@ -1800,6 +2019,7 @@ main(
     CheckRomErrors(&H, Image);
     CheckFirmwareFaults(&H, Image);
     CheckInterruptPointer(&H, Image);
+    CheckInterruptService(&H, Image);
     CheckRetry(&H, Image);
     CheckCancellation(&H, Image);
     CheckBadPayload(&H, Data, Image);

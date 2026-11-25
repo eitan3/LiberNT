@@ -183,6 +183,9 @@ extern "C" {
 #define FWLOAD_PARAM_ID_SHIFT               20
 #define FWLOAD_MAILBOX_BYTES                4096
 
+/* DSP interrupts in a row that the boot's polls consumed no message between: after them the service routine masks the enables once more and stops claiming the line. A driver choice, not a hardware constant */
+#define FWLOAD_INTERRUPT_STORM_LIMIT        16
+
 /* The busy and done bits of the IPC registers, Linux mtl.h MTL_DSP_REG_HFIPCXIDR_BUSY, MTL_DSP_REG_HFIPCXIDA_DONE, MTL_DSP_REG_HFIPCXTDR_BUSY and MTL_DSP_REG_HFIPCXTDA_BUSY: bit 31 of each; the header of a received message is its register without that bit */
 #define FWLOAD_IPC_BUSY                    0x80000000UL
 #define FWLOAD_IPC_DONE                    0x80000000UL
@@ -245,7 +248,9 @@ typedef enum _FWLOAD_STATUS
     FwloadDmaTooManyFragments,
     FwloadDmaTooSmall,
     FwloadHardwareFault,
-    FwloadBadState
+    FwloadBadState,
+    FwloadInterruptStorm,
+    FwloadInterruptTimeout
 } FWLOAD_STATUS;
 
 typedef enum _FWLOAD_STATE
@@ -434,6 +439,8 @@ typedef struct _FWLOAD_CONTEXT FWLOAD_CONTEXT, *PFWLOAD_CONTEXT;
  * implement it with a DSP model. Time is injected too: NowUs is monotonic, DelayUs advances it.
  * The DSP-to-host IPC is not an operation: the library receives and acknowledges it through the
  * register operations, so the state machine and the receive path cannot disagree.
+ * Lock and Unlock are optional: they serialize the passive-level read-modify-writes of the interrupt
+ * enables against FwloadInterruptService, which runs under the caller's interrupt lock already.
  * The table holds functions only, so it can stay static const: every call receives the context
  * FwloadInitContext was given.
  */
@@ -448,6 +455,8 @@ typedef struct _FWLOAD_OPS
     FWLOAD_STATUS (*StreamTrigger)(PVOID Context, BOOLEAN Start);
     VOID (*StreamRelease)(PVOID Context);
     VOID (*Log)(PVOID Context, const char* Text);
+    VOID (*Lock)(PVOID Context);
+    VOID (*Unlock)(PVOID Context);
 } FWLOAD_OPS, *PFWLOAD_OPS;
 
 /* What the firmware answered after FW_READY */
@@ -474,6 +483,16 @@ typedef struct _FWLOAD_FW_CONFIG
     UINT32 TupleCount;
 } FWLOAD_FW_CONFIG, *PFWLOAD_FW_CONFIG;
 
+/* The interrupt registers of the host IPC at one moment, for the service routine's first interrupt and for the driver's log */
+typedef struct _FWLOAD_INTERRUPT_STATE
+{
+    UINT32 Pointer;
+    UINT32 Enable;
+    UINT32 HostIpcEnable;
+    UINT32 IpcControl;
+    UINT32 SubsystemControl;
+} FWLOAD_INTERRUPT_STATE, *PFWLOAD_INTERRUPT_STATE;
+
 struct _FWLOAD_CONTEXT
 {
     const FWLOAD_OPS* Ops;
@@ -497,8 +516,16 @@ struct _FWLOAD_CONTEXT
     BOOLEAN Cancel;
     BOOLEAN StreamSubmitted;
     BOOLEAN InterruptsEnabled;
+    /* the boot's policy: FALSE, the default, polls every wait and keeps the IPC interrupts masked from the power-up to the power-down; TRUE enables them once the ROM acknowledged, as Linux does */
+    BOOLEAN UseInterrupts;
+    /* the interrupt guard tripped: the service routine stopped claiming the line and every wait ends with FwloadInterruptStorm */
+    BOOLEAN InterruptStorm;
     BOOLEAN SubsystemOn;
     BOOLEAN CoreOn;
+    UINT32 InterruptCount;
+    /* DSP interrupts in a row that no received message separated */
+    UINT32 StormCount;
+    FWLOAD_INTERRUPT_STATE FirstInterrupt;
     FWLOAD_FW_CONFIG FwConfig;
     UINT8 Mailbox[FWLOAD_MAILBOX_BYTES];
 };
@@ -543,6 +570,26 @@ FwloadInitContext(
 
 FWLOAD_STATUS FwloadBoot(_Inout_ PFWLOAD_CONTEXT Context);
 FWLOAD_STATUS FwloadPowerDown(_Inout_ PFWLOAD_CONTEXT Context);
+
+/* The register a raw interrupt pointer names, or 0xFFFFFFFF when it names none: not all ones, its 21-bit field not zero, not all ones and 32-bit aligned */
+UINT32
+FwloadInterruptOffset(
+    UINT32 Pointer);
+
+/* The register the interrupt pointer names, or 0xFFFFFFFF when it names none; read from the hardware at every call */
+UINT32
+FwloadInterruptEnableOffset(
+    _In_ const FWLOAD_CONTEXT* Context);
+
+VOID
+FwloadReadInterruptState(
+    _In_ const FWLOAD_CONTEXT* Context,
+    _Out_ PFWLOAD_INTERRUPT_STATE State);
+
+/* The body of the DSP's interrupt service routine: TRUE when a message was pending, was counted and the enables were masked; runs under the caller's interrupt lock, at the caller's interrupt level */
+BOOLEAN
+FwloadInterruptService(
+    _Inout_ PFWLOAD_CONTEXT Context);
 
 #ifdef __cplusplus
 }

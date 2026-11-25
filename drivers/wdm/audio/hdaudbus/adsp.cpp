@@ -364,6 +364,19 @@ UINT32 ADSPStreamPosition(_In_ PVOID _context, _In_ HANDLE Handle) {
 	return *stream->posbuf;
 }
 
+/* The lock hda_interrupt runs under: a DSP driver serializes its interrupt register updates against the callback it registered */
+void ADSPAcquireInterruptLock(_In_ PVOID _context) {
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+
+	WdfInterruptAcquireLock(devData->FdoContext->Interrupt);
+}
+
+void ADSPReleaseInterruptLock(_In_ PVOID _context) {
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+
+	WdfInterruptReleaseLock(devData->FdoContext->Interrupt);
+}
+
 ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
 	ADSP_BUS_INTERFACE busInterface;
 	RtlZeroMemory(&busInterface, sizeof(ADSP_BUS_INTERFACE));
@@ -391,6 +404,9 @@ ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
 
 	busInterface.DSPEnableSPIB = ADSPEnableSPIB;
 	busInterface.DSPDisableSPIB = ADSPDisableSPIB;
+
+	busInterface.AcquireInterruptLock = ADSPAcquireInterruptLock;
+	busInterface.ReleaseInterruptLock = ADSPReleaseInterruptLock;
 
 	return busInterface;
 }

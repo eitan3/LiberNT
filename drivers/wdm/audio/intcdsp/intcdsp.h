@@ -42,12 +42,6 @@
 #define INTCDSP_CAP_VERSION_SHIFT 28
 #define INTCDSP_CAP_NEXT_MASK     0xFFFF
 
-/* Interrupt enables of the host IPC: the bit of the register the interrupt pointer names (mtl.h MTL_IRQ_INTEN_L_HOST_IPC_MASK), of HfHIPCIE (MTL_DSP_REG_HfHIPCIE_IE_MASK) and of HFIPCXCTL (MTL_DSP_REG_HFIPCXCTL_BUSY, _DONE); the reply and target registers and their busy and done bits are the fwload platform table's */
-#define INTCDSP_INTEN_HOST_IPC    0x00000001UL
-#define INTCDSP_HIPCIE_IE         0x00000001UL
-#define INTCDSP_IPCCTL_BUSY_INT   0x00000001UL
-#define INTCDSP_IPCCTL_DONE_INT   0x00000002UL
-
 /* The lowest BAR4 length the ACE 1.0 register map and both mailbox windows need: window 1 (mtl.h MTL_SRAM_WINDOW_OFFSET(1), 0x8000 bytes per window) plus the downlink mailbox it holds (MTL_DSP_MBOX_DOWNLINK_OFFSET, 0x1000 bytes); studied under LICENSING.md rule 7 */
 #define INTCDSP_BAR4_MIN_BYTES    0x189000
 
@@ -85,6 +79,8 @@ typedef _Must_inspect_result_ UINT32(*PDSP_STREAM_POSITION)(_In_ PVOID Context, 
 typedef void(*PDSP_START_STOP_STREAM)(_In_ PVOID Context, _In_ HANDLE Handle, int StartStop);
 typedef void(*PDSP_ENABLE_SPIB)(_In_ PVOID Context, _In_ HANDLE Handle, UINT32 Value);
 typedef void(*PDSP_DISABLE_SPIB)(_In_ PVOID Context, _In_ HANDLE Handle);
+/* Added by this driver's request: the bus driver's interrupt spin lock, raised to DIRQL, which its interrupt service routine holds while it calls the DSP callback */
+typedef void(*PADSP_INTERRUPT_LOCK)(_In_ PVOID Context);
 
 typedef struct _ADSP_BUS_INTERFACE
 {
@@ -107,6 +103,8 @@ typedef struct _ADSP_BUS_INTERFACE
     PDSP_STREAM_POSITION StreamPosition;
     PDSP_ENABLE_SPIB DSPEnableSPIB;
     PDSP_DISABLE_SPIB DSPDisableSPIB;
+    PADSP_INTERRUPT_LOCK AcquireInterruptLock;
+    PADSP_INTERRUPT_LOCK ReleaseInterruptLock;
 } ADSP_BUS_INTERFACE, *PADSP_BUS_INTERFACE;
 
 typedef struct _INTCDSP_DEVICE
@@ -150,7 +148,6 @@ typedef struct _INTCDSP_DEVICE
     FWLOAD_STATUS LastStatus;
     BOOLEAN InterruptArmed;
     BOOLEAN InterruptRegistered;
-    volatile LONG Interrupts;
 } INTCDSP_DEVICE, *PINTCDSP_DEVICE;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(INTCDSP_DEVICE, IntcDspGetData)
@@ -176,10 +173,6 @@ IntcDspClockFrequency(
 PADSP_INTERRUPT_CALLBACK
 IntcDspInterruptRoutine(
     VOID);
-
-VOID
-IntcDspMaskInterrupts(
-    _Inout_ PINTCDSP_DEVICE Dev);
 
 NTSTATUS
 IntcDspReadBootDsp(

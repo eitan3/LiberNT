@@ -25,8 +25,7 @@
 #define FAKE_DSP_CSS_BYTES_READ    48
 
 #define FAKE_DSP_CONSUME    16
-/* The ROM's own reading of the container layout (rimage manifest.h, cse.h, css.h): independent of the host reader */
-#define FAKE_RI_CPD_ENTRY_OFFSET    12
+/* The ROM's own reading of the container layout (rimage manifest.h, cse.h, css.h): independent of the host reader */#define FAKE_RI_CPD_ENTRY_OFFSET    12
 #define FAKE_RI_CSS_VENDOR          16
 #define FAKE_RI_CSS_ID              28
 #define FAKE_RI_FW_HDR_LEN          4
@@ -519,6 +518,79 @@ FakeDspRomStart(
 }
 
 static
+VOID
+FakeDspWriteLog(
+    PFAKE_DSP Dsp,
+    UINT32 Bar,
+    UINT32 Offset,
+    UINT32 Value)
+{
+    if (Dsp->WriteCount >= FAKE_DSP_WRITE_LOG)
+        return;
+    Dsp->WriteLog[Dsp->WriteCount].Bar = Bar;
+    Dsp->WriteLog[Dsp->WriteCount].Offset = Offset;
+    Dsp->WriteLog[Dsp->WriteCount].Value = Value;
+    Dsp->WriteLog[Dsp->WriteCount].At = Dsp->Clock;
+    Dsp->WriteLog[Dsp->WriteCount].Powered = (Dsp->SubsystemControl & FAKE_DSP_SUBSYSTEM_CPA) != 0;
+    Dsp->WriteCount++;
+}
+
+/* One of the three interrupt enables the service routine masks and the passive level sets */
+static
+BOOLEAN
+FakeDspIsInterruptEnable(
+    const FAKE_DSP* Dsp,
+    UINT32 Bar,
+    UINT32 Offset)
+{
+    return Bar == FWLOAD_BAR_DSP && (Offset == FAKE_DSP_INTERRUPT_POINTER ||
+        Offset == Dsp->Platform->HostIpcInterruptEnable || Offset == Dsp->Platform->IpcControl);
+}
+
+/* The interrupt lock as the bus driver holds it around its service routine: a passive-level write to an enable arrives under it, a routine's write under the caller's hold of it */
+VOID
+FakeDspInterruptLock(
+    PFAKE_DSP Dsp)
+{
+    if (Dsp->InterruptLockDepth != 0)
+        Dsp->InterruptLockRecursions++;
+    Dsp->InterruptLockDepth++;
+}
+
+VOID
+FakeDspInterruptUnlock(
+    PFAKE_DSP Dsp)
+{
+    if (Dsp->InterruptLockDepth != 0)
+        Dsp->InterruptLockDepth--;
+    else
+        Dsp->InterruptLockUnderflows++;
+}
+
+BOOLEAN
+FakeDspMessagePending(
+    const FAKE_DSP* Dsp)
+{
+    return (Dsp->IpcReply & FAKE_DSP_IPC_DONE) != 0 || (Dsp->IpcTarget & FAKE_DSP_IPC_BUSY) != 0;
+}
+
+static
+VOID
+FakeDspLockOp(
+    PVOID Context)
+{
+    FakeDspInterruptLock((PFAKE_DSP)Context);
+}
+
+static
+VOID
+FakeDspUnlockOp(
+    PVOID Context)
+{
+    FakeDspInterruptUnlock((PFAKE_DSP)Context);
+}
+
+static
 UINT32
 FakeDspRead32(
     PVOID Context,
@@ -607,14 +679,13 @@ FakeDspWrite32(
     UINT32 Type;
 
     FakeDspAdvance(Dsp);
-    if (Dsp->WriteCount < FAKE_DSP_WRITE_LOG)
+    FakeDspWriteLog(Dsp, Bar, Offset, Value);
+    if (FakeDspIsInterruptEnable(Dsp, Bar, Offset))
     {
-        Dsp->WriteLog[Dsp->WriteCount].Bar = Bar;
-        Dsp->WriteLog[Dsp->WriteCount].Offset = Offset;
-        Dsp->WriteLog[Dsp->WriteCount].Value = Value;
-        Dsp->WriteLog[Dsp->WriteCount].At = Dsp->Clock;
-        Dsp->WriteLog[Dsp->WriteCount].Powered = (Dsp->SubsystemControl & FAKE_DSP_SUBSYSTEM_CPA) != 0;
-        Dsp->WriteCount++;
+        if (Dsp->InterruptLockDepth != 0)
+            Dsp->InterruptWritesLocked++;
+        else
+            Dsp->InterruptWritesUnlocked++;
     }
     if (Bar == FWLOAD_BAR_PP)
     {
@@ -791,7 +862,11 @@ UINT64
 FakeDspNowUs(
     PVOID Context)
 {
-    return ((PFAKE_DSP)Context)->Clock;
+    PFAKE_DSP Dsp = (PFAKE_DSP)Context;
+
+    if (Dsp->InterruptLockDepth != 0)
+        Dsp->InterruptLockDelays++;
+    return Dsp->Clock;
 }
 
 static
@@ -802,6 +877,8 @@ FakeDspDelayUs(
 {
     PFAKE_DSP Dsp = (PFAKE_DSP)Context;
 
+    if (Dsp->InterruptLockDepth != 0)
+        Dsp->InterruptLockDelays++;
     Dsp->Clock += Microseconds;
     FakeDspAdvance(Dsp);
 }
@@ -925,7 +1002,9 @@ static const FWLOAD_OPS FakeDspOpsTable =
     FakeDspStreamSubmit,
     FakeDspStreamTrigger,
     FakeDspStreamRelease,
-    FakeDspLogOp
+    FakeDspLogOp,
+    FakeDspLockOp,
+    FakeDspUnlockOp
 };
 
 static const FAKE_DSP_FAULTS FakeDspDefaults =

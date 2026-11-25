@@ -108,6 +108,48 @@ BootWith(
     ok_eq_uint(Context->State, FwloadStateOff);
 }
 
+/* The interrupt guard of the service routine (R2 of the branch review): a pending message is claimed and the enables masked under the lock the caller holds, the count of interrupts that no acknowledgement separates reaches FWLOAD_INTERRUPT_STORM_LIMIT, and the routine stops claiming the line */
+static
+VOID
+CheckInterruptGuard(
+    PFAKE_DSP Dsp,
+    PFWLOAD_CONTEXT Context,
+    const SOF_RI_IMAGE* Parsed,
+    PFWLOAD_CL_DMA Dma)
+{
+    UINT32 Index;
+
+    FakeDspInit(Dsp, FwloadPlatformArlS(), NULL);
+    FwloadInitContext(Context, FakeDspOps(), Dsp, FwloadPlatformArlS(), Parsed, Dma, NULL);
+    ok(!FwloadInterruptService(Context), "a line with no message pending was claimed\n");
+    Dsp->IpcTarget = FWLOAD_IPC_BUSY | SOFIPC4_FW_READY_PRIMARY;
+    for (Index = 1; Index < FWLOAD_INTERRUPT_STORM_LIMIT; Index++)
+    {
+        FakeDspOps()->Lock(Dsp);
+        ok(FwloadInterruptService(Context) != FALSE, "a pending message was not claimed\n");
+        FakeDspOps()->Unlock(Dsp);
+    }
+    ok(!Context->InterruptStorm, "the guard tripped early\n");
+    FakeDspOps()->Lock(Dsp);
+    ok(FwloadInterruptService(Context) != FALSE, "the last interrupt before the guard was not claimed\n");
+    FakeDspOps()->Unlock(Dsp);
+    ok(Context->InterruptStorm != FALSE, "the guard did not trip\n");
+    ok_eq_uint(Context->InterruptCount, FWLOAD_INTERRUPT_STORM_LIMIT);
+    ok_eq_uint(Context->FirstInterrupt.Pointer, FAKE_DSP_INTERRUPT_POINTER);
+    FakeDspOps()->Lock(Dsp);
+    ok(!FwloadInterruptService(Context), "a disarmed routine claimed the line\n");
+    FakeDspOps()->Unlock(Dsp);
+    ok_eq_uint(Context->InterruptCount, FWLOAD_INTERRUPT_STORM_LIMIT);
+    ok_eq_uint(Dsp->InterruptWritesLocked, 3 * FWLOAD_INTERRUPT_STORM_LIMIT);
+    ok_eq_uint(Dsp->InterruptWritesUnlocked, 0);
+    ok_eq_uint(Dsp->InterruptLockRecursions, 0);
+    ok_eq_uint(Dsp->InterruptLockDelays, 0);
+    ok_eq_uint(Dsp->InterruptLockDepth, 0);
+    ok_eq_uint(Dsp->UnexpectedAccesses, 0);
+    ok_eq_str(FwloadStatusName(FwloadInterruptStorm), "interrupt storm");
+    ok_eq_str(FwloadStatusName(FwloadInterruptTimeout), "interrupt enable timeout");
+}
+
 START_TEST(Fwload)
 {
     UINT8* Image;
@@ -164,6 +206,16 @@ START_TEST(Fwload)
     ok_eq_uint(Context->FwConfig.Registers.AbiVersion, SOFIPC4_FW_REGS_ABI_VER);
     ok_eq_uint(Context->Dma.FragmentCount, 1);
     ok_eq_uint(Context->Dma.StreamTag, FWLOAD_CL_STREAM_TAG);
+    /* the boot polls: the three enables were masked after the power-up and never set, and every passive-level write to them ran under the interrupt lock */
+    ok_eq_uint(Dsp->InterruptEnable, 0);
+    ok_eq_uint(Dsp->HostIpcEnable, 0);
+    ok_eq_uint(Dsp->IpcControl, 0);
+    ok_eq_uint(Context->InterruptCount, 0);
+    ok_eq_uint(Dsp->InterruptWritesLocked, 6);
+    ok_eq_uint(Dsp->InterruptWritesUnlocked, 0);
+    ok_eq_uint(Dsp->InterruptLockRecursions, 0);
+
+    CheckInterruptGuard(Dsp, Context, &Parsed, &Dma);
 
     /* a boot without the operations context stops before the model sees a single access */
     FakeDspInit(Dsp, FwloadPlatformArlS(), NULL);

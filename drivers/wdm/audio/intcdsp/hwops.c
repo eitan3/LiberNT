@@ -7,9 +7,6 @@
 
 #include "intcdsp.h"
 
-/* The interrupt enable register the interrupt pointer names: mtl.h MTL_HFINTIPPTR_PTR_MASK, bits 20:0 (studied under LICENSING.md rule 7) */
-#define INTCDSP_INT_POINTER_MASK 0x001FFFFFUL
-
 #define INTCDSP_STALL_MAX_US     2000
 
 static UINT64 IntcDspFrequency;
@@ -21,16 +18,6 @@ IntcDspRead32(
     _In_ UINT32 Offset)
 {
     return READ_REGISTER_ULONG((volatile ULONG*)(Dev->AdspBar.Base.BasePtr + Offset));
-}
-
-static
-VOID
-IntcDspWrite32(
-    _In_ PINTCDSP_DEVICE Dev,
-    _In_ UINT32 Offset,
-    _In_ UINT32 Value)
-{
-    WRITE_REGISTER_ULONG((volatile ULONG*)(Dev->AdspBar.Base.BasePtr + Offset), Value);
 }
 
 static
@@ -205,6 +192,27 @@ IntcDspOpLog(
     IntcDspLog("%s\n", Text);
 }
 
+/* The bus driver's interrupt lock, the one its service routine holds while it calls the callback: the loader takes it around every passive-level read-modify-write of the interrupt enables */
+static
+VOID
+IntcDspOpLock(
+    PVOID Context)
+{
+    PINTCDSP_DEVICE Dev = Context;
+
+    Dev->Bus.AcquireInterruptLock(Dev->Bus.Context);
+}
+
+static
+VOID
+IntcDspOpUnlock(
+    PVOID Context)
+{
+    PINTCDSP_DEVICE Dev = Context;
+
+    Dev->Bus.ReleaseInterruptLock(Dev->Bus.Context);
+}
+
 static const FWLOAD_OPS IntcDspOps =
 {
     IntcDspOpRead32,
@@ -215,7 +223,9 @@ static const FWLOAD_OPS IntcDspOps =
     IntcDspOpStreamSubmit,
     IntcDspOpStreamTrigger,
     IntcDspOpStreamRelease,
-    IntcDspOpLog
+    IntcDspOpLog,
+    IntcDspOpLock,
+    IntcDspOpUnlock
 };
 
 const FWLOAD_OPS*
@@ -243,29 +253,18 @@ IntcDspClockFrequency(
     return IntcDspFrequency;
 }
 
-/* The register a raw interrupt pointer names, 0xFFFFFFFF when it names none: all ones, zero, an unaligned offset and one outside BAR4 are refused; mtl.h MTL_HFINTIPPTR_PTR_MASK, bits 20:0 */
+/* The register a raw interrupt pointer names, 0xFFFFFFFF when it names none: the loader's rules (all ones, zero, an odd address, the field's all ones) and the BAR4 range */
 static
 UINT32
 IntcDspInterruptOffset(
     _In_ PINTCDSP_DEVICE Dev,
     _In_ UINT32 Pointer)
 {
-    UINT32 Offset = Pointer & INTCDSP_INT_POINTER_MASK;
+    UINT32 Offset = FwloadInterruptOffset(Pointer);
 
-    if (Pointer == 0xFFFFFFFF || Offset == 0 || Offset == INTCDSP_INT_POINTER_MASK ||
-        (Offset & (sizeof(ULONG) - 1)) != 0 ||
-        Offset > Dev->AdspBar.Len || Dev->AdspBar.Len - Offset < sizeof(ULONG))
+    if (Offset == 0xFFFFFFFF || Offset > Dev->AdspBar.Len || Dev->AdspBar.Len - Offset < sizeof(ULONG))
         return 0xFFFFFFFF;
     return Offset;
-}
-
-/* The interrupt enable register, read from the pointer at every use and never kept: the pointer belongs to the DSP's power domain and answers all ones or zero until the subsystem is powered */
-static
-UINT32
-IntcDspInterruptEnableOffset(
-    _In_ PINTCDSP_DEVICE Dev)
-{
-    return IntcDspInterruptOffset(Dev, IntcDspRead32(Dev, Dev->Platform->InterruptPointer));
 }
 
 static
@@ -274,32 +273,11 @@ IntcDspInterruptCallback(
     PVOID Context)
 {
     PINTCDSP_DEVICE Dev = Context;
-    UINT32 Xida, Xtdr;
 
+    /* the callback stays registered for the device's lifetime; a boot arms it for its own duration, and the bus driver calls it under the lock the operations table hands the loader */
     if (!Dev->InterruptArmed)
         return FALSE;
-    Xida = IntcDspRead32(Dev, Dev->Platform->IpcReply);
-    Xtdr = IntcDspRead32(Dev, Dev->Platform->IpcTarget);
-    if (!(Xida & FWLOAD_IPC_DONE) && !(Xtdr & FWLOAD_IPC_BUSY))
-        return FALSE;
-    InterlockedIncrement(&Dev->Interrupts);
-    IntcDspMaskInterrupts(Dev);
-    return TRUE;
-}
-
-VOID
-IntcDspMaskInterrupts(
-    _Inout_ PINTCDSP_DEVICE Dev)
-{
-    UINT32 Offset = IntcDspInterruptEnableOffset(Dev);
-
-    /* Linux masks the IPC interrupt by clearing the ADSPIC bit (hda-dsp.c hda_dsp_ipc_int_disable) and its IRQ thread acknowledges the message (mtl.c mtl_ipc_irq_thread); here the passive-level poll does the acknowledging, and a level-triggered line left asserted would starve it */
-    if (Offset != 0xFFFFFFFF)
-        IntcDspWrite32(Dev, Offset, IntcDspRead32(Dev, Offset) & ~INTCDSP_INTEN_HOST_IPC);
-    IntcDspWrite32(Dev, Dev->Platform->HostIpcInterruptEnable,
-        IntcDspRead32(Dev, Dev->Platform->HostIpcInterruptEnable) & ~INTCDSP_HIPCIE_IE);
-    IntcDspWrite32(Dev, Dev->Platform->IpcControl,
-        IntcDspRead32(Dev, Dev->Platform->IpcControl) & ~(INTCDSP_IPCCTL_BUSY_INT | INTCDSP_IPCCTL_DONE_INT));
+    return FwloadInterruptService(Dev->Fw) ? TRUE : FALSE;
 }
 
 PADSP_INTERRUPT_CALLBACK

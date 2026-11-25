@@ -182,6 +182,13 @@ typedef struct _FAKE_DSP
     /* the interrupt pointer: how often it was read, and how often while the subsystem was powered down */
     UINT32 InterruptPointerReads;
     UINT32 InterruptPointerReadsUnpowered;
+    /* the interrupt lock the operations table models: its depth, the writes to the three enables under it and without it, a lock taken twice and a clock operation made under it */
+    UINT32 InterruptLockDepth;
+    UINT32 InterruptWritesLocked;
+    UINT32 InterruptWritesUnlocked;
+    UINT32 InterruptLockRecursions;
+    UINT32 InterruptLockDelays;
+    UINT32 InterruptLockUnderflows;
     /* what the model posted into the receive registers, and what the loader read and acknowledged */
     UINT32 Replies;
     UINT32 Notifications;
@@ -205,6 +212,11 @@ typedef struct _FAKE_DSP
 const FAKE_DSP_FAULTS* FakeDspDefaultFaults(VOID);
 VOID FakeDspInit(PFAKE_DSP Dsp, const FWLOAD_PLATFORM* Platform, const FAKE_DSP_FAULTS* Faults);
 const FWLOAD_OPS* FakeDspOps(VOID);
+/* The interrupt lock as the operations table models it, for a test that plays the interrupt service routine */
+VOID FakeDspInterruptLock(PFAKE_DSP Dsp);
+VOID FakeDspInterruptUnlock(PFAKE_DSP Dsp);
+/* Whether a message is pending in the model's registers */
+BOOLEAN FakeDspMessagePending(const FAKE_DSP* Dsp);
 BOOLEAN FakeDspPowerEventSeen(const FAKE_DSP* Dsp, UINT32 Event);
 UINT32 FakeDspEventTime(const FAKE_DSP* Dsp, UINT32 Event);
 UINT32 FakeDspWriteCount(const FAKE_DSP* Dsp, UINT32 Bar, UINT32 Offset);

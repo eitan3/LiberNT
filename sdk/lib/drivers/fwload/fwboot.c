@@ -45,7 +45,8 @@ typedef enum _FWLOAD_OUTCOME
     FwloadOutcomePending,
     FwloadOutcomeHalted,
     FwloadOutcomeCancelled,
-    FwloadOutcomeStalled
+    FwloadOutcomeStalled,
+    FwloadOutcomeStorm
 } FWLOAD_OUTCOME;
 
 static
@@ -111,7 +112,7 @@ FwloadIpcReceive(
 static
 VOID
 FwloadIpcDone(
-    const FWLOAD_CONTEXT* Context,
+    FWLOAD_CONTEXT* Context,
     BOOLEAN FromReply);
 
 /* One poll interval, or the cancellation of the boot */
@@ -163,6 +164,8 @@ FwloadWaitMask(
 
         if ((Value & Mask) == Expected)
             return FwloadOutcomeDone;
+        if (Context->InterruptStorm)
+            return FwloadOutcomeStorm;
         if (Context->Cancel)
             return FwloadOutcomeCancelled;
         if (FwloadNow(Context) - Start >= TimeoutUs)
@@ -174,7 +177,7 @@ FwloadWaitMask(
     }
 }
 
-/* A cancelled wait, a timed-out wait and a stalled clock are told apart by the outcome and the cancellation flag */
+/* A cancelled wait, a timed-out wait, a stalled clock and a tripped interrupt guard are told apart by the outcome and the cancellation flag */
 static
 FWLOAD_STATUS
 FwloadWaitStatus(
@@ -186,6 +189,8 @@ FwloadWaitStatus(
         return FwloadOk;
     if (Outcome == FwloadOutcomeStalled)
         return FwloadClockStalled;
+    if (Outcome == FwloadOutcomeStorm)
+        return FwloadInterruptStorm;
     return Context->Cancel ? FwloadCancelled : Timeout;
 }
 
@@ -212,6 +217,8 @@ FwloadRomStatus(
         }
         if ((Raw & FWLOAD_FSR_STATE_MASK) == Target)
             return FwloadOutcomeDone;
+        if (Context->InterruptStorm)
+            return FwloadOutcomeStorm;
         if (Context->Cancel)
             return FwloadOutcomeCancelled;
         if (FwloadNow(Context) - Start >= TimeoutUs)
@@ -293,13 +300,30 @@ FwloadCorePowerDown(
         Context->Timeouts.CorePowerDownUs), FwloadTimeoutPowerUp);
 }
 
-/* The register the interrupt IP pointer names, read wherever it is used and never kept: it belongs to the DSP's power domain and reads all ones or zero before the subsystem is powered, and the register it reaches is 32-bit */
+/* The caller's interrupt lock, the one the service routine runs under: the passive-level read-modify-writes of the three enables take it, so that none of them interleaves with the routine's or with another */
 static
-UINT32
-FwloadInterruptEnableOffset(
+VOID
+FwloadLock(
     const FWLOAD_CONTEXT* Context)
 {
-    UINT32 Pointer = FwloadRead(Context, FWLOAD_BAR_DSP, Context->Platform->InterruptPointer);
+    if (Context->Ops->Lock != NULL)
+        Context->Ops->Lock(Context->OpsContext);
+}
+
+static
+VOID
+FwloadUnlock(
+    const FWLOAD_CONTEXT* Context)
+{
+    if (Context->Ops->Unlock != NULL)
+        Context->Ops->Unlock(Context->OpsContext);
+}
+
+/* The register a raw interrupt pointer names, or no register: it is the DSP's to answer until the subsystem is powered, all ones or zero or an odd address name none, and the register it reaches is 32-bit; mtl.h MTL_HFINTIPPTR_PTR_MASK, bits 20:0 */
+UINT32
+FwloadInterruptOffset(
+    UINT32 Pointer)
+{
     UINT32 Offset = Pointer & FWLOAD_INT_POINTER_MASK;
 
     if (Pointer == 0xFFFFFFFFUL || Offset == 0 || Offset == FWLOAD_INT_POINTER_MASK ||
@@ -308,38 +332,123 @@ FwloadInterruptEnableOffset(
     return Offset;
 }
 
-/* The interrupt enable register the interrupt IP pointer names, the host IPC enable and the IPC interrupt enables */
+/* The interrupt enable register, read from the pointer at every call and never kept */
+UINT32
+FwloadInterruptEnableOffset(
+    const FWLOAD_CONTEXT* Context)
+{
+    return FwloadInterruptOffset(FwloadRead(Context, FWLOAD_BAR_DSP, Context->Platform->InterruptPointer));
+}
+
+/* Read-modify-write of one interrupt enable: the caller holds the interrupt lock or runs under it */
+static
+VOID
+FwloadInterruptUpdate(
+    const FWLOAD_CONTEXT* Context,
+    UINT32 Offset,
+    UINT32 Mask,
+    UINT32 Value)
+{
+    FwloadUpdate(Context, FWLOAD_BAR_DSP, Offset, Mask, Value);
+}
+
+/* The three enables cleared without a wait, for the service routine, which cannot wait; nothing is written through a pointer that names no register */
+static
+VOID
+FwloadInterruptsMask(
+    const FWLOAD_CONTEXT* Context)
+{
+    UINT32 Offset = FwloadInterruptEnableOffset(Context);
+
+    if (Offset != FWLOAD_NO_INTERRUPT_ENABLE)
+        FwloadInterruptUpdate(Context, Offset, FWLOAD_INTEN_HOST_IPC, 0);
+    FwloadInterruptUpdate(Context, Context->Platform->HostIpcInterruptEnable, FWLOAD_HIPCIE_IE, 0);
+    FwloadInterruptUpdate(Context, Context->Platform->IpcControl, FWLOAD_IPCCTL_BUSY_INT | FWLOAD_IPCCTL_DONE_INT, 0);
+}
+
+VOID
+FwloadReadInterruptState(
+    const FWLOAD_CONTEXT* Context,
+    PFWLOAD_INTERRUPT_STATE State)
+{
+    const FWLOAD_PLATFORM* Platform = Context->Platform;
+    UINT32 Offset;
+
+    State->Pointer = FwloadRead(Context, FWLOAD_BAR_DSP, Platform->InterruptPointer);
+    Offset = FwloadInterruptOffset(State->Pointer);
+    State->Enable = Offset != FWLOAD_NO_INTERRUPT_ENABLE ? FwloadRead(Context, FWLOAD_BAR_DSP, Offset) : FWLOAD_NO_INTERRUPT_ENABLE;
+    State->HostIpcEnable = FwloadRead(Context, FWLOAD_BAR_DSP, Platform->HostIpcInterruptEnable);
+    State->IpcControl = FwloadRead(Context, FWLOAD_BAR_DSP, Platform->IpcControl);
+    State->SubsystemControl = FwloadRead(Context, FWLOAD_BAR_DSP, Platform->SubsystemControl);
+}
+
+/* The interrupt enable register the interrupt IP pointer names, the host IPC enable and the IPC interrupt enables, each read back where the register allows it */
 static
 FWLOAD_STATUS
 FwloadInterruptsEnable(
     FWLOAD_CONTEXT* Context,
     BOOLEAN Enable)
 {
-    UINT32 Pointer = FwloadInterruptEnableOffset(Context);
+    UINT32 Offset = FwloadInterruptEnableOffset(Context);
     UINT32 Value = Enable ? FWLOAD_INTEN_HOST_IPC : 0;
     FWLOAD_OUTCOME Outcome;
 
     /* nothing is written through a pointer that names no register; an interrupt that cannot be gated is not enabled */
-    if (Pointer != FWLOAD_NO_INTERRUPT_ENABLE)
+    if (Offset != FWLOAD_NO_INTERRUPT_ENABLE)
     {
-        FwloadUpdate(Context, FWLOAD_BAR_DSP, Pointer, FWLOAD_INTEN_HOST_IPC, Value);
-        Outcome = FwloadWaitMask(Context, Pointer, FWLOAD_INTEN_HOST_IPC, Value, Context->Timeouts.PowerUpUs);
+        FwloadLock(Context);
+        FwloadInterruptUpdate(Context, Offset, FWLOAD_INTEN_HOST_IPC, Value);
+        FwloadUnlock(Context);
+        Outcome = FwloadWaitMask(Context, Offset, FWLOAD_INTEN_HOST_IPC, Value, Context->Timeouts.PowerUpUs);
         if (Outcome != FwloadOutcomeDone)
-            return FwloadWaitStatus(Context, Outcome, FwloadTimeoutPowerUp);
+            return FwloadWaitStatus(Context, Outcome, FwloadInterruptTimeout);
     }
     else if (Enable)
         return FwloadHardwareFault;
     Value = Enable ? FWLOAD_HIPCIE_IE : 0;
-    FwloadUpdate(Context, FWLOAD_BAR_DSP, Context->Platform->HostIpcInterruptEnable, FWLOAD_HIPCIE_IE, Value);
+    FwloadLock(Context);
+    FwloadInterruptUpdate(Context, Context->Platform->HostIpcInterruptEnable, FWLOAD_HIPCIE_IE, Value);
+    FwloadUnlock(Context);
     Outcome = FwloadWaitMask(Context, Context->Platform->HostIpcInterruptEnable, FWLOAD_HIPCIE_IE,
         Value, Context->Timeouts.PowerUpUs);
     if (Outcome != FwloadOutcomeDone)
-        return FwloadWaitStatus(Context, Outcome, FwloadTimeoutPowerUp);
-    FwloadUpdate(Context, FWLOAD_BAR_DSP, Context->Platform->IpcControl,
-        FWLOAD_IPCCTL_BUSY_INT | FWLOAD_IPCCTL_DONE_INT,
+        return FwloadWaitStatus(Context, Outcome, FwloadInterruptTimeout);
+    FwloadLock(Context);
+    FwloadInterruptUpdate(Context, Context->Platform->IpcControl, FWLOAD_IPCCTL_BUSY_INT | FWLOAD_IPCCTL_DONE_INT,
         Enable ? (FWLOAD_IPCCTL_BUSY_INT | FWLOAD_IPCCTL_DONE_INT) : 0);
+    FwloadUnlock(Context);
     Context->InterruptsEnabled = Enable;
     return FwloadOk;
+}
+
+/*
+ * The body of the DSP's interrupt service routine, with the register reads of mtl.c mtl_ipc_irq_thread: a done bit in
+ * the reply register or a busy bit in the target register means a message is pending. Nothing is acknowledged here,
+ * the boot's polls consume the message; the three enables are masked because a level-triggered line left asserted would
+ * re-enter at DIRQL forever, and the interrupts are counted: FWLOAD_INTERRUPT_STORM_LIMIT in a row that no poll consumed
+ * a message between mean the enables do not gate the line on this part, and the routine stops claiming it.
+ */
+BOOLEAN
+FwloadInterruptService(
+    FWLOAD_CONTEXT* Context)
+{
+    const FWLOAD_PLATFORM* Platform = Context->Platform;
+    BOOLEAN Pending;
+
+    if (Context->InterruptStorm)
+        return FALSE;
+    Pending = (FwloadRead(Context, FWLOAD_BAR_DSP, Platform->IpcReply) & FWLOAD_IPC_DONE) != 0 ||
+        (FwloadRead(Context, FWLOAD_BAR_DSP, Platform->IpcTarget) & FWLOAD_IPC_BUSY) != 0;
+    if (!Pending)
+        return FALSE;
+    Context->InterruptCount++;
+    if (Context->InterruptCount == 1)
+        FwloadReadInterruptState(Context, &Context->FirstInterrupt);
+    FwloadInterruptsMask(Context);
+    Context->StormCount++;
+    if (Context->StormCount >= FWLOAD_INTERRUPT_STORM_LIMIT)
+        Context->InterruptStorm = TRUE;
+    return TRUE;
 }
 
 /* One ROM initialisation: the purge request, the core, the ROM's acknowledgement, the interrupts and the ROM status */
@@ -363,9 +472,13 @@ FwloadRomInit(
     if (Status != FwloadOk)
         return Status;
     FwloadIpcDone(Context, TRUE);
-    Status = FwloadInterruptsEnable(Context, TRUE);
-    if (Status != FwloadOk)
-        return Status;
+    /* the boot polls every wait, so the interrupts stay masked unless the caller asked for them (FWLOAD_CONTEXT.UseInterrupts) */
+    if (Context->UseInterrupts)
+    {
+        Status = FwloadInterruptsEnable(Context, TRUE);
+        if (Status != FwloadOk)
+            return Status;
+    }
     switch (FwloadRomStatus(Context, FWLOAD_FSR_INIT_DONE, Context->Timeouts.RomStatusUs))
     {
         case FwloadOutcomeDone:
@@ -376,6 +489,8 @@ FwloadRomInit(
             return FwloadCancelled;
         case FwloadOutcomeStalled:
             return FwloadClockStalled;
+        case FwloadOutcomeStorm:
+            return FwloadInterruptStorm;
         default:
             return FwloadTimeoutRomStatus;
     }
@@ -422,6 +537,9 @@ FwloadCopyFirmware(
                 break;
             case FwloadOutcomeStalled:
                 Status = FwloadClockStalled;
+                break;
+            case FwloadOutcomeStorm:
+                Status = FwloadInterruptStorm;
                 break;
             default:
                 Status = FwloadTimeoutBaseFw;
@@ -567,11 +685,13 @@ FwloadIpcReceive(
 static
 VOID
 FwloadIpcDone(
-    const FWLOAD_CONTEXT* Context,
+    FWLOAD_CONTEXT* Context,
     BOOLEAN FromReply)
 {
     const FWLOAD_PLATFORM* Platform = Context->Platform;
 
+    /* an acknowledged message, the ROM's included, is the progress the interrupt guard counts from */
+    Context->StormCount = 0;
     if (FromReply)
     {
         FwloadWrite(Context, FWLOAD_BAR_DSP, Platform->IpcReply, FWLOAD_IPC_DONE);
@@ -613,6 +733,8 @@ FwloadWaitFwReady(
             }
             continue;
         }
+        if (Context->InterruptStorm)
+            return FwloadInterruptStorm;
         if (Context->Cancel)
             return FwloadCancelled;
         if (FwloadNow(Context) - Start >= Context->Timeouts.FwReadyUs)
@@ -664,6 +786,8 @@ FwloadQueryFwConfig(
             }
             continue;
         }
+        if (Context->InterruptStorm)
+            return FwloadInterruptStorm;
         if (Context->Cancel)
             return FwloadCancelled;
         if (FwloadNow(Context) - Start >= Context->Timeouts.IpcReplyUs)
@@ -807,7 +931,7 @@ FwloadStatusName(
         "cancelled", "power-up timeout", "ROM init timeout", "ROM status timeout", "base firmware timeout",
         "FW_READY timeout", "IPC reply timeout", "clock stalled", "ROM error", "firmware crash", "ABI mismatch", "version mismatch",
         "IPC error", "bad IPC reply", "too many DMA fragments", "DMA buffer too small",
-        "hardware fault", "bad state"
+        "hardware fault", "bad state", "interrupt storm", "interrupt enable timeout"
     };
 
     if ((UINT32)Status >= sizeof(Names) / sizeof(Names[0]))
@@ -970,6 +1094,11 @@ FwloadBoot(
     if (Status != FwloadOk)
         return FwloadFail(Context, Context->State, Status);
     FwloadLog(Context, "subsystem powered");
+
+    /* the boot polls: the IPC interrupts are masked before anything else touches the DSP, whatever the BIOS or a former OS left set */
+    Status = FwloadInterruptsEnable(Context, FALSE);
+    if (Status != FwloadOk)
+        return FwloadFail(Context, Context->State, Status);
 
     Status = FwloadPrepareStream(Context);
     if (Status != FwloadOk)
