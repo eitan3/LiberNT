@@ -268,6 +268,7 @@ SoftplgStepControl(
     _Out_opt_ SOFTPLG_CONTROL* Control)
 {
     UINT32 Kind, Bytes, PrivateSize;
+    SIZE_T Total;
     const UINT8* Record;
 
     if (!SoftplgRangeFits(Walk, *Offset, CTL_BYTES + SIZE_FIELD_BYTES))
@@ -279,8 +280,11 @@ SoftplgStepControl(
     Bytes = SoftplgReadU32(Record + CTL_BYTES);
     if (Bytes != SoftplgKindLayouts[Kind].Bytes)
         return SoftplgUnsupported;
+    if (!SoftplgRangeFits(Walk, *Offset, Bytes))
+        return SoftplgTruncated;
     PrivateSize = SoftplgReadU32(Record + SoftplgKindLayouts[Kind].PrivOffset);
-    if (!SoftplgRangeFits(Walk, *Offset, Bytes + PrivateSize))
+    Total = (SIZE_T)Bytes + PrivateSize;
+    if (!SoftplgRangeFits(Walk, *Offset, Total))
         return SoftplgTruncated;
 
     if (Control != NULL)
@@ -315,7 +319,7 @@ SoftplgStepControl(
             Control->TextCount = SoftplgReadU32(Record + ENUM_COUNT_OFFSET);
         }
     }
-    *Offset += Bytes + PrivateSize;
+    *Offset += Total;
     return SoftplgOk;
 }
 
@@ -332,7 +336,7 @@ SoftplgLocateElement(
     _Out_ SOFTPLG_ELEMENT* Element)
 {
     SOFTPLG_STATUS Status;
-    SIZE_T Offset = Walk->Offset;
+    SIZE_T Offset = Walk->Offset, Total;
     UINT32 Current, PrivateSize, Controls, Control;
 
     if (Index >= Count)
@@ -344,16 +348,17 @@ SoftplgLocateElement(
         if (SoftplgReadU32(Walk->Data + Offset) != Bytes)
             return SoftplgUnsupported;
         PrivateSize = SoftplgReadU32(Walk->Data + Offset + PrivOffset);
-        if (!SoftplgRangeFits(Walk, Offset, Bytes + PrivateSize))
+        Total = (SIZE_T)Bytes + PrivateSize;
+        if (!SoftplgRangeFits(Walk, Offset, Total))
             return SoftplgTruncated;
         if (Current == Index)
         {
             Element->Offset = Offset;
-            Element->Size = Bytes + PrivateSize;
+            Element->Size = Total;
             return SoftplgOk;
         }
 
-        Offset += Bytes + PrivateSize;
+        Offset += Total;
         if (WidgetControls)
         {
             Controls = SoftplgReadU32(Walk->Data + Offset - PrivateSize - Bytes + WIDGET_CONTROLS_OFFSET);

@@ -13,6 +13,194 @@
 
 #include "softplg_cases.h"
 
+#define SOFTPLG_TEST_TAG 'Splt'
+
+static const struct
+{
+    const UINT8* Block;
+    SIZE_T Bytes;
+}
+ControlKinds[] =
+{
+    { TplgControlMixer, 360 },
+    { TplgControlBytes, 240 },
+    { TplgControlEnum, 1764 }
+};
+
+/* A private size whose 32-bit sum with the structure size wraps to 0, to 1, or the largest there is */
+static
+ULONG
+WrapSize(
+    SIZE_T Bytes,
+    SIZE_T Which)
+{
+    return Which == 2 ? 0xFFFFFFFFUL : (ULONG)(0UL - (ULONG)Bytes) + (ULONG)Which;
+}
+
+static
+VOID
+Put32(
+    PUCHAR At,
+    ULONG Value)
+{
+    At[0] = (UCHAR)Value;
+    At[1] = (UCHAR)(Value >> 8);
+    At[2] = (UCHAR)(Value >> 16);
+    At[3] = (UCHAR)(Value >> 24);
+}
+
+/* A pool block of exactly Length bytes holding the first Length bytes of Source */
+static
+PUCHAR
+ExactCopy(
+    const UINT8* Source,
+    SIZE_T Length)
+{
+    PUCHAR Copy = ExAllocatePoolWithTag(NonPagedPool, Length, SOFTPLG_TEST_TAG);
+
+    ok(Copy != NULL, "allocation of %Iu bytes failed\n", Length);
+    if (Copy != NULL)
+        RtlCopyMemory(Copy, Source, Length);
+    return Copy;
+}
+
+static
+VOID
+ExactFree(
+    PUCHAR Copy)
+{
+    if (Copy != NULL)
+        ExFreePoolWithTag(Copy, SOFTPLG_TEST_TAG);
+}
+
+/* R7 of the branch review: the private size of a control is read only once its whole structure is known to fit, and no private size wraps the sum */
+static
+VOID
+CheckControlBounds(VOID)
+{
+    /* block, private size field and structure size of the manifest, the first widget, the PCM and the link */
+    static const ULONG ElementBlock[] = { 0, 1, 3, 4 };
+    static const SIZE_T ElementPriv[] = { 36 + 108, TPLG_WIDGET0_OFFSET + 128, TPLG_PCM_BLOCK_OFFSET + 36 + 908, TPLG_LINK_BLOCK_OFFSET + 36 + 1652 };
+    static const SIZE_T ElementBytes[] = { 112, 132, 912, 1656 };
+    static const SIZE_T HeadCuts[] = { 0, 1, 207, 208, 209 };
+    static const SIZE_T TailCuts[] = { 1, 2, 4, 5 };
+    static const SIZE_T HeadCutCount = sizeof(HeadCuts) / sizeof(HeadCuts[0]);
+    static const SIZE_T CutCount = sizeof(HeadCuts) / sizeof(HeadCuts[0]) + sizeof(TailCuts) / sizeof(TailCuts[0]);
+    SOFTPLG_SUMMARY Summary;
+    SOFTPLG_BLOCK Block;
+    SOFTPLG_CONTROL Control;
+    SOFTPLG_WIDGET Widget;
+    SOFTPLG_MANIFEST Manifest;
+    SOFTPLG_PCM Pcm;
+    SOFTPLG_LINK Link;
+    PUCHAR Copy;
+    SIZE_T Size, Bytes, Cut, K, E, V, C;
+    SOFTPLG_STATUS Status;
+
+    for (K = 0; K < sizeof(ControlKinds) / sizeof(ControlKinds[0]); K++)
+    {
+        Bytes = ControlKinds[K].Bytes;
+
+        /* the whole structure with no private data is one control that ends where the file ends */
+        Size = 36 + Bytes;
+        Copy = ExactCopy(ControlKinds[K].Block, Size);
+        if (Copy == NULL)
+            return;
+        ok_eq_int(SoftplgWalk(Copy, Size, NULL, NULL, &Summary), SoftplgOk);
+        ok_eq_int(SoftplgReadBlock(Copy, Size, 0, &Block), SoftplgOk);
+        ok_eq_int(SoftplgReadControl(Copy, Size, &Block, 0, &Control), SoftplgOk);
+        ok_eq_uint(Control.Kind, (ULONG)K + 1);
+        ok_eq_size(Control.Private.Offset, Size);
+        ok_eq_size(Control.Private.Size, 0);
+        for (V = 0; V < 3; V++)
+        {
+            Put32(Copy + Size - 4, WrapSize(Bytes, V));
+            ok_eq_int(SoftplgReadControl(Copy, Size, &Block, 0, &Control), SoftplgTruncated);
+        }
+        ExactFree(Copy);
+
+        /* cuts inside the structure: before the control header ends and where it ends, then one, two, four and five bytes short of the structure's end, around its private size field */
+        for (C = 0; C < CutCount; C++)
+        {
+            Cut = C < HeadCutCount ? HeadCuts[C] : Bytes - TailCuts[C - HeadCutCount];
+            Size = 36 + Cut;
+            Copy = ExactCopy(ControlKinds[K].Block, Size);
+            if (Copy == NULL)
+                return;
+            Put32(Copy + 24, (ULONG)Cut);
+            ok_eq_int(SoftplgReadBlock(Copy, Size, 0, &Block), SoftplgOk);
+            ok_eq_int(SoftplgReadControl(Copy, Size, &Block, 0, &Control), SoftplgTruncated);
+            ExactFree(Copy);
+        }
+    }
+
+    Size = sizeof(TplgSynthetic);
+    Copy = ExactCopy(TplgSynthetic, Size);
+    if (Copy == NULL)
+        return;
+    ok_eq_int(SoftplgWalk(Copy, Size, NULL, NULL, &Summary), SoftplgOk);
+    ok_eq_int(SoftplgReadBlock(Copy, Size, 1, &Block), SoftplgOk);
+    ok_eq_int(SoftplgReadWidgetControl(Copy, Size, &Block, 1, 0, &Control), SoftplgOk);
+    ok_eq_int(SoftplgReadWidget(Copy, Size, &Block, 2, &Widget), SoftplgOk);
+    ExactFree(Copy);
+
+    /* the widget block ends inside the control of PGA1.0, and the bytes after its end, which belong to the next widget, read as a private size that wraps the sum */
+    Copy = ExactCopy(TplgSynthetic, Size);
+    if (Copy == NULL)
+        return;
+    Put32(Copy + TPLG_WIDGET_BLOCK_OFFSET + 24, (ULONG)(TPLG_CONTROL1_OFFSET + 300 - TPLG_WIDGET_BLOCK_OFFSET - 36));
+    Put32(Copy + TPLG_CONTROL1_OFFSET + 356, WrapSize(360, 0));
+    ok_eq_int(SoftplgReadBlock(Copy, Size, 1, &Block), SoftplgOk);
+    ok_eq_int(SoftplgReadWidgetControl(Copy, Size, &Block, 1, 0, &Control), SoftplgTruncated);
+    ok_eq_int(SoftplgReadWidget(Copy, Size, &Block, 2, &Widget), SoftplgTruncated);
+    ExactFree(Copy);
+
+    for (V = 0; V < 3; V++)
+    {
+        Copy = ExactCopy(TplgSynthetic, Size);
+        if (Copy == NULL)
+            return;
+        Put32(Copy + TPLG_CONTROL1_OFFSET + 356, WrapSize(360, V));
+        ok_eq_int(SoftplgReadBlock(Copy, Size, 1, &Block), SoftplgOk);
+        ok_eq_int(SoftplgReadWidgetControl(Copy, Size, &Block, 1, 0, &Control), SoftplgTruncated);
+        ok_eq_int(SoftplgReadWidget(Copy, Size, &Block, 2, &Widget), SoftplgTruncated);
+        ExactFree(Copy);
+
+        for (E = 0; E < 4; E++)
+        {
+            Copy = ExactCopy(TplgSynthetic, Size);
+            if (Copy == NULL)
+                return;
+            Put32(Copy + ElementPriv[E], WrapSize(ElementBytes[E], V));
+            ok_eq_int(SoftplgReadBlock(Copy, Size, ElementBlock[E], &Block), SoftplgOk);
+            switch (E)
+            {
+                case 0: Status = SoftplgReadManifest(Copy, Size, &Block, &Manifest); break;
+                case 1: Status = SoftplgReadWidget(Copy, Size, &Block, 0, &Widget); break;
+                case 2: Status = SoftplgReadPcm(Copy, Size, &Block, 0, &Pcm); break;
+                default: Status = SoftplgReadLink(Copy, Size, &Block, 0, &Link); break;
+            }
+            ok_eq_int(Status, SoftplgTruncated);
+            ExactFree(Copy);
+        }
+    }
+
+    /* the same cuts inside the control appended to PGA1.0, through both readers that walk over it */
+    for (C = 0; C < CutCount; C++)
+    {
+        Cut = C < HeadCutCount ? HeadCuts[C] : 360 - TailCuts[C - HeadCutCount];
+        Size = TPLG_CONTROL1_OFFSET + Cut;
+        Copy = ExactCopy(TplgSynthetic, Size);
+        if (Copy == NULL)
+            return;
+        Put32(Copy + TPLG_WIDGET_BLOCK_OFFSET + 24, (ULONG)(Size - TPLG_WIDGET_BLOCK_OFFSET - 36));
+        ok_eq_int(SoftplgReadBlock(Copy, Size, 1, &Block), SoftplgOk);
+        ok_eq_int(SoftplgReadWidgetControl(Copy, Size, &Block, 1, 0, &Control), SoftplgTruncated);
+        ok_eq_int(SoftplgReadWidget(Copy, Size, &Block, 2, &Widget), SoftplgTruncated);
+        ExactFree(Copy);
+    }
+}
+
 struct _COLLECT
 {
     UINT32 Types[8];
@@ -256,4 +444,5 @@ START_TEST(Softplg)
 {
     CheckSynthetic();
     CheckMalformed();
+    CheckControlBounds();
 }

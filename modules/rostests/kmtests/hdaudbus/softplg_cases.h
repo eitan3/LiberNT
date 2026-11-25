@@ -41,6 +41,16 @@
     DSP_U32(204), DSP_U32(SoftplgTypeMixer), Name, DSP_U32(3), Z8, Z4, DSP_U32(0), DSP_U32(0), Z128, \
     DSP_U32(360), DSP_U32(0), DSP_U32(100), DSP_U32(0), DSP_U32(0), DSP_U32(2), Z128, DSP_U32(PrivateSize)
 
+/* Bytes control: the same header, body of 36 bytes (size 240, maximum, mask, base, registers, three operations, private size) */
+#define TPLG_BYTES_CONTROL(Name, PrivateSize) \
+    DSP_U32(204), DSP_U32(SoftplgTypeBytes), Name, DSP_U32(3), Z8, Z4, DSP_U32(0), DSP_U32(0), Z128, \
+    DSP_U32(240), DSP_U32(255), DSP_U32(255), DSP_U32(0), DSP_U32(1), Z8, Z4, DSP_U32(PrivateSize)
+
+/* Enum control: the same header, body of 1560 bytes (size 1764, no channels, 8 channel records of 16 bytes, no items, 16 texts of 44 bytes, 176 values, private size) */
+#define TPLG_ENUM_CONTROL(Name, PrivateSize) \
+    DSP_U32(204), DSP_U32(SoftplgTypeEnum), Name, DSP_U32(3), Z8, Z4, DSP_U32(0), DSP_U32(0), Z128, \
+    DSP_U32(1764), DSP_U32(0), Z128, DSP_U32(0), DSP_U32(0), DSP_U32(0), Z512, Z128, Z64, Z512, Z128, Z64, DSP_U32(PrivateSize)
+
 /* One vendor array of word tuples: size 12 + 8 * Count, type 4, then (token, value) pairs */
 #define TPLG_WORDS(Count, ...) DSP_U32(12 + 8 * (Count)), DSP_U32(SOFTPLG_TUPLE_WORD), DSP_U32(Count), __VA_ARGS__
 #define TPLG_WORD(Token, Value) DSP_U32(Token), DSP_U32(Value)
@@ -110,6 +120,22 @@ static const unsigned char TplgSynthetic[] =
     TPLG_GRAPH_BLOCK,
     TPLG_PCM_BLOCK,
     TPLG_LINK_BLOCK
+};
+
+/* Blocks 5 to 7: one control of each kind, alone in a block of its own type, without private data */
+static const unsigned char TplgControlMixer[] =
+{
+    TPLG_HEADER(SoftplgTypeMixer, 360, 0, 1), TPLG_MIXER(TPLG_NAME6('P', 'G', 'A', '1', '.', '0'), 0)
+};
+
+static const unsigned char TplgControlBytes[] =
+{
+    TPLG_HEADER(SoftplgTypeBytes, 240, 0, 1), TPLG_BYTES_CONTROL(TPLG_NAME5('B', 'Y', 'T', 'E', 'S'), 0)
+};
+
+static const unsigned char TplgControlEnum[] =
+{
+    TPLG_HEADER(SoftplgTypeEnum, 1764, 0, 1), TPLG_ENUM_CONTROL(TPLG_NAME4('E', 'N', 'U', 'M'), 0)
 };
 
 #define TPLG_MANIFEST_BLOCK_SIZE  (36 + TPLG_MANIFEST_PAYLOAD)

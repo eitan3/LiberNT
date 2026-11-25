@@ -229,6 +229,9 @@ check_sizes(void)
     CHECK_EQ(TPLG_WIDGET_BLOCK_OFFSET, 151);
     CHECK_EQ(TPLG_LINK_BLOCK_OFFSET, 151 + 832 + 300 + 1008);
     CHECK_EQ(TPLG_WIDGET2_OFFSET + 144, TPLG_WIDGET_BLOCK_OFFSET + TPLG_WIDGET_BLOCK_SIZE);
+    CHECK_EQ(sizeof(TplgControlMixer), 36 + 360);
+    CHECK_EQ(sizeof(TplgControlBytes), 36 + 240);
+    CHECK_EQ(sizeof(TplgControlEnum), 36 + 1764);
 }
 
 struct _COLLECT
@@ -820,6 +823,161 @@ check_fixtures(void)
     }
 }
 
+static const struct
+{
+    const UINT8* Block;
+    SIZE_T Bytes;
+}
+ControlKinds[] =
+{
+    { TplgControlMixer, 360 },
+    { TplgControlBytes, 240 },
+    { TplgControlEnum, 1764 }
+};
+
+/* A private size whose 32-bit sum with the structure size wraps to 0, to 1, or the largest there is */
+static
+UINT32
+WrapSize(
+    SIZE_T Bytes,
+    SIZE_T Which)
+{
+    return Which == 2 ? 0xFFFFFFFFu : (UINT32)(0u - (UINT32)Bytes) + (UINT32)Which;
+}
+
+static
+void
+Put32(
+    UINT8* At,
+    UINT32 Value)
+{
+    At[0] = (UINT8)Value;
+    At[1] = (UINT8)(Value >> 8);
+    At[2] = (UINT8)(Value >> 16);
+    At[3] = (UINT8)(Value >> 24);
+}
+
+/* A heap block of exactly Length bytes holding the first Length bytes of Source: the sanitizer sees every read past it */
+static
+UINT8*
+ExactCopy(
+    const UINT8* Source,
+    SIZE_T Length)
+{
+    UINT8* Copy = (UINT8*)malloc(Length);
+
+    CHECK(Copy != NULL);
+    if (Copy == NULL)
+        exit(2);
+    memcpy(Copy, Source, Length);
+    return Copy;
+}
+
+/* R7 of the branch review: the private size of a control is read only once its whole structure is known to fit, and no private size wraps the sum */
+static
+void
+check_control_bounds(void)
+{
+    /* block, private size field and structure size of the manifest, the first widget, the PCM and the link */
+    static const UINT32 ElementBlock[] = { 0, 1, 3, 4 };
+    static const SIZE_T ElementPriv[] = { 36 + 108, TPLG_WIDGET0_OFFSET + 128, TPLG_PCM_BLOCK_OFFSET + 36 + 908, TPLG_LINK_BLOCK_OFFSET + 36 + 1652 };
+    static const SIZE_T ElementBytes[] = { 112, 132, 912, 1656 };
+    SOFTPLG_SUMMARY Summary;
+    SOFTPLG_BLOCK Block;
+    SOFTPLG_CONTROL Control;
+    SOFTPLG_WIDGET Widget;
+    SOFTPLG_MANIFEST Manifest;
+    SOFTPLG_PCM Pcm;
+    SOFTPLG_LINK Link;
+    UINT8* Copy;
+    SIZE_T Size, K, E, V, Cut;
+    UINT32 Bytes;
+
+    for (K = 0; K < sizeof(ControlKinds) / sizeof(ControlKinds[0]); K++)
+    {
+        Bytes = (UINT32)ControlKinds[K].Bytes;
+
+        /* the whole structure with no private data is one control that ends where the file ends */
+        Size = 36 + Bytes;
+        Copy = ExactCopy(ControlKinds[K].Block, Size);
+        CHECK_EQ(SoftplgWalk(Copy, Size, NULL, NULL, &Summary), SoftplgOk);
+        CHECK_EQ(SoftplgReadBlock(Copy, Size, 0, &Block), SoftplgOk);
+        CHECK_EQ(SoftplgReadControl(Copy, Size, &Block, 0, &Control), SoftplgOk);
+        CHECK_EQ(Control.Kind, K + 1);
+        CHECK_EQ(Control.Private.Offset, Size);
+        CHECK_EQ(Control.Private.Size, 0);
+        for (V = 0; V < 3; V++)
+        {
+            Put32(Copy + Size - 4, WrapSize(Bytes, V));
+            CHECK_EQ(SoftplgReadControl(Copy, Size, &Block, 0, &Control), SoftplgTruncated);
+        }
+        free(Copy);
+    }
+
+    Size = sizeof(TplgSynthetic);
+    Copy = ExactCopy(TplgSynthetic, Size);
+    CHECK_EQ(SoftplgWalk(Copy, Size, NULL, NULL, &Summary), SoftplgOk);
+    CHECK_EQ(SoftplgReadBlock(Copy, Size, 1, &Block), SoftplgOk);
+    CHECK_EQ(SoftplgReadWidgetControl(Copy, Size, &Block, 1, 0, &Control), SoftplgOk);
+    CHECK_EQ(SoftplgReadWidget(Copy, Size, &Block, 2, &Widget), SoftplgOk);
+    free(Copy);
+
+    /* the widget block ends inside the control of PGA1.0, and the bytes after its end, which belong to the next widget, read as a private size that wraps the sum */
+    Copy = ExactCopy(TplgSynthetic, Size);
+    Put32(Copy + TPLG_WIDGET_BLOCK_OFFSET + 24, (UINT32)(TPLG_CONTROL1_OFFSET + 300 - TPLG_WIDGET_BLOCK_OFFSET - 36));
+    Put32(Copy + TPLG_CONTROL1_OFFSET + 356, WrapSize(360, 0));
+    CHECK_EQ(SoftplgReadBlock(Copy, Size, 1, &Block), SoftplgOk);
+    CHECK_EQ(SoftplgReadWidgetControl(Copy, Size, &Block, 1, 0, &Control), SoftplgTruncated);
+    CHECK_EQ(SoftplgReadWidget(Copy, Size, &Block, 2, &Widget), SoftplgTruncated);
+    free(Copy);
+
+    for (V = 0; V < 3; V++)
+    {
+        Copy = ExactCopy(TplgSynthetic, Size);
+        Put32(Copy + TPLG_CONTROL1_OFFSET + 356, WrapSize(360, V));
+        CHECK_EQ(SoftplgReadBlock(Copy, Size, 1, &Block), SoftplgOk);
+        CHECK_EQ(SoftplgReadWidgetControl(Copy, Size, &Block, 1, 0, &Control), SoftplgTruncated);
+        CHECK_EQ(SoftplgReadWidget(Copy, Size, &Block, 2, &Widget), SoftplgTruncated);
+        free(Copy);
+
+        for (E = 0; E < 4; E++)
+        {
+            Copy = ExactCopy(TplgSynthetic, Size);
+            Put32(Copy + ElementPriv[E], WrapSize(ElementBytes[E], V));
+            CHECK_EQ(SoftplgReadBlock(Copy, Size, ElementBlock[E], &Block), SoftplgOk);
+            CHECK_EQ(E == 0 ? SoftplgReadManifest(Copy, Size, &Block, &Manifest)
+                    : E == 1 ? SoftplgReadWidget(Copy, Size, &Block, 0, &Widget)
+                    : E == 2 ? SoftplgReadPcm(Copy, Size, &Block, 0, &Pcm)
+                    : SoftplgReadLink(Copy, Size, &Block, 0, &Link), SoftplgTruncated);
+            free(Copy);
+        }
+    }
+
+    /* every cut inside a control structure: the file ends there, and the control is refused without a read past the file */
+    for (K = 0; K < sizeof(ControlKinds) / sizeof(ControlKinds[0]); K++)
+    {
+        for (Cut = 0; Cut < ControlKinds[K].Bytes; Cut++)
+        {
+            Size = 36 + Cut;
+            Copy = ExactCopy(ControlKinds[K].Block, Size);
+            Put32(Copy + 24, (UINT32)Cut);
+            CHECK_EQ(SoftplgReadBlock(Copy, Size, 0, &Block), SoftplgOk);
+            CHECK_EQ(SoftplgReadControl(Copy, Size, &Block, 0, &Control), SoftplgTruncated);
+            free(Copy);
+        }
+    }
+    for (Cut = 0; Cut < 360; Cut++)
+    {
+        Size = TPLG_CONTROL1_OFFSET + Cut;
+        Copy = ExactCopy(TplgSynthetic, Size);
+        Put32(Copy + TPLG_WIDGET_BLOCK_OFFSET + 24, (UINT32)(Size - TPLG_WIDGET_BLOCK_OFFSET - 36));
+        CHECK_EQ(SoftplgReadBlock(Copy, Size, 1, &Block), SoftplgOk);
+        CHECK_EQ(SoftplgReadWidgetControl(Copy, Size, &Block, 1, 0, &Control), SoftplgTruncated);
+        CHECK_EQ(SoftplgReadWidget(Copy, Size, &Block, 2, &Widget), SoftplgTruncated);
+        free(Copy);
+    }
+}
+
 static
 void
 check_names(void)
@@ -844,6 +1002,7 @@ int main(void)
     check_sizes();
     check_synthetic();
     check_malformed();
+    check_control_bounds();
     check_short_and_garbage_inputs();
     check_fixtures();
     check_names();
