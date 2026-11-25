@@ -23,6 +23,8 @@ typedef char CHAR, *PCHAR;
 typedef unsigned char UCHAR, *PUCHAR, BOOLEAN, *PBOOLEAN;
 typedef void VOID, *PVOID;
 
+#define MAXSIZE_T              (~(SIZE_T)0)
+
 #ifndef TRUE
 #define TRUE 1
 #endif

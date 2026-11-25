@@ -82,7 +82,7 @@ typedef struct _HARNESS
     FWLOAD_BDL_ENTRY Bdl[HARNESS_BDL_ENTRIES];
     SIZE_T BdlCapacity;
     FWLOAD_TIMEOUTS Timeouts;
-    UINT32 EntryBoundary;
+    UINT64 EntryBoundary;
     UINT32 CancelAfterDelays;
     UINT32 Delays;
     /* the DSP interrupts the line raises per clock advance while a message is pending: the model has no line, the harness plays it */
@@ -2052,6 +2052,87 @@ CheckSyntheticImage(
     free(Image);
 }
 
+/* A descriptor list over one buffer: the entries run from the buffer's address without a gap, none is empty or longer than a descriptor's length field, none crosses the boundary, and together they are the payload */
+static
+void
+CheckDescriptorList(
+    const FWLOAD_CL_DMA* Dma,
+    UINT64 Address,
+    UINT64 Boundary,
+    SIZE_T Bytes)
+{
+    SIZE_T Index;
+    UINT64 At = Address, Total = 0;
+
+    CHECK_EQ(Dma->Bytes, Bytes);
+    for (Index = 0; Index < Dma->FragmentCount; Index++)
+    {
+        const FWLOAD_BDL_ENTRY* Entry = &Dma->Bdl[Index];
+        UINT64 EntryAddress = (UINT64)Entry->AddressLow | ((UINT64)Entry->AddressHigh << 32);
+
+        CHECK_EQ(EntryAddress, At);
+        CHECK(Entry->Bytes != 0);
+        CHECK(Entry->Bytes <= 0xFFFFFFFFULL);
+        if (Boundary != 0)
+            CHECK((EntryAddress % Boundary) + Entry->Bytes <= Boundary);
+        CHECK_EQ(Entry->InterruptOnCompletion, 0);
+        At += Entry->Bytes;
+        Total += Entry->Bytes;
+    }
+    CHECK_EQ(Total, Bytes);
+    CHECK_EQ(At, Address + Bytes);
+}
+
+/* R11 of the branch review: the shared rows over one segment, counted for every row and built for those that fit a small buffer */
+static
+void
+CheckBoundaryRows(
+    const UINT8* Payload)
+{
+    static UINT8 Copy[0x9000];
+    FWLOAD_DMA_SEGMENT Segment;
+    FWLOAD_BDL_ENTRY Bdl[8];
+    FWLOAD_CL_DMA Dma;
+    SIZE_T Row;
+    UINT64 Boundary;
+
+    for (Row = 0; Row < sizeof(FwloadCaseBoundaries) / sizeof(FwloadCaseBoundaries[0]); Row++)
+    {
+        Boundary = FwloadCaseBoundaries[Row].Boundary;
+        Segment.Address = FwloadCaseBoundaries[Row].Address;
+        Segment.Bytes = (SIZE_T)FwloadCaseBoundaries[Row].SegmentBytes;
+        CHECK_EQ(FwloadClDmaEntryCount(&Segment, 1, (SIZE_T)FwloadCaseBoundaries[Row].PayloadBytes, Boundary),
+                 FwloadCaseBoundaries[Row].Entries);
+        if (FwloadCaseBoundaries[Row].PayloadBytes > sizeof(Copy))
+            continue;
+
+        memset(&Dma, 0, sizeof(Dma));
+        memset(Copy, 0xA5, sizeof(Copy));
+        Dma.Virtual = Copy;
+        Dma.Capacity = sizeof(Copy);
+        Dma.Segment = &Segment;
+        Dma.SegmentCount = 1;
+        Dma.Bdl = Bdl;
+        Dma.BdlCapacity = sizeof(Bdl) / sizeof(Bdl[0]);
+        Dma.BdlBytes = sizeof(Bdl);
+        Dma.EntryBoundary = Boundary;
+        CHECK_EQ(FwloadClDmaPrepare(&Dma, Payload, (SIZE_T)FwloadCaseBoundaries[Row].PayloadBytes), FwloadOk);
+        CHECK_EQ(Dma.FragmentCount, FwloadCaseBoundaries[Row].Entries);
+        CheckDescriptorList(&Dma, Segment.Address, Boundary, (SIZE_T)FwloadCaseBoundaries[Row].PayloadBytes);
+        CHECK(memcmp(Copy, Payload, (SIZE_T)FwloadCaseBoundaries[Row].PayloadBytes) == 0);
+        /* the first row: the segment that straddles the boundary is cut exactly there */
+        if (Row == 0)
+        {
+            CHECK_EQ(Bdl[0].AddressLow, 0xFFFF8000U);
+            CHECK_EQ(Bdl[0].AddressHigh, 0);
+            CHECK_EQ(Bdl[0].Bytes, 0x8000);
+            CHECK_EQ(Bdl[1].AddressLow, 0);
+            CHECK_EQ(Bdl[1].AddressHigh, 1);
+            CHECK_EQ(Bdl[1].Bytes, 0x1000);
+        }
+    }
+}
+
 static
 void
 CheckDma(
@@ -2164,6 +2245,34 @@ CheckDma(
     CheckFailedBootIsOff(H, FwloadDmaTooManyFragments, FwloadStatePoweringUp);
     H->EntryBoundary = 0;
     H->BdlCapacity = HARNESS_BDL_ENTRIES;
+
+    /* R11 of the branch review: the real payload in a buffer that straddles the 4 GiB boundary, at the boundary the driver asks for: two descriptors, none crossing, and the model boots from it */
+    H->Segment[0].Address = 0xFFF00000ULL;
+    H->Segment[0].Bytes = H->Bytes;
+    H->SegmentCount = 1;
+    Dma.SegmentCount = 1;
+    Dma.BdlCapacity = STREAM_BDL_ENTRIES;
+    Dma.BdlBytes = STREAM_BDL_ENTRIES * sizeof(FWLOAD_BDL_ENTRY);
+    Dma.EntryBoundary = FWLOAD_CL_DMA_BOUNDARY_BYTES;
+    Status = FwloadClDmaPrepare(&Dma, Data + Image->PayloadOffset, Image->PayloadBytes);
+    CHECK_EQ(Status, FwloadOk);
+    CHECK_EQ(Dma.FragmentCount, 2);
+    CheckDescriptorList(&Dma, 0xFFF00000ULL, FWLOAD_CL_DMA_BOUNDARY_BYTES, Image->PayloadBytes);
+    CHECK(memcmp(Dma.Virtual, Data + Image->PayloadOffset, Image->PayloadBytes) == 0);
+    /* without the boundary the same buffer is one descriptor that crosses it */
+    Dma.EntryBoundary = 0;
+    CHECK_EQ(FwloadClDmaPrepare(&Dma, Data + Image->PayloadOffset, Image->PayloadBytes), FwloadOk);
+    CHECK_EQ(Dma.FragmentCount, 1);
+    CHECK((UINT64)Dma.Bdl[0].AddressLow + Dma.Bdl[0].Bytes > FWLOAD_CL_DMA_BOUNDARY_BYTES);
+    H->EntryBoundary = FWLOAD_CL_DMA_BOUNDARY_BYTES;
+    HarnessBoot(H, Image, NULL);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Ctx->Dma.FragmentCount, 2);
+    CHECK_EQ(H->Dsp->DmaErrors, 0);
+    H->EntryBoundary = 0;
+    H->Segment[0].Address = 0x10000000ULL;
+    H->Segment[0].Bytes = 0x100000;
+    CheckBoundaryRows(Data + Image->PayloadOffset);
 
     /* segments that do not cover the payload, or a buffer that is too small */
     H->Segment[2].Bytes = 0x8000;

@@ -84,6 +84,8 @@ extern "C" {
 /* Code-loader stream: Linux hda.h FW_CL_STREAM_NUMBER and HDA_CL_STREAM_FORMAT */
 #define FWLOAD_CL_STREAM_TAG        1
 #define FWLOAD_CL_STREAM_FORMAT     0x40
+/* The address boundary the driver asks of the code-loader descriptor list: no descriptor crosses a 4 GiB address boundary, so a buffer that straddles one is two descriptors (R11 of the branch review; a driver choice, as the 4 KiB rule is) */
+#define FWLOAD_CL_DMA_BOUNDARY_BYTES  0x100000000ULL
 
 /* ROM control word written to the request register: Linux hda.h HDA_DSP_ROM_IPC_* */
 #define FWLOAD_ROM_IPC_CONTROL      0x01000000UL
@@ -407,7 +409,7 @@ typedef struct _FWLOAD_CL_DMA
     SIZE_T BdlBytes;
     SIZE_T FragmentCount;
     SIZE_T Bytes;
-    UINT32 EntryBoundary;
+    UINT64 EntryBoundary;
     UINT8 StreamTag;
     UINT16 StreamFormat;
     UINT16 LastValidIndex;
@@ -582,7 +584,7 @@ FwloadClDmaEntryCount(
     _In_reads_(SegmentCount) const FWLOAD_DMA_SEGMENT* Segment,
     SIZE_T SegmentCount,
     SIZE_T PayloadBytes,
-    UINT32 EntryBoundary);
+    UINT64 EntryBoundary);
 
 VOID
 FwloadInitContext(

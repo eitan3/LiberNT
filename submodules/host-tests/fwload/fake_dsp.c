@@ -920,7 +920,7 @@ FakeDspDelayUs(
     FakeDspAdvance(Dsp);
 }
 
-/* The controller's view of the stream: the descriptor list must describe exactly the payload, in order, within 4 KiB bounds */
+/* The controller's view of the stream: the descriptor list must describe exactly the payload, in order, within the entry boundary it declares */
 static
 FWLOAD_STATUS
 FakeDspStreamSubmit(
@@ -952,7 +952,7 @@ FakeDspStreamSubmit(
         if (Entry->Bytes == 0)
             Errors |= FAKE_DSP_DMA_COVERAGE;
         if (Dma->EntryBoundary != 0 &&
-            ((SIZE_T)Address % Dma->EntryBoundary) + Entry->Bytes > Dma->EntryBoundary)
+            (Address % Dma->EntryBoundary) + Entry->Bytes > Dma->EntryBoundary)
             Errors |= FAKE_DSP_DMA_BOUNDARY;
         if (Entry->InterruptOnCompletion != 0)
             Errors |= FAKE_DSP_DMA_IOC;

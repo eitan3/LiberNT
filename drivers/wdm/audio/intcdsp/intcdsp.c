@@ -165,7 +165,7 @@ IntcDspBoot(
     }
     Dev->Segment.Address = MmGetPhysicalAddress(Dev->DmaBuffer).QuadPart;
     Dev->Segment.Bytes = Dev->DmaBytes;
-    Entries = FwloadClDmaEntryCount(&Dev->Segment, 1, Dev->Image.Ri.PayloadBytes, 0);
+    Entries = FwloadClDmaEntryCount(&Dev->Segment, 1, Dev->Image.Ri.PayloadBytes, FWLOAD_CL_DMA_BOUNDARY_BYTES);
     if (Entries == 0 || Entries > INTCDSP_BDL_ENTRIES)
     {
         IntcDspLog("the payload needs %I64u descriptors, the stream has %u\n", (ULONGLONG)Entries, (ULONG)INTCDSP_BDL_ENTRIES);
@@ -204,7 +204,7 @@ IntcDspBoot(
     Dma.Bdl = (PFWLOAD_BDL_ENTRY)Bdl;
     Dma.BdlCapacity = INTCDSP_BDL_ENTRIES;
     Dma.BdlBytes = INTCDSP_BDL_BYTES;
-    Dma.EntryBoundary = 0;
+    Dma.EntryBoundary = FWLOAD_CL_DMA_BOUNDARY_BYTES;
     Dma.StreamTag = Dev->StreamTag;
     Dma.StreamFormat = FWLOAD_CL_STREAM_FORMAT;
     FwloadDefaultTimeouts(&Timeouts);

@@ -272,4 +272,28 @@ static const struct
     { FWLOAD_ROM_NULL_FW_ENTRY, "null firmware entry" }
 };
 
+/* R11 of the branch review: one segment, the payload it carries, the entry boundary and the entries the walk must make of them; the sizes are UINT64 so that a row reads the same at every address width. A segment that straddles the 4 GiB boundary is two entries, none crossing it; one below it, ending at it or starting at it is one entry; a 5 GiB segment is cut at the boundary and, where a cut is still longer than a descriptor's 32-bit length field, once more */
+#define FWLOAD_CASE_GIB(n)          ((UINT64)(n) << 30)
+#define FWLOAD_CASE_BOUNDARY_4G     0x100000000ULL
+
+static const struct
+{
+    UINT64 Address;
+    UINT64 SegmentBytes;
+    UINT64 PayloadBytes;
+    UINT64 Boundary;
+    SIZE_T Entries;
+} FwloadCaseBoundaries[] =
+{
+    { 0xFFFF8000ULL, 0x9000, 0x9000, FWLOAD_CASE_BOUNDARY_4G, 2 },
+    { 0xFFFF8000ULL, 0x9000, 0x8000, FWLOAD_CASE_BOUNDARY_4G, 1 },
+    { 0xFFFF0000ULL, 0x10000, 0x10000, FWLOAD_CASE_BOUNDARY_4G, 1 },
+    { 0x100000000ULL, 0x9000, 0x9000, FWLOAD_CASE_BOUNDARY_4G, 1 },
+    { 0x10000000ULL, 0x9000, 0x9000, FWLOAD_CASE_BOUNDARY_4G, 1 },
+    { 0xFFFF8000ULL, 0x9000, 0x9000, 0, 1 },
+    { FWLOAD_CASE_GIB(1), FWLOAD_CASE_GIB(5), FWLOAD_CASE_GIB(5), FWLOAD_CASE_BOUNDARY_4G, 2 },
+    { FWLOAD_CASE_BOUNDARY_4G, FWLOAD_CASE_GIB(5), FWLOAD_CASE_GIB(5), FWLOAD_CASE_BOUNDARY_4G, 3 },
+    { FWLOAD_CASE_GIB(1), FWLOAD_CASE_GIB(5), FWLOAD_CASE_GIB(5), 0, 2 }
+};
+
 #endif

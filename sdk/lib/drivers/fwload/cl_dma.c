@@ -24,6 +24,8 @@
 
 #define FWLOAD_BDL_ENTRY_BYTES  16
 #define FWLOAD_LVI_MAX          0x10000
+/* The length field of a descriptor entry is 32 bits */
+#define FWLOAD_CL_DMA_ENTRY_BYTES_MAX   0xFFFFFFFFULL
 
 static
 SIZE_T
@@ -31,9 +33,11 @@ FwloadClDmaWalk(
     _In_reads_(SegmentCount) const FWLOAD_DMA_SEGMENT* Segment,
     SIZE_T SegmentCount,
     SIZE_T PayloadBytes,
-    UINT32 EntryBoundary,
+    UINT64 EntryBoundary,
     _Inout_opt_ PFWLOAD_CL_DMA Dma)
 {
+    /* a boundary wider than an address is never crossed */
+    const UINT64 Boundary = EntryBoundary <= MAXSIZE_T ? EntryBoundary : 0;
     SIZE_T Index, Offset = 0, Entries = 0;
 
     for (Index = 0; Index < SegmentCount && Offset < PayloadBytes; Index++)
@@ -49,9 +53,11 @@ FwloadClDmaWalk(
 
             if (PayloadBytes - Offset < Chunk)
                 Chunk = PayloadBytes - Offset;
-            if (EntryBoundary != 0)
+            if (Chunk > FWLOAD_CL_DMA_ENTRY_BYTES_MAX)
+                Chunk = FWLOAD_CL_DMA_ENTRY_BYTES_MAX;
+            if (Boundary != 0)
             {
-                SIZE_T Remain = (SIZE_T)EntryBoundary - ((SIZE_T)(Address + Done) % EntryBoundary);
+                SIZE_T Remain = (SIZE_T)Boundary - (SIZE_T)((Address + Done) % Boundary);
 
                 if (Chunk > Remain)
                     Chunk = Remain;
@@ -80,7 +86,7 @@ FwloadClDmaEntryCount(
     const FWLOAD_DMA_SEGMENT* Segment,
     SIZE_T SegmentCount,
     SIZE_T PayloadBytes,
-    UINT32 EntryBoundary)
+    UINT64 EntryBoundary)
 {
     return FwloadClDmaWalk(Segment, SegmentCount, PayloadBytes, EntryBoundary, NULL);
 }

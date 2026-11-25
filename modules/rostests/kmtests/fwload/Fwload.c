@@ -362,6 +362,34 @@ START_TEST(Fwload)
     ok_eq_int(FwloadClDmaEntryCount(&Segment, 1, Parsed.PayloadBytes, 0), 1);
     ok_eq_int(FwloadClDmaPrepare(&Dma, Image + Parsed.PayloadOffset, 0), FwloadBadLength);
 
+    /* R11 of the branch review: the descriptor list at the 4 GiB boundary the driver asks for, over the shared rows */
+    for (Index = 0; Index < sizeof(FwloadCaseBoundaries) / sizeof(FwloadCaseBoundaries[0]); Index++)
+    {
+        Segment.Address = FwloadCaseBoundaries[Index].Address;
+        Segment.Bytes = (SIZE_T)FwloadCaseBoundaries[Index].SegmentBytes;
+        ok_eq_size(FwloadClDmaEntryCount(&Segment, 1, (SIZE_T)FwloadCaseBoundaries[Index].PayloadBytes, FwloadCaseBoundaries[Index].Boundary),
+                   FwloadCaseBoundaries[Index].Entries);
+    }
+    /* the first row built: the segment that straddles the boundary is cut exactly there, and the model accepts the list */
+    Segment.Address = 0xFFFF8000ULL;
+    Segment.Bytes = 0x9000;
+    Dma.Capacity = 0x9000;
+    Dma.SegmentCount = 1;
+    Dma.BdlCapacity = 256;
+    Dma.BdlBytes = sizeof(Bdl);
+    Dma.EntryBoundary = FWLOAD_CL_DMA_BOUNDARY_BYTES;
+    ok_eq_int(FwloadClDmaPrepare(&Dma, Image + Parsed.PayloadOffset, 0x9000), FwloadOk);
+    ok_eq_uint(Dma.FragmentCount, 2);
+    ok_eq_uint(Dma.Bdl[0].AddressLow, 0xFFFF8000UL);
+    ok_eq_uint(Dma.Bdl[0].AddressHigh, 0);
+    ok_eq_uint(Dma.Bdl[0].Bytes, 0x8000);
+    ok_eq_uint(Dma.Bdl[1].AddressLow, 0);
+    ok_eq_uint(Dma.Bdl[1].AddressHigh, 1);
+    ok_eq_uint(Dma.Bdl[1].Bytes, 0x1000);
+    FakeDspInit(Dsp, FwloadPlatformArlS(), NULL);
+    ok_eq_int(FakeDspOps()->StreamSubmit(Dsp, &Dma), FwloadOk);
+    ok_eq_uint(Dsp->DmaErrors, 0);
+
     ExFreePoolWithTag(Virtual, FWLOAD_TEST_TAG);
     ExFreePoolWithTag(Context, FWLOAD_TEST_TAG);
     ExFreePoolWithTag(Dsp, FWLOAD_TEST_TAG);
