@@ -1,4 +1,5 @@
 add_subdirectory(nhlt)
 add_subdirectory(sofipc4)
+add_subdirectory(sofipc)
 add_subdirectory(disco)
 add_subdirectory(softplg)

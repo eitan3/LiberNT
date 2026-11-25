@@ -1,8 +1,18 @@
 /*
  * PROJECT:     LiberNT host-native tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     A DSP model of the ACE 1.0 boot path for the firmware loader: the registers the loader touches, the ROM and firmware progress on a virtual clock, the code-loader stream consumer, FW_READY and the first IPC, with injectable faults
+ * PURPOSE:     A DSP model of the ACE 1.0 boot path and of the firmware's IPC after it: registers, virtual-time ROM and firmware progress, the code-loader consumer, FW_READY, the configuration query, a pipeline table and large-configuration blocks, with injectable faults and an access log
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
+ */
+
+/*
+ * The behaviour modelled is the public one: the register set and the state codes of the
+ * ACE 1.0 ROM (Linux mtl.h), the ROM error codes (hda.h), the IPC4 notification and reply
+ * formats (SOF src/include/ipc4) and the firmware configuration tuples (SOF
+ * src/include/sof/tlv.h). The pipeline transitions the model accepts and the status it
+ * answers to an illegal one are model values; the large-configuration block rules are those
+ * of Linux v6.12 sound/soc/sof/ipc4.c (sof_ipc4_set_get_data), studied under LICENSING.md
+ * rule 7. The timings are model values; no hardware was measured.
  */
 
 #ifndef FAKE_DSP_H
@@ -57,6 +67,23 @@
 #define FAKE_DSP_IPC_REPLY_LEFT_PENDING  0x00000008UL /* a reply is still waiting for its done bit */
 #define FAKE_DSP_IPC_NOTIFY_LEFT_BUSY    0x00000010UL /* a notification is still waiting for its acknowledgement */
 
+/* No message type, for the faults that name one */
+#define FAKE_DSP_NO_TYPE                 0xFFFFFFFFUL
+
+/* The firmware's pipeline table of the model and the configuration its large-config parameter holds */
+#define FAKE_DSP_PIPELINES               16
+#define FAKE_DSP_LARGE_CONFIG_BYTES      16384
+/* The newest requests of the host after the boot, their two header words */
+#define FAKE_DSP_REQUEST_LOG             16
+
+/* Violations of the large-configuration block rules the model found */
+#define FAKE_DSP_LARGE_FIRST_MISSING     0x00000001UL /* the first block came without the first flag, or a later one with it */
+#define FAKE_DSP_LARGE_OFFSET_WRONG      0x00000002UL /* a later block did not continue where the one before ended */
+#define FAKE_DSP_LARGE_LAST_MISSING      0x00000004UL /* the block that completed the data came without the last flag */
+#define FAKE_DSP_LARGE_LAST_EARLY        0x00000008UL /* the last flag came on a block that did not complete the data */
+#define FAKE_DSP_LARGE_SIZE_WRONG        0x00000010UL /* a block carried fewer or more bytes than its header says */
+#define FAKE_DSP_LARGE_DATA_LOST         0x00000020UL /* a block's data arrived damaged */
+
 /* Power events, in the order the loader causes them */
 #define FAKE_POWER_INTERRUPTS_OFF 1
 #define FAKE_POWER_STREAM_RELEASE 2
@@ -110,6 +137,16 @@ typedef struct _FAKE_DSP_FAULTS
     BOOLEAN NeverIpcReply;
     BOOLEAN MemoryReadFails;
     BOOLEAN NoHaltOnBadImage;
+    /* the firmware's IPC after the boot: a request whose type is IpcStatusForType is answered with IpcStatusValue, one whose type is NeverReplyForType is dropped, a reply whose type is shifted answers a message nobody sent */
+    UINT32 IpcStatusForType;
+    UINT32 IpcStatusValue;
+    UINT32 NeverReplyForType;
+    UINT32 ReplyTypeShift;
+    /* a firmware exception, or a log-buffer notification, posted the moment a request arrives; a notification posted beside the reply */
+    BOOLEAN CrashDuringRequest;
+    BOOLEAN NotifyDuringRequest;
+    BOOLEAN NotifyBesideReply;
+    BOOLEAN MemoryWriteFails;
 } FAKE_DSP_FAULTS, *PFAKE_DSP_FAULTS;
 
 typedef struct _FAKE_DSP_EVENT
@@ -117,8 +154,34 @@ typedef struct _FAKE_DSP_EVENT
     UINT64 At;
     UINT32 Kind;
     UINT32 Value;
+    /* a reply: its header as it will be posted, whether the uplink mailbox carries its payload, and whether a notification is posted beside it */
+    UINT32 Primary;
+    UINT32 Extension;
+    BOOLEAN HasPayload;
+    BOOLEAN Beside;
     struct _FAKE_DSP_EVENT* Next;
 } FAKE_DSP_EVENT;
+
+/* One register or mailbox access, in order: a read or a write of a 32-bit register, a read or a write of a mailbox range; Value is the register value or the byte count */
+#define FAKE_DSP_ACCESS_READ32      0
+#define FAKE_DSP_ACCESS_WRITE32     1
+#define FAKE_DSP_ACCESS_READMEMORY  2
+#define FAKE_DSP_ACCESS_WRITEMEMORY 3
+
+typedef struct _FAKE_DSP_ACCESS
+{
+    UINT8 Op;
+    UINT8 Bar;
+    UINT16 Reserved;
+    UINT32 Offset;
+    UINT32 Value;
+} FAKE_DSP_ACCESS, *PFAKE_DSP_ACCESS;
+
+typedef struct _FAKE_DSP_PIPELINE
+{
+    BOOLEAN Used;
+    UINT32 State;
+} FAKE_DSP_PIPELINE, *PFAKE_DSP_PIPELINE;
 
 typedef struct _FAKE_DSP_WRITE
 {
@@ -211,8 +274,34 @@ typedef struct _FAKE_DSP
     UINT32 WindowReadsAtNotification;
     UINT32 IpcProtocolErrors;
     BOOLEAN ReplyPending;
+    /* the reply waiting carries a payload the host must read before it acknowledges */
+    BOOLEAN ReplyHasPayload;
     BOOLEAN NotificationPending;
     BOOLEAN NotificationIsFwReady;
+    /* the firmware's IPC after the boot: requests and replies other than the configuration query, the pipeline table, the downlink mailbox and the large-configuration parameter as the blocks assembled it */
+    UINT32 TransportRequests;
+    UINT32 TransportReplies;
+    /* the newest FAKE_DSP_REQUEST_LOG requests after the boot: RequestLog[i % FAKE_DSP_REQUEST_LOG] is the request number i */
+    UINT32 RequestLogCount;
+    UINT32 RequestPrimary[FAKE_DSP_REQUEST_LOG];
+    UINT32 RequestExtension[FAKE_DSP_REQUEST_LOG];
+    /* the downlink writes the transport made, and the byte count of the last */
+    UINT32 DownlinkWrites;
+    UINT32 LastDownlinkBytes;
+    FAKE_DSP_PIPELINE Pipeline[FAKE_DSP_PIPELINES];
+    UINT8 Downlink[FWLOAD_MAILBOX_BYTES];
+    UINT8 LargeConfig[FAKE_DSP_LARGE_CONFIG_BYTES];
+    UINT32 LargeConfigBytes;
+    UINT32 LargeConfigTotal;
+    UINT32 LargeConfigBlocks;
+    UINT32 LargeConfigErrors;
+    /* the access log and, in it, the last exchange: from the write of the request extension to the write that acknowledged the reply */
+    FAKE_DSP_ACCESS* Access;
+    UINT32 AccessCapacity;
+    UINT32 AccessCount;
+    UINT32 RequestDataIndex;
+    UINT32 ExchangeStart;
+    UINT32 ExchangeEnd;
     /* the storm: how many notifications were posted and whether it is running */
     BOOLEAN Storming;
     UINT32 StormPosted;
@@ -228,6 +317,19 @@ typedef struct _FAKE_DSP
 const FAKE_DSP_FAULTS* FakeDspDefaultFaults(VOID);
 VOID FakeDspInit(PFAKE_DSP Dsp, const FWLOAD_PLATFORM* Platform, const FAKE_DSP_FAULTS* Faults);
 const FWLOAD_OPS* FakeDspOps(VOID);
+/* The downlink mailbox as the transport's operation writes it; not an operation of the loader, whose boot never sends a payload */
+BOOLEAN
+FakeDspWriteMemory(
+    PVOID Context,
+    UINT32 Offset,
+    const UINT8* Buffer,
+    SIZE_T Bytes);
+/* Records every register and mailbox access into Buffer, oldest first, until it is full */
+VOID
+FakeDspAccessBegin(
+    PFAKE_DSP Dsp,
+    FAKE_DSP_ACCESS* Buffer,
+    UINT32 Capacity);
 /* The interrupt lock as the operations table models it, for a test that plays the interrupt service routine */
 VOID FakeDspInterruptLock(PFAKE_DSP Dsp);
 VOID FakeDspInterruptUnlock(PFAKE_DSP Dsp);

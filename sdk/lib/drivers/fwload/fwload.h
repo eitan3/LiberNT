@@ -619,6 +619,28 @@ BOOLEAN
 FwloadInterruptService(
     _Inout_ PFWLOAD_CONTEXT Context);
 
+/*
+ * The three register steps of a DSP-to-host message, shared with the IPC transport (sdk/lib/drivers/audio/sofipc)
+ * so that the boot and the transport cannot disagree about their order. Receive reads a reply's or a notification's
+ * header and extension and acknowledges nothing; Done acknowledges one once its payload was read; InterruptsEnable
+ * masks or sets the three IPC interrupt enables, each read back, under the caller's interrupt lock.
+ */
+BOOLEAN
+FwloadIpcReceive(
+    _Inout_ PFWLOAD_CONTEXT Context,
+    _Out_ PSOFIPC4_MSG Message,
+    _Out_ PBOOLEAN FromReply);
+
+VOID
+FwloadIpcDone(
+    _Inout_ PFWLOAD_CONTEXT Context,
+    BOOLEAN FromReply);
+
+FWLOAD_STATUS
+FwloadInterruptsEnable(
+    _Inout_ PFWLOAD_CONTEXT Context,
+    BOOLEAN Enable);
+
 /* Reads and parses the image the first time and keeps it; a resident image is not read again, and after a failure nothing stays resident, so the next call is the re-read on demand */
 FWLOAD_STATUS
 FwloadImageEnsure(

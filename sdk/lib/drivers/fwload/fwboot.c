@@ -92,19 +92,6 @@ FwloadLog(
         Context->Ops->Log(Context->OpsContext, Text);
 }
 
-static
-BOOLEAN
-FwloadIpcReceive(
-    FWLOAD_CONTEXT* Context,
-    PSOFIPC4_MSG Message,
-    PBOOLEAN FromReply);
-
-static
-VOID
-FwloadIpcDone(
-    FWLOAD_CONTEXT* Context,
-    BOOLEAN FromReply);
-
 /* One poll interval, or the cancellation of the boot */
 static
 FWLOAD_STATUS
@@ -369,8 +356,7 @@ FwloadReadInterruptState(
     State->SubsystemControl = FwloadRead(Context, FWLOAD_BAR_DSP, Platform->SubsystemControl);
 }
 
-/* The interrupt enable register the interrupt IP pointer names, the host IPC enable and the IPC interrupt enables, each read back where the register allows it */
-static
+/* The interrupt enable register the interrupt IP pointer names, the host IPC enable and the IPC interrupt enables, each read back where the register allows it. Shared with the IPC transport (sofipc), whose interrupt mode sets the three again after every exchange the service routine masked */
 FWLOAD_STATUS
 FwloadInterruptsEnable(
     FWLOAD_CONTEXT* Context,
@@ -625,9 +611,9 @@ FwloadIsCrash(
  * done bit, extension = the target data register, mtl.h MTL_DSP_REG_HFIPCXTDDY); a busy bit in the
  * target register carries a notification the same way. Nothing is acknowledged here: the caller
  * consumes the message first and then acknowledges it, as the irq thread runs the message handlers
- * before mtl_ipc_dsp_done and mtl_ipc_host_done.
+ * before mtl_ipc_dsp_done and mtl_ipc_host_done. Shared with the IPC transport (sofipc), so that the boot
+ * and the transport read the registers in one order.
  */
-static
 BOOLEAN
 FwloadIpcReceive(
     FWLOAD_CONTEXT* Context,
@@ -653,8 +639,7 @@ FwloadIpcReceive(
     return TRUE;
 }
 
-/* The acknowledgement of a received message once its payload was read: a reply's done bit is written back (mtl.c mtl_ipc_dsp_done), a notification's busy bit is written back and the target acknowledgement cleared (mtl_ipc_host_done) */
-static
+/* The acknowledgement of a received message once its payload was read: a reply's done bit is written back (mtl.c mtl_ipc_dsp_done), a notification's busy bit is written back and the target acknowledgement cleared (mtl_ipc_host_done). Shared with the IPC transport (sofipc) */
 VOID
 FwloadIpcDone(
     FWLOAD_CONTEXT* Context,

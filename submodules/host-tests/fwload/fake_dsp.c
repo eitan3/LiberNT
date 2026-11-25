@@ -64,6 +64,33 @@ FakeDspRomStart(
     PFAKE_DSP Dsp);
 
 static
+VOID
+FakeDspPostNotification(
+    PFAKE_DSP Dsp,
+    UINT32 Primary);
+
+static
+VOID
+FakeDspRequest(
+    PFAKE_DSP Dsp,
+    const SOFIPC4_MSG* Request);
+
+static
+UINT32
+FakeDspRead32Raw(
+    PVOID Context,
+    UINT32 Bar,
+    UINT32 Offset);
+
+static
+VOID
+FakeDspWrite32Raw(
+    PVOID Context,
+    UINT32 Bar,
+    UINT32 Offset,
+    UINT32 Value);
+
+static
 UINT32
 FakeDspLe32(
     const UINT8* Data)
@@ -151,19 +178,28 @@ FakeDspEventLog(
     Dsp->EventLogCount++;
 }
 
+/* A free pool slot is one with no kind; a fired or cancelled event gets its kind cleared */
 static
-BOOLEAN
-FakeDspSchedule(
+VOID
+FakeDspRelease(
+    FAKE_DSP_EVENT* Event)
+{
+    Event->Kind = 0;
+    Event->Next = NULL;
+}
+
+/* An event of the pool linked at its time, or NULL when the pool is full */
+static
+FAKE_DSP_EVENT*
+FakeDspEventNew(
     PFAKE_DSP Dsp,
     UINT64 At,
-    UINT32 Kind,
-    UINT32 Value)
+    UINT32 Kind)
 {
     FAKE_DSP_EVENT* Event = NULL;
     FAKE_DSP_EVENT** Link;
     UINT32 Index;
 
-    /* a pool slot is free while it carries no kind */
     for (Index = 0; Index < FAKE_DSP_EVENT_POOL; Index++)
     {
         if (Dsp->EventPool[Index].Kind == 0)
@@ -173,27 +209,59 @@ FakeDspSchedule(
         }
     }
     if (Event == NULL)
-        return FALSE;
+        return NULL;
     Event->At = At;
     Event->Kind = Kind;
-    Event->Value = Value;
+    Event->Value = 0;
+    Event->Primary = 0;
+    Event->Extension = 0;
+    Event->HasPayload = FALSE;
+    Event->Beside = FALSE;
     Event->Next = NULL;
     for (Link = &Dsp->Event; *Link != NULL && (*Link)->At <= At; Link = &(*Link)->Next)
         ;
     Event->Next = *Link;
     *Link = Event;
     Dsp->EventCount++;
+    return Event;
+}
+
+static
+BOOLEAN
+FakeDspSchedule(
+    PFAKE_DSP Dsp,
+    UINT64 At,
+    UINT32 Kind,
+    UINT32 Value)
+{
+    FAKE_DSP_EVENT* Event = FakeDspEventNew(Dsp, At, Kind);
+
+    if (Event == NULL)
+        return FALSE;
+    Event->Value = Value;
     return TRUE;
 }
 
-/* A free pool slot is one with no kind; a fired or cancelled event gets its kind cleared */
+/* The reply to a request, as the firmware will post it */
 static
-VOID
-FakeDspRelease(
-    FAKE_DSP_EVENT* Event)
+BOOLEAN
+FakeDspScheduleReply(
+    PFAKE_DSP Dsp,
+    UINT64 At,
+    UINT32 Primary,
+    UINT32 Extension,
+    BOOLEAN HasPayload,
+    BOOLEAN Beside)
 {
-    Event->Kind = 0;
-    Event->Next = NULL;
+    FAKE_DSP_EVENT* Event = FakeDspEventNew(Dsp, At, FAKE_EVENT_IPC_REPLY);
+
+    if (Event == NULL)
+        return FALSE;
+    Event->Primary = Primary;
+    Event->Extension = Extension;
+    Event->HasPayload = HasPayload;
+    Event->Beside = Beside;
+    return TRUE;
 }
 
 /* A core that is powered down loses its ROM and firmware progress: everything but the power events is dropped */
@@ -407,6 +475,8 @@ FakeDspFire(
     SOFIPC4_MSG Message;
     UINT32 Kind = Event->Kind;
     UINT32 Value = Event->Value;
+    UINT32 Primary = Event->Primary, Extension = Event->Extension;
+    BOOLEAN HasPayload = Event->HasPayload, Beside = Event->Beside;
     UINT32 Halt;
 
     FakeDspRelease(Event);
@@ -483,15 +553,16 @@ FakeDspFire(
             Dsp->Notifications++;
             break;
         case FAKE_EVENT_IPC_REPLY:
-            FakeDspWriteFwConfig(Dsp);
-            Message.Primary = (SofIpc4ModConfigGet << SOFIPC4_TYPE_SHIFT) | SOFIPC4_RSP_BIT |
-                SOFIPC4_MSG_TGT_BIT | (Value & SOFIPC4_PRIMARY_PAYLOAD_MASK);
-            /* a reply to a host request: the reply register goes done with the header, the data register carries the extension */
-            Dsp->IpcReply = FAKE_DSP_IPC_DONE | Message.Primary;
-            Dsp->IpcTargetData = 0;
+            /* a reply to a host request: the reply register goes done with the header, the data register carries the extension; a notification can be posted beside it */
+            Dsp->IpcReply = FAKE_DSP_IPC_DONE | Primary;
+            Dsp->IpcTargetData = Extension;
             Dsp->ReplyPending = TRUE;
+            Dsp->ReplyHasPayload = HasPayload;
             Dsp->UplinkReadsAtReply = Dsp->UplinkReads;
             Dsp->Replies++;
+            if (Beside)
+                FakeDspPostNotification(Dsp, (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
+                    (SOFIPC4_NOTIFY_LOG_BUFFER_STATUS << SOFIPC4_NOTIFICATION_TYPE_SHIFT));
             break;
         case FAKE_EVENT_HALT:
             Dsp->RomError = Value;
@@ -549,6 +620,227 @@ FakeDspRomStart(
         FakeDspSchedule(Dsp, Now + Dsp->Faults.RomReadyUs, FAKE_EVENT_HALT, Dsp->Faults.HaltCode);
     else if (!Dsp->Faults.NeverRomReady)
         FakeDspSchedule(Dsp, Now + Dsp->Faults.RomReadyUs, FAKE_EVENT_ROM_READY, 0);
+}
+
+static
+VOID
+FakeDspPostNotification(
+    PFAKE_DSP Dsp,
+    UINT32 Primary)
+{
+    Dsp->IpcTarget = FAKE_DSP_IPC_BUSY | Primary;
+    Dsp->IpcTargetData = 0;
+    Dsp->IpcTargetAck |= FAKE_DSP_IPC_BUSY;
+    Dsp->NotificationPending = TRUE;
+    Dsp->NotificationIsFwReady = FALSE;
+    Dsp->Notifications++;
+}
+
+/* The firmware's pipeline table: a created pipeline starts uninitialized, goes to reset or paused from there, paused and running lead into each other and into reset, and is deleted from any state but running; anything else is answered with the bad-state status (a model value) */
+static
+UINT32
+FakeDspPipeline(
+    PFAKE_DSP Dsp,
+    const SOFIPC4_MSG* Request,
+    UINT32* Extension)
+{
+    UINT32 Type = SofIpc4MsgType(Request);
+    UINT32 State = Request->Primary & 0xFFFF;
+    PFAKE_DSP_PIPELINE Pipeline;
+    BOOLEAN Legal = FALSE;
+
+    if (((Request->Primary >> 16) & SOFIPC4_PIPELINE_INSTANCE_MAX) >= FAKE_DSP_PIPELINES)
+        return SofIpc4InvalidResourceId;
+    Pipeline = &Dsp->Pipeline[(Request->Primary >> 16) & SOFIPC4_PIPELINE_INSTANCE_MAX];
+    switch (Type)
+    {
+        case SofIpc4GlbCreatePipeline:
+            if (Pipeline->Used)
+                return SofIpc4ResourceIdExists;
+            Pipeline->Used = TRUE;
+            Pipeline->State = SOFIPC4_PIPELINE_STATE_UNINITIALIZED;
+            return SofIpc4Success;
+        case SofIpc4GlbDeletePipeline:
+            if (!Pipeline->Used)
+                return SofIpc4InvalidResourceId;
+            if (Pipeline->State == SOFIPC4_PIPELINE_STATE_RUNNING)
+                return SofIpc4BadState;
+            Pipeline->Used = FALSE;
+            Pipeline->State = SOFIPC4_PIPELINE_STATE_INVALID;
+            return SofIpc4Success;
+        case SofIpc4GlbSetPipelineState:
+            if (!Pipeline->Used)
+                return SofIpc4InvalidResourceId;
+            switch (Pipeline->State)
+            {
+                case SOFIPC4_PIPELINE_STATE_UNINITIALIZED:
+                    Legal = State == SOFIPC4_PIPELINE_STATE_RESET || State == SOFIPC4_PIPELINE_STATE_PAUSED;
+                    break;
+                case SOFIPC4_PIPELINE_STATE_RESET:
+                    Legal = State == SOFIPC4_PIPELINE_STATE_PAUSED;
+                    break;
+                case SOFIPC4_PIPELINE_STATE_PAUSED:
+                    Legal = State == SOFIPC4_PIPELINE_STATE_RUNNING || State == SOFIPC4_PIPELINE_STATE_RESET;
+                    break;
+                case SOFIPC4_PIPELINE_STATE_RUNNING:
+                    Legal = State == SOFIPC4_PIPELINE_STATE_PAUSED;
+                    break;
+                default:
+                    break;
+            }
+            if (!Legal)
+                return SofIpc4BadState;
+            Pipeline->State = State;
+            return SofIpc4Success;
+        case SofIpc4GlbGetPipelineState:
+            if (!Pipeline->Used)
+                return SofIpc4InvalidResourceId;
+            *Extension = Pipeline->State;
+            return SofIpc4Success;
+        default:
+            return SofIpc4ErrorInvalidParam;
+    }
+}
+
+/* The firmware's large-configuration parameter: a set is assembled block by block and checked against the block rules; a get answers LargeConfigTotal bytes, each word its own index from the start of the data, and reports the total in its first reply */
+static
+UINT32
+FakeDspLargeConfig(
+    PFAKE_DSP Dsp,
+    const SOFIPC4_MSG* Request,
+    UINT32* Extension,
+    PBOOLEAN HasPayload)
+{
+    UINT32 Header = Request->Extension;
+    UINT32 SizeField = Header & SOFIPC4_LARGE_CONFIG_DATA_MAX;
+    BOOLEAN First = (Header & SOFIPC4_LARGE_CONFIG_INIT_BLOCK) != 0;
+    BOOLEAN Last = (Header & SOFIPC4_LARGE_CONFIG_FINAL_BLOCK) != 0;
+    UINT8* Uplink = Dsp->Window + (Dsp->Platform->UplinkOffset - Dsp->Platform->Window0Offset);
+    UINT32 Offset, Chunk, Index;
+
+    if (SofIpc4MsgType(Request) == SofIpc4ModLargeConfigGet)
+    {
+        Offset = First ? 0 : SizeField;
+        if (Offset > Dsp->LargeConfigTotal)
+            return SofIpc4InvalidConfigDataLen;
+        Chunk = Dsp->LargeConfigTotal - Offset;
+        if (Chunk > FWLOAD_MAILBOX_BYTES)
+            Chunk = FWLOAD_MAILBOX_BYTES;
+        for (Index = 0; Index < Chunk; Index += 4)
+            FakeDspPut32(Uplink + Index, (Offset + Index) / 4);
+        *HasPayload = TRUE;
+        *Extension = (First ? Dsp->LargeConfigTotal : Offset) |
+            (Offset + Chunk == Dsp->LargeConfigTotal ? SOFIPC4_LARGE_CONFIG_FINAL_BLOCK : 0);
+        return SofIpc4Success;
+    }
+    if (First)
+    {
+        Dsp->LargeConfigTotal = SizeField;
+        Dsp->LargeConfigBytes = 0;
+        Dsp->LargeConfigBlocks = 0;
+        Dsp->LargeConfigErrors = 0;
+        Offset = 0;
+    }
+    else
+    {
+        if (Dsp->LargeConfigBlocks == 0)
+            Dsp->LargeConfigErrors |= FAKE_DSP_LARGE_FIRST_MISSING;
+        if (SizeField != Dsp->LargeConfigBytes)
+            Dsp->LargeConfigErrors |= FAKE_DSP_LARGE_OFFSET_WRONG;
+        Offset = SizeField;
+    }
+    Chunk = Dsp->LargeConfigTotal - Offset;
+    if (Chunk > FWLOAD_MAILBOX_BYTES)
+        Chunk = FWLOAD_MAILBOX_BYTES;
+    Dsp->LargeConfigBlocks++;
+    if (Offset + Chunk == Dsp->LargeConfigTotal && !Last)
+        Dsp->LargeConfigErrors |= FAKE_DSP_LARGE_LAST_MISSING;
+    if (Offset + Chunk < Dsp->LargeConfigTotal && Last)
+        Dsp->LargeConfigErrors |= FAKE_DSP_LARGE_LAST_EARLY;
+    if (Dsp->LastDownlinkBytes != Chunk)
+        Dsp->LargeConfigErrors |= FAKE_DSP_LARGE_SIZE_WRONG;
+    FakeDspCopy(Dsp->LargeConfig + Offset, Dsp->Downlink, Chunk);
+    /* the data the tests send: word k of the whole configuration is k */
+    for (Index = 0; Index < Chunk; Index += 4)
+    {
+        if (FakeDspLe32(Dsp->LargeConfig + Offset + Index) != (Offset + Index) / 4)
+        {
+            Dsp->LargeConfigErrors |= FAKE_DSP_LARGE_DATA_LOST;
+            break;
+        }
+    }
+    Dsp->LargeConfigBytes = Offset + Chunk;
+    return Dsp->LargeConfigErrors ? SofIpc4InvalidConfigDataStruct : SofIpc4Success;
+}
+
+/* One request of the host after the firmware entered: the configuration query answers its tuples in the uplink mailbox, the pipeline and large-configuration messages their model, anything else an invalid parameter; then the faults */
+static
+VOID
+FakeDspRequest(
+    PFAKE_DSP Dsp,
+    const SOFIPC4_MSG* Request)
+{
+    UINT32 Type = SofIpc4MsgType(Request);
+    UINT32 Target = SofIpc4MsgTarget(Request);
+    UINT32 Status = SofIpc4Success, Extension = 0, Primary;
+    BOOLEAN HasPayload = FALSE, Config = FALSE;
+
+    Dsp->IpcRequests++;
+    Dsp->LastIpcPrimary = Request->Primary;
+    Dsp->LastIpcExtension = Request->Extension;
+    if (Target == SOFIPC4_TARGET_MODULE_MSG && Type == SofIpc4ModConfigGet &&
+        (Request->Primary & SOFIPC4_PRIMARY_PAYLOAD_MASK) == 0 &&
+        (Request->Extension >> FWLOAD_PARAM_ID_SHIFT) == FWLOAD_PARAM_ID_FW_CONFIG)
+    {
+        FakeDspWriteFwConfig(Dsp);
+        HasPayload = TRUE;
+        Config = TRUE;
+        Status = Dsp->Faults.IpcStatus;
+    }
+    else
+    {
+        UINT32 Log = Dsp->RequestLogCount % FAKE_DSP_REQUEST_LOG;
+
+        Dsp->RequestPrimary[Log] = Request->Primary;
+        Dsp->RequestExtension[Log] = Request->Extension;
+        Dsp->RequestLogCount++;
+        Dsp->TransportRequests++;
+        if (Target == SOFIPC4_TARGET_FW_GEN_MSG &&
+            (Type == SofIpc4GlbCreatePipeline || Type == SofIpc4GlbDeletePipeline ||
+             Type == SofIpc4GlbSetPipelineState || Type == SofIpc4GlbGetPipelineState))
+            Status = FakeDspPipeline(Dsp, Request, &Extension);
+        else if (Target == SOFIPC4_TARGET_MODULE_MSG &&
+            (Type == SofIpc4ModLargeConfigGet || Type == SofIpc4ModLargeConfigSet))
+            Status = FakeDspLargeConfig(Dsp, Request, &Extension, &HasPayload);
+        /* the module messages of the later checkpoints: accepted, not modelled */
+        else if (Target == SOFIPC4_TARGET_MODULE_MSG &&
+            (Type == SofIpc4ModInitInstance || Type == SofIpc4ModBind || Type == SofIpc4ModUnbind ||
+             Type == SofIpc4ModDeleteInstance))
+            Status = SofIpc4Success;
+        else
+        {
+            Dsp->IpcRequestErrors++;
+            Status = SofIpc4ErrorInvalidParam;
+        }
+        if (Dsp->Faults.CrashDuringRequest)
+            FakeDspPostNotification(Dsp, (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
+                (SOFIPC4_NOTIFY_EXCEPTION_CAUGHT << SOFIPC4_NOTIFICATION_TYPE_SHIFT));
+        if (Dsp->Faults.NotifyDuringRequest)
+            FakeDspPostNotification(Dsp, (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
+                (SOFIPC4_NOTIFY_LOG_BUFFER_STATUS << SOFIPC4_NOTIFICATION_TYPE_SHIFT));
+        if (Type == Dsp->Faults.IpcStatusForType)
+            Status = Dsp->Faults.IpcStatusValue;
+        if (Type == Dsp->Faults.NeverReplyForType)
+            return;
+    }
+    if (Config && Dsp->Faults.NeverIpcReply)
+        return;
+    Primary = (((Type + (Config ? 0 : Dsp->Faults.ReplyTypeShift)) & SOFIPC4_TYPE_MASK) << SOFIPC4_TYPE_SHIFT) |
+        SOFIPC4_RSP_BIT | (Target == SOFIPC4_TARGET_MODULE_MSG ? SOFIPC4_MSG_TGT_BIT : 0) |
+        (Status & SOFIPC4_PRIMARY_PAYLOAD_MASK);
+    if (FakeDspScheduleReply(Dsp, Dsp->Clock + Dsp->Faults.IpcReplyUs, Primary, Extension, HasPayload,
+        !Config && Dsp->Faults.NotifyBesideReply) && !Config)
+        Dsp->TransportReplies++;
 }
 
 static
@@ -624,9 +916,31 @@ FakeDspUnlockOp(
     FakeDspInterruptUnlock((PFAKE_DSP)Context);
 }
 
+/* The access log: one register or mailbox access, in order */
+static
+VOID
+FakeDspAccess(
+    PFAKE_DSP Dsp,
+    UINT32 Op,
+    UINT32 Bar,
+    UINT32 Offset,
+    UINT32 Value)
+{
+    FAKE_DSP_ACCESS* Entry;
+
+    if (Dsp->Access == NULL || Dsp->AccessCount >= Dsp->AccessCapacity)
+        return;
+    Entry = &Dsp->Access[Dsp->AccessCount++];
+    Entry->Op = (UINT8)Op;
+    Entry->Bar = (UINT8)Bar;
+    Entry->Reserved = 0;
+    Entry->Offset = Offset;
+    Entry->Value = Value;
+}
+
 static
 UINT32
-FakeDspRead32(
+FakeDspRead32Raw(
     PVOID Context,
     UINT32 Bar,
     UINT32 Offset)
@@ -700,8 +1014,33 @@ FakeDspRead32(
 }
 
 static
+UINT32
+FakeDspRead32(
+    PVOID Context,
+    UINT32 Bar,
+    UINT32 Offset)
+{
+    UINT32 Value = FakeDspRead32Raw(Context, Bar, Offset);
+
+    FakeDspAccess((PFAKE_DSP)Context, FAKE_DSP_ACCESS_READ32, Bar, Offset, Value);
+    return Value;
+}
+
+static
 VOID
 FakeDspWrite32(
+    PVOID Context,
+    UINT32 Bar,
+    UINT32 Offset,
+    UINT32 Value)
+{
+    FakeDspAccess((PFAKE_DSP)Context, FAKE_DSP_ACCESS_WRITE32, Bar, Offset, Value);
+    FakeDspWrite32Raw(Context, Bar, Offset, Value);
+}
+
+static
+VOID
+FakeDspWrite32Raw(
     PVOID Context,
     UINT32 Bar,
     UINT32 Offset,
@@ -710,7 +1049,6 @@ FakeDspWrite32(
     PFAKE_DSP Dsp = (PFAKE_DSP)Context;
     const FWLOAD_PLATFORM* Platform = Dsp->Platform;
     SOFIPC4_MSG Request;
-    UINT32 Type;
 
     FakeDspAdvance(Dsp);
     FakeDspWriteLog(Dsp, Bar, Offset, Value);
@@ -781,6 +1119,8 @@ FakeDspWrite32(
         if (Offset == Platform->IpcRequestData)
         {
             Dsp->IpcRequestData = Value;
+            /* the access log index of this write: the exchange's first step */
+            Dsp->RequestDataIndex = Dsp->AccessCount != 0 ? Dsp->AccessCount - 1 : 0;
             return;
         }
         if (Offset == Platform->IpcControl)
@@ -795,10 +1135,12 @@ FakeDspWrite32(
             {
                 if (!(Dsp->IpcReply & FAKE_DSP_IPC_DONE))
                     Dsp->IpcProtocolErrors |= FAKE_DSP_IPC_ACK_WITHOUT_DONE;
-                if (Dsp->ReplyPending && Dsp->UplinkReads == Dsp->UplinkReadsAtReply)
+                if (Dsp->ReplyPending && Dsp->ReplyHasPayload && Dsp->UplinkReads == Dsp->UplinkReadsAtReply)
                     Dsp->IpcProtocolErrors |= FAKE_DSP_IPC_ACK_BEFORE_READ;
                 Dsp->ReplyPending = FALSE;
                 Dsp->IpcReply &= ~FAKE_DSP_IPC_DONE;
+                /* the access log index of this write: the exchange's last step */
+                Dsp->ExchangeEnd = Dsp->AccessCount != 0 ? Dsp->AccessCount - 1 : 0;
             }
             return;
         }
@@ -841,23 +1183,11 @@ FakeDspWrite32(
                     FakeDspRomStart(Dsp);
                 return;
             }
-            Dsp->IpcRequests++;
-            Dsp->LastIpcPrimary = Value;
-            Dsp->LastIpcExtension = Dsp->IpcRequestData;
+            /* the firmware's IPC: the access log index of this write, then the model's handling */
+            Dsp->ExchangeStart = Dsp->RequestDataIndex;
             Request.Primary = Value;
             Request.Extension = Dsp->IpcRequestData;
-            Type = SofIpc4MsgType(&Request);
-            if (Type != SofIpc4ModConfigGet || SofIpc4MsgTarget(&Request) != SOFIPC4_TARGET_MODULE_MSG ||
-                (Value & SOFIPC4_PRIMARY_PAYLOAD_MASK) != 0 ||
-                (Dsp->IpcRequestData >> FWLOAD_PARAM_ID_SHIFT) != FWLOAD_PARAM_ID_FW_CONFIG)
-            {
-                Dsp->IpcRequestErrors++;
-                Type = SofIpc4ErrorInvalidParam;
-            }
-            else
-                Type = Dsp->Faults.IpcStatus;
-            if (!Dsp->Faults.NeverIpcReply)
-                FakeDspSchedule(Dsp, Dsp->Clock + Dsp->Faults.IpcReplyUs, FAKE_EVENT_IPC_REPLY, Type);
+            FakeDspRequest(Dsp, &Request);
             return;
         }
         if (Offset == Platform->RomStatus || Offset == Platform->RomError)
@@ -877,6 +1207,7 @@ FakeDspReadMemory(
     PFAKE_DSP Dsp = (PFAKE_DSP)Context;
 
     FakeDspAdvance(Dsp);
+    FakeDspAccess(Dsp, FAKE_DSP_ACCESS_READMEMORY, FWLOAD_BAR_DSP, Offset, (UINT32)Bytes);
     /* a read the loader attempts counts, whether or not the injected fault lets it succeed */
     if (Offset == Dsp->Platform->UplinkOffset)
         Dsp->UplinkReads++;
@@ -892,6 +1223,43 @@ FakeDspReadMemory(
     }
     FakeDspCopy(Buffer, Dsp->Window + (Offset - Dsp->Platform->Window0Offset), Bytes);
     return TRUE;
+}
+
+/* The downlink mailbox: whole 32-bit words inside the mailbox the firmware's configuration reply named, nothing else */
+BOOLEAN
+FakeDspWriteMemory(
+    PVOID Context,
+    UINT32 Offset,
+    const UINT8* Buffer,
+    SIZE_T Bytes)
+{
+    PFAKE_DSP Dsp = (PFAKE_DSP)Context;
+
+    FakeDspAdvance(Dsp);
+    FakeDspAccess(Dsp, FAKE_DSP_ACCESS_WRITEMEMORY, FWLOAD_BAR_DSP, Offset, (UINT32)Bytes);
+    Dsp->DownlinkWrites++;
+    Dsp->LastDownlinkBytes = (UINT32)Bytes;
+    if ((Bytes & (sizeof(UINT32) - 1)) != 0 || Offset != Dsp->Platform->DownlinkOffset ||
+        Bytes > FWLOAD_MAILBOX_BYTES)
+    {
+        Dsp->UnexpectedAccesses++;
+        return FALSE;
+    }
+    if (Dsp->Faults.MemoryWriteFails)
+        return FALSE;
+    FakeDspCopy(Dsp->Downlink, Buffer, Bytes);
+    return TRUE;
+}
+
+VOID
+FakeDspAccessBegin(
+    PFAKE_DSP Dsp,
+    FAKE_DSP_ACCESS* Buffer,
+    UINT32 Capacity)
+{
+    Dsp->Access = Buffer;
+    Dsp->AccessCapacity = Capacity;
+    Dsp->AccessCount = 0;
 }
 
 static
@@ -1048,7 +1416,8 @@ static const FAKE_DSP_FAULTS FakeDspDefaults =
 {
     100, 200, 100, 500, 2000, 200, 50, 0, FAKE_DSP_HALT_NONE, 0, 0, SOFIPC4_FW_REGS_ABI_VER,
     SofIpc4Success, FAKE_DSP_TUPLES_GOOD, FAKE_DSP_STORM_NONE, 0, 0, FALSE, FALSE,
-    FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE
+    FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE,
+    FAKE_DSP_NO_TYPE, 0, FAKE_DSP_NO_TYPE, 0, FALSE, FALSE, FALSE, FALSE
 };
 
 const FAKE_DSP_FAULTS*

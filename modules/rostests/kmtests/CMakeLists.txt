@@ -142,9 +142,11 @@ list(APPEND KMTEST_DRV_SOURCE
     hdaudbus/Disco.c
     hdaudbus/Softplg.c
     fwload/Fwload.c
+    intcdsp/SofIpc.c
     ${REACTOS_SOURCE_DIR}/submodules/host-tests/fwload/fake_dsp.c
     ${REACTOS_SOURCE_DIR}/submodules/host-tests/fwload/fake_bus.c
     ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/intcdsp/adspbus.c
+    ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/intcdsp/ipclock.c
     ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus/policy.c
     ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus/policy_dmi.c
     ks/KsCreateItemSlot.c
@@ -584,6 +586,7 @@ target_include_directories(kmtest_drv PRIVATE
     ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus
     ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/intcdsp
     ${REACTOS_SOURCE_DIR}/modules/rostests/kmtests/fwload
+    ${REACTOS_SOURCE_DIR}/modules/rostests/kmtests/intcdsp
     ${REACTOS_SOURCE_DIR}/submodules/host-tests/fwload
     ${REACTOS_SOURCE_DIR}/drivers/directx/dxgmms2
     ${REACTOS_SOURCE_DIR}/sdk/lib/drivers/softgpu
@@ -620,7 +623,7 @@ elseif(CMAKE_C_COMPILER_ID STREQUAL "Clang")
 else()
     target_link_options(kmtest_drv PRIVATE -Wl,--forceinteg)
 endif()
-target_link_libraries(kmtest_drv kmtest_printf chkstk memcmp poguid wdmguid arblib wdmsec aux_klib nhlt sofipc4 disco softplg fwload ${PSEH_LIB})
+target_link_libraries(kmtest_drv kmtest_printf chkstk memcmp poguid wdmguid arblib wdmsec aux_klib nhlt sofipc4 sofipc disco softplg fwload ${PSEH_LIB})
 add_importlibs(kmtest_drv battc ks ksecdd ndis smclib ntoskrnl hal)
 if(REACTOS_USE_WDDM)
     add_importlibs(kmtest_drv dxgkrnl dxgmms2)

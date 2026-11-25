@@ -66,6 +66,8 @@ typedef HANDLE* PHANDLE;
 #endif
 
 #define _In_reads_(x)
+#define _In_reads_opt_(x)
+#define _Out_writes_(x)
 #define _Inout_opt_
 #define _Out_writes_bytes_(x)
 #define _Out_writes_opt_(x)
