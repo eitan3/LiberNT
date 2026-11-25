@@ -175,6 +175,12 @@ PADSP_INTERRUPT_CALLBACK
 IntcDspInterruptRoutine(
     VOID);
 
+/* One line of the interrupt registers and the power state, read through the loader so that the pointer means what the loader makes of it: for the first boot on silicon, the branch review's list */
+VOID
+IntcDspLogInterruptState(
+    _In_ PINTCDSP_DEVICE Dev,
+    _In_ const char* Tag);
+
 NTSTATUS
 IntcDspReadBootDsp(
     _Out_ PULONG Value);

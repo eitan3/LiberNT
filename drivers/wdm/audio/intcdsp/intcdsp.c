@@ -80,8 +80,10 @@ IntcDspPowerDown(
     if (Dev->Fw.State != FwloadStateOff)
     {
         Status = FwloadPowerDown(&Dev->Fw);
-        IntcDspLog("DSP power down from state %s: %s, cleanup %s\n", FwloadStateName(Dev->Fw.State),
-                   FwloadStatusName(Status), FwloadStatusName(Dev->Fw.CleanupStatus));
+        /* the power state after the loader's own power-down: whether the subsystem really went off is a silicon fact the log must carry */
+        Dev->Adspcs = IntcDspOpsTable()->Read32(Dev, FWLOAD_BAR_DSP, Dev->Platform->SubsystemControl);
+        IntcDspLog("DSP power down from state %s: %s, cleanup %s, ADSPCS 0x%08x (SPA %u, CPA %u)\n", FwloadStateName(Dev->Fw.State),
+                   FwloadStatusName(Status), FwloadStatusName(Dev->Fw.CleanupStatus), Dev->Adspcs, (Dev->Adspcs >> 16) & 1, (Dev->Adspcs >> 24) & 1);
     }
     Dev->Booted = FALSE;
     if (Dev->InterruptRegistered)
@@ -224,14 +226,24 @@ IntcDspBoot(
     if (!Dev->InterruptRegistered)
         IntcDspLog("interrupt callback not registered: 0x%08lx; the boot polls on\n", NtStatus);
 
+    /* the interrupt registers and the power state before the loader powers the subsystem, for the first boot on silicon */
+    IntcDspLogInterruptState(Dev, "interrupts before power-up");
     Status = FwloadBoot(&Dev->Fw);
     Dev->InterruptArmed = FALSE;
     Dev->LastStatus = Status;
-    IntcDspLog("boot %s after %I64u us (clock %I64u us): state %s, failed in %s (%s), ROM status 0x%08x %s, ROM error 0x%08x %s, IPC status %u, last DSP message 0x%08x|0x%08x, attempt %u, %lu DSP interrupts, cleanup %s\n",
+    Dev->Adspcs = IntcDspOpsTable()->Read32(Dev, FWLOAD_BAR_DSP, Dev->Platform->SubsystemControl);
+    IntcDspLog("boot %s after %I64u us (clock %I64u us): state %s, failed in %s (%s), ROM status 0x%08x %s, ROM error 0x%08x %s, IPC status %u, last DSP message 0x%08x|0x%08x, attempt %u, %lu DSP interrupts, cleanup %s, ADSPCS 0x%08x\n",
                FwloadStatusName(Status), Dev->Fw.BootUs, (ULONGLONG)IntcDspOpsTable()->NowUs(Dev), FwloadStateName(Dev->Fw.State), FwloadStateName(Dev->Fw.FailedState),
                FwloadStatusName(Dev->Fw.Status), Dev->Fw.RomStatus, FwloadFsrStateName(Dev->Fw.RomStatus & FWLOAD_FSR_STATE_MASK),
                Dev->Fw.RomError, FwloadRomErrorName(Dev->Fw.RomError), Dev->Fw.LastIpcStatus, Dev->Fw.LastIpcPrimary, Dev->Fw.LastIpcExtension, Dev->Fw.Attempt,
-               Dev->Fw.InterruptCount, FwloadStatusName(Dev->Fw.CleanupStatus));
+               Dev->Fw.InterruptCount, FwloadStatusName(Dev->Fw.CleanupStatus), Dev->Adspcs);
+    /* the registers as the service routine found them at the first interrupt, before it masked anything; no line when no interrupt came, which is what a poll-only boot expects */
+    if (Dev->Fw.InterruptCount != 0)
+    {
+        IntcDspLog("first DSP interrupt: ADSPCS 0x%08x, HFINTIPPTR 0x%08x, INTEN 0x%08x, HfHIPCIE 0x%08x, HFIPCXCTL 0x%08x\n",
+                   Dev->Fw.FirstInterrupt.SubsystemControl, Dev->Fw.FirstInterrupt.Pointer, Dev->Fw.FirstInterrupt.Enable,
+                   Dev->Fw.FirstInterrupt.HostIpcEnable, Dev->Fw.FirstInterrupt.IpcControl);
+    }
     /* the guard tripped: the enables do not gate the line on this controller, the service routine stopped claiming it, and it is taken off the line for good */
     if (Dev->Fw.InterruptStorm)
     {

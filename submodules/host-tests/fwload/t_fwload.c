@@ -1357,12 +1357,20 @@ CheckInterruptService(
     const SOF_RI_IMAGE* Image)
 {
     const FWLOAD_PLATFORM* Platform = FwloadPlatformArlS();
+    FWLOAD_INTERRUPT_STATE State;
     UINT32 Writes, Index;
 
     /* a message pending with no boot: nothing is claimed while nothing is pending, then each claim masks the three enables under the lock the bus holds, the first one reads the registers for the driver's log, and the guard trips after FWLOAD_INTERRUPT_STORM_LIMIT */
     HarnessBoot(H, Image, NULL);
     CHECK(!HarnessInterrupt(H));
     CHECK_EQ(H->Ctx->InterruptCount, 0);
+    /* the line the driver prints for the first boot on silicon reads the same registers */
+    FwloadReadInterruptState(H->Ctx, &State);
+    CHECK_EQ(State.Pointer, FAKE_DSP_INTERRUPT_POINTER);
+    CHECK_EQ(State.Enable, 0);
+    CHECK_EQ(State.HostIpcEnable, 0);
+    CHECK_EQ(State.IpcControl, 0);
+    CHECK_EQ(State.SubsystemControl, 0);
     H->Dsp->IpcTarget = FWLOAD_IPC_BUSY | SOFIPC4_FW_READY_PRIMARY;
     CHECK(HarnessInterrupt(H));
     CHECK_EQ(H->Ctx->InterruptCount, 1);
@@ -1409,6 +1417,13 @@ CheckInterruptService(
     CHECK_EQ(H->Dsp->InterruptEnable, 0);
     CHECK_EQ(H->Dsp->HostIpcEnable, 0);
     CHECK_EQ(H->Dsp->IpcControl, 0);
+    /* powered and masked: what the driver's step lines show */
+    FwloadReadInterruptState(H->Ctx, &State);
+    CHECK_EQ(State.Pointer, FAKE_DSP_INTERRUPT_POINTER);
+    CHECK_EQ(State.Enable, 0);
+    CHECK_EQ(State.HostIpcEnable, 0);
+    CHECK_EQ(State.IpcControl, 0);
+    CHECK_EQ(State.SubsystemControl, 0x01010000);
     CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
     CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
 

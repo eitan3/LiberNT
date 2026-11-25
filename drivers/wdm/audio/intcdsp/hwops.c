@@ -184,12 +184,26 @@ IntcDspOpStreamRelease(
 
 static
 VOID
+IntcDspLogInterruptState(
+    _In_ PINTCDSP_DEVICE Dev,
+    _In_ const char* Tag)
+{
+    FWLOAD_INTERRUPT_STATE State;
+
+    FwloadReadInterruptState(&Dev->Fw, &State);
+    IntcDspLog("%s: ADSPCS 0x%08x (SPA %u, CPA %u), HFINTIPPTR 0x%08x, INTEN 0x%08x, HfHIPCIE 0x%08x, HFIPCXCTL 0x%08x\n",
+               Tag, State.SubsystemControl, (State.SubsystemControl >> 16) & 1, (State.SubsystemControl >> 24) & 1,
+               State.Pointer, State.Enable, State.HostIpcEnable, State.IpcControl);
+}
+
+static
+VOID
 IntcDspOpLog(
     PVOID Context,
     const char* Text)
 {
-    UNREFERENCED_PARAMETER(Context);
-    IntcDspLog("%s\n", Text);
+    /* every step the loader names carries the registers' state at that moment */
+    IntcDspLogInterruptState((PINTCDSP_DEVICE)Context, Text);
 }
 
 /* The bus driver's interrupt lock, the one its service routine holds while it calls the callback: the loader takes it around every passive-level read-modify-write of the interrupt enables */
