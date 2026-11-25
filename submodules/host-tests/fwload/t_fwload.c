@@ -340,6 +340,13 @@ HarnessBoot(
     Dma.EntryBoundary = H->EntryBoundary;
     Dma.StreamTag = (UINT8)H->StreamTag;
     FwloadInitContext(H->Ctx, &HarnessOps, H, FwloadPlatformArlS(), Image, &Dma, &H->Timeouts);
+    /* the driver keeps one context for the device and re-initializes it in place for every boot (R4): nothing of the boot before survives it */
+    CHECK_EQ(H->Ctx->State, FwloadStateOff);
+    CHECK_EQ(H->Ctx->Status, FwloadOk);
+    CHECK(!H->Ctx->Cancel && !H->Ctx->InterruptStorm && !H->Ctx->InterruptsEnabled && !H->Ctx->UseInterrupts &&
+        !H->Ctx->StreamSubmitted && !H->Ctx->SubsystemOn && !H->Ctx->CoreOn);
+    CHECK_EQ(H->Ctx->InterruptCount, 0);
+    CHECK_EQ(H->Ctx->StormCount, 0);
     H->Delays = 0;
     H->LogCount = 0;
     H->OpsSeen = 0;

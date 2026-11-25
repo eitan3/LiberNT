@@ -138,7 +138,8 @@ typedef struct _INTCDSP_DEVICE
     PUCHAR DmaBuffer;
     SIZE_T DmaBytes;
     FWLOAD_DMA_SEGMENT Segment;
-    FWLOAD_CONTEXT* Fw;
+    /* the loader's context is part of the device and re-initialized in place for every boot: nothing is allocated per boot, so no boot can leak or dangle one (R4) */
+    FWLOAD_CONTEXT Fw;
     HANDLE Stream;
     UINT8 StreamTag;
     ULONG StreamFragments;

@@ -92,6 +92,13 @@ BootWith(
 {
     FakeDspInit(Dsp, FwloadPlatformArlS(), Faults);
     FwloadInitContext(Context, FakeDspOps(), Dsp, FwloadPlatformArlS(), Parsed, Dma, NULL);
+    /* the driver keeps one context for the device and re-initializes it in place for every boot (R4): nothing of the boot before survives it */
+    ok_eq_uint(Context->State, FwloadStateOff);
+    ok_eq_int(Context->Status, FwloadOk);
+    ok(!Context->Cancel && !Context->InterruptStorm && !Context->InterruptsEnabled && !Context->StreamSubmitted &&
+        !Context->SubsystemOn && !Context->CoreOn, "a re-initialized context kept state of the boot before\n");
+    ok_eq_uint(Context->InterruptCount, 0);
+    ok_eq_uint(Context->StormCount, 0);
     ok_eq_int(FwloadBoot(Context), Expected);
     ok_eq_uint(Context->State, ExpectedState);
     ok_eq_uint(Dsp->UnexpectedAccesses, 0);

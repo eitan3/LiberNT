@@ -277,7 +277,7 @@ IntcDspInterruptCallback(
     /* the callback stays registered for the device's lifetime; a boot arms it for its own duration, and the bus driver calls it under the lock the operations table hands the loader */
     if (!Dev->InterruptArmed)
         return FALSE;
-    return FwloadInterruptService(Dev->Fw) ? TRUE : FALSE;
+    return FwloadInterruptService(&Dev->Fw) ? TRUE : FALSE;
 }
 
 PADSP_INTERRUPT_CALLBACK

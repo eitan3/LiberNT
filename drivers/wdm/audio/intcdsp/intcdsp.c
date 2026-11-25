@@ -77,11 +77,11 @@ IntcDspPowerDown(
     NTSTATUS NtStatus;
 
     Dev->InterruptArmed = FALSE;
-    if (Dev->Fw && Dev->Fw->State != FwloadStateOff)
+    if (Dev->Fw.State != FwloadStateOff)
     {
-        Status = FwloadPowerDown(Dev->Fw);
-        IntcDspLog("DSP power down from state %s: %s, cleanup %s\n", FwloadStateName(Dev->Fw->State),
-                   FwloadStatusName(Status), FwloadStatusName(Dev->Fw->CleanupStatus));
+        Status = FwloadPowerDown(&Dev->Fw);
+        IntcDspLog("DSP power down from state %s: %s, cleanup %s\n", FwloadStateName(Dev->Fw.State),
+                   FwloadStatusName(Status), FwloadStatusName(Dev->Fw.CleanupStatus));
     }
     Dev->Booted = FALSE;
     if (Dev->InterruptRegistered)
@@ -108,11 +108,6 @@ IntcDspBootStop(
     IntcDspLog("boot stopped at %s: 0x%08lx; the DSP is not started\n", Step, Status);
     IntcDspReleaseStream(Dev);
     Dev->LastStatus = FwloadHardwareFault;
-    if (Dev->Fw)
-    {
-        ExFreePoolWithTag(Dev->Fw, INTCDSP_POOL_TAG);
-        Dev->Fw = NULL;
-    }
     if (Dev->DmaBuffer)
         MmFreeContiguousMemorySpecifyCache(Dev->DmaBuffer, (ULONG)Dev->DmaBytes, MmNonCached);
     Dev->DmaBuffer = NULL;
@@ -200,12 +195,6 @@ IntcDspBoot(
     }
     Dev->StreamPrepared = TRUE;
 
-    Dev->Fw = ExAllocatePoolWithTag(NonPagedPool, sizeof(FWLOAD_CONTEXT), INTCDSP_POOL_TAG);
-    if (!Dev->Fw)
-    {
-        NtStatus = STATUS_INSUFFICIENT_RESOURCES;
-        goto Fail;
-    }
     RtlZeroMemory(&Dma, sizeof(Dma));
     Dma.Virtual = Dev->DmaBuffer;
     Dma.Capacity = Dev->DmaBytes;
@@ -218,7 +207,7 @@ IntcDspBoot(
     Dma.StreamTag = Dev->StreamTag;
     Dma.StreamFormat = FWLOAD_CL_STREAM_FORMAT;
     FwloadDefaultTimeouts(&Timeouts);
-    FwloadInitContext(Dev->Fw, IntcDspOpsTable(), Dev, Platform, &Dev->Ri, &Dma, &Timeouts);
+    FwloadInitContext(&Dev->Fw, IntcDspOpsTable(), Dev, Platform, &Dev->Ri, &Dma, &Timeouts);
 
     NtStatus = Dev->Bus.SetDSPPowerState(Dev->Bus.Context, PowerDeviceD0);
     if (!NT_SUCCESS(NtStatus))
@@ -236,19 +225,19 @@ IntcDspBoot(
     if (!Dev->InterruptRegistered)
         IntcDspLog("interrupt callback not registered: 0x%08lx; the boot polls on\n", NtStatus);
 
-    Status = FwloadBoot(Dev->Fw);
+    Status = FwloadBoot(&Dev->Fw);
     Dev->InterruptArmed = FALSE;
     Dev->LastStatus = Status;
     IntcDspLog("boot %s after %I64u us (clock %I64u us): state %s, failed in %s (%s), ROM status 0x%08x %s, ROM error 0x%08x %s, IPC status %u, last DSP message 0x%08x|0x%08x, attempt %u, %lu DSP interrupts, cleanup %s\n",
-               FwloadStatusName(Status), Dev->Fw->BootUs, (ULONGLONG)IntcDspOpsTable()->NowUs(Dev), FwloadStateName(Dev->Fw->State), FwloadStateName(Dev->Fw->FailedState),
-               FwloadStatusName(Dev->Fw->Status), Dev->Fw->RomStatus, FwloadFsrStateName(Dev->Fw->RomStatus & FWLOAD_FSR_STATE_MASK),
-               Dev->Fw->RomError, FwloadRomErrorName(Dev->Fw->RomError), Dev->Fw->LastIpcStatus, Dev->Fw->LastIpcPrimary, Dev->Fw->LastIpcExtension, Dev->Fw->Attempt,
-               Dev->Fw->InterruptCount, FwloadStatusName(Dev->Fw->CleanupStatus));
+               FwloadStatusName(Status), Dev->Fw.BootUs, (ULONGLONG)IntcDspOpsTable()->NowUs(Dev), FwloadStateName(Dev->Fw.State), FwloadStateName(Dev->Fw.FailedState),
+               FwloadStatusName(Dev->Fw.Status), Dev->Fw.RomStatus, FwloadFsrStateName(Dev->Fw.RomStatus & FWLOAD_FSR_STATE_MASK),
+               Dev->Fw.RomError, FwloadRomErrorName(Dev->Fw.RomError), Dev->Fw.LastIpcStatus, Dev->Fw.LastIpcPrimary, Dev->Fw.LastIpcExtension, Dev->Fw.Attempt,
+               Dev->Fw.InterruptCount, FwloadStatusName(Dev->Fw.CleanupStatus));
     /* the guard tripped: the enables do not gate the line on this controller, the service routine stopped claiming it, and it is taken off the line for good */
-    if (Dev->Fw->InterruptStorm)
+    if (Dev->Fw.InterruptStorm)
     {
         IntcDspLog("DSP interrupt storm: %lu interrupts in a row without a message consumed, the interrupt callback is disarmed and unregistered\n",
-                   Dev->Fw->InterruptCount);
+                   Dev->Fw.InterruptCount);
         if (Dev->InterruptRegistered)
         {
             Dev->Bus.UnregisterInterrupt(Dev->Bus.Context);
@@ -257,22 +246,22 @@ IntcDspBoot(
     }
     if (Status == FwloadOk)
     {
-        Registers = &Dev->Fw->FwConfig.Registers;
+        Registers = &Dev->Fw.FwConfig.Registers;
         Dev->Booted = TRUE;
         IntcDspLog("firmware ready: version %u.%u.%u.%u, ABI %u, ROM implementation %u.%u version %u.%u platform %u, ROM info 0x%08x, downlink mailbox %u bytes, uplink mailbox %u bytes, trace log %u bytes, %u pipelines, %u libraries, context save %u, %u tuples\n",
-                   Dev->Fw->FwConfig.Major, Dev->Fw->FwConfig.Minor, Dev->Fw->FwConfig.Hotfix, Dev->Fw->FwConfig.Build,
+                   Dev->Fw.FwConfig.Major, Dev->Fw.FwConfig.Minor, Dev->Fw.FwConfig.Hotfix, Dev->Fw.FwConfig.Build,
                    Registers->AbiVersion, Registers->RomImplementationRevisionMajor, Registers->RomImplementationRevisionMinor,
                    Registers->RomImplementationVersionMajor, Registers->RomImplementationVersionMinor, Registers->RomPlatformType,
-                   Registers->RomFuseValues, Dev->Fw->FwConfig.DownlinkMailboxBytes, Dev->Fw->FwConfig.UplinkMailboxBytes,
-                   Dev->Fw->FwConfig.TraceLogBytes, Dev->Fw->FwConfig.MaxPipelines, Dev->Fw->FwConfig.MaxLibraries,
-                   Dev->Fw->FwConfig.ContextSave, Dev->Fw->FwConfig.TupleCount);
+                   Registers->RomFuseValues, Dev->Fw.FwConfig.DownlinkMailboxBytes, Dev->Fw.FwConfig.UplinkMailboxBytes,
+                   Dev->Fw.FwConfig.TraceLogBytes, Dev->Fw.FwConfig.MaxPipelines, Dev->Fw.FwConfig.MaxLibraries,
+                   Dev->Fw.FwConfig.ContextSave, Dev->Fw.FwConfig.TupleCount);
     }
     else
     {
         /* the tuple walk says which tuple it refused (D3): a length that is not a multiple of four, a tuple without a value, or a type the firmware does not define */
-        if (Dev->Fw->FwConfig.BadTuple)
+        if (Dev->Fw.FwConfig.BadTuple)
             IntcDspLog("firmware configuration: tuple type 0x%x at offset 0x%Ix of the reply is malformed\n",
-                       Dev->Fw->FwConfig.BadTupleType, Dev->Fw->FwConfig.BadTupleOffset);
+                       Dev->Fw.FwConfig.BadTupleType, Dev->Fw.FwConfig.BadTupleOffset);
         IntcDspPowerDown(Dev);
     }
 
@@ -365,11 +354,6 @@ IntcDspEvtDeviceReleaseHardware(
     UNREFERENCED_PARAMETER(ResourcesTranslated);
     IntcDspPowerDown(Dev);
     IntcDspReleaseStream(Dev);
-    if (Dev->Fw)
-    {
-        ExFreePoolWithTag(Dev->Fw, INTCDSP_POOL_TAG);
-        Dev->Fw = NULL;
-    }
     if (Dev->DmaBuffer)
         MmFreeContiguousMemorySpecifyCache(Dev->DmaBuffer, (ULONG)Dev->DmaBytes, MmNonCached);
     Dev->DmaBuffer = NULL;
