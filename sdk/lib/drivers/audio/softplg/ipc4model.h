@@ -140,6 +140,10 @@ typedef enum _SOFTPLG_IPC4_KIND
 
 /* ipc4_audio_format in six words: sampling frequency, container depth, channel map, channel configuration, interleaving style, then the configuration word (channels in 7:0, valid bits in 15:8, sample type in 23:16) */
 #define SOFTPLG_IPC4_AUDIO_FORMAT_WORDS        6
+/* What SOFTPLG_IPC4_FORMAT.Words holds, in the order the topology gives its audio-format tuples (SoftplgFormatTuples) and the message carries them: the sampling rate, the container depth, the channel map, the channel configuration, the interleaving style, and the format configuration, whose channels are SOFTPLG_FORMAT_CHANNELS_OF it, its valid bits SOFTPLG_FORMAT_VALID_OF it and its sample type SOFTPLG_FORMAT_TYPE_OF it */
+#define SOFTPLG_FORMAT_WORD_RATE              0
+#define SOFTPLG_FORMAT_WORD_DEPTH             1
+#define SOFTPLG_FORMAT_WORD_CFG               5
 #define SOFTPLG_FORMAT_CHANNELS_OF(Word)       ((Word) & 0xFF)
 #define SOFTPLG_FORMAT_VALID_OF(Word)          (((Word) >> 8) & 0xFF)
 #define SOFTPLG_FORMAT_TYPE_OF(Word)           (((Word) >> 16) & 0xFF)
