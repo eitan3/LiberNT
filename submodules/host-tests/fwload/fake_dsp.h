@@ -14,6 +14,9 @@
 #define FAKE_DSP_INTERRUPT_POINTER 0x1D00
 #define FAKE_DSP_WINDOW_BYTES      0x8000
 
+/* The answer of a DSP-domain register, the interrupt pointer among them, while its subsystem is powered down */
+#define FAKE_DSP_POINTER_UNPOWERED 0xFFFFFFFFUL
+
 /* Where the model halts the ROM */
 #define FAKE_DSP_HALT_NONE          0
 #define FAKE_DSP_HALT_AFTER_PURGE   1
@@ -81,6 +84,10 @@ typedef struct _FAKE_DSP_FAULTS
     UINT32 IpcStatus;
     UINT32 TupleFault;
     UINT32 ReportedVersionShift;
+    /* the raw value the interrupt pointer reads while the subsystem is powered, when InterruptPointerOverride is set */
+    UINT32 InterruptPointer;
+    BOOLEAN InterruptPointerOverride;
+    BOOLEAN PointerNeedsPower;
     BOOLEAN SubsystemNeverPowers;
     BOOLEAN CoreNeverPowers;
     BOOLEAN NeverAckRom;
@@ -106,6 +113,8 @@ typedef struct _FAKE_DSP_WRITE
     UINT32 Offset;
     UINT32 Value;
     UINT64 At;
+    /* whether the subsystem reported power active when the write arrived */
+    BOOLEAN Powered;
 } FAKE_DSP_WRITE;
 
 #define FAKE_DSP_WRITE_LOG   256
@@ -170,6 +179,9 @@ typedef struct _FAKE_DSP
     UINT32 PowerEvents;
     UINT32 PowerOrder[16];
     UINT32 PowerOrderCount;
+    /* the interrupt pointer: how often it was read, and how often while the subsystem was powered down */
+    UINT32 InterruptPointerReads;
+    UINT32 InterruptPointerReadsUnpowered;
     /* what the model posted into the receive registers, and what the loader read and acknowledged */
     UINT32 Replies;
     UINT32 Notifications;

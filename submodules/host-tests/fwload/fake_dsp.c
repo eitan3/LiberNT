@@ -553,7 +553,17 @@ FakeDspRead32(
             return Dsp->CoreControl;
         }
         if (Offset == Platform->InterruptPointer)
-            return FAKE_DSP_INTERRUPT_POINTER;
+        {
+            Dsp->InterruptPointerReads++;
+            /* a register of the DSP's own power domain: all ones until the subsystem reports power active */
+            if (!(Dsp->SubsystemControl & FAKE_DSP_SUBSYSTEM_CPA))
+            {
+                Dsp->InterruptPointerReadsUnpowered++;
+                if (Dsp->Faults.PointerNeedsPower)
+                    return FAKE_DSP_POINTER_UNPOWERED;
+            }
+            return Dsp->Faults.InterruptPointerOverride ? Dsp->Faults.InterruptPointer : FAKE_DSP_INTERRUPT_POINTER;
+        }
         if (Offset == FAKE_DSP_INTERRUPT_POINTER)
             return Dsp->InterruptEnable;
         if (Offset == Platform->HostIpcInterruptEnable)
@@ -603,6 +613,7 @@ FakeDspWrite32(
         Dsp->WriteLog[Dsp->WriteCount].Offset = Offset;
         Dsp->WriteLog[Dsp->WriteCount].Value = Value;
         Dsp->WriteLog[Dsp->WriteCount].At = Dsp->Clock;
+        Dsp->WriteLog[Dsp->WriteCount].Powered = (Dsp->SubsystemControl & FAKE_DSP_SUBSYSTEM_CPA) != 0;
         Dsp->WriteCount++;
     }
     if (Bar == FWLOAD_BAR_PP)
@@ -920,7 +931,7 @@ static const FWLOAD_OPS FakeDspOpsTable =
 static const FAKE_DSP_FAULTS FakeDspDefaults =
 {
     100, 200, 100, 500, 2000, 200, 50, 0, FAKE_DSP_HALT_NONE, 0, 0, SOFIPC4_FW_REGS_ABI_VER,
-    SofIpc4Success, FAKE_DSP_TUPLES_GOOD, 0,
+    SofIpc4Success, FAKE_DSP_TUPLES_GOOD, 0, 0, FALSE, FALSE,
     FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE
 };
 

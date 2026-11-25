@@ -28,6 +28,8 @@
 /* mtl.h MTL_IRQ_INTEN_L_HOST_IPC_MASK and MTL_HFINTIPPTR_PTR_MASK */
 #define FWLOAD_INTEN_HOST_IPC       0x00000001UL
 #define FWLOAD_INT_POINTER_MASK     0x001FFFFFUL
+/* What the interrupt pointer names when its bits do not name a 32-bit register of BAR4 */
+#define FWLOAD_NO_INTERRUPT_ENABLE  0xFFFFFFFFUL
 /* mtl.h MTL_DSP_REG_HfHIPCIE_IE_MASK, MTL_DSP_REG_HFIPCXCTL_BUSY and _DONE */
 #define FWLOAD_HIPCIE_IE            0x00000001UL
 #define FWLOAD_IPCCTL_BUSY_INT      0x00000001UL
@@ -291,6 +293,21 @@ FwloadCorePowerDown(
         Context->Timeouts.CorePowerDownUs), FwloadTimeoutPowerUp);
 }
 
+/* The register the interrupt IP pointer names, read wherever it is used and never kept: it belongs to the DSP's power domain and reads all ones or zero before the subsystem is powered, and the register it reaches is 32-bit */
+static
+UINT32
+FwloadInterruptEnableOffset(
+    const FWLOAD_CONTEXT* Context)
+{
+    UINT32 Pointer = FwloadRead(Context, FWLOAD_BAR_DSP, Context->Platform->InterruptPointer);
+    UINT32 Offset = Pointer & FWLOAD_INT_POINTER_MASK;
+
+    if (Pointer == 0xFFFFFFFFUL || Offset == 0 || Offset == FWLOAD_INT_POINTER_MASK ||
+        (Offset & (sizeof(UINT32) - 1)) != 0)
+        return FWLOAD_NO_INTERRUPT_ENABLE;
+    return Offset;
+}
+
 /* The interrupt enable register the interrupt IP pointer names, the host IPC enable and the IPC interrupt enables */
 static
 FWLOAD_STATUS
@@ -298,15 +315,20 @@ FwloadInterruptsEnable(
     FWLOAD_CONTEXT* Context,
     BOOLEAN Enable)
 {
-    UINT32 Pointer = FwloadRead(Context, FWLOAD_BAR_DSP, Context->Platform->InterruptPointer) &
-        FWLOAD_INT_POINTER_MASK;
+    UINT32 Pointer = FwloadInterruptEnableOffset(Context);
     UINT32 Value = Enable ? FWLOAD_INTEN_HOST_IPC : 0;
     FWLOAD_OUTCOME Outcome;
 
-    FwloadUpdate(Context, FWLOAD_BAR_DSP, Pointer, FWLOAD_INTEN_HOST_IPC, Value);
-    Outcome = FwloadWaitMask(Context, Pointer, FWLOAD_INTEN_HOST_IPC, Value, Context->Timeouts.PowerUpUs);
-    if (Outcome != FwloadOutcomeDone)
-        return FwloadWaitStatus(Context, Outcome, FwloadTimeoutPowerUp);
+    /* nothing is written through a pointer that names no register; an interrupt that cannot be gated is not enabled */
+    if (Pointer != FWLOAD_NO_INTERRUPT_ENABLE)
+    {
+        FwloadUpdate(Context, FWLOAD_BAR_DSP, Pointer, FWLOAD_INTEN_HOST_IPC, Value);
+        Outcome = FwloadWaitMask(Context, Pointer, FWLOAD_INTEN_HOST_IPC, Value, Context->Timeouts.PowerUpUs);
+        if (Outcome != FwloadOutcomeDone)
+            return FwloadWaitStatus(Context, Outcome, FwloadTimeoutPowerUp);
+    }
+    else if (Enable)
+        return FwloadHardwareFault;
     Value = Enable ? FWLOAD_HIPCIE_IE : 0;
     FwloadUpdate(Context, FWLOAD_BAR_DSP, Context->Platform->HostIpcInterruptEnable, FWLOAD_HIPCIE_IE, Value);
     Outcome = FwloadWaitMask(Context, Context->Platform->HostIpcInterruptEnable, FWLOAD_HIPCIE_IE,

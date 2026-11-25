@@ -360,17 +360,11 @@ CheckBootWrites(
 
 static
 void
-CheckFailedBootIsOff(
-    const HARNESS* H,
-    FWLOAD_STATUS Status,
-    FWLOAD_STATE FailedState)
+CheckDspIsOff(
+    const HARNESS* H)
 {
     const FAKE_DSP* Dsp = H->Dsp;
 
-    CHECK_EQ(H->Ctx->Status, Status);
-    CHECK_EQ(H->Ctx->State, FwloadStateFailed);
-    CHECK_EQ(H->Ctx->FailedState, FailedState);
-    CHECK_EQ(H->Ctx->CleanupStatus, FwloadOk);
     CHECK(FakeDspPowerEventSeen(Dsp, FAKE_POWER_SUBSYSTEM_OFF));
     CHECK(FakeDspPowerEventSeen(Dsp, FAKE_POWER_GPROCEN_OFF));
     CHECK((Dsp->SubsystemControl & 0x01000000) == 0);
@@ -381,13 +375,27 @@ CheckFailedBootIsOff(
     CHECK(Dsp->StreamStarts <= Dsp->StreamStops);
     /* every message the DSP posted was consumed and acknowledged before the boot gave up */
     CHECK_EQ(FakeDspIpcErrors(Dsp), 0);
-    if (FailedState != FwloadStatePoweringUp)
-        CHECK(FakeDspPowerEventSeen(Dsp, FAKE_POWER_INTERRUPTS_OFF));
     /* the failed context can still be powered down to off */
     CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
     CHECK_EQ(H->Ctx->State, FwloadStateOff);
     CHECK_EQ(H->Ctx->Status, FwloadOk);
     CHECK_EQ(Dsp->UnexpectedAccesses, 0);
+}
+
+static
+void
+CheckFailedBootIsOff(
+    const HARNESS* H,
+    FWLOAD_STATUS Status,
+    FWLOAD_STATE FailedState)
+{
+    CHECK_EQ(H->Ctx->Status, Status);
+    CHECK_EQ(H->Ctx->State, FwloadStateFailed);
+    CHECK_EQ(H->Ctx->FailedState, FailedState);
+    CHECK_EQ(H->Ctx->CleanupStatus, FwloadOk);
+    CheckDspIsOff(H);
+    if (FailedState != FwloadStatePoweringUp)
+        CHECK(FakeDspPowerEventSeen(H->Dsp, FAKE_POWER_INTERRUPTS_OFF));
 }
 
 static
@@ -944,6 +952,81 @@ CheckFirmwareFaults(
     HarnessBoot(H, Image, &Faults);
     CHECK_EQ(FwloadBoot(H->Ctx), FwloadHardwareFault);
     CheckFailedBootIsOff(H, FwloadHardwareFault, FwloadStateFwReady);
+}
+
+/*
+ * R1 of the branch review: the interrupt pointer is a register of the DSP's power domain. Whatever it reads before the subsystem is powered, nothing is written through it, and a pointer that names no 32-bit
+ * register names none for the whole boot
+ */
+static
+void
+CheckInterruptPointer(
+    HARNESS* H,
+    const SOF_RI_IMAGE* Image)
+{
+    const FWLOAD_PLATFORM* Platform = FwloadPlatformArlS();
+    /* zero, an odd address, the last address of the pointer's field, and the bus's all ones */
+    static const UINT32 NoRegister[] = { 0, 1, 0x1D01, 0x1FFFFF, 0xFFFFFFFF };
+    FAKE_DSP_FAULTS Faults;
+    UINT32 Index, EnableWrites;
+
+    /* all ones until the subsystem is powered: the pointer is read where it is used, so every write to the three enables arrives powered and the boot is the model's */
+    Faults = *FakeDspDefaultFaults();
+    Faults.PointerNeedsPower = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    EnableWrites = 0;
+    for (Index = 0; Index < H->Dsp->WriteCount; Index++)
+    {
+        const FAKE_DSP_WRITE* Write = &H->Dsp->WriteLog[Index];
+
+        if (Write->Bar == FWLOAD_BAR_DSP && (Write->Offset == FAKE_DSP_INTERRUPT_POINTER ||
+            Write->Offset == Platform->HostIpcInterruptEnable || Write->Offset == Platform->IpcControl))
+        {
+            CHECK(Write->Powered);
+            EnableWrites++;
+        }
+    }
+    CHECK_EQ(EnableWrites, 3);
+    CHECK_EQ(H->Dsp->InterruptPointerReads, 1);
+    CHECK_EQ(H->Dsp->InterruptPointerReadsUnpowered, 0);
+    CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Dsp->InterruptPointerReads, 2);
+    CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
+
+    /* the subsystem never powers up: the cleanup meets all ones and writes nothing through the pointer */
+    Faults = *FakeDspDefaultFaults();
+    Faults.PointerNeedsPower = TRUE;
+    Faults.SubsystemNeverPowers = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadTimeoutPowerUp);
+    CheckFailedBootIsOff(H, FwloadTimeoutPowerUp, FwloadStatePoweringUp);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, FAKE_DSP_INTERRUPT_POINTER), 0);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, 0x1FFFFF), 0);
+    CHECK_EQ(H->Dsp->InterruptPointerReads, 2);
+    CHECK_EQ(H->Dsp->InterruptPointerReadsUnpowered, 2);
+
+    /* a pointer that names no 32-bit register once the DSP is powered: the interrupt is not enabled and nothing is written through it */
+    for (Index = 0; Index < sizeof(NoRegister) / sizeof(NoRegister[0]); Index++)
+    {
+        Faults = *FakeDspDefaultFaults();
+        Faults.InterruptPointerOverride = TRUE;
+        Faults.InterruptPointer = NoRegister[Index];
+        HarnessBoot(H, Image, &Faults);
+        CHECK_EQ(FwloadBoot(H->Ctx), FwloadHardwareFault);
+        CHECK_EQ(H->Ctx->State, FwloadStateFailed);
+        CHECK_EQ(H->Ctx->FailedState, FwloadStateRomInit);
+        CHECK_EQ(H->Ctx->CleanupStatus, FwloadOk);
+        /* no register was written through the pointer, so the model never saw the interrupt go off */
+        CHECK(!FakeDspPowerEventSeen(H->Dsp, FAKE_POWER_INTERRUPTS_OFF));
+        CheckDspIsOff(H);
+        CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, FAKE_DSP_INTERRUPT_POINTER), 0);
+        CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, NoRegister[Index] & 0x1FFFFF), 0);
+        CHECK_EQ(H->Dsp->InterruptEnable, 0);
+        CHECK_EQ(H->Dsp->HostIpcEnable, 0);
+        CHECK_EQ(H->Dsp->IpcControl, 0);
+    }
 }
 
 static
@@ -1716,6 +1799,7 @@ main(
     CheckStalledClock(&H, Image);
     CheckRomErrors(&H, Image);
     CheckFirmwareFaults(&H, Image);
+    CheckInterruptPointer(&H, Image);
     CheckRetry(&H, Image);
     CheckCancellation(&H, Image);
     CheckBadPayload(&H, Data, Image);

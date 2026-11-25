@@ -150,7 +150,6 @@ typedef struct _INTCDSP_DEVICE
     FWLOAD_STATUS LastStatus;
     BOOLEAN InterruptArmed;
     BOOLEAN InterruptRegistered;
-    ULONG IntEnableOffset;
     volatile LONG Interrupts;
 } INTCDSP_DEVICE, *PINTCDSP_DEVICE;
 
@@ -180,12 +179,7 @@ IntcDspInterruptRoutine(
 
 VOID
 IntcDspMaskInterrupts(
-    _In_ PINTCDSP_DEVICE Dev);
-
-/* 0xFFFFFFFF when the register the interrupt pointer names lies outside BAR4 */
-UINT32
-IntcDspInterruptEnableOffset(
-    _In_ PINTCDSP_DEVICE Dev);
+    _Inout_ PINTCDSP_DEVICE Dev);
 
 NTSTATUS
 IntcDspReadBootDsp(

@@ -219,7 +219,6 @@ IntcDspBoot(
     Dma.StreamFormat = FWLOAD_CL_STREAM_FORMAT;
     FwloadDefaultTimeouts(&Timeouts);
     FwloadInitContext(Dev->Fw, IntcDspOpsTable(), Dev, Platform, &Dev->Ri, &Dma, &Timeouts);
-    Dev->IntEnableOffset = IntcDspInterruptEnableOffset(Dev);
 
     NtStatus = Dev->Bus.SetDSPPowerState(Dev->Bus.Context, PowerDeviceD0);
     if (!NT_SUCCESS(NtStatus))

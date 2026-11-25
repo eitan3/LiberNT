@@ -243,6 +243,31 @@ IntcDspClockFrequency(
     return IntcDspFrequency;
 }
 
+/* The register a raw interrupt pointer names, 0xFFFFFFFF when it names none: all ones, zero, an unaligned offset and one outside BAR4 are refused; mtl.h MTL_HFINTIPPTR_PTR_MASK, bits 20:0 */
+static
+UINT32
+IntcDspInterruptOffset(
+    _In_ PINTCDSP_DEVICE Dev,
+    _In_ UINT32 Pointer)
+{
+    UINT32 Offset = Pointer & INTCDSP_INT_POINTER_MASK;
+
+    if (Pointer == 0xFFFFFFFF || Offset == 0 || Offset == INTCDSP_INT_POINTER_MASK ||
+        (Offset & (sizeof(ULONG) - 1)) != 0 ||
+        Offset > Dev->AdspBar.Len || Dev->AdspBar.Len - Offset < sizeof(ULONG))
+        return 0xFFFFFFFF;
+    return Offset;
+}
+
+/* The interrupt enable register, read from the pointer at every use and never kept: the pointer belongs to the DSP's power domain and answers all ones or zero until the subsystem is powered */
+static
+UINT32
+IntcDspInterruptEnableOffset(
+    _In_ PINTCDSP_DEVICE Dev)
+{
+    return IntcDspInterruptOffset(Dev, IntcDspRead32(Dev, Dev->Platform->InterruptPointer));
+}
+
 static
 int
 IntcDspInterruptCallback(
@@ -264,12 +289,13 @@ IntcDspInterruptCallback(
 
 VOID
 IntcDspMaskInterrupts(
-    _In_ PINTCDSP_DEVICE Dev)
+    _Inout_ PINTCDSP_DEVICE Dev)
 {
+    UINT32 Offset = IntcDspInterruptEnableOffset(Dev);
+
     /* Linux masks the IPC interrupt by clearing the ADSPIC bit (hda-dsp.c hda_dsp_ipc_int_disable) and its IRQ thread acknowledges the message (mtl.c mtl_ipc_irq_thread); here the passive-level poll does the acknowledging, and a level-triggered line left asserted would starve it */
-    if (Dev->IntEnableOffset != 0xFFFFFFFF)
-        IntcDspWrite32(Dev, Dev->IntEnableOffset,
-            IntcDspRead32(Dev, Dev->IntEnableOffset) & ~INTCDSP_INTEN_HOST_IPC);
+    if (Offset != 0xFFFFFFFF)
+        IntcDspWrite32(Dev, Offset, IntcDspRead32(Dev, Offset) & ~INTCDSP_INTEN_HOST_IPC);
     IntcDspWrite32(Dev, Dev->Platform->HostIpcInterruptEnable,
         IntcDspRead32(Dev, Dev->Platform->HostIpcInterruptEnable) & ~INTCDSP_HIPCIE_IE);
     IntcDspWrite32(Dev, Dev->Platform->IpcControl,
@@ -283,23 +309,12 @@ IntcDspInterruptRoutine(
     return IntcDspInterruptCallback;
 }
 
-UINT32
-IntcDspInterruptEnableOffset(
-    _In_ PINTCDSP_DEVICE Dev)
-{
-    UINT32 Offset = IntcDspOpRead32(Dev, FWLOAD_BAR_DSP, Dev->Platform->InterruptPointer) & INTCDSP_INT_POINTER_MASK;
-
-    if (Offset > Dev->AdspBar.Len || Dev->AdspBar.Len - Offset < sizeof(ULONG))
-        return 0xFFFFFFFF;
-    return Offset;
-}
-
 VOID
 IntcDspProbe(
     _Inout_ PINTCDSP_DEVICE Dev)
 {
     const FWLOAD_PLATFORM* Platform = FwloadPlatformArlS();
-    UINT32 CapId, State;
+    UINT32 CapId, Offset, State;
 
     CapId = (Dev->PpCapHeader & INTCDSP_CAP_ID_MASK) >> INTCDSP_CAP_ID_SHIFT;
     IntcDspLog("controller %04x:%04x: BAR0 %p (0x%lx bytes), BAR4 %p (0x%lx bytes), PP capability %p: header 0x%08x (id %u, version %u, next 0x%04x), PPCTL 0x%08x (GPROCEN %u), PPSTS 0x%08x\n",
@@ -343,10 +358,11 @@ IntcDspProbe(
                Platform->SubsystemControl, Dev->Adspcs, (Dev->Adspcs >> 16) & 1, (Dev->Adspcs >> 24) & 1,
                Platform->InterruptPointer, Dev->IntPointer, Platform->HostIpcInterruptEnable, Dev->HfpIe,
                Platform->IpcControl, Dev->IpcCtl);
-    if ((Dev->IntPointer & INTCDSP_INT_POINTER_MASK) < Dev->AdspBar.Len - sizeof(ULONG))
-        IntcDspLog("BAR4 +0x%x (the interrupt enable register the pointer names) 0x%08x\n",
-                   Dev->IntPointer & INTCDSP_INT_POINTER_MASK,
-                   IntcDspRead32(Dev, Dev->IntPointer & INTCDSP_INT_POINTER_MASK));
+    Offset = IntcDspInterruptOffset(Dev, Dev->IntPointer);
+    if (Offset != 0xFFFFFFFF)
+        IntcDspLog("BAR4 +0x%x (the interrupt enable register the pointer names) 0x%08x\n", Offset, IntcDspRead32(Dev, Offset));
+    else
+        IntcDspLog("HFINTIPPTR 0x%08x names no 32-bit register inside BAR4: the host IPC interrupt enable cannot be reached\n", Dev->IntPointer);
 
     Dev->Fsr = IntcDspRead32(Dev, Platform->RomStatus);
     Dev->RomError = IntcDspRead32(Dev, Platform->RomError);
