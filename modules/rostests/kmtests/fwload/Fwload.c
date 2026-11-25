@@ -112,8 +112,15 @@ BootWith(
         ok(FakeDspPowerEventSeen(Dsp, FAKE_POWER_SUBSYSTEM_OFF) != FALSE, "subsystem left on\n");
         ok(FakeDspPowerEventSeen(Dsp, FAKE_POWER_GPROCEN_OFF) != FALSE, "GPROCEN left on\n");
     }
-    ok_eq_int(FwloadPowerDown(Context), FwloadOk);
-    ok_eq_uint(Context->State, FwloadStateOff);
+    {
+        FWLOAD_STATE Before = Context->State;
+
+        ok_eq_int(FwloadPowerDown(Context), FwloadOk);
+        ok_eq_uint(Context->State, FwloadStateOff);
+        /* the record of the state the power-down came from (D4): the one the context was in, which the context is no longer */
+        if (Before != FwloadStateOff)
+            ok_eq_uint(Context->PowerDownFrom, Before);
+    }
 }
 
 /* The interrupt guard of the service routine (R2 of the branch review): a pending message is claimed and the enables masked under the lock the caller holds, the count of interrupts that no acknowledgement separates reaches FWLOAD_INTERRUPT_STORM_LIMIT, and the routine stops claiming the line */

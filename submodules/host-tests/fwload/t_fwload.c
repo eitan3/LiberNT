@@ -729,6 +729,8 @@ CheckHappyPath(
     Status = FwloadPowerDown(H->Ctx);
     CHECK_EQ(Status, FwloadOk);
     CHECK_EQ(H->Ctx->State, FwloadStateOff);
+    /* the record of the state the power-down came from, for the driver's line (D4): ready, not the off the context is in now */
+    CHECK_EQ(H->Ctx->PowerDownFrom, FwloadStateReady);
     CHECK_EQ(H->Ctx->Status, FwloadOk);
     CHECK_EQ(H->Ctx->CleanupStatus, FwloadOk);
     CHECK_EQ(H->Dsp->PowerOrderCount, 10);
@@ -750,11 +752,13 @@ CheckHappyPath(
     CHECK_EQ(H->Dsp->InterruptLockRecursions, 0);
     CHECK_EQ(H->Dsp->InterruptLockDelays, 0);
     CheckBootWrites(H, 3);
-    /* powering down twice is harmless; booting again after that boots again */
+    /* powering down twice is harmless, and the second call from off leaves the record alone; booting again after that boots again */
     CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Ctx->PowerDownFrom, FwloadStateReady);
     HarnessBoot(H, Image, NULL);
     CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
     CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Ctx->PowerDownFrom, FwloadStateReady);
     CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
 
     /* the stream tag the caller was given goes into the purge request: tag 2 encodes as 1 << 9 */

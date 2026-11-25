@@ -229,9 +229,9 @@ IntcDspPowerDown(
     if (Dev->Fw.State != FwloadStateOff)
     {
         Status = FwloadPowerDown(&Dev->Fw);
-        /* the power state after the loader's own power-down: whether the subsystem really went off is a silicon fact the log must carry */
+        /* the power state after the loader's own power-down: whether the subsystem really went off is a silicon fact the log must carry; the state is the one the loader left, as its own record says (the context is off by now) */
         Dev->Adspcs = IntcDspOpsTable()->Read32(Dev, FWLOAD_BAR_DSP, Dev->Platform->SubsystemControl);
-        IntcDspLog("DSP power down from state %s: %s, cleanup %s, ADSPCS 0x%08x (SPA %u, CPA %u)\n", FwloadStateName(Dev->Fw.State),
+        IntcDspLog("DSP power down from state %s: %s, cleanup %s, ADSPCS 0x%08x (SPA %u, CPA %u)\n", FwloadStateName(Dev->Fw.PowerDownFrom),
                    FwloadStatusName(Status), FwloadStatusName(Dev->Fw.CleanupStatus), Dev->Adspcs, (Dev->Adspcs >> 16) & 1, (Dev->Adspcs >> 24) & 1);
     }
     Dev->Booted = FALSE;
@@ -499,7 +499,6 @@ IntcDspEvtDevicePrepareHardware(
     else
         IntcDspLog("BootDsp is not set (%s): probe only, the DSP is not touched\n",
                    (Status == STATUS_OBJECT_NAME_NOT_FOUND) ? "value absent" : "unreadable");
-    IntcDspReadIpcSettings(Dev);
     return STATUS_SUCCESS;
 }
 

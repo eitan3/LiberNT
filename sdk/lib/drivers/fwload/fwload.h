@@ -533,6 +533,8 @@ struct _FWLOAD_CONTEXT
     FWLOAD_STATUS Status;
     FWLOAD_STATE FailedState;
     FWLOAD_STATUS CleanupStatus;
+    /* the state FwloadPowerDown was called from: the driver's power-down line names it, since the context is off by the time the call returns */
+    FWLOAD_STATE PowerDownFrom;
     UINT32 RomStatus;
     UINT32 RomError;
     UINT32 LastIpcStatus;

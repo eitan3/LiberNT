@@ -1113,6 +1113,7 @@ FwloadPowerDown(
         return FwloadOk;
     if (Context->State == FwloadStatePoweringDown)
         return FwloadBadState;
+    Context->PowerDownFrom = Context->State;
     Context->State = FwloadStatePoweringDown;
     Context->CleanupStatus = FwloadPowerOff(Context);
     Context->Status = Context->CleanupStatus;
