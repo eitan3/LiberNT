@@ -325,6 +325,24 @@ IntcDspTopologyLoad(
     Evidence.MicTplg = Sources.MicTplg[0] != 0 ? Sources.MicTplg : NULL;
     DspTopologySelect(&Evidence, &Selection);
 
+    /* the model of the device's first boot stands while the selection names the same file: a resume reads nothing again (R6) */
+    if (Dev->TopologyModel != NULL && Selection.Name != NULL && DspTopologyNameValid(Selection.Name) &&
+        strncmp(Dev->TopologyName, Selection.Name, sizeof(Dev->TopologyName)) == 0)
+    {
+        IntcDspLog("topology '%s': resident, the model of the device's first boot\n", Dev->TopologyName);
+        IntcDspTopologyLog(Dev);
+        return TRUE;
+    }
+    /* any other outcome replaces the model of the boot before */
+    if (Dev->Topology != NULL)
+    {
+        ExFreePoolWithTag(Dev->Topology, INTCDSP_POOL_TAG);
+        Dev->Topology = NULL;
+        Dev->TopologyBytes = 0;
+        Dev->TopologyModel = NULL;
+        Dev->TopologyName[0] = 0;
+    }
+
     if (Selection.Source == DspTopologySourceNone)
     {
         IntcDspLog("topology: none selected (no override, no quirk, no _DSD name); the DSP is powered down, no audio endpoint\n");
