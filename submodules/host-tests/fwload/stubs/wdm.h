@@ -16,7 +16,7 @@ typedef enum _DEVICE_POWER_STATE
     PowerDeviceD0,
     PowerDeviceD3
 } DEVICE_POWER_STATE, *PDEVICE_POWER_STATE;
-/* an MDL and an event object as the stream members of the bus interface pass them: opaque to the code compiled on the host */
+/* an MDL and an event object as the stream members of the bus interface pass them: the MDL is opaque to the code compiled on the host; the event is what the fake bus sets and the stream manager's period wait takes */
 typedef struct _MDL
 {
     UCHAR Opaque[16];
@@ -27,5 +27,21 @@ typedef struct _KEVENT
     BOOLEAN Signaled;
     UINT32 Signals;
 } KEVENT, *PKEVENT;
+/* wdm.h: the timeout of a wait, relative in 100 ns units when negative (QuadPart is all the wait reads), and the two enumerations KeWaitForSingleObject takes */
+typedef union _LARGE_INTEGER
+{
+    LONGLONG QuadPart;
+} LARGE_INTEGER, *PLARGE_INTEGER;
+typedef enum _KWAIT_REASON
+{
+    Executive = 0
+} KWAIT_REASON;
+typedef enum _KPROCESSOR_MODE
+{
+    KernelMode = 0
+} KPROCESSOR_MODE;
+/* Declared as the kernel's are; fake_bus.c defines them for the host, a wait being the test's model's to answer through the fake bus's wait hook */
+VOID KeClearEvent(PKEVENT Event);
+NTSTATUS KeWaitForSingleObject(PVOID Object, KWAIT_REASON WaitReason, KPROCESSOR_MODE WaitMode, BOOLEAN Alertable, PLARGE_INTEGER Timeout);
 
 #endif

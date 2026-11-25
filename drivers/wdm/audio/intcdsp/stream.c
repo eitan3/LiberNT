@@ -1415,6 +1415,71 @@ IntcDspNow(
     return Streams->Ipc->Fw->Ops->NowUs(Streams->Ipc->Fw->OpsContext);
 }
 
+/*
+ * The periods of a stream, waited for on the position buffer's entry:
+ * the event is registered on the stream, the bus's interrupt DPC sets it
+ * at every period, and each wake adds how far the entry moved since the
+ * wake before, so that two periods that came between two wakes still
+ * count, and the entry's wrap at the buffer's end is one step forward.
+ * The wait ends with Count periods or when TimeoutMs passed, whichever
+ * comes first; Periods tells how many whole periods came, at most Count.
+ */
+NTSTATUS
+IntcDspStreamWaitPeriods(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    HANDLE Stream,
+    UINT32 Count,
+    UINT32 TimeoutMs,
+    _Inout_ PKEVENT Event,
+    _Out_ PULONG Periods)
+{
+    PINTCDSP_STREAM Managed = IntcDspStreamOf(Streams, Stream);
+    ULONG Bytes, Half, Last, Position, Moved = 0;
+    UINT64 StartUs, ElapsedMs;
+    LARGE_INTEGER Timeout;
+    NTSTATUS Status;
+
+    *Periods = 0;
+    if (Managed == NULL || Managed->Handle == NULL || Managed->Bytes == 0 || Count == 0)
+        return STATUS_INVALID_PARAMETER;
+    Bytes = (ULONG)Managed->Bytes;
+    Half = Bytes / Count;
+    KeClearEvent(Event);
+    Status = IntcDspStreamRegisterEvent(Streams, Stream, Event);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    StartUs = IntcDspNow(Streams);
+    Last = Streams->Bus->StreamPosition(Streams->Bus->Context, Managed->Handle) % Bytes;
+    Status = STATUS_IO_TIMEOUT;
+    for (;;)
+    {
+        Position = Streams->Bus->StreamPosition(Streams->Bus->Context, Managed->Handle) % Bytes;
+        Moved += (Position - Last + Bytes) % Bytes;
+        Last = Position;
+        if (Moved >= Half * Count)
+        {
+            Status = STATUS_SUCCESS;
+            break;
+        }
+        ElapsedMs = (IntcDspNow(Streams) - StartUs) / 1000;
+        if (ElapsedMs >= TimeoutMs)
+            break;
+        Timeout.QuadPart = -((LONGLONG)(TimeoutMs - (ULONG)ElapsedMs) * 10000);
+        Status = KeWaitForSingleObject(Event, Executive, KernelMode, FALSE, &Timeout);
+        KeClearEvent(Event);
+        if (Status == STATUS_TIMEOUT)
+        {
+            Status = STATUS_IO_TIMEOUT;
+            break;
+        }
+    }
+    Position = Streams->Bus->StreamPosition(Streams->Bus->Context, Managed->Handle) % Bytes;
+    Moved += (Position - Last + Bytes) % Bytes;
+    IntcDspStreamUnregisterEvent(Streams, Stream, Event);
+    *Periods = Moved / Half > Count ? Count : Moved / Half;
+    return Status;
+}
+
 /* The value of a register the bus handed out, 0 when it gave none */
 static
 UINT32

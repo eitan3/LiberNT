@@ -554,6 +554,35 @@ FakeBusSignal(
     }
 }
 
+#ifndef FAKE_BUS_KERNEL
+FAKE_BUS_WAIT_HOOK FakeBusWaitHook;
+PVOID FakeBusWaitContext;
+
+/* The host's event primitives, as the kernel's: an event is cleared by hand, and a wait is the test's model's to answer */
+VOID
+KeClearEvent(
+    PKEVENT Event)
+{
+    Event->Signaled = FALSE;
+}
+
+NTSTATUS
+KeWaitForSingleObject(
+    PVOID Object,
+    KWAIT_REASON WaitReason,
+    KPROCESSOR_MODE WaitMode,
+    BOOLEAN Alertable,
+    PLARGE_INTEGER Timeout)
+{
+    (VOID)WaitReason;
+    (VOID)WaitMode;
+    (VOID)Alertable;
+    if (FakeBusWaitHook == NULL)
+        return STATUS_TIMEOUT;
+    return FakeBusWaitHook(FakeBusWaitContext, (PKEVENT)Object, Timeout);
+}
+#endif
+
 UINT32
 FakeBusCount(
     _In_ const FAKE_BUS* Bus,

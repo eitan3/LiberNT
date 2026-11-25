@@ -143,4 +143,17 @@ FakeBusFind(
     UINT32 Kind,
     UINT32 Index);
 
+#ifndef FAKE_BUS_KERNEL
+/*
+ * The host's event waits of the stream manager's period wait:
+ * KeClearEvent and KeWaitForSingleObject are defined in fake_bus.c for the
+ * host, and a wait is answered by the test's model of the bus's interrupt
+ * and of time through this hook, with its context; with no hook, every
+ * wait ends at once in STATUS_TIMEOUT.
+ */
+typedef NTSTATUS (*FAKE_BUS_WAIT_HOOK)(_In_opt_ PVOID Context, _Inout_ PKEVENT Event, _In_opt_ PLARGE_INTEGER Timeout);
+extern FAKE_BUS_WAIT_HOOK FakeBusWaitHook;
+extern PVOID FakeBusWaitContext;
+#endif
+
 #endif

@@ -37,6 +37,7 @@ typedef HANDLE* PHANDLE;
 
 #define NT_SUCCESS(Status)      ((NTSTATUS)(Status) >= 0)
 #define STATUS_SUCCESS          ((NTSTATUS)0x00000000L)
+#define STATUS_TIMEOUT          ((NTSTATUS)0x00000102L)
 #define STATUS_NO_SUCH_DEVICE   ((NTSTATUS)0xC000000EL)
 #define STATUS_INVALID_BUFFER_SIZE ((NTSTATUS)0xC0000023L)
 /* the status codes the DSP driver's stream manager answers */

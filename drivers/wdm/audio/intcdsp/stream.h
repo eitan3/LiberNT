@@ -299,6 +299,24 @@ IntcDspStreamUnregisterEvent(
     HANDLE Stream,
     _In_ PKEVENT NotificationEvent);
 
+/*
+ * The periods of a stream, waited for on the position buffer's entry:
+ * the event is registered on the stream, the bus's interrupt DPC sets it
+ * at every period, and each wake adds how far the entry moved since the
+ * wake before, so that two periods that came between two wakes still
+ * count, and the entry's wrap at the buffer's end is one step forward.
+ * The wait ends with Count periods or when TimeoutMs passed, whichever
+ * comes first; Periods tells how many whole periods came, at most Count.
+ */
+NTSTATUS
+IntcDspStreamWaitPeriods(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    HANDLE Stream,
+    UINT32 Count,
+    UINT32 TimeoutMs,
+    _Inout_ PKEVENT Event,
+    _Out_ PULONG Periods);
+
 /* The frame size a stream format gives, in bytes */
 ULONG
 IntcDspStreamFrameBytes(

@@ -273,13 +273,7 @@ IntcDspSelfTestMap(
     return Virtual;
 }
 
-/*
- * The periods of a stream, counted by the position buffer's entry: an
- * event is registered on the stream, the bus's interrupt DPC sets it at
- * every period, and each wake reads how far the position moved, so that
- * two periods that came between two wakes still count. The wait ends with
- * Count periods or when TimeoutMs passed, whichever comes first.
- */
+/* The self-test's wait for the capture's periods: the manager's wait on the device's period event, which the bus's interrupt DPC sets */
 static
 NTSTATUS
 IntcDspSelfTestWait(
@@ -290,51 +284,8 @@ IntcDspSelfTestWait(
     _Out_ PULONG Periods)
 {
     PINTCDSP_DEVICE Dev = (PINTCDSP_DEVICE)Context;
-    PINTCDSP_STREAM Managed = IntcDspStreamOf(&Dev->Streams, Stream);
-    ULONG Bytes, Half, Last, Position, Progress = 0;
-    UINT64 StartUs, ElapsedMs;
-    LARGE_INTEGER Timeout;
-    NTSTATUS Status;
 
-    *Periods = 0;
-    if (Managed == NULL || Managed->Handle == NULL || Managed->Bytes == 0 || Count == 0)
-        return STATUS_INVALID_PARAMETER;
-    Bytes = (ULONG)Managed->Bytes;
-    Half = Bytes / Count;
-    KeClearEvent(&Dev->SelfTestEvent);
-    Status = IntcDspStreamRegisterEvent(&Dev->Streams, Stream, &Dev->SelfTestEvent);
-    if (!NT_SUCCESS(Status))
-        return Status;
-    StartUs = Dev->Fw.Ops->NowUs(Dev->Fw.OpsContext);
-    Last = Dev->Bus.StreamPosition(Dev->Bus.Context, Managed->Handle) % Bytes;
-    Status = STATUS_IO_TIMEOUT;
-    for (;;)
-    {
-        Position = Dev->Bus.StreamPosition(Dev->Bus.Context, Managed->Handle) % Bytes;
-        Progress = (Position - Last + Bytes) % Bytes;
-        Last = Position;
-        if (Progress >= Half * Count)
-        {
-            Status = STATUS_SUCCESS;
-            break;
-        }
-        ElapsedMs = (Dev->Fw.Ops->NowUs(Dev->Fw.OpsContext) - StartUs) / 1000;
-        if (ElapsedMs >= TimeoutMs)
-            break;
-        Timeout.QuadPart = -((LONGLONG)(TimeoutMs - (ULONG)ElapsedMs) * 10000);
-        Status = KeWaitForSingleObject(&Dev->SelfTestEvent, Executive, KernelMode, FALSE, &Timeout);
-        KeClearEvent(&Dev->SelfTestEvent);
-        if (Status == STATUS_TIMEOUT)
-        {
-            Status = STATUS_IO_TIMEOUT;
-            break;
-        }
-    }
-    Position = Dev->Bus.StreamPosition(Dev->Bus.Context, Managed->Handle) % Bytes;
-    Progress += (Position - Last + Bytes) % Bytes;
-    IntcDspStreamUnregisterEvent(&Dev->Streams, Stream, &Dev->SelfTestEvent);
-    *Periods = Progress / Half > Count ? Count : Progress / Half;
-    return Status;
+    return IntcDspStreamWaitPeriods(&Dev->Streams, Stream, Count, TimeoutMs, &Dev->SelfTestEvent, Periods);
 }
 
 NTSTATUS
