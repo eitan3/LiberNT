@@ -14,6 +14,7 @@
 #include <hdaudio.h>
 #include <wdf.h>
 #include <fwload.h>
+#include <sofipc.h>
 #include <nhlt_parse.h>
 
 #define INTCDSP_POOL_TAG 'PcDI'
@@ -26,6 +27,13 @@
 #define INTCDSP_FIRMWARE_PATH     L"\\SystemRoot\\System32\\drivers\\intel\\sof\\sof-arl-s.ri"
 #define INTCDSP_SETTINGS_PATH     L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\intcdsp\\Settings"
 #define INTCDSP_SETTINGS_VALUE    L"BootDsp"
+#define INTCDSP_SETTINGS_SELFTEST L"SelfTest"
+#define INTCDSP_SETTINGS_USEINTERRUPTS L"UseInterrupts"
+#define INTCDSP_SETTINGS_IPCTIMEOUTMS  L"IpcTimeoutMs"
+/* The budget of every IPC message class when the value is absent, zero or past a minute: the plan's default */
+#define INTCDSP_IPC_TIMEOUT_MS_DEFAULT  500
+#define INTCDSP_IPC_TIMEOUT_MS_MAX      60000
+#define INTCDSP_SELFTEST_IPC            1
 #define INTCDSP_FIRMWARE_MAX_BYTES (8 * 1024 * 1024)
 #define INTCDSP_MODULE_MAX        256
 
@@ -50,6 +58,7 @@ DEFINE_GUID(GUID_ADSP_BUS_INTERFACE,
     0x752a2cae, 0x3455, 0x4d18, 0xa1, 0x84, 0x8b, 0x34, 0xb2, 0x26, 0x32, 0xce);
 
 #include "adspbus.h"
+#include "ipclock.h"
 
 typedef struct _INTCDSP_DEVICE
 {
@@ -93,6 +102,13 @@ typedef struct _INTCDSP_DEVICE
     FWLOAD_STATUS LastStatus;
     BOOLEAN InterruptArmed;
     BOOLEAN InterruptRegistered;
+    /* the IPC transport after a boot: its settings, its request lock and whether the interrupt callback hands the line to it */
+    ULONG SelfTest;
+    ULONG UseInterrupts;
+    ULONG IpcTimeoutMs;
+    INTCDSP_REQUEST_LOCK RequestLock;
+    SOFIPC_CONTEXT Ipc;
+    BOOLEAN IpcArmed;
 } INTCDSP_DEVICE, *PINTCDSP_DEVICE;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(INTCDSP_DEVICE, IntcDspGetData)
@@ -126,8 +142,14 @@ IntcDspLogInterruptState(
     _In_ const char* Tag);
 
 NTSTATUS
-IntcDspReadBootDsp(
+IntcDspReadSetting(
+    _In_ PCWSTR Name,
     _Out_ PULONG Value);
+
+/* The operations the transport adds to the loader's table: the downlink mailbox and the request lock */
+const SOFIPC_OPS*
+IntcDspIpcOpsTable(
+    VOID);
 
 NTSTATUS
 IntcDspLoadFirmware(

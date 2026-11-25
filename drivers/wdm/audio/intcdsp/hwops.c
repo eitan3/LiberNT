@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT Intel Smart Sound DSP driver
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The hardware side of the firmware loader's operations table: BAR4 register and window access, the clock, the hdaudbus code-loader stream and the interrupt callback
+ * PURPOSE:     The hardware side of the firmware loader's operations table and of the IPC transport's: BAR4 register and window access in both directions, the clock, the hdaudbus code-loader stream, the request lock and the interrupt callback
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -107,6 +107,46 @@ IntcDspOpReadMemory(
     for (Index = 0; Index < Bytes / sizeof(ULONG); Index++)
         Target[Index] = READ_REGISTER_ULONG(Source + Index);
     return TRUE;
+}
+
+/* The downlink mailbox, as the transport writes a payload into it: BAR4 only, whole 32-bit words, inside the bar's length */
+static
+BOOLEAN
+IntcDspOpWriteMemory(
+    PVOID Context,
+    UINT32 Offset,
+    const UINT8* Buffer,
+    SIZE_T Bytes)
+{
+    PINTCDSP_DEVICE Dev = Context;
+    volatile ULONG* Target;
+    const ULONG* Source;
+    SIZE_T Index;
+
+    if ((Bytes & (sizeof(ULONG) - 1)) != 0 || Offset > Dev->AdspBar.Len || Bytes > Dev->AdspBar.Len - Offset)
+        return FALSE;
+    Target = (volatile ULONG*)(Dev->AdspBar.Base.BasePtr + Offset);
+    Source = (const ULONG*)Buffer;
+    for (Index = 0; Index < Bytes / sizeof(ULONG); Index++)
+        WRITE_REGISTER_ULONG(Target + Index, Source[Index]);
+    return TRUE;
+}
+
+static
+BOOLEAN
+IntcDspOpRequestLock(
+    PVOID Context,
+    UINT32 TimeoutUs)
+{
+    return IntcDspRequestLockAcquire(&((PINTCDSP_DEVICE)Context)->RequestLock, TimeoutUs);
+}
+
+static
+VOID
+IntcDspOpRequestUnlock(
+    PVOID Context)
+{
+    IntcDspRequestLockRelease(&((PINTCDSP_DEVICE)Context)->RequestLock);
 }
 
 static
@@ -249,6 +289,20 @@ IntcDspOpsTable(
     return &IntcDspOps;
 }
 
+static const SOFIPC_OPS IntcDspIpcOps =
+{
+    IntcDspOpWriteMemory,
+    IntcDspOpRequestLock,
+    IntcDspOpRequestUnlock
+};
+
+const SOFIPC_OPS*
+IntcDspIpcOpsTable(
+    VOID)
+{
+    return &IntcDspIpcOps;
+}
+
 VOID
 IntcDspInitClock(
     VOID)
@@ -288,10 +342,12 @@ IntcDspInterruptCallback(
 {
     PINTCDSP_DEVICE Dev = Context;
 
-    /* the callback stays registered for the device's lifetime; a boot arms it for its own duration, and the bus driver calls it under the lock the operations table hands the loader */
-    if (!Dev->InterruptArmed)
-        return FALSE;
-    return FwloadInterruptService(&Dev->Fw) ? TRUE : FALSE;
+    /* the callback stays registered for the device's lifetime: a boot arms it for its own duration and the loader's routine answers; once a boot succeeded the transport's routine answers while the driver's settings ask for interrupts */
+    if (Dev->InterruptArmed)
+        return FwloadInterruptService(&Dev->Fw) ? TRUE : FALSE;
+    if (Dev->IpcArmed)
+        return SofIpcInterruptService(&Dev->Ipc) ? TRUE : FALSE;
+    return FALSE;
 }
 
 PADSP_INTERRUPT_CALLBACK

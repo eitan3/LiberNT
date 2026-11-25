@@ -9,11 +9,12 @@ list(APPEND SOURCE
     intcdsp.c
     adspbus.c
     hwops.c
+    ipclock.c
     fwfile.c)
 
 add_library(intcdsp MODULE ${SOURCE} intcdsp.rc)
 set_module_type(intcdsp kmdfdriver)
-target_link_libraries(intcdsp libcntpr ${PSEH_LIB} fwload nhlt)
+target_link_libraries(intcdsp libcntpr ${PSEH_LIB} fwload sofipc nhlt)
 add_importlibs(intcdsp wdfldr ntoskrnl hal)
 add_cd_file(TARGET intcdsp DESTINATION reactos/system32/drivers FOR all)
 add_driver_inf(intcdsp intcdsp.inf)

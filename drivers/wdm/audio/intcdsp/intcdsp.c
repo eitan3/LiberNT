@@ -20,27 +20,36 @@ EVT_WDF_DEVICE_D0_EXIT IntcDspEvtDeviceD0Exit;
 #define INTCDSP_CL_SAMPLE_RATE       48000
 #define INTCDSP_CL_BITS_PER_SAMPLE   32
 
+/* The self-test's pipeline: instance 1, as the plan assigns it, priority 0, core 0, no module and so no memory pages */
+#define INTCDSP_SELFTEST_PIPELINE    1
+#define INTCDSP_SELFTEST_EXCHANGES   6
+
 static
+VOID
+IntcDspIpcAttach(
+    _Inout_ PINTCDSP_DEVICE Dev);
+
+/* One REG_DWORD of the driver's Settings key; the value is left alone when it cannot be read */
 NTSTATUS
-IntcDspReadBootDsp(
+IntcDspReadSetting(
+    _In_ PCWSTR Name,
     _Out_ PULONG Value)
 {
     OBJECT_ATTRIBUTES Attributes;
-    UNICODE_STRING Path, Name;
+    UNICODE_STRING Path, ValueName;
     UCHAR Buffer[sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(ULONG)];
     PKEY_VALUE_PARTIAL_INFORMATION Info;
     HANDLE Key;
     ULONG Result;
     NTSTATUS Status;
 
-    *Value = 0;
     RtlInitUnicodeString(&Path, INTCDSP_SETTINGS_PATH);
-    RtlInitUnicodeString(&Name, INTCDSP_SETTINGS_VALUE);
+    RtlInitUnicodeString(&ValueName, Name);
     InitializeObjectAttributes(&Attributes, &Path, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
     Status = ZwOpenKey(&Key, KEY_QUERY_VALUE, &Attributes);
     if (!NT_SUCCESS(Status))
         return Status;
-    Status = ZwQueryValueKey(Key, &Name, KeyValuePartialInformation, Buffer, sizeof(Buffer), &Result);
+    Status = ZwQueryValueKey(Key, &ValueName, KeyValuePartialInformation, Buffer, sizeof(Buffer), &Result);
     ZwClose(Key);
     if (!NT_SUCCESS(Status))
         return Status;
@@ -49,6 +58,145 @@ IntcDspReadBootDsp(
         return STATUS_OBJECT_TYPE_MISMATCH;
     RtlCopyMemory(Value, Info->Data, sizeof(ULONG));
     return STATUS_SUCCESS;
+}
+
+/* The transport's three settings: absent, unreadable or out of range leaves the plan's default */
+static
+VOID
+IntcDspReadIpcSettings(
+    _Inout_ PINTCDSP_DEVICE Dev)
+{
+    ULONG Value;
+
+    Dev->SelfTest = 0;
+    Dev->UseInterrupts = 0;
+    Dev->IpcTimeoutMs = INTCDSP_IPC_TIMEOUT_MS_DEFAULT;
+    if (NT_SUCCESS(IntcDspReadSetting(INTCDSP_SETTINGS_SELFTEST, &Value)))
+        Dev->SelfTest = Value;
+    if (NT_SUCCESS(IntcDspReadSetting(INTCDSP_SETTINGS_USEINTERRUPTS, &Value)))
+        Dev->UseInterrupts = Value;
+    if (NT_SUCCESS(IntcDspReadSetting(INTCDSP_SETTINGS_IPCTIMEOUTMS, &Value)) && Value != 0 && Value <= INTCDSP_IPC_TIMEOUT_MS_MAX)
+        Dev->IpcTimeoutMs = Value;
+    IntcDspLog("SelfTest = %lu, UseInterrupts = %lu, IpcTimeoutMs = %lu ms\n", Dev->SelfTest, Dev->UseInterrupts, Dev->IpcTimeoutMs);
+}
+
+/* The line of an exchange that did not end well, the plan's one line per failure: the request in words and in registers, the outcome and the time */
+static
+VOID
+IntcDspIpcLog(
+    _In_ PINTCDSP_DEVICE Dev,
+    SOFIPC_STATUS Result,
+    _In_ const SOFIPC4_MSG* Msg)
+{
+    const SOFIPC_EXCHANGE* Last = &Dev->Ipc.Last;
+    UINT32 Type = SofIpc4MsgType(Msg);
+
+    if (Result == SofIpcBadState)
+    {
+        IntcDspLog("ipc: %s (%u) 0x%08x|0x%08x refused: the link is %s\n", SofIpcTypeName(Msg->Primary), Type,
+                   Msg->Primary | FWLOAD_IPC_BUSY, Msg->Extension, SofIpcLinkName(Dev->Ipc.Link));
+        return;
+    }
+    if (Result == SofIpcBusy)
+    {
+        IntcDspLog("ipc: %s (%u) 0x%08x|0x%08x busy after %I64u us: another request holds the link\n", SofIpcTypeName(Msg->Primary), Type,
+                   Msg->Primary | FWLOAD_IPC_BUSY, Msg->Extension, Last->ElapsedUs);
+        return;
+    }
+    if (Result == SofIpcFwStatus)
+        IntcDspLog("ipc: %s (%u) 0x%08x|0x%08x status %u (%s) after %I64u us; the link is faulted\n", SofIpcTypeName(Msg->Primary), Type,
+                   Msg->Primary | FWLOAD_IPC_BUSY, Msg->Extension, Last->Status, SofIpc4StatusName(Last->Status), Last->ElapsedUs);
+    else
+        IntcDspLog("ipc: %s (%u) 0x%08x|0x%08x %s after %I64u us; the link is faulted\n", SofIpcTypeName(Msg->Primary), Type,
+                   Msg->Primary | FWLOAD_IPC_BUSY, Msg->Extension, SofIpcStatusName(Result), Last->ElapsedUs);
+}
+
+/* One exchange through the transport; on any outcome but success its line is logged here, once */
+static
+SOFIPC_STATUS
+IntcDspIpcSend(
+    _Inout_ PINTCDSP_DEVICE Dev,
+    SOFIPC_CLASS Class,
+    _In_ const SOFIPC4_MSG* Msg)
+{
+    SOFIPC_REQUEST Request;
+    SOFIPC_STATUS Result;
+
+    RtlZeroMemory(&Request, sizeof(Request));
+    Request.Class = Class;
+    Request.Msg = *Msg;
+    Result = SofIpcRequest(&Dev->Ipc, &Request);
+    if (Result != SofIpcOk)
+        IntcDspIpcLog(Dev, Result, Msg);
+    return Result;
+}
+
+/* The transport hangs off the loader's context once the boot is over: ready, or faulted at once when the guard already tripped or an enable did not read back */
+static
+VOID
+IntcDspIpcAttach(
+    _Inout_ PINTCDSP_DEVICE Dev)
+{
+    UINT32 Timeouts[SofIpcClassCount];
+    SOFIPC_STATUS Result;
+
+    IntcDspRequestLockInit(&Dev->RequestLock);
+    SofIpcDefaultTimeouts(Timeouts, Dev->IpcTimeoutMs);
+    Dev->IpcArmed = FALSE;
+    Result = SofIpcInit(&Dev->Ipc, IntcDspIpcOpsTable(), Dev, &Dev->Fw, Timeouts, Dev->UseInterrupts != 0);
+    Dev->IpcArmed = Dev->UseInterrupts != 0 && Result == SofIpcOk;
+    IntcDspLog("ipc: link %s, %s, %lu ms per message\n", SofIpcLinkName(Dev->Ipc.Link), Dev->IpcArmed ? "interrupts on" : "polled", Dev->IpcTimeoutMs);
+}
+
+/* The IPC self-test (SelfTest = 1): pipeline 1 created, paused, run, paused, reset and deleted, one exchange each with its line, then the summary. A failed exchange is logged by the send and the DSP is powered down, as every faulted link ends */
+static
+VOID
+IntcDspIpcSelfTest(
+    _Inout_ PINTCDSP_DEVICE Dev)
+{
+    static const char* const Steps[INTCDSP_SELFTEST_EXCHANGES] =
+    {
+        "create pipeline 1", "pipeline 1 paused", "pipeline 1 running", "pipeline 1 paused", "pipeline 1 reset", "delete pipeline 1"
+    };
+    SOFIPC4_MSG Messages[INTCDSP_SELFTEST_EXCHANGES];
+    SOFIPC_STATUS Result = SofIpcOk;
+    UINT32 Index;
+
+    SofIpc4PipelineCreate(&Messages[0], INTCDSP_SELFTEST_PIPELINE, 0, 0, 0, 0, 0);
+    SofIpc4PipelineSetState(&Messages[1], INTCDSP_SELFTEST_PIPELINE, SOFIPC4_PIPELINE_STATE_PAUSED, 0);
+    SofIpc4PipelineSetState(&Messages[2], INTCDSP_SELFTEST_PIPELINE, SOFIPC4_PIPELINE_STATE_RUNNING, 0);
+    SofIpc4PipelineSetState(&Messages[3], INTCDSP_SELFTEST_PIPELINE, SOFIPC4_PIPELINE_STATE_PAUSED, 0);
+    SofIpc4PipelineSetState(&Messages[4], INTCDSP_SELFTEST_PIPELINE, SOFIPC4_PIPELINE_STATE_RESET, 0);
+    SofIpc4PipelineDelete(&Messages[5], INTCDSP_SELFTEST_PIPELINE);
+    for (Index = 0; Index < INTCDSP_SELFTEST_EXCHANGES; Index++)
+    {
+        Result = IntcDspIpcSend(Dev, SofIpcClassPipeline, &Messages[Index]);
+        if (Result != SofIpcOk)
+            break;
+        IntcDspLog("ipc self-test: %s: status %u after %I64u us\n", Steps[Index], Dev->Ipc.Last.Status, Dev->Ipc.Last.ElapsedUs);
+    }
+    if (Result == SofIpcOk)
+        IntcDspLog("ipc self-test: %u requests, %u replies, %u notifications, %u timeouts, %lu DSP interrupts, ok\n",
+                   Dev->Ipc.Requests, Dev->Ipc.Replies, Dev->Ipc.Notifications, Dev->Ipc.Timeouts, Dev->Ipc.InterruptCount);
+    else
+        IntcDspLog("ipc self-test: %u requests, %u replies, %u notifications, %u timeouts, %lu DSP interrupts, failed at %s\n",
+                   Dev->Ipc.Requests, Dev->Ipc.Replies, Dev->Ipc.Notifications, Dev->Ipc.Timeouts, Dev->Ipc.InterruptCount, Steps[Index]);
+    /* the guard tripped on the transport's watch: the callback is taken off the line for good, as after a boot */
+    if (Dev->Fw.InterruptStorm)
+    {
+        IntcDspLog("DSP interrupt storm: %lu interrupts in a row without a message consumed, the interrupt callback is disarmed and unregistered\n",
+                   Dev->Fw.InterruptCount);
+        if (Dev->InterruptRegistered)
+        {
+            Dev->Bus.UnregisterInterrupt(Dev->Bus.Context);
+            Dev->InterruptRegistered = FALSE;
+        }
+    }
+    if (Result != SofIpcOk)
+    {
+        IntcDspPowerDown(Dev);
+        Dev->Booted = FALSE;
+    }
 }
 
 VOID
@@ -77,6 +225,7 @@ IntcDspPowerDown(
     NTSTATUS NtStatus;
 
     Dev->InterruptArmed = FALSE;
+    Dev->IpcArmed = FALSE;
     if (Dev->Fw.State != FwloadStateOff)
     {
         Status = FwloadPowerDown(&Dev->Fw);
@@ -266,6 +415,10 @@ IntcDspBoot(
                    Registers->RomFuseValues, Dev->Fw.FwConfig.DownlinkMailboxBytes, Dev->Fw.FwConfig.UplinkMailboxBytes,
                    Dev->Fw.FwConfig.TraceLogBytes, Dev->Fw.FwConfig.MaxPipelines, Dev->Fw.FwConfig.MaxLibraries,
                    Dev->Fw.FwConfig.ContextSave, Dev->Fw.FwConfig.TupleCount);
+        /* the transport hangs off the booted loader from here; the self-test is the opt-in check of the plan */
+        IntcDspIpcAttach(Dev);
+        if (Dev->SelfTest == INTCDSP_SELFTEST_IPC)
+            IntcDspIpcSelfTest(Dev);
     }
     else
     {
@@ -338,7 +491,7 @@ IntcDspEvtDevicePrepareHardware(
     IntcDspProbe(Dev);
     IntcDspLoadFirmware(Dev);
 
-    Status = IntcDspReadBootDsp(&Dev->BootDsp);
+    Status = IntcDspReadSetting(INTCDSP_SETTINGS_VALUE, &Dev->BootDsp);
     if (NT_SUCCESS(Status))
         IntcDspLog("BootDsp = %lu: %s\n", Dev->BootDsp,
                    Dev->BootDsp ? (Dev->Platform ? "the DSP is booted at the next D0 entry" : "no register map for this controller, probe only")
@@ -346,6 +499,7 @@ IntcDspEvtDevicePrepareHardware(
     else
         IntcDspLog("BootDsp is not set (%s): probe only, the DSP is not touched\n",
                    (Status == STATUS_OBJECT_NAME_NOT_FOUND) ? "value absent" : "unreadable");
+    IntcDspReadIpcSettings(Dev);
     return STATUS_SUCCESS;
 }
 
@@ -387,7 +541,8 @@ IntcDspEvtDeviceD0Entry(
     UNREFERENCED_PARAMETER(PreviousState);
     if (!Dev->BusValid)
         return STATUS_SUCCESS;
-    IntcDspReadBootDsp(&Dev->BootDsp);
+    IntcDspReadSetting(INTCDSP_SETTINGS_VALUE, &Dev->BootDsp);
+    IntcDspReadIpcSettings(Dev);
     if (Dev->BootDsp)
         IntcDspBoot(Dev);
     return STATUS_SUCCESS;
