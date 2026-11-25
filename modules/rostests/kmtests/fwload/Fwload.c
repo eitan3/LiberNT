@@ -243,6 +243,11 @@ START_TEST(Fwload)
     Faults = *FakeDspDefaultFaults();
     Faults.NeverFwReady = TRUE;
     BootWith(Dsp, Context, &Parsed, &Dma, &Faults, FwloadTimeoutFwReady, FwloadStateFailed);
+    /* R5 of the branch review: a firmware that streams notifications instead of FW_READY ends at the FW_READY budget, one notification drained per poll */
+    Faults = *FakeDspDefaultFaults();
+    Faults.NotificationStorm = FAKE_DSP_STORM_INSTEAD_FW_READY;
+    BootWith(Dsp, Context, &Parsed, &Dma, &Faults, FwloadTimeoutFwReady, FwloadStateFailed);
+    ok_eq_uint(Dsp->StormPosted, FWLOAD_TIMEOUT_FW_READY_US / FWLOAD_POLL_INTERVAL_US + 1);
     Faults = *FakeDspDefaultFaults();
     Faults.AbiVersion = 2;
     BootWith(Dsp, Context, &Parsed, &Dma, &Faults, FwloadAbiMismatch, FwloadStateFailed);

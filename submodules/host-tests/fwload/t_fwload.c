@@ -1302,6 +1302,76 @@ CheckInterruptService(
     CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
 }
 
+/*
+ * R5 of the branch review: a firmware that streams notifications faster than the polls drain them. Every wait ends at its bounds on every iteration, so the storm is a timeout with a running
+ * clock and a stalled clock without one, with the notifications drained bounded by the polls; the model stops a storm after FAKE_DSP_STORM_MAX so that a loader without the bound still ends somewhere, with that many drained
+ */
+static
+void
+CheckNotificationStorm(
+    HARNESS* H,
+    const SOF_RI_IMAGE* Image)
+{
+    FAKE_DSP_FAULTS Faults;
+
+    /* instead of FW_READY: the FW_READY budget ends the boot after its polls, each of which drained one notification */
+    Faults = *FakeDspDefaultFaults();
+    Faults.NotificationStorm = FAKE_DSP_STORM_INSTEAD_FW_READY;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadTimeoutFwReady);
+    CHECK_EQ(H->Ctx->State, FwloadStateFailed);
+    CHECK_EQ(H->Ctx->FailedState, FwloadStateFwReady);
+    CHECK_EQ(H->Ctx->CleanupStatus, FwloadOk);
+    CHECK(H->Ctx->BootUs >= H->Timeouts.FwReadyUs + 4000 && H->Ctx->BootUs < H->Timeouts.FwReadyUs + 14000);
+    /* one notification posted at the moment FW_READY was due and one per poll of the budget: the model's cap is never reached */
+    CHECK_EQ(H->Dsp->StormPosted, (UINT32)(H->Timeouts.FwReadyUs / FWLOAD_POLL_INTERVAL_US) + 1);
+    CHECK_EQ(H->Dsp->StormPosted, H->Dsp->Notifications);
+    CHECK_EQ(H->Dsp->Replies, 0);
+    CHECK_EQ(H->Dsp->IpcRequests, 0);
+    CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
+    CHECK_EQ(H->Dsp->StreamSubmits, H->Dsp->StreamReleases);
+    CHECK((H->Dsp->SubsystemControl & 0x01000000) == 0);
+    CHECK((H->Dsp->PpControl & FWLOAD_PPCTL_GPROCEN) == 0);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+
+    /* the same with a clock that does not advance: the poll bound ends it, at twice the polls */
+    HarnessBoot(H, Image, &Faults);
+    H->ClockStalled = TRUE;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadClockStalled);
+    CHECK_EQ(H->Ctx->FailedState, FwloadStateFwReady);
+    CHECK_EQ(H->Dsp->StormPosted, 2 * (UINT32)(H->Timeouts.FwReadyUs / FWLOAD_POLL_INTERVAL_US) + 1);
+    CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+
+    /* after FW_READY, while the reply is waited for and never comes: the IPC reply budget, one notification posted when FW_READY was acknowledged, one per poll and one left waiting */
+    Faults = *FakeDspDefaultFaults();
+    Faults.NotificationStorm = FAKE_DSP_STORM_AFTER_FW_READY;
+    Faults.NeverIpcReply = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadTimeoutIpcReply);
+    CHECK_EQ(H->Ctx->State, FwloadStateFailed);
+    CHECK_EQ(H->Ctx->FailedState, FwloadStateConfiguring);
+    CHECK_EQ(H->Ctx->CleanupStatus, FwloadOk);
+    CHECK(H->Ctx->BootUs >= H->Timeouts.IpcReplyUs + 4500 && H->Ctx->BootUs < H->Timeouts.IpcReplyUs + 14500);
+    CHECK_EQ(H->Delays, H->Timeouts.IpcReplyUs / FWLOAD_POLL_INTERVAL_US + 9);
+    CHECK_EQ(H->Dsp->StormPosted, (UINT32)(H->Timeouts.IpcReplyUs / FWLOAD_POLL_INTERVAL_US) + 2);
+    CHECK_EQ(H->Dsp->IpcRequests, 1);
+    CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+
+    /* a storm beside a reply that does come: the boot is the model's, unchanged; the reply wait's one poll drains the first storm notification and the second is left waiting */
+    Faults = *FakeDspDefaultFaults();
+    Faults.NotificationStorm = FAKE_DSP_STORM_AFTER_FW_READY;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Ctx->BootUs, 5000);
+    CHECK_EQ(H->Delays, 8);
+    CHECK_EQ(H->Dsp->StormPosted, 2);
+    CHECK_EQ(H->Ctx->InterruptCount, 0);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
+}
+
 static
 void
 CheckRetry(
@@ -2077,6 +2147,7 @@ main(
     CheckFirmwareFaults(&H, Image);
     CheckInterruptPointer(&H, Image);
     CheckInterruptService(&H, Image);
+    CheckNotificationStorm(&H, Image);
     CheckRetry(&H, Image);
     CheckCancellation(&H, Image);
     CheckBadPayload(&H, Data, Image);

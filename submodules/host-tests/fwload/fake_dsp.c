@@ -379,6 +379,25 @@ FakeDspWriteFwConfig(
         FakeDspSet(Window + At, 0xFF, FWLOAD_MAILBOX_BYTES - At);
 }
 
+/* One notification of a storm: a log-buffer status notification (ipc4 notification.h SOF_IPC4_NOTIFY_LOG_BUFFER_STATUS) posted the way FW_READY is */
+static
+VOID
+FakeDspPostStorm(
+    PFAKE_DSP Dsp)
+{
+    if (Dsp->StormPosted >= FAKE_DSP_STORM_MAX)
+        return;
+    Dsp->Storming = TRUE;
+    Dsp->IpcTarget = FAKE_DSP_IPC_BUSY | (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
+        (SOFIPC4_NOTIFY_LOG_BUFFER_STATUS << SOFIPC4_NOTIFICATION_TYPE_SHIFT);
+    Dsp->IpcTargetData = 0;
+    Dsp->IpcTargetAck |= FAKE_DSP_IPC_BUSY;
+    Dsp->NotificationPending = TRUE;
+    Dsp->NotificationIsFwReady = FALSE;
+    Dsp->Notifications++;
+    Dsp->StormPosted++;
+}
+
 static
 VOID
 FakeDspFire(
@@ -445,6 +464,12 @@ FakeDspFire(
             FakeDspPut32(Dsp->Window + 0, 0x20000005);
             FakeDspPut32(Dsp->Window + 24, 0x0120315A);
             FakeDspPut32(Dsp->Window + 28, Dsp->Faults.AbiVersion);
+            /* instead of FW_READY, a firmware that crashed into a loop streams notifications */
+            if (Dsp->Faults.NotificationStorm == FAKE_DSP_STORM_INSTEAD_FW_READY)
+            {
+                FakeDspPostStorm(Dsp);
+                break;
+            }
             Message.Primary = Dsp->Faults.CrashNotification != 0 ?
                 (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
                     (Dsp->Faults.CrashNotification << SOFIPC4_NOTIFICATION_TYPE_SHIFT) : SOFIPC4_FW_READY_PRIMARY;
@@ -788,6 +813,9 @@ FakeDspWrite32(
                     Dsp->IpcProtocolErrors |= FAKE_DSP_IPC_ACK_BEFORE_READ;
                 Dsp->NotificationPending = FALSE;
                 Dsp->IpcTarget &= ~FAKE_DSP_IPC_BUSY;
+                /* the acknowledged FW_READY starts the storm the case asked for; an acknowledged storm notification is followed by the next at once */
+                if (Dsp->Storming || (Dsp->NotificationIsFwReady && Dsp->Faults.NotificationStorm == FAKE_DSP_STORM_AFTER_FW_READY))
+                    FakeDspPostStorm(Dsp);
             }
             return;
         }
@@ -1019,7 +1047,7 @@ static const FWLOAD_OPS FakeDspOpsTable =
 static const FAKE_DSP_FAULTS FakeDspDefaults =
 {
     100, 200, 100, 500, 2000, 200, 50, 0, FAKE_DSP_HALT_NONE, 0, 0, SOFIPC4_FW_REGS_ABI_VER,
-    SofIpc4Success, FAKE_DSP_TUPLES_GOOD, 0, 0, FALSE, FALSE,
+    SofIpc4Success, FAKE_DSP_TUPLES_GOOD, FAKE_DSP_STORM_NONE, 0, 0, FALSE, FALSE,
     FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE
 };
 
@@ -1109,7 +1137,8 @@ FakeDspIpcErrors(
 
     if (Dsp->IpcReply & FAKE_DSP_IPC_DONE)
         Errors |= FAKE_DSP_IPC_REPLY_LEFT_PENDING;
-    if (Dsp->IpcTarget & FAKE_DSP_IPC_BUSY)
+    /* a storm notification left waiting when the boot gave up is how a storm ends */
+    if ((Dsp->IpcTarget & FAKE_DSP_IPC_BUSY) && !Dsp->Storming)
         Errors |= FAKE_DSP_IPC_NOTIFY_LEFT_BUSY;
     return Errors;
 }

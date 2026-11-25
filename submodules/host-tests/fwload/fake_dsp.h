@@ -34,6 +34,12 @@
 #define FAKE_DSP_TUPLES_ZERO_MAILBOXES  8
 #define FAKE_DSP_TUPLES_NO_MAILBOXES    9
 
+/* Notification storms: the firmware posts log-buffer notifications, a new one the moment the host acknowledges one; the model stops after FAKE_DSP_STORM_MAX so that a loader without a bound still ends somewhere */
+#define FAKE_DSP_STORM_NONE              0
+#define FAKE_DSP_STORM_INSTEAD_FW_READY  1
+#define FAKE_DSP_STORM_AFTER_FW_READY    2
+#define FAKE_DSP_STORM_MAX               20000
+
 /* Contract violations of the code-loader stream the model found */
 #define FAKE_DSP_DMA_TAG       0x00000001UL
 #define FAKE_DSP_DMA_FORMAT    0x00000002UL
@@ -89,6 +95,7 @@ typedef struct _FAKE_DSP_FAULTS
     UINT32 AbiVersion;
     UINT32 IpcStatus;
     UINT32 TupleFault;
+    UINT32 NotificationStorm;
     UINT32 ReportedVersionShift;
     /* the raw value the interrupt pointer reads while the subsystem is powered, when InterruptPointerOverride is set */
     UINT32 InterruptPointer;
@@ -206,6 +213,9 @@ typedef struct _FAKE_DSP
     BOOLEAN ReplyPending;
     BOOLEAN NotificationPending;
     BOOLEAN NotificationIsFwReady;
+    /* the storm: how many notifications were posted and whether it is running */
+    BOOLEAN Storming;
+    UINT32 StormPosted;
     FAKE_DSP_WRITE WriteLog[FAKE_DSP_WRITE_LOG];
     UINT32 WriteCount;
     UINT32 EventLog[FAKE_DSP_EVENT_LOG];

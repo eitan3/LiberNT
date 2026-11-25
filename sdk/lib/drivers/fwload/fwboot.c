@@ -39,16 +39,6 @@
 /* A wait whose clock does not advance would never reach its budget: after this many times the polls the budget needs, it is reported as a stalled clock */
 #define FWLOAD_STALLED_POLL_FACTOR  2
 
-typedef enum _FWLOAD_OUTCOME
-{
-    FwloadOutcomeDone = 0,
-    FwloadOutcomePending,
-    FwloadOutcomeHalted,
-    FwloadOutcomeCancelled,
-    FwloadOutcomeStalled,
-    FwloadOutcomeStorm
-} FWLOAD_OUTCOME;
-
 static
 UINT32
 FwloadRead(
@@ -146,85 +136,82 @@ FwloadStallPolls(
     return FWLOAD_STALLED_POLL_FACTOR * (UINT64)TimeoutUs / (Interval != 0 ? Interval : 1);
 }
 
+/* Why a wait that has not met its condition stops, read at the end of every iteration of every wait: a tripped interrupt guard, a cancellation, the deadline and the poll bound; FwloadOk asks for one poll more */
 static
-FWLOAD_OUTCOME
+FWLOAD_STATUS
+FwloadWaitStop(
+    const FWLOAD_CONTEXT* Context,
+    UINT64 Start,
+    UINT64 Polls,
+    UINT64 StallPolls,
+    UINT32 TimeoutUs,
+    FWLOAD_STATUS Timeout)
+{
+    if (Context->InterruptStorm)
+        return FwloadInterruptStorm;
+    if (Context->Cancel)
+        return FwloadCancelled;
+    if (FwloadNow(Context) - Start >= TimeoutUs)
+        return Timeout;
+    if (Polls >= StallPolls)
+        return FwloadClockStalled;
+    return FwloadOk;
+}
+
+static
+FWLOAD_STATUS
 FwloadWaitMask(
     const FWLOAD_CONTEXT* Context,
     UINT32 Offset,
     UINT32 Mask,
     UINT32 Expected,
-    UINT32 TimeoutUs)
+    UINT32 TimeoutUs,
+    FWLOAD_STATUS Timeout)
 {
     UINT64 Start = FwloadNow(Context);
     UINT64 Polls = 0, StallPolls = FwloadStallPolls(Context, TimeoutUs);
+    FWLOAD_STATUS Status;
 
     for (;;)
     {
-        UINT32 Value = FwloadRead(Context, FWLOAD_BAR_DSP, Offset);
-
-        if ((Value & Mask) == Expected)
-            return FwloadOutcomeDone;
-        if (Context->InterruptStorm)
-            return FwloadOutcomeStorm;
-        if (Context->Cancel)
-            return FwloadOutcomeCancelled;
-        if (FwloadNow(Context) - Start >= TimeoutUs)
-            return FwloadOutcomePending;
-        if (Polls >= StallPolls)
-            return FwloadOutcomeStalled;
+        if ((FwloadRead(Context, FWLOAD_BAR_DSP, Offset) & Mask) == Expected)
+            return FwloadOk;
+        Status = FwloadWaitStop(Context, Start, Polls, StallPolls, TimeoutUs, Timeout);
+        if (Status != FwloadOk)
+            return Status;
         FwloadPause(Context);
         Polls++;
     }
 }
 
-/* A cancelled wait, a timed-out wait, a stalled clock and a tripped interrupt guard are told apart by the outcome and the cancellation flag */
-static
-FWLOAD_STATUS
-FwloadWaitStatus(
-    const FWLOAD_CONTEXT* Context,
-    FWLOAD_OUTCOME Outcome,
-    FWLOAD_STATUS Timeout)
-{
-    if (Outcome == FwloadOutcomeDone)
-        return FwloadOk;
-    if (Outcome == FwloadOutcomeStalled)
-        return FwloadClockStalled;
-    if (Outcome == FwloadOutcomeStorm)
-        return FwloadInterruptStorm;
-    return Context->Cancel ? FwloadCancelled : Timeout;
-}
-
 /* The ROM status register: a halted DSP reports its error code instead of a state; the NULL entry code carries no halt bit */
 static
-FWLOAD_OUTCOME
+FWLOAD_STATUS
 FwloadRomStatus(
     FWLOAD_CONTEXT* Context,
     UINT32 Target,
-    UINT32 TimeoutUs)
+    UINT32 TimeoutUs,
+    FWLOAD_STATUS Timeout)
 {
     UINT64 Start = FwloadNow(Context);
     UINT64 Polls = 0, StallPolls = FwloadStallPolls(Context, TimeoutUs);
+    UINT32 Raw;
+    FWLOAD_STATUS Status;
 
     for (;;)
     {
-        UINT32 Raw = FwloadRead(Context, FWLOAD_BAR_DSP, Context->Platform->RomStatus);
-
+        Raw = FwloadRead(Context, FWLOAD_BAR_DSP, Context->Platform->RomStatus);
         Context->RomStatus = Raw;
         if ((Raw & FWLOAD_FSR_HALTED) || Raw == FWLOAD_ROM_NULL_FW_ENTRY)
         {
             Context->RomError = FwloadRead(Context, FWLOAD_BAR_DSP, Context->Platform->RomError);
-            return FwloadOutcomeHalted;
+            return FwloadRomError;
         }
         if ((Raw & FWLOAD_FSR_STATE_MASK) == Target)
-            return FwloadOutcomeDone;
-        if (Context->InterruptStorm)
-            return FwloadOutcomeStorm;
-        if (Context->Cancel)
-            return FwloadOutcomeCancelled;
-        if (FwloadNow(Context) - Start >= TimeoutUs)
-            return FwloadOutcomePending;
-        if (Polls >= StallPolls)
-            return FwloadOutcomeStalled;
+            return FwloadOk;
+        Status = FwloadWaitStop(Context, Start, Polls, StallPolls, TimeoutUs, Timeout);
+        if (Status != FwloadOk)
+            return Status;
         FwloadPause(Context);
         Polls++;
     }
@@ -242,8 +229,8 @@ FwloadSubsystemPowerUp(
     Status = FwloadSettle(Context);
     if (Status != FwloadOk)
         return Status;
-    return FwloadWaitStatus(Context, FwloadWaitMask(Context, Context->Platform->SubsystemControl,
-        FWLOAD_SUBSYSTEM_CPA, FWLOAD_SUBSYSTEM_CPA, Context->Timeouts.PowerUpUs), FwloadTimeoutPowerUp);
+    return FwloadWaitMask(Context, Context->Platform->SubsystemControl,
+        FWLOAD_SUBSYSTEM_CPA, FWLOAD_SUBSYSTEM_CPA, Context->Timeouts.PowerUpUs, FwloadTimeoutPowerUp);
 }
 
 static
@@ -258,8 +245,8 @@ FwloadSubsystemPowerDown(
     Status = FwloadSettle(Context);
     if (Status != FwloadOk)
         return Status;
-    return FwloadWaitStatus(Context, FwloadWaitMask(Context, Context->Platform->SubsystemControl,
-        FWLOAD_SUBSYSTEM_CPA, 0, Context->Timeouts.PowerUpUs), FwloadTimeoutPowerUp);
+    return FwloadWaitMask(Context, Context->Platform->SubsystemControl,
+        FWLOAD_SUBSYSTEM_CPA, 0, Context->Timeouts.PowerUpUs, FwloadTimeoutPowerUp);
 }
 
 /* Only the primary core is powered by the host; an already powered core is left alone */
@@ -278,8 +265,8 @@ FwloadCorePowerUp(
     Status = FwloadSettle(Context);
     if (Status != FwloadOk)
         return Status;
-    return FwloadWaitStatus(Context, FwloadWaitMask(Context, Control, FWLOAD_CORE_CPA,
-        FWLOAD_CORE_CPA, Context->Timeouts.PowerUpUs), FwloadTimeoutPowerUp);
+    return FwloadWaitMask(Context, Control, FWLOAD_CORE_CPA,
+        FWLOAD_CORE_CPA, Context->Timeouts.PowerUpUs, FwloadTimeoutPowerUp);
 }
 
 static
@@ -296,8 +283,8 @@ FwloadCorePowerDown(
     Status = FwloadSettle(Context);
     if (Status != FwloadOk)
         return Status;
-    return FwloadWaitStatus(Context, FwloadWaitMask(Context, Control, FWLOAD_CORE_CPA, 0,
-        Context->Timeouts.CorePowerDownUs), FwloadTimeoutPowerUp);
+    return FwloadWaitMask(Context, Control, FWLOAD_CORE_CPA, 0,
+        Context->Timeouts.CorePowerDownUs, FwloadTimeoutPowerUp);
 }
 
 /* The caller's interrupt lock, the one the service routine runs under: the passive-level read-modify-writes of the three enables take it, so that none of them interleaves with the routine's or with another */
@@ -391,7 +378,7 @@ FwloadInterruptsEnable(
 {
     UINT32 Offset = FwloadInterruptEnableOffset(Context);
     UINT32 Value = Enable ? FWLOAD_INTEN_HOST_IPC : 0;
-    FWLOAD_OUTCOME Outcome;
+    FWLOAD_STATUS Status;
 
     /* nothing is written through a pointer that names no register; an interrupt that cannot be gated is not enabled */
     if (Offset != FWLOAD_NO_INTERRUPT_ENABLE)
@@ -399,9 +386,9 @@ FwloadInterruptsEnable(
         FwloadLock(Context);
         FwloadInterruptUpdate(Context, Offset, FWLOAD_INTEN_HOST_IPC, Value);
         FwloadUnlock(Context);
-        Outcome = FwloadWaitMask(Context, Offset, FWLOAD_INTEN_HOST_IPC, Value, Context->Timeouts.PowerUpUs);
-        if (Outcome != FwloadOutcomeDone)
-            return FwloadWaitStatus(Context, Outcome, FwloadInterruptTimeout);
+        Status = FwloadWaitMask(Context, Offset, FWLOAD_INTEN_HOST_IPC, Value, Context->Timeouts.PowerUpUs, FwloadInterruptTimeout);
+        if (Status != FwloadOk)
+            return Status;
     }
     else if (Enable)
         return FwloadHardwareFault;
@@ -409,10 +396,10 @@ FwloadInterruptsEnable(
     FwloadLock(Context);
     FwloadInterruptUpdate(Context, Context->Platform->HostIpcInterruptEnable, FWLOAD_HIPCIE_IE, Value);
     FwloadUnlock(Context);
-    Outcome = FwloadWaitMask(Context, Context->Platform->HostIpcInterruptEnable, FWLOAD_HIPCIE_IE,
-        Value, Context->Timeouts.PowerUpUs);
-    if (Outcome != FwloadOutcomeDone)
-        return FwloadWaitStatus(Context, Outcome, FwloadInterruptTimeout);
+    Status = FwloadWaitMask(Context, Context->Platform->HostIpcInterruptEnable, FWLOAD_HIPCIE_IE,
+        Value, Context->Timeouts.PowerUpUs, FwloadInterruptTimeout);
+    if (Status != FwloadOk)
+        return Status;
     FwloadLock(Context);
     FwloadInterruptUpdate(Context, Context->Platform->IpcControl, FWLOAD_IPCCTL_BUSY_INT | FWLOAD_IPCCTL_DONE_INT,
         Enable ? (FWLOAD_IPCCTL_BUSY_INT | FWLOAD_IPCCTL_DONE_INT) : 0);
@@ -467,8 +454,8 @@ FwloadRomInit(
     Status = FwloadCorePowerUp(Context);
     if (Status != FwloadOk)
         return Status;
-    Status = FwloadWaitStatus(Context, FwloadWaitMask(Context, Platform->IpcReply, FWLOAD_IPC_DONE,
-        FWLOAD_IPC_DONE, Context->Timeouts.RomInitUs), FwloadTimeoutRomInit);
+    Status = FwloadWaitMask(Context, Platform->IpcReply, FWLOAD_IPC_DONE,
+        FWLOAD_IPC_DONE, Context->Timeouts.RomInitUs, FwloadTimeoutRomInit);
     if (Status != FwloadOk)
         return Status;
     FwloadIpcDone(Context, TRUE);
@@ -479,21 +466,7 @@ FwloadRomInit(
         if (Status != FwloadOk)
             return Status;
     }
-    switch (FwloadRomStatus(Context, FWLOAD_FSR_INIT_DONE, Context->Timeouts.RomStatusUs))
-    {
-        case FwloadOutcomeDone:
-            return FwloadOk;
-        case FwloadOutcomeHalted:
-            return FwloadRomError;
-        case FwloadOutcomeCancelled:
-            return FwloadCancelled;
-        case FwloadOutcomeStalled:
-            return FwloadClockStalled;
-        case FwloadOutcomeStorm:
-            return FwloadInterruptStorm;
-        default:
-            return FwloadTimeoutRomStatus;
-    }
+    return FwloadRomStatus(Context, FWLOAD_FSR_INIT_DONE, Context->Timeouts.RomStatusUs, FwloadTimeoutRomStatus);
 }
 
 /* The code-loader stream carries the firmware before the ROM is asked to boot it: payload, descriptors and stream registers */
@@ -525,26 +498,7 @@ FwloadCopyFirmware(
     Status = Context->Ops->StreamTrigger(Context->OpsContext, TRUE);
     if (Status == FwloadOk)
     {
-        switch (FwloadRomStatus(Context, FWLOAD_FSR_FW_ENTERED, Context->Timeouts.BaseFwUs))
-        {
-            case FwloadOutcomeDone:
-                break;
-            case FwloadOutcomeHalted:
-                Status = FwloadRomError;
-                break;
-            case FwloadOutcomeCancelled:
-                Status = FwloadCancelled;
-                break;
-            case FwloadOutcomeStalled:
-                Status = FwloadClockStalled;
-                break;
-            case FwloadOutcomeStorm:
-                Status = FwloadInterruptStorm;
-                break;
-            default:
-                Status = FwloadTimeoutBaseFw;
-                break;
-        }
+        Status = FwloadRomStatus(Context, FWLOAD_FSR_FW_ENTERED, Context->Timeouts.BaseFwUs, FwloadTimeoutBaseFw);
         Status2 = Context->Ops->StreamTrigger(Context->OpsContext, FALSE);
         if (Status == FwloadOk)
             Status = Status2;
@@ -730,6 +684,7 @@ FwloadWaitFwReady(
     BOOLEAN FromReply, WindowRead;
     UINT64 Start = FwloadNow(Context);
     UINT64 Polls = 0, StallPolls = FwloadStallPolls(Context, Context->Timeouts.FwReadyUs);
+    FWLOAD_STATUS Result;
 
     for (;;)
     {
@@ -749,16 +704,11 @@ FwloadWaitFwReady(
                 Context->RomError = SofIpc4NotificationType(&Message);
                 return FwloadFwCrash;
             }
-            continue;
         }
-        if (Context->InterruptStorm)
-            return FwloadInterruptStorm;
-        if (Context->Cancel)
-            return FwloadCancelled;
-        if (FwloadNow(Context) - Start >= Context->Timeouts.FwReadyUs)
-            return FwloadTimeoutFwReady;
-        if (Polls >= StallPolls)
-            return FwloadClockStalled;
+        /* a firmware that streams notifications faster than the polls drain them must not spin the boot: every iteration ends at the same bounds */
+        Result = FwloadWaitStop(Context, Start, Polls, StallPolls, Context->Timeouts.FwReadyUs, FwloadTimeoutFwReady);
+        if (Result != FwloadOk)
+            return Result;
         FwloadPause(Context);
         Polls++;
     }
@@ -802,16 +752,11 @@ FwloadQueryFwConfig(
                 Context->RomError = SofIpc4NotificationType(&Reply);
                 return FwloadFwCrash;
             }
-            continue;
         }
-        if (Context->InterruptStorm)
-            return FwloadInterruptStorm;
-        if (Context->Cancel)
-            return FwloadCancelled;
-        if (FwloadNow(Context) - Start >= Context->Timeouts.IpcReplyUs)
-            return FwloadTimeoutIpcReply;
-        if (Polls >= StallPolls)
-            return FwloadClockStalled;
+        /* as above: the bounds are read on every iteration, a notification storm included */
+        Result = FwloadWaitStop(Context, Start, Polls, StallPolls, Context->Timeouts.IpcReplyUs, FwloadTimeoutIpcReply);
+        if (Result != FwloadOk)
+            return Result;
         FwloadPause(Context);
         Polls++;
     }
