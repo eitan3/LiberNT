@@ -34,7 +34,9 @@ typedef void VOID, *PVOID;
 #define _Out_
 #define _In_reads_bytes_(x)
 #define _In_reads_bytes_opt_(x)
+#define _In_reads_(x)
 #define _Out_writes_bytes_(x)
+#define _Out_writes_opt_(x)
 #define _In_opt_
 #define _In_z_
 #define _Inout_

@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT host-native tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The topology walker reads a synthetic binary and the real sof-bin topologies as the independent walk says, and never reads past a short or garbled one
+ * PURPOSE:     The topology walker reads a synthetic binary and the real sof-bin topologies as the independent walk says, resolves their module UUIDs against the firmware image's module table, and never reads past a short or garbled one
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -12,8 +12,12 @@
 #include "shim.h"
 
 #include <softplg.h>
+#include <fwload.h>
 
 #include "softplg_cases.h"
+
+/* The vendor tuple that names a widget's module (include/uapi/sound/sof/tokens.h SOF_TKN_COMP_UUID, studied under LICENSING.md rule 7) */
+#define TEST_COMP_UUID             405
 
 static int Checks;
 static int Failures;
@@ -690,7 +694,10 @@ static const FIXTURE_FACTS Fixtures[] =
         "MIXER1.0", "DMIC", "NoCodec-3", "MIXER1.0", "BUF7.1" },
     { "sof-sdca-4amp-id2.tplg", 154, 1, 0, 0, 0, 0, 0, 0, 0, 1,
         { 8, 1, 0, 0 },
-        "", "", "", "", "" }
+        "", "", "", "", "" },
+    { "sof-hda-generic-ace1-2ch.tplg", 67203, 28, 60, 16, 23, 6, 6, 6, 2480, 8,
+        { 8, 1, 5, 1, 5, 6, 5, 9, 5, 4, 5, 6, 5, 2, 5, 2, 5, 2, 5, 2, 5, 1, 5, 4, 5, 5, 5, 4, 5, 2, 5, 2, 5, 2, 5, 2, 5, 2, 5, 2, 7, 6, 10, 6, 4, 14, 4, 1, 4, 4, 4, 1, 4, 2, 4, 1, 0, 0 },
+        "iDisp3 Tx", "HDA Analog", "Analog", "dai-copier.HDA.Analog.playback", "drc.2.1" }
 };
 
 static unsigned char Fixture[131072];
@@ -978,6 +985,207 @@ check_control_bounds(void)
     }
 }
 
+/* A module kind of sof-hda-generic-ace1-2ch.tplg: the last part of the first word of its widgets' names, the module UUID those widgets carry, the module's place in sof-arl-s.ri (the index of its entry in the extended manifest, where Linux takes the module id from), the name the firmware's own module table gives it, and how many widgets carry it. The facts come from an independent decode of both files */
+typedef struct _MODULE_FACTS
+{
+    const char* Suffix;
+    UINT8 Uuid[SOFTPLG_UUID_BYTES];
+    UINT32 Id;
+    const char* Name;
+    UINT32 Widgets;
+} MODULE_FACTS;
+
+static const MODULE_FACTS AceModules[] =
+{
+    { "mixin", { 0xB2, 0x6E, 0x65, 0x39, 0x71, 0x3B, 0x49, 0x40, 0x8D, 0x3F, 0xF9, 0x2C, 0xD5, 0xC4, 0x3C, 0x09 }, 3, "MIXIN", 2 },
+    { "mixout", { 0x5A, 0x50, 0x56, 0x3C, 0xD7, 0x24, 0x8F, 0x41, 0xBD, 0xDC, 0xC1, 0xF5, 0xA3, 0xAC, 0x2A, 0xE0 }, 4, "MIXOUT", 1 },
+    { "copier", { 0x83, 0x0C, 0xA0, 0x9B, 0x12, 0xCA, 0x83, 0x4A, 0x94, 0x3C, 0x1F, 0xA2, 0xE8, 0x2F, 0x9D, 0xDA }, 5, "COPIER", 15 },
+    { "gain", { 0xA8, 0xA9, 0xBC, 0x61, 0xD0, 0x18, 0x18, 0x4A, 0x8E, 0x7B, 0x26, 0x39, 0x21, 0x98, 0x04, 0xB7 }, 7, "GAIN", 4 },
+    { "eqiir", { 0xE6, 0xC0, 0x50, 0x51, 0xF9, 0x27, 0xC8, 0x4E, 0x83, 0x51, 0xC7, 0x05, 0xB6, 0x42, 0xD1, 0x2F }, 18, "EQIIR", 3 },
+    { "eqfir", { 0xE7, 0x0C, 0xA9, 0x43, 0xA5, 0xF3, 0xDF, 0x41, 0xAC, 0x06, 0xBA, 0x98, 0x65, 0x1A, 0xE6, 0xA3 }, 19, "EQFIR", 1 },
+    { "drc", { 0xDA, 0xE4, 0x6E, 0xB3, 0x6F, 0x00, 0xF9, 0x47, 0xA0, 0x6D, 0xFE, 0xCB, 0xE2, 0xD8, 0xB6, 0xCE }, 21, "DRC", 2 },
+    { "tdfb", { 0x49, 0x17, 0x51, 0xDD, 0xFA, 0xD9, 0x5C, 0x45, 0xB3, 0xA7, 0x13, 0x58, 0x56, 0x93, 0xF1, 0xAF }, 25, "TDFB", 1 }
+};
+
+#define ACE_MODULE_COUNT        (sizeof(AceModules) / sizeof(AceModules[0]))
+
+/* A whole file in a heap block of exactly its length */
+static
+UINT8*
+LoadExact(
+    const char* Path,
+    SIZE_T* Bytes)
+{
+    FILE* File = fopen(Path, "rb");
+    UINT8* Data = NULL;
+    long Length = 0;
+
+    *Bytes = 0;
+    if (File != NULL)
+    {
+        fseek(File, 0, SEEK_END);
+        Length = ftell(File);
+        fseek(File, 0, SEEK_SET);
+        if (Length > 0)
+            Data = (UINT8*)malloc((SIZE_T)Length);
+        if (Data != NULL)
+            *Bytes = fread(Data, 1, (SIZE_T)Length, File);
+        fclose(File);
+    }
+    if (Data == NULL || *Bytes != (SIZE_T)Length)
+    {
+        fprintf(stderr, "t_softplg.c: cannot read %s\n", Path);
+        ++Failures;
+        free(Data);
+        return NULL;
+    }
+    return Data;
+}
+
+/* The module kind a widget's name names, or ACE_MODULE_COUNT: the first word of the name ends with the kind's name, as host-copier, dai-copier and module-copier end in copier */
+static
+SIZE_T
+ModuleKind(
+    const char* Name)
+{
+    const char* Dot = strchr(Name, '.');
+    SIZE_T Head = Dot != NULL ? (SIZE_T)(Dot - Name) : strlen(Name), Kind, Length;
+
+    for (Kind = 0; Kind < ACE_MODULE_COUNT; Kind++)
+    {
+        Length = strlen(AceModules[Kind].Suffix);
+        if (Head >= Length && strncmp(Name + Head - Length, AceModules[Kind].Suffix, Length) == 0)
+            return Kind;
+    }
+    return ACE_MODULE_COUNT;
+}
+
+static
+BOOLEAN
+WidgetUuid(
+    const UINT8* Data,
+    SIZE_T Size,
+    const SOFTPLG_WIDGET* Widget,
+    UINT8* Uuid)
+{
+    SOFTPLG_TUPLE_ITER Iterator;
+    SOFTPLG_TUPLE Tuple;
+    SIZE_T Index;
+
+    if (Widget->Private.Size == 0 || SoftplgTupleBegin(Data, Size, &Widget->Private, &Iterator) != SoftplgOk)
+        return FALSE;
+    while (SoftplgTupleNext(&Iterator, &Tuple) == SoftplgOk)
+    {
+        if (Tuple.Type == SOFTPLG_TUPLE_UUID && Tuple.Token == TEST_COMP_UUID)
+        {
+            for (Index = 0; Index < SOFTPLG_UUID_BYTES; Index++)
+                Uuid[Index] = Tuple.Uuid[Index];
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/* Edges of sof-hda-generic-ace1-2ch.tplg (sink, source): the analog playback pipeline from the host copier to the link copier, the three HDMI paths and the ends of the two capture paths; each is in the file exactly once */
+static const char* const AceEdges[][2] =
+{
+    { "gain.1.1", "host-copier.0.playback" }, { "mixin.1.1", "gain.1.1" }, { "mixout.2.1", "mixin.1.1" }, { "gain.2.1", "mixout.2.1" },
+    { "eqiir.2.1", "gain.2.1" }, { "eqfir.2.1", "eqiir.2.1" }, { "drc.2.1", "eqfir.2.1" }, { "dai-copier.HDA.Analog.playback", "drc.2.1" },
+    { "dai-copier.HDA.iDisp1.playback", "host-copier.3.playback" }, { "dai-copier.HDA.iDisp2.playback", "host-copier.4.playback" },
+    { "dai-copier.HDA.iDisp3.playback", "host-copier.5.playback" },
+    { "eqiir.4.1", "dai-copier.HDA.Analog.capture" }, { "host-copier.0.capture", "module-copier.4.2" },
+    { "gain.12.1", "dai-copier.DMIC.dmic01.capture" }, { "host-copier.6.capture", "drc.11.1" }
+};
+
+/* Every widget of the fixture that names a module kind carries that module's UUID, and the firmware image's module table has that UUID at the module id the kind resolves to; the widgets that name no module carry none; the graph has the named edges */
+static
+void
+check_ace_fixture(void)
+{
+    SOF_RI_IMAGE Image;
+    PSOF_RI_MODULE Modules;
+    SOFTPLG_SUMMARY Summary;
+    SOFTPLG_BLOCK Block;
+    SOFTPLG_WIDGET Widget;
+    SOFTPLG_GRAPH_EDGE Edge;
+    UINT8 *Topology, *Firmware, Uuid[SOFTPLG_UUID_BYTES];
+    SIZE_T TopologyBytes, FirmwareBytes, B, N, Kind, E, Edges = 0;
+    UINT32 M, Resolved[ACE_MODULE_COUNT], Carrying = 0, Plain = 0;
+    SIZE_T Found[sizeof(AceEdges) / sizeof(AceEdges[0])];
+
+    memset(Found, 0, sizeof(Found));
+    Topology = LoadExact(SOFTPLG_FIXTURE_DIR "/sof-hda-generic-ace1-2ch.tplg", &TopologyBytes);
+    Firmware = LoadExact(SOFTPLG_FW_FIXTURE_DIR "/sof-arl-s.ri", &FirmwareBytes);
+    CHECK_EQ(FirmwareBytes, 1158164);
+    Modules = (PSOF_RI_MODULE)calloc(64, sizeof(SOF_RI_MODULE));
+    CHECK(Modules != NULL);
+    if (Topology == NULL || Firmware == NULL || Modules == NULL)
+        goto Out;
+
+    CHECK_EQ(SofRiParse(Firmware, FirmwareBytes, Modules, 64, &Image), FwloadOk);
+    CHECK_EQ(Image.ExtManModuleCount, 32);
+    CHECK_EQ(Image.ModuleCount, 32);
+    for (M = 0; M < ACE_MODULE_COUNT; M++)
+    {
+        CHECK(memcmp(Modules[AceModules[M].Id].Uuid, AceModules[M].Uuid, SOFTPLG_UUID_BYTES) == 0);
+        CHECK_STR(Modules[AceModules[M].Id].Name, AceModules[M].Name);
+    }
+
+    memset(Resolved, 0, sizeof(Resolved));
+    CHECK_EQ(SoftplgWalk(Topology, TopologyBytes, NULL, NULL, &Summary), SoftplgOk);
+    for (B = 0; B < Summary.BlockCount; B++)
+    {
+        CHECK_EQ(SoftplgReadBlock(Topology, TopologyBytes, B, &Block), SoftplgOk);
+        if (Block.Type != SoftplgTypeWidget)
+            continue;
+        for (N = 0; N < Block.Count; N++)
+        {
+            CHECK_EQ(SoftplgReadWidget(Topology, TopologyBytes, &Block, N, &Widget), SoftplgOk);
+            Kind = ModuleKind(Widget.Name);
+            if (Kind == ACE_MODULE_COUNT)
+            {
+                CHECK(!WidgetUuid(Topology, TopologyBytes, &Widget, Uuid));
+                Plain++;
+                continue;
+            }
+            CHECK(WidgetUuid(Topology, TopologyBytes, &Widget, Uuid));
+            CHECK(memcmp(Uuid, AceModules[Kind].Uuid, SOFTPLG_UUID_BYTES) == 0);
+            Resolved[Kind]++;
+            Carrying++;
+        }
+    }
+    CHECK_EQ(Carrying, 29);
+    CHECK_EQ(Plain, 31);
+    for (M = 0; M < ACE_MODULE_COUNT; M++)
+        CHECK_EQ(Resolved[M], AceModules[M].Widgets);
+
+    for (B = 0; B < Summary.BlockCount; B++)
+    {
+        CHECK_EQ(SoftplgReadBlock(Topology, TopologyBytes, B, &Block), SoftplgOk);
+        if (Block.Type != SoftplgTypeGraph)
+            continue;
+        for (N = 0; N < Block.Count; N++)
+        {
+            CHECK_EQ(SoftplgReadGraphEdge(Topology, TopologyBytes, &Block, N, &Edge), SoftplgOk);
+            Edges++;
+            for (E = 0; E < sizeof(AceEdges) / sizeof(AceEdges[0]); E++)
+                if (strcmp(Edge.Sink, AceEdges[E][0]) == 0 && strcmp(Edge.Source, AceEdges[E][1]) == 0)
+                {
+                    CHECK_EQ(Edge.Control[0], 0);
+                    Found[E]++;
+                }
+        }
+    }
+    CHECK_EQ(Edges, 23);
+    for (E = 0; E < sizeof(AceEdges) / sizeof(AceEdges[0]); E++)
+        CHECK_EQ(Found[E], 1);
+
+Out:
+    free(Modules);
+    free(Firmware);
+    free(Topology);
+}
+
 static
 void
 check_names(void)
@@ -1005,6 +1213,7 @@ int main(void)
     check_control_bounds();
     check_short_and_garbage_inputs();
     check_fixtures();
+    check_ace_fixture();
     check_names();
 
     printf("softplg: %d checks, %d failures\n", Checks, Failures);
