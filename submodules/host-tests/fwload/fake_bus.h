@@ -85,6 +85,8 @@ typedef struct _FAKE_BUS
     FAKE_BUS_STREAM Stream[2][FAKE_BUS_STREAMS];
     FAKE_BUS_EVENT Log[FAKE_BUS_EVENTS_LOG];
     UINT32 LogCount;
+    /* how often each kind of event came, whether or not the log still holds it */
+    UINT32 Counts[FAKE_BUS_EVENT_POWER + 1];
     UINT32 PowerStates;
     DEVICE_POWER_STATE LastPowerState;
 } FAKE_BUS, *PFAKE_BUS;
@@ -114,6 +116,12 @@ FakeBusTruncate(
 PFAKE_BUS_STREAM
 FakeBusStream(
     _In_ const FAKE_BUS* Bus,
+    HANDLE Handle);
+
+/* The fake stream behind a handle while the driver holds it (taken and not freed), NULL otherwise */
+PFAKE_BUS_STREAM
+FakeBusOwned(
+    _In_ PFAKE_BUS Bus,
     HANDLE Handle);
 
 /* A period of the stream: sets every event the driver registered on it, as the bus's interrupt DPC would */

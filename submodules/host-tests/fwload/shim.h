@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stddef.h>
+#include <stdarg.h>
 
 typedef int8_t INT8, *PINT8;
 typedef uint8_t UINT8, *PUINT8;
@@ -53,6 +54,7 @@ typedef HANDLE* PHANDLE;
 #define STATUS_DEVICE_PROTOCOL_ERROR ((NTSTATUS)0xC0000186L)
 #define STATUS_NOT_FOUND            ((NTSTATUS)0xC0000225L)
 #define STATUS_CANCELLED            ((NTSTATUS)0xC0000120L)
+#define STATUS_RETRY                ((NTSTATUS)0xC0000227L)
 
 typedef int32_t INT32, *PINT32;
 typedef int64_t INT64, *PINT64;

@@ -773,7 +773,146 @@ FakeDspLargeConfig(
     return Dsp->LargeConfigErrors ? SofIpc4InvalidConfigDataStruct : SofIpc4Success;
 }
 
-/* One request of the host after the firmware entered: the configuration query answers its tuples in the uplink mailbox, the pipeline and large-configuration messages their model, anything else an invalid parameter; then the faults */
+/* The configuration the downlink mailbox carries, as the table reads it: the words, and for a copier its gateway's type and index */
+static
+void
+FakeDspModuleConfig(
+    PFAKE_DSP Dsp,
+    UINT32 Words,
+    PFAKE_DSP_MODULE Module)
+{
+    UINT32 Index, Node;
+
+    if (Words > FAKE_DSP_CONFIG_WORDS)
+        Words = FAKE_DSP_CONFIG_WORDS;
+    for (Index = 0; Index < Words; Index++)
+        Module->Config[Index] = FakeDspLe32(Dsp->Downlink + Index * 4);
+    Module->Words = Words;
+    Module->Copier = Words >= FAKE_DSP_COPIER_CONFIG_WORDS;
+    Module->GwType = 0;
+    Module->GwIndex = FAKE_DSP_NODE_INDEX_PLACEHOLDER;
+    if (!Module->Copier)
+        return;
+    Node = Module->Config[FAKE_DSP_COPIER_NODE_ID_WORD];
+    Module->GwIndex = Node & 0xFF;
+    Module->GwType = (Node >> 8) & 0xF;
+}
+
+/*
+ * The firmware's module table: an init instance adds an instance with its
+ * configuration, a bind records which instance feeds which, a delete
+ * instance removes the instance and the bindings behind it; an instance
+ * that exists is answered with the resource-exists status, one that does
+ * not with the invalid-resource status (model values).
+ */
+INT32
+FakeDspModuleFind(
+    const FAKE_DSP* Dsp,
+    UINT32 Id,
+    UINT32 Instance)
+{
+    UINT32 Index;
+
+    for (Index = 0; Index < FAKE_DSP_MODULES; Index++)
+        if (Dsp->Module[Index].Used && Dsp->Module[Index].Id == Id && Dsp->Module[Index].Instance == Instance)
+            return (INT32)Index;
+    return FAKE_DSP_NO_MODULE;
+}
+
+static
+UINT32
+FakeDspModuleInit(
+    PFAKE_DSP Dsp,
+    const SOFIPC4_MSG* Request)
+{
+    UINT32 Id = Request->Primary & 0xFFFF, Instance = (Request->Primary >> 16) & 0xFF;
+    UINT32 Size = Request->Extension & 0xFFFF, Pipeline = (Request->Extension >> 16) & 0xFF;
+    UINT32 Index;
+
+    if (FakeDspModuleFind(Dsp, Id, Instance) >= 0)
+        return SofIpc4ResourceIdExists;
+    if (Size > FWLOAD_MAILBOX_BYTES / 4)
+        return SofIpc4ErrorInvalidParam;
+    for (Index = 0; Index < FAKE_DSP_MODULES && Dsp->Module[Index].Used; Index++)
+        ;
+    if (Index == FAKE_DSP_MODULES)
+        return SofIpc4ErrorInvalidParam;
+    memset(&Dsp->Module[Index], 0, sizeof(Dsp->Module[Index]));
+    Dsp->Module[Index].Used = TRUE;
+    Dsp->Module[Index].Id = Id;
+    Dsp->Module[Index].Instance = Instance;
+    Dsp->Module[Index].Pipeline = Pipeline;
+    Dsp->Module[Index].Src = FAKE_DSP_NO_MODULE;
+    FakeDspModuleConfig(Dsp, Size, &Dsp->Module[Index]);
+    Dsp->ModuleInits++;
+    return SofIpc4Success;
+}
+
+static
+UINT32
+FakeDspModuleBind(
+    PFAKE_DSP Dsp,
+    const SOFIPC4_MSG* Request)
+{
+    INT32 Source = FakeDspModuleFind(Dsp, Request->Primary & 0xFFFF, (Request->Primary >> 16) & 0xFF);
+    INT32 Sink = FakeDspModuleFind(Dsp, Request->Extension & 0xFFFF, (Request->Extension >> 16) & 0xFF);
+
+    if (Source < 0 || Sink < 0)
+        return SofIpc4InvalidResourceId;
+    Dsp->Module[Sink].Src = Source;
+    Dsp->ModuleBinds++;
+    return SofIpc4Success;
+}
+
+static
+UINT32
+FakeDspModuleDelete(
+    PFAKE_DSP Dsp,
+    const SOFIPC4_MSG* Request)
+{
+    INT32 Instance = FakeDspModuleFind(Dsp, Request->Primary & 0xFFFF, (Request->Primary >> 16) & 0xFF);
+    UINT32 Index;
+
+    if (Instance < 0)
+        return SofIpc4InvalidResourceId;
+    /* whatever was bound behind it is unbound with it */
+    for (Index = 0; Index < FAKE_DSP_MODULES; Index++)
+        if (Dsp->Module[Index].Used && Dsp->Module[Index].Src == Instance)
+            Dsp->Module[Index].Src = FAKE_DSP_NO_MODULE;
+    Dsp->Module[Instance].Used = FALSE;
+    Dsp->ModuleDeletes++;
+    return SofIpc4Success;
+}
+
+/* A large-configuration set to an instance of the module table replaces its configuration: one block with both flags, whole dwords (a model value) */
+static
+BOOLEAN
+FakeDspModuleReconfigure(
+    PFAKE_DSP Dsp,
+    const SOFIPC4_MSG* Request,
+    UINT32* Status)
+{
+    UINT32 Header = Request->Extension;
+    UINT32 Bytes = Header & SOFIPC4_LARGE_CONFIG_DATA_MAX;
+    INT32 Instance = FakeDspModuleFind(Dsp, Request->Primary & 0xFFFF, (Request->Primary >> 16) & 0xFF);
+
+    if (Instance < 0)
+        return FALSE;
+    if ((Header & SOFIPC4_LARGE_CONFIG_INIT_BLOCK) == 0 || (Header & SOFIPC4_LARGE_CONFIG_FINAL_BLOCK) == 0)
+        *Status = SofIpc4InvalidRequest;
+    else if (Bytes > FWLOAD_MAILBOX_BYTES || (Bytes & 3) != 0 || Bytes == 0)
+        *Status = SofIpc4ErrorInvalidParam;
+    else
+    {
+        FakeDspModuleConfig(Dsp, Bytes / 4, &Dsp->Module[Instance]);
+        Dsp->Module[Instance].Updates++;
+        Dsp->ModuleUpdates++;
+        *Status = SofIpc4Success;
+    }
+    return TRUE;
+}
+
+/* One request of the host after the firmware entered: the configuration query answers its tuples in the uplink mailbox, the pipeline, module and large-configuration messages their model, anything else an invalid parameter; then the faults */
 static
 VOID
 FakeDspRequest(
@@ -805,17 +944,27 @@ FakeDspRequest(
         Dsp->RequestExtension[Log] = Request->Extension;
         Dsp->RequestLogCount++;
         Dsp->TransportRequests++;
+        if (Dsp->Faults.NeverReplyAtRequest != 0 && Dsp->TransportRequests == Dsp->Faults.NeverReplyAtRequest)
+            return;
         if (Target == SOFIPC4_TARGET_FW_GEN_MSG &&
             (Type == SofIpc4GlbCreatePipeline || Type == SofIpc4GlbDeletePipeline ||
              Type == SofIpc4GlbSetPipelineState || Type == SofIpc4GlbGetPipelineState))
             Status = FakeDspPipeline(Dsp, Request, &Extension);
-        else if (Target == SOFIPC4_TARGET_MODULE_MSG &&
-            (Type == SofIpc4ModLargeConfigGet || Type == SofIpc4ModLargeConfigSet))
+        else if (Target == SOFIPC4_TARGET_MODULE_MSG && Type == SofIpc4ModLargeConfigGet)
             Status = FakeDspLargeConfig(Dsp, Request, &Extension, &HasPayload);
-        /* the module messages of the later checkpoints: accepted, not modelled */
-        else if (Target == SOFIPC4_TARGET_MODULE_MSG &&
-            (Type == SofIpc4ModInitInstance || Type == SofIpc4ModBind || Type == SofIpc4ModUnbind ||
-             Type == SofIpc4ModDeleteInstance))
+        else if (Target == SOFIPC4_TARGET_MODULE_MSG && Type == SofIpc4ModLargeConfigSet)
+        {
+            if (!FakeDspModuleReconfigure(Dsp, Request, &Status))
+                Status = FakeDspLargeConfig(Dsp, Request, &Extension, &HasPayload);
+        }
+        else if (Target == SOFIPC4_TARGET_MODULE_MSG && Type == SofIpc4ModInitInstance)
+            Status = FakeDspModuleInit(Dsp, Request);
+        else if (Target == SOFIPC4_TARGET_MODULE_MSG && Type == SofIpc4ModBind)
+            Status = FakeDspModuleBind(Dsp, Request);
+        else if (Target == SOFIPC4_TARGET_MODULE_MSG && Type == SofIpc4ModDeleteInstance)
+            Status = FakeDspModuleDelete(Dsp, Request);
+        /* an unbind is accepted and not modelled */
+        else if (Target == SOFIPC4_TARGET_MODULE_MSG && Type == SofIpc4ModUnbind)
             Status = SofIpc4Success;
         else
         {

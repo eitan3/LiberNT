@@ -127,6 +127,8 @@ FakeBusLog(
 {
     PFAKE_BUS_EVENT Event;
 
+    if (Kind <= FAKE_BUS_EVENT_POWER)
+        Bus->Counts[Kind]++;
     if (Bus->LogCount >= FAKE_BUS_EVENTS_LOG)
         return;
     Event = &Bus->Log[Bus->LogCount++];
@@ -180,10 +182,15 @@ FakeBusGetStream(
 {
     PFAKE_BUS Bus = (PFAKE_BUS)Context;
     PFAKE_BUS_STREAM Stream;
+    NTSTATUS Status;
 
     Stream = FakeBusTake(Bus, Capture);
     if (Stream == NULL)
-        return Capture ? Bus->CaptureStatus : Bus->RenderStatus;
+    {
+        /* the pool is exhausted, or the test made the allocation fail: the bus's own answer to a pool without a free stream */
+        Status = Capture ? Bus->CaptureStatus : Bus->RenderStatus;
+        return Status != STATUS_SUCCESS ? Status : STATUS_INSUFFICIENT_RESOURCES;
+    }
     Stream->Format = StreamFormat;
     RtlZeroMemory(Stream->Events, sizeof(Stream->Events));
     Stream->Position = 0;
@@ -232,7 +239,6 @@ static NTSTATUS FakeBusPowerState(PVOID Context, DEVICE_POWER_STATE NewPowerStat
     return STATUS_SUCCESS;
 }
 
-static
 PFAKE_BUS_STREAM
 FakeBusOwned(
     PFAKE_BUS Bus,
@@ -553,12 +559,7 @@ FakeBusCount(
     _In_ const FAKE_BUS* Bus,
     UINT32 Kind)
 {
-    UINT32 Index, Count = 0;
-
-    for (Index = 0; Index < Bus->LogCount; Index++)
-        if (Bus->Log[Index].Kind == Kind)
-            Count++;
-    return Count;
+    return Kind <= FAKE_BUS_EVENT_POWER ? Bus->Counts[Kind] : 0;
 }
 
 const FAKE_BUS_EVENT*

@@ -14,6 +14,10 @@
 #include "fake_dsp.h"
 #include "fwload_cases.h"
 #include "sofipc.h"
+#include "fake_bus.h"
+#include <softplg.h>
+#include <ipc4model.h>
+#include "stream.h"
 #include "ipc4_transport_cases.h"
 
 static int Checks;
@@ -70,6 +74,9 @@ typedef struct _HARNESS
     UINT32 LockAcquires;
     UINT32 LockWaits;
     UINT32 LockUnlocks;
+    /* the lock acquisitions so far, and the one that answers busy as a second caller would find the lock taken: 0 never */
+    UINT32 LockAttempts;
+    UINT32 LockBusyAtRequest;
     /* the line raises this many interrupts per delay while a message is pending; IpcArmed picks the transport's service routine over the loader's */
     UINT32 InterruptsPerDelay;
     BOOLEAN IpcArmed;
@@ -231,6 +238,13 @@ HIpcRequestLock(
 {
     HARNESS* H = (HARNESS*)Context;
 
+    H->LockAttempts++;
+    if (H->LockBusyAtRequest != 0 && H->LockAttempts == H->LockBusyAtRequest)
+    {
+        H->LockWaits++;
+        H->LastLockTimeout = TimeoutUs;
+        return FALSE;
+    }
     if (!H->LockHeld)
     {
         H->LockHeld = TRUE;
@@ -334,6 +348,8 @@ HarnessBoot(
     H->LockAcquires = 0;
     H->LockWaits = 0;
     H->LockUnlocks = 0;
+    H->LockAttempts = 0;
+    H->LockBusyAtRequest = 0;
     memset(&H->Ipc, 0, sizeof(H->Ipc));
 }
 
@@ -974,7 +990,8 @@ CheckTwoCallers(
     /* a payload is refused before anything is sent when it cannot travel through a block, and a reply buffer past the uplink mailbox too */
     HarnessStart(H, Image, NULL);
     HarnessAttach(H, NULL, FALSE);
-    SofIpc4ModuleInitInstance(&Request.Msg, 1, 0, 1, 1025, 0, 0);
+    /* 1024 dwords fill the downlink mailbox: the header and the payload agree, and the model's table takes the instance */
+    SofIpc4ModuleInitInstance(&Request.Msg, 1, 0, 1, FWLOAD_MAILBOX_BYTES / 4, 0, 0);
     Request.Class = SofIpcClassModule;
     Request.Payload = Payload;
     Request.PayloadBytes = FWLOAD_MAILBOX_BYTES + 4;
@@ -997,7 +1014,7 @@ CheckTwoCallers(
     CHECK(memcmp(H->Dsp->Downlink, Payload, sizeof(Payload)) == 0);
     /* the header the model received is the codec's words, the payload first; the reply's header came back in the request */
     CHECK_EQ(H->Dsp->RequestPrimary[0], Primary | FWLOAD_IPC_BUSY);
-    CHECK_EQ(H->Dsp->RequestExtension[0], 1025 | (1 << 16));
+    CHECK_EQ(H->Dsp->RequestExtension[0], (FWLOAD_MAILBOX_BYTES / 4) | (1 << 16));
     CHECK_EQ(Request.Msg.Primary, (SofIpc4ModInitInstance << SOFIPC4_TYPE_SHIFT) | SOFIPC4_RSP_BIT | SOFIPC4_MSG_TGT_BIT | SofIpc4Success);
 }
 
@@ -1241,6 +1258,1054 @@ CheckLink(
     }
 }
 
+/* ---- (i) The stream manager: the DSP driver's own transitions over the fake bus and the model, with the loopback topology ---- */
+
+#define STREAM_LOG_BYTES        32768
+#define STREAM_REAL_MODULES     64
+#define STREAM_FRAMES           4096
+
+typedef struct _STREAM_HARNESS
+{
+    HARNESS H;
+    FAKE_BUS Bus;
+    INTCDSP_STREAMS_OPS Ops;
+    INTCDSP_SELFTEST_OPS SelfTestOps;
+    INTCDSP_STREAMS Streams;
+    UINT8* State;
+    UINT8* ModelBuffer;
+    PSOFTPLG_IPC4_MODEL Model;
+    UINT8* File;
+    SIZE_T FileBytes;
+    UINT8* Firmware;
+    SIZE_T FirmwareBytes;
+    SOF_RI_MODULE Modules[STREAM_REAL_MODULES];
+    SOF_RI_IMAGE Ri;
+    CHAR Log[STREAM_LOG_BYTES];
+    SIZE_T LogBytes;
+    UINT32 Faults;
+    KEVENT Event;
+    UINT32 Waits;
+    /* the wire of the model's pipeline: whether it forwards, the latency it puts on the capture in frames, where the capture stream stands when it stops, in frames, and the capture sample it damages */
+    BOOLEAN Wire;
+    UINT32 Latency;
+    UINT32 StopFrames;
+    UINT32 DamageFrame;
+    NTSTATUS WaitStatus;
+} STREAM_HARNESS;
+
+static const INTCDSP_SELFTEST_OPS StreamSelfTestOps;
+
+static
+void
+StreamLog(
+    PVOID Context,
+    const char* Format,
+    va_list Arguments)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)Context;
+    int Written = vsnprintf(S->Log + S->LogBytes, sizeof(S->Log) - S->LogBytes, Format, Arguments);
+
+    if (Written > 0)
+        S->LogBytes += (SIZE_T)Written < sizeof(S->Log) - S->LogBytes ? (SIZE_T)Written : sizeof(S->Log) - S->LogBytes - 1;
+}
+
+static
+void
+StreamFault(
+    PVOID Context)
+{
+    ((STREAM_HARNESS*)Context)->Faults++;
+}
+
+static const INTCDSP_STREAMS_OPS StreamOpsTemplate =
+{
+    NULL,
+    StreamLog,
+    StreamFault,
+    NULL
+};
+
+/* How often the log holds a line */
+static
+UINT32
+StreamLogCount(
+    const STREAM_HARNESS* S,
+    const char* Text)
+{
+    UINT32 Count = 0;
+    const char* At = S->Log;
+
+    while ((At = strstr(At, Text)) != NULL)
+    {
+        Count++;
+        At++;
+    }
+    return Count;
+}
+
+/* The module id of a UUID: its index in the real firmware image's module table, as the driver resolves it */
+static
+UINT32
+StreamLookup(
+    PVOID Context,
+    const UINT8* Uuid)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)Context;
+    UINT32 M;
+
+    for (M = 0; M < S->Ri.ModuleCount; M++)
+        if (memcmp(S->Ri.Modules[M].Uuid, Uuid, SOFTPLG_UUID_BYTES) == 0)
+            return M;
+    return SOFTPLG_MODULE_NONE;
+}
+
+/* A whole fixture file */
+static
+UINT8*
+StreamFile(
+    const char* Directory,
+    const char* Name,
+    SIZE_T* Bytes)
+{
+    FILE* File;
+    UINT8* Data;
+    long Size;
+    char Path[512];
+
+    snprintf(Path, sizeof(Path), "%s/%s", Directory, Name);
+    File = fopen(Path, "rb");
+    CHECK(File != NULL);
+    if (File == NULL)
+        exit(2);
+    fseek(File, 0, SEEK_END);
+    Size = ftell(File);
+    fseek(File, 0, SEEK_SET);
+    Data = (UINT8*)malloc((size_t)Size);
+    if (Data == NULL)
+        exit(2);
+    CHECK_EQ(fread(Data, 1, (size_t)Size, File), (size_t)Size);
+    fclose(File);
+    *Bytes = (SIZE_T)Size;
+    return Data;
+}
+
+/* The manager over a booted model: the loopback topology built into a model with the real firmware's module table, the fake bus, the stream members */
+static
+void
+StreamStart(
+    STREAM_HARNESS* S,
+    const FAKE_DSP_FAULTS* Faults)
+{
+    SOFTPLG_MODEL_INPUT Input;
+    SOFTPLG_IPC4_LIMITS Limits;
+    SOFTPLG_IPC4_PROBLEM Problem;
+    SOF_RI_MODULE Modules[4];
+    SOF_RI_IMAGE Parsed;
+    SIZE_T Bytes = 0;
+    UINT8* Image;
+
+    memset(S, 0, sizeof(*S));
+    HarnessInit(&S->H);
+    Image = (UINT8*)calloc(1, FWLOAD_CASE_IMAGE_BYTES);
+    if (Image == NULL)
+        exit(2);
+    FwloadCaseBuildImage(Image);
+    CHECK_EQ(SofRiParse(Image, FWLOAD_CASE_IMAGE_BYTES, Modules, 4, &Parsed), FwloadOk);
+    HarnessStart(&S->H, &Parsed, Faults);
+    free(Image);
+    HarnessAttach(&S->H, NULL, FALSE);
+    S->File = StreamFile(SOFTPLG_FIXTURE_DIR, "sof-ipc4-loopback.tplg", &S->FileBytes);
+    S->Firmware = StreamFile(FWLOAD_FIXTURE_DIR, "sof-arl-s.ri", &S->FirmwareBytes);
+    CHECK_EQ(SofRiParse(S->Firmware, S->FirmwareBytes, S->Modules, STREAM_REAL_MODULES, &S->Ri), FwloadOk);
+    memset(&Input, 0, sizeof(Input));
+    Input.Data = S->File;
+    Input.Size = S->FileBytes;
+    Input.Lookup = StreamLookup;
+    Input.LookupContext = S;
+    CHECK_EQ(SoftplgModelMeasure(&Input, &Bytes, &Problem), SoftplgModelOk);
+    /* T1: the file's size and the model's are two numbers (the topology line prints the file's, 4286, beside the model's, 2288) */
+    CHECK_EQ(Bytes, 2288);
+    CHECK_EQ(S->FileBytes, 4286);
+    S->ModelBuffer = (UINT8*)calloc(1, Bytes);
+    CHECK(S->ModelBuffer != NULL);
+    CHECK_EQ(SoftplgModelBuild(&Input, S->ModelBuffer, Bytes, &S->Model, &Problem), SoftplgModelOk);
+    Limits.MaxPipelines = S->H.Ctx->FwConfig.MaxPipelines;
+    Limits.MailboxBytes = S->H.Ctx->FwConfig.DownlinkMailboxBytes;
+    CHECK_EQ(SoftplgModelValidate(S->Model, &Limits, &Problem), SoftplgModelOk);
+    FakeBusInit(&S->Bus, 2, TRUE);
+    S->State = (UINT8*)calloc(1, IntcDspStreamsBytes(S->Model));
+    CHECK(S->State != NULL);
+    S->Ops = StreamOpsTemplate;
+    S->Ops.Context = S;
+    S->SelfTestOps = StreamSelfTestOps;
+    S->SelfTestOps.Context = S;
+    IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
+    CHECK(S->Streams.Ready);
+    S->Wire = TRUE;
+}
+
+/* The PCM of the loopback, in a harness that is up */
+
+static
+void
+StreamStop(
+    STREAM_HARNESS* S)
+{
+    free(S->State);
+    free(S->ModelBuffer);
+    free(S->File);
+    free(S->Firmware);
+    free(S->H.Dsp);
+    free(S->H.Ctx);
+    free(S->H.Virtual);
+}
+
+/* The fake stream behind an MDL */
+static
+PFAKE_BUS_STREAM
+StreamByMdl(
+    STREAM_HARNESS* S,
+    PMDL Mdl)
+{
+    UINT32 D, I;
+
+    for (D = 0; D < 2; D++)
+        for (I = 0; I < FAKE_BUS_STREAMS; I++)
+            if (S->Bus.Stream[D][I].Used && S->Bus.Stream[D][I].Mdl == Mdl)
+                return &S->Bus.Stream[D][I];
+    return NULL;
+}
+
+static
+PVOID
+StreamMap(
+    PVOID Context,
+    PMDL Mdl,
+    SIZE_T Bytes)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)Context;
+    PFAKE_BUS_STREAM Stream = StreamByMdl(S, Mdl);
+
+    CHECK(Stream != NULL && Stream->Bytes == Bytes);
+    return Stream != NULL ? Stream->Memory : NULL;
+}
+
+/*
+ * The model's wire, as the self-test's wait: at the periods the capture
+ * buffer takes what the render buffer holds, Latency frames behind around
+ * the cyclic buffer, when the wire forwards at all; the capture's events are
+ * set as the bus's DPC would set them. The handle is the manager's.
+ */
+static
+NTSTATUS
+StreamWait(
+    PVOID Context,
+    HANDLE Handle,
+    UINT32 Count,
+    UINT32 TimeoutMs,
+    PULONG Periods)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)Context;
+    PINTCDSP_STREAM Managed = IntcDspStreamOf(&S->Streams, Handle);
+    PFAKE_BUS_STREAM Capture, Render = NULL;
+    UINT32 D, I, FrameBytes, Frames;
+    INT32* Damage;
+
+    *Periods = 0;
+    CHECK_EQ(Count, 2);
+    CHECK(TimeoutMs != 0);
+    S->Waits++;
+    if (S->WaitStatus != STATUS_SUCCESS)
+        return S->WaitStatus;
+    CHECK(Managed != NULL && Managed->Capture);
+    if (Managed == NULL)
+        return STATUS_INVALID_DEVICE_REQUEST;
+    Capture = FakeBusOwned(&S->Bus, Managed->Handle);
+    CHECK(Capture != NULL && Capture->Running);
+    if (Capture == NULL || !Capture->Running)
+        return STATUS_INVALID_DEVICE_REQUEST;
+    for (D = 0; D < 2 && Render == NULL; D++)
+        for (I = 0; I < FAKE_BUS_STREAMS; I++)
+            if (S->Bus.Stream[D][I].Used && !S->Bus.Stream[D][I].Capture && S->Bus.Stream[D][I].Running)
+                Render = &S->Bus.Stream[D][I];
+    CHECK(Render != NULL);
+    if (Render == NULL)
+        return STATUS_INVALID_DEVICE_REQUEST;
+    FrameBytes = Capture->Format.NumberOfChannels * (Capture->Format.ContainerSize / 8);
+    Frames = (UINT32)(Capture->Bytes / FrameBytes);
+    CHECK_EQ(Render->Bytes, Capture->Bytes);
+    if (S->Wire)
+    {
+        for (I = 0; I < Frames; I++)
+            memcpy((PUCHAR)Capture->Memory + (SIZE_T)I * FrameBytes,
+                   (PUCHAR)Render->Memory + (SIZE_T)((I + Frames - S->Latency) % Frames) * FrameBytes, FrameBytes);
+    }
+    if (S->DamageFrame != 0 && S->DamageFrame < Frames)
+    {
+        Damage = (INT32*)((PUCHAR)Capture->Memory + (SIZE_T)S->DamageFrame * FrameBytes + FrameBytes / 2);
+        *Damage += 5;
+    }
+    Capture->Position = Capture->DmaPosition = S->StopFrames * FrameBytes;
+    for (I = 0; I < Count; I++)
+        FakeBusSignal(&S->Bus, Managed->Handle);
+    *Periods = Count;
+    return STATUS_SUCCESS;
+}
+
+static const INTCDSP_SELFTEST_OPS StreamSelfTestOps =
+{
+    NULL,
+    StreamMap,
+    StreamWait
+};
+
+/* The model booted and the transport attached, as the driver's boot leaves them */
+static
+void
+StreamBoot(
+    STREAM_HARNESS* S,
+    const FAKE_DSP_FAULTS* Faults)
+{
+    SOF_RI_MODULE Modules[4];
+    SOF_RI_IMAGE Parsed;
+    UINT8* Image;
+
+    /* a boot after a fault: the model, the loader's context and its buffer of the boot before go first */
+    free(S->H.Dsp);
+    free(S->H.Ctx);
+    free(S->H.Virtual);
+    HarnessInit(&S->H);
+    Image = (UINT8*)calloc(1, FWLOAD_CASE_IMAGE_BYTES);
+    if (Image == NULL)
+        exit(2);
+    FwloadCaseBuildImage(Image);
+    CHECK_EQ(SofRiParse(Image, FWLOAD_CASE_IMAGE_BYTES, Modules, 4, &Parsed), FwloadOk);
+    HarnessStart(&S->H, &Parsed, Faults);
+    free(Image);
+    HarnessAttach(&S->H, NULL, FALSE);
+}
+
+/* The PCM of the loopback, in a harness that is up */
+static
+UINT32
+StreamPcm(
+    STREAM_HARNESS* S)
+{
+    UINT32 Pcm = IntcDspStreamPcm(&S->Streams, INTCDSP_SELFTEST_PCM);
+
+    CHECK(Pcm != SOFTPLG_NO_PCM);
+    CHECK_EQ(IntcDspStreamPcm(&S->Streams, "No such PCM"), SOFTPLG_NO_PCM);
+    return Pcm;
+}
+
+/* The codec driver holds the first render stream and the first two capture streams, as it does on a machine with a codec: the DSP's streams then carry the model's guest tags 2 and 3 */
+static
+void
+StreamTakeCodecStreams(
+    STREAM_HARNESS* S)
+{
+    HDAUDIO_STREAM_FORMAT Format;
+    HANDLE Taken;
+    UINT8 Tag;
+
+    memset(&Format, 0, sizeof(Format));
+    CHECK_EQ(S->Bus.Interface.GetRenderStream(S->Bus.Interface.Context, Format, &Taken, &Tag), STATUS_SUCCESS);
+    CHECK_EQ(Tag, 1);
+    CHECK_EQ(S->Bus.Interface.GetCaptureStream(S->Bus.Interface.Context, Format, &Taken, &Tag), STATUS_SUCCESS);
+    CHECK_EQ(Tag, 1);
+    CHECK_EQ(S->Bus.Interface.GetCaptureStream(S->Bus.Interface.Context, Format, &Taken, &Tag), STATUS_SUCCESS);
+    CHECK_EQ(Tag, 2);
+}
+
+/* Every stream object free, no path held, nothing built, the link ready and nothing faulted */
+static
+void
+StreamQuiescent(
+    STREAM_HARNESS* S,
+    UINT32 Pcm)
+{
+    UINT32 Sx;
+
+    for (Sx = 0; Sx < INTCDSP_STREAMS_MAX; Sx++)
+        CHECK_EQ(S->Streams.Stream[Sx].State, IntcDspStreamStateFree);
+    CHECK_EQ(S->Streams.Path[Pcm].Open, 0);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 0);
+    CHECK_EQ(S->Streams.Path[Pcm].Running, 0);
+    CHECK(S->Streams.Path[Pcm].Built == FALSE);
+    CHECK_EQ(S->Streams.PipelineInstance[0], 0);
+    CHECK_EQ(S->Streams.Faulted, FALSE);
+    CHECK_EQ(S->Faults, 0);
+    CHECK_EQ(S->H.Ipc.Link, SofIpcLinkReady);
+    CHECK_EQ(S->H.Dsp->Pipeline[1].Used, FALSE);
+    CHECK(FakeDspModuleFind(S->H.Dsp, 5, 0) < 0 && FakeDspModuleFind(S->H.Dsp, 5, 1) < 0 && FakeDspModuleFind(S->H.Dsp, 7, 0) < 0);
+}
+
+/* (i1) The golden trace: the loopback pair's transitions in the plan's order, the words the model's table lists, and the stream tag in each copier's word 17 */
+static
+void
+CheckStreamGolden(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    HANDLE Render = NULL, Capture = NULL;
+    PULONG Register;
+    const INTCDSP_TRACE* T;
+    const IPC4_STREAM_CASE* C;
+    INT32 Playback, CaptureCopier, Gain;
+    UINT32 Pcm, I;
+    SIZE_T Requests;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    StreamTakeCodecStreams(S);
+    Pcm = StreamPcm(S);
+    Requests = S->H.Dsp->TransportRequests;
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    CHECK(Render != NULL && Capture != NULL);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->Tag, IPC4_STREAM_CASE_RENDER_TAG);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Capture)->Tag, IPC4_STREAM_CASE_CAPTURE_TAG);
+    /* the format index is the 32-bit one of the copier's host-side formats */
+    CHECK_EQ(S->Model->Formats[S->Model->Widgets[IntcDspStreamOf(&S->Streams, Render)->Copier].FirstFormat +
+                                IntcDspStreamOf(&S->Streams, Render)->Format].Words[SOFTPLG_FORMAT_WORD_DEPTH], 32);
+    CHECK_EQ(S->Model->Formats[S->Model->Widgets[IntcDspStreamOf(&S->Streams, Capture)->Copier].FirstFormat +
+                                S->Model->Widgets[IntcDspStreamOf(&S->Streams, Capture)->Copier].InputFormats +
+                                IntcDspStreamOf(&S->Streams, Capture)->Format].Words[SOFTPLG_FORMAT_WORD_DEPTH], 32);
+    /* the stream format the bus received: the valid bits in their container */
+    CHECK_EQ(S->Bus.Stream[0][1].Format.SampleRate, 48000);
+    CHECK_EQ(S->Bus.Stream[0][1].Format.ValidBitsPerSample, 32);
+    CHECK_EQ(S->Bus.Stream[0][1].Format.ContainerSize, 32);
+    CHECK_EQ(S->Bus.Stream[0][1].Format.NumberOfChannels, 2);
+    /* the render stream's allocation builds the PCM once for both streams: the capture copier names the capture stream already */
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    Playback = FakeDspModuleFind(S->H.Dsp, 5, 0);
+    CaptureCopier = FakeDspModuleFind(S->H.Dsp, 5, 1);
+    Gain = FakeDspModuleFind(S->H.Dsp, 7, 0);
+    CHECK(Playback >= 0 && CaptureCopier >= 0 && Gain >= 0);
+    if (Playback < 0 || CaptureCopier < 0 || Gain < 0)
+        goto Out;
+    /* the host-output copier: 21 words, the gateway node id = type << 8 | tag - 1, the input format the stream's, the gateway buffer two milliseconds of its input */
+    CHECK(S->H.Dsp->Module[Playback].Copier);
+    CHECK_EQ(S->H.Dsp->Module[Playback].Words, 21);
+    CHECK_EQ(S->H.Dsp->Module[Playback].Config[SOFTPLG_COPIER_NODE_ID_WORD], IPC4_STREAM_CASE_PLAYBACK_NODE);
+    CHECK_EQ(S->H.Dsp->Module[Playback].GwType, 0);
+    CHECK_EQ(S->H.Dsp->Module[Playback].GwIndex, IPC4_STREAM_CASE_RENDER_TAG - 1);
+    CHECK_EQ(S->H.Dsp->Module[Playback].Config[4], 48000);
+    CHECK_EQ(S->H.Dsp->Module[Playback].Config[5], 32);
+    CHECK_EQ(S->H.Dsp->Module[Playback].Config[9], (1u << 16) | (32u << 8) | 2);
+    CHECK_EQ(S->H.Dsp->Module[Playback].Config[SOFTPLG_COPIER_DMA_BUFFER_WORD], 2 * S->H.Dsp->Module[Playback].Config[1]);
+    CHECK_EQ(S->H.Dsp->Module[Playback].Config[SOFTPLG_COPIER_CONFIG_LENGTH_WORD], 1);
+    CHECK_EQ(S->H.Dsp->Module[Playback].Config[SOFTPLG_COPIER_ATTRIBUTES_WORD], 0);
+    /* the host-input copier: its output format is the capture stream's */
+    CHECK(S->H.Dsp->Module[CaptureCopier].Copier);
+    CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Config[SOFTPLG_COPIER_NODE_ID_WORD], IPC4_STREAM_CASE_CAPTURE_NODE);
+    CHECK_EQ(S->H.Dsp->Module[CaptureCopier].GwType, 1);
+    CHECK_EQ(S->H.Dsp->Module[CaptureCopier].GwIndex, IPC4_STREAM_CASE_CAPTURE_TAG - 1);
+    CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Config[SOFTPLG_COPIER_OUT_FORMAT_WORD + 0], 48000);
+    CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Config[SOFTPLG_COPIER_OUT_FORMAT_WORD + 1], 32);
+    CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Config[SOFTPLG_COPIER_OUT_FORMAT_WORD + 5], (1u << 16) | (32u << 8) | 2);
+    CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Config[SOFTPLG_COPIER_DMA_BUFFER_WORD], 2 * S->H.Dsp->Module[CaptureCopier].Config[2]);
+    /* the gain: a base configuration of 10 words, no gateway */
+    CHECK(!S->H.Dsp->Module[Gain].Copier);
+    CHECK_EQ(S->H.Dsp->Module[Gain].Words, 10);
+    CHECK_EQ(S->H.Dsp->Module[Gain].Config[1], S->H.Dsp->Module[Gain].Config[2]);
+    CHECK_EQ(S->H.Dsp->Module[Gain].Config[4], 48000);
+    /* the binds: the gain behind the host-output copier, the host-input copier behind the gain */
+    CHECK_EQ(S->H.Dsp->Module[Gain].Src, Playback);
+    CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Src, Gain);
+    CHECK_EQ(S->H.Dsp->Module[Playback].Src, FAKE_DSP_NO_MODULE);
+    CHECK_EQ(S->H.Dsp->ModuleInits, 3);
+    CHECK_EQ(S->H.Dsp->ModuleBinds, 2);
+    CHECK_EQ(S->H.Dsp->ModuleDeletes, 0);
+    CHECK_EQ(S->H.Dsp->ModuleUpdates, 0);
+    CHECK_EQ(S->Streams.PipelineInstance[0], 1);
+    CHECK_EQ(S->H.Dsp->Pipeline[1].Used, TRUE);
+    CHECK_EQ(S->H.Dsp->Pipeline[1].State, SOFIPC4_PIPELINE_STATE_UNINITIALIZED);
+    /* the pipeline was created with the scheduler's values: priority 0, no pages, core 0, no low-power flag */
+    CHECK_EQ(S->H.Dsp->RequestPrimary[0], 0x11010000 | FWLOAD_IPC_BUSY);
+    CHECK_EQ(S->H.Dsp->RequestExtension[0], 0);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(S->H.Dsp->TransportRequests - Requests, 6);
+    /* the software bound is at the buffer size, and the whole cycle is valid */
+    CHECK(S->Bus.Stream[0][1].Spib && S->Bus.Stream[1][2].Spib);
+    CHECK_EQ(S->Bus.Stream[0][1].SpibValue, IPC4_STREAM_CASE_BUFFER_BYTES);
+    CHECK_EQ(S->Bus.Stream[1][2].SpibValue, IPC4_STREAM_CASE_BUFFER_BYTES);
+    /* the capture stream runs first, the render stream after it; the pipelines were paused and running before either */
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(S->H.Dsp->Pipeline[1].State, SOFIPC4_PIPELINE_STATE_RUNNING);
+    CHECK(S->Bus.Stream[1][2].Running && !S->Bus.Stream[0][1].Running);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK(S->Bus.Stream[0][1].Running);
+    CHECK_EQ(IntcDspStreamPositionRegister(&S->Streams, Render, &Register), STATUS_SUCCESS);
+    CHECK(Register == &S->Bus.Stream[0][1].DmaPosition);
+    CHECK_EQ(IntcDspStreamLinkPositionRegister(&S->Streams, Render, &Register), STATUS_SUCCESS);
+    CHECK(Register == &S->Bus.Stream[0][1].Position);
+    /* the capture stream pauses alone: the pipeline stays running for the render stream */
+    CHECK_EQ(IntcDspStreamPause(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK(!S->Bus.Stream[1][2].Running && S->Bus.Stream[0][1].Running);
+    CHECK_EQ(S->H.Dsp->Pipeline[1].State, SOFIPC4_PIPELINE_STATE_RUNNING);
+    CHECK_EQ(IntcDspStreamPause(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(S->H.Dsp->Pipeline[1].State, SOFIPC4_PIPELINE_STATE_PAUSED);
+    /* the capture stream frees first: its copier is told its stream is going, and nothing else is deleted */
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(S->H.Dsp->ModuleUpdates, 1);
+    CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Config[SOFTPLG_COPIER_NODE_ID_WORD], IPC4_STREAM_CASE_PLACEHOLDER_NODE);
+    CHECK_EQ(S->H.Dsp->Module[CaptureCopier].GwIndex, 0xFF);
+    CHECK_EQ(S->H.Dsp->ModuleDeletes, 0);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 1);
+    /* the render stream frees last: the pipeline is reset, the instances and the pipeline deleted */
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(S->H.Dsp->ModuleDeletes, 3);
+    CHECK(!S->H.Dsp->Pipeline[1].Used);
+    CHECK_EQ(S->Streams.PipelineInstance[0], 0);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+
+Out:
+    /* the trace is the golden one, line for line */
+    CHECK_EQ(S->Streams.TraceCount, IPC4_STREAM_TRACE_ROWS);
+    for (I = 0; I < IPC4_STREAM_TRACE_ROWS && I < S->Streams.TraceCount; I++)
+    {
+        T = &S->Streams.Trace[I];
+        C = &Ipc4StreamTrace[I];
+        if (T->Kind != C->Kind || T->Capture != C->Capture || T->Tag != C->Tag || T->Primary != C->Primary || T->Extension != C->Extension)
+            fprintf(stderr, "  trace row %u (%s): kind %u/%u capture %u/%u tag %u/%u primary 0x%08x/0x%08x extension 0x%08x/0x%08x\n",
+                    I, C->Step, T->Kind, C->Kind, T->Capture, C->Capture, T->Tag, C->Tag, T->Primary, C->Primary, T->Extension, C->Extension);
+        CHECK_EQ(T->Kind, C->Kind);
+        CHECK_EQ(T->Capture, C->Capture);
+        CHECK_EQ(T->Tag, C->Tag);
+        CHECK_EQ(T->Primary, C->Primary);
+        CHECK_EQ(T->Extension, C->Extension);
+        /* every request was a success; the buffer and its bound are the buffer's size */
+        if (T->Kind == INTCDSP_TRACE_IPC)
+            CHECK_EQ(T->Value, 0);
+        if (T->Kind == INTCDSP_TRACE_BUFFER || T->Kind == INTCDSP_TRACE_SPIB)
+            CHECK_EQ(T->Value, IPC4_STREAM_CASE_BUFFER_BYTES);
+    }
+    /* the transitions' starts are where the case header says */
+    CHECK_STR(Ipc4StreamTrace[IPC4_STREAM_TRACE_ALLOCATE].Step, "allocate: the render buffer");
+    CHECK_STR(Ipc4StreamTrace[IPC4_STREAM_TRACE_RUN].Step, "run: pipeline 1 paused");
+    CHECK_STR(Ipc4StreamTrace[IPC4_STREAM_TRACE_PAUSE].Step, "pause: the capture stream");
+    CHECK_STR(Ipc4StreamTrace[IPC4_STREAM_TRACE_FREE].Step, "free: the copier told its stream is going");
+    CHECK_STR(Ipc4StreamTrace[IPC4_STREAM_TRACE_CLOSE].Step, "close: the capture tag");
+    /* the bus gave back everything the pair took */
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_OPEN), 5);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER), 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_RUN), 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_STOP), 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_SPIB), 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_SPIB_OFF), 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_REGISTER), 0);
+    CHECK_EQ(S->Bus.Stream[0][1].Runs, 1);
+    CHECK_EQ(S->Bus.Stream[0][1].Stops, 1);
+    CHECK(!S->Bus.Stream[0][1].Spib && !S->Bus.Stream[0][1].Buffer && !S->Bus.Stream[0][1].Used);
+    StreamQuiescent(S, Pcm);
+    StreamStop(S);
+    free(S);
+}
+
+/* (i2) A format the host copier does not offer is refused before anything is taken; the depths the copier offers open with their format index */
+static
+void
+CheckStreamFormats(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    HANDLE Render = NULL, Capture = NULL, Other;
+    const SOFTPLG_IPC4_WIDGET* Copier;
+    const SOFTPLG_IPC4_FORMAT* F;
+    PINTCDSP_STREAM Stream;
+    UINT32 Pcm, Index, Depth;
+    static const ULONG Depths[] = { 16, 24, 32 };
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, 99, FALSE, 48000, 2, 32, 32, &Render), STATUS_INVALID_PARAMETER);
+    /* 44.1 kHz, a packed 24-bit stream, one channel, six channels, 20 valid bits: none is among the copier's formats */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 44100, 2, 16, 16, &Render), STATUS_NOT_SUPPORTED);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 24, 24, &Render), STATUS_NOT_SUPPORTED);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 1, 16, 16, &Render), STATUS_NOT_SUPPORTED);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 6, 32, 32, &Render), STATUS_NOT_SUPPORTED);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 20, 32, &Render), STATUS_NOT_SUPPORTED);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 8, 8, &Render), STATUS_NOT_SUPPORTED);
+    CHECK(Render == NULL);
+    CHECK_EQ(S->Streams.TraceCount, 0);
+    CHECK_EQ(S->H.Dsp->TransportRequests, 0);
+    CHECK_EQ(S->Streams.Path[Pcm].Open, 0);
+    for (Index = 0; Index < 2; Index++)
+        for (Depth = 0; Depth < FAKE_BUS_STREAMS; Depth++)
+            CHECK(!S->Bus.Stream[Index][Depth].Used);
+    /* every depth the copier offers opens, render and capture, with the index of its format */
+    for (Index = 0; Index < 3; Index++)
+    {
+        CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, Depths[Index], Depths[Index] <= 16 ? 16 : 32, &Render), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, Depths[Index], Depths[Index] <= 16 ? 16 : 32, &Capture), STATUS_SUCCESS);
+        Stream = IntcDspStreamOf(&S->Streams, Render);
+        Copier = &S->Model->Widgets[Stream->Copier];
+        F = &S->Model->Formats[Copier->FirstFormat + Stream->Format];
+        CHECK_EQ(SOFTPLG_FORMAT_VALID_OF(F->Words[SOFTPLG_FORMAT_WORD_CFG]), Depths[Index]);
+        CHECK_EQ(F->Words[SOFTPLG_FORMAT_WORD_DEPTH], Depths[Index] <= 16 ? 16 : 32);
+        /* the bus got the valid bits in the container the sample rule gives them */
+        CHECK_EQ(S->Bus.Stream[0][0].Format.ValidBitsPerSample, Depths[Index]);
+        CHECK_EQ(S->Bus.Stream[0][0].Format.ContainerSize, Depths[Index] <= 16 ? 16 : 32);
+        CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+    }
+    CHECK_EQ(S->H.Dsp->TransportRequests, 0);
+    CHECK_EQ(S->Streams.Path[Pcm].Open, 0);
+    /* a stream object is one at a time: a second open of the same handle is refused, and a bad handle too */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_INVALID_DEVICE_REQUEST);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, (HANDLE)&S->Streams, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 3), STATUS_INVALID_PARAMETER);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, 1001, 2), STATUS_INVALID_PARAMETER);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 1), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    Other = (HANDLE)Render;
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Other), STATUS_INVALID_HANDLE);
+    StreamQuiescent(S, Pcm);
+    StreamStop(S);
+    free(S);
+}
+
+/* (i3) An exhausted stream pool, a bus that fails, and a buffer the bus does not give: nothing is held, nothing is sent */
+static
+void
+CheckStreamPool(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    HANDLE Render = NULL, Capture = NULL, Taken;
+    HDAUDIO_STREAM_FORMAT Format;
+    UINT8 Tag;
+    UINT32 Pcm;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    memset(&Format, 0, sizeof(Format));
+    /* one render stream in the pool, and the codec driver holds it */
+    S->Bus.RenderStreams = 1;
+    CHECK_EQ(S->Bus.Interface.GetRenderStream(S->Bus.Interface.Context, Format, &Taken, &Tag), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_INSUFFICIENT_RESOURCES);
+    CHECK(Render == NULL);
+    CHECK_EQ(S->Streams.Path[Pcm].Open, 0);
+    CHECK_EQ(S->Streams.TraceCount, 0);
+    /* a bus that answers an error */
+    S->Bus.CaptureStatus = STATUS_NO_SUCH_DEVICE;
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_NO_SUCH_DEVICE);
+    /* a stream opens and its buffer is refused: the stream stays open with its tag, nothing was told to the firmware */
+    S->Bus.RenderStreams = FAKE_BUS_STREAMS;
+    S->Bus.BufferStatus = STATUS_INSUFFICIENT_RESOURCES;
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_INSUFFICIENT_RESOURCES);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStateOpen);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 0);
+    CHECK_EQ(S->H.Dsp->TransportRequests, 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER), 0);
+    /* the buffer comes on the next try, and the stream runs its course */
+    S->Bus.BufferStatus = STATUS_SUCCESS;
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamPause(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(S->H.Dsp->ModuleInits, 3);
+    CHECK_EQ(S->H.Dsp->ModuleDeletes, 3);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 1);
+    StreamQuiescent(S, Pcm);
+    /* a bus without the stream members does not start the manager, and the transitions say so */
+    FakeBusTruncate(&S->Bus, RTL_SIZEOF_THROUGH_FIELD(ADSP_BUS_INTERFACE, GetTopologySources));
+    CHECK(!IntcDspBusStreams(&S->Bus.Interface));
+    IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
+    CHECK(!S->Streams.Ready);
+    CHECK(StreamLogCount(S, "streams: not started (the bus carries no stream members)\n") == 1);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_DEVICE_NOT_READY);
+    CHECK_EQ(IntcDspStreamClockRegister(&S->Streams, (PULONG*)&Taken), STATUS_NOT_SUPPORTED);
+    StreamStop(S);
+    free(S);
+}
+
+/* (i4) A timeout at each request of the allocate and the run transitions: the link faults, nothing more is sent, every stream's buffer and tag go back to the bus, the driver is told, and the next boot starts over */
+static
+void
+CheckStreamTimeouts(
+    void)
+{
+    STREAM_HARNESS* S;
+    FAKE_DSP_FAULTS Faults;
+    HANDLE Render = NULL, Capture = NULL, Fresh;
+    NTSTATUS Status;
+    UINT32 K, Sx, Pcm;
+
+    for (K = 1; K <= IPC4_STREAM_TRACE_ALLOCATE_REQUESTS + IPC4_STREAM_TRACE_RUN_REQUESTS; K++)
+    {
+        S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+        CHECK(S != NULL);
+        if (S == NULL)
+            return;
+        Faults = *FakeDspDefaultFaults();
+        Faults.NeverReplyAtRequest = K;
+        StreamStart(S, &Faults);
+        StreamTakeCodecStreams(S);
+        Pcm = StreamPcm(S);
+        CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+        Status = IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2);
+        if (K > IPC4_STREAM_TRACE_ALLOCATE_REQUESTS)
+        {
+            /* the capture stream's run: its paused request is the seventh, its running request the eighth */
+            CHECK_EQ(Status, STATUS_SUCCESS);
+            CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+            Status = IntcDspStreamRun(&S->Streams, Capture);
+        }
+        /* the request that was dropped is the one the firmware never answers: the transport's timeout, the manager's status */
+        CHECK_EQ(Status, STATUS_IO_TIMEOUT);
+        CHECK_EQ(S->H.Dsp->TransportRequests, K);
+        CHECK_EQ(S->H.Ipc.Timeouts, 1);
+        CHECK(S->H.Ipc.Last.ElapsedUs >= 500000);
+        CHECK_EQ(S->H.Ipc.Link, SofIpcLinkFaulted);
+        CHECK_EQ(S->Streams.Faulted, TRUE);
+        CHECK_EQ(S->Faults, 1);
+        /* every stream's buffer and tag went back to the bus; none had run when the fault came */
+        CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 2);
+        CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), K >= IPC4_STREAM_TRACE_ALLOCATE_REQUESTS + 1 ? 2 : 1);
+        CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_STOP), 0);
+        CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_SPIB_OFF), K >= IPC4_STREAM_TRACE_ALLOCATE_REQUESTS + 1 ? 2 : 1);
+        for (Sx = 0; Sx < INTCDSP_STREAMS_MAX; Sx++)
+            CHECK(S->Streams.Stream[Sx].State == IntcDspStreamStateFree || S->Streams.Stream[Sx].State == IntcDspStreamStateReleased);
+        CHECK(S->Streams.Path[Pcm].Held == 0 && S->Streams.Path[Pcm].Built == FALSE);
+        CHECK_EQ(S->Streams.PipelineInstance[0], 0);
+        CHECK(StreamLogCount(S, "the link is faulted\n") == 1);
+        CHECK(StreamLogCount(S, "streams: released after the fault; nothing is sent until the DSP is booted again\n") == 1);
+        /* nothing more is sent: the transitions refuse, and the fault is reported once */
+        CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_DEVICE_NOT_READY);
+        CHECK(Fresh == NULL);
+        CHECK_EQ(IntcDspStreamRun(&S->Streams, Capture), STATUS_DEVICE_NOT_READY);
+        CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+        for (Sx = 0; Sx < INTCDSP_STREAMS_MAX; Sx++)
+            CHECK_EQ(S->Streams.Stream[Sx].State, IntcDspStreamStateFree);
+        CHECK_EQ(S->H.Dsp->TransportRequests, K);
+        CHECK_EQ(S->Faults, 1);
+        /* the next boot initializes the manager again, and the streams work */
+        StreamBoot(S, NULL);
+        IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
+        CHECK(S->Streams.Ready && !S->Streams.Faulted);
+        CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+        /* the instance ids of the boot before are not reused: the pipeline is the boot's first one again, its own count starting over */
+        CHECK_EQ(S->Streams.PipelineInstance[0], 1);
+        CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+        StreamStop(S);
+        free(S);
+    }
+}
+
+/* (i5) A busy transport at each request of the build (a second caller holds the link): the link stays usable, what was built is deleted again in order, the buffer is released and the tag kept, and the next allocation builds afresh */
+static
+void
+CheckStreamBusy(
+    void)
+{
+    STREAM_HARNESS* S;
+    HANDLE Render = NULL, Capture = NULL;
+    UINT32 K, Pcm, Sent, Teardown, Sx;
+
+    for (K = 1; K <= IPC4_STREAM_TRACE_ALLOCATE_REQUESTS; K++)
+    {
+        S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+        CHECK(S != NULL);
+        if (S == NULL)
+            return;
+        StreamStart(S, NULL);
+        StreamTakeCodecStreams(S);
+        Pcm = StreamPcm(S);
+        S->H.LockBusyAtRequest = K;
+        CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_RETRY);
+        /* the link is ready and nothing faulted */
+        CHECK_EQ(S->H.Ipc.Link, SofIpcLinkReady);
+        CHECK_EQ(S->Streams.Faulted, FALSE);
+        CHECK_EQ(S->Faults, 0);
+        /* the stream is as an open left it: its buffer released, its tag kept */
+        CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStateOpen);
+        CHECK(IntcDspStreamOf(&S->Streams, Render)->Mdl == NULL);
+        CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 1);
+        CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_SPIB_OFF), 1);
+        CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 0);
+        CHECK_EQ(S->Streams.Path[Pcm].Held, 0);
+        /* what the build had told the firmware is deleted again: the pipeline reset, its instances, the pipeline */
+        CHECK_EQ(S->H.Dsp->ModuleInits, S->H.Dsp->ModuleDeletes);
+        CHECK(!S->H.Dsp->Pipeline[1].Used);
+        CHECK_EQ(S->Streams.PipelineInstance[0], 0);
+        for (Sx = 0; Sx < S->Model->WidgetCount; Sx++)
+            CHECK_EQ(S->Streams.WidgetFlags[Sx], 0);
+        /* the requests the firmware saw: the build's before the busy one, then the teardown's (reset, the instances initialized, delete pipeline) */
+        Teardown = K == 1 ? 0 : (K == 2 ? 2 : 1 + (K < 6 ? K - 2 : 3) + 1);
+        Sent = (K - 1) + Teardown;
+        CHECK_EQ(S->H.Dsp->TransportRequests, Sent);
+        /* the teardown's own order: the last request is the pipeline's deletion, the one before the first instance's */
+        if (Sent != 0)
+        {
+            CHECK_EQ((S->H.Dsp->RequestPrimary[(Sent - 1) % FAKE_DSP_REQUEST_LOG] >> SOFIPC4_TYPE_SHIFT) & SOFIPC4_TYPE_MASK, SofIpc4GlbDeletePipeline);
+            CHECK_EQ(S->H.Dsp->RequestPrimary[(Sent - 1) % FAKE_DSP_REQUEST_LOG] & 0x00FF0000, 1 << 16);
+        }
+        /* the next allocation builds afresh, and the pipeline ids of the boot are not reused */
+        S->H.LockBusyAtRequest = 0;
+        CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+        CHECK_EQ(S->Streams.PipelineInstance[0], K == 1 ? 1 : 2);
+        CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+        StreamQuiescent(S, Pcm);
+        StreamStop(S);
+        free(S);
+    }
+}
+
+/* (i6) A stream that opens after the PCM was built: its copier waited with the placeholder, and one large-configuration set names the stream; a stream that frees while another holds the PCM has its copier told so */
+static
+void
+CheckStreamLate(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    HANDLE Render = NULL, Capture = NULL;
+    INT32 CaptureCopier;
+    UINT32 Pcm;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    /* the render stream alone builds the PCM: the capture copier is initialized with the placeholder and names no stream */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CaptureCopier = FakeDspModuleFind(S->H.Dsp, 5, 1);
+    CHECK(CaptureCopier >= 0);
+    if (CaptureCopier < 0)
+        goto Out;
+    CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Config[SOFTPLG_COPIER_NODE_ID_WORD], IPC4_STREAM_CASE_PLACEHOLDER_NODE);
+    CHECK_EQ(S->H.Dsp->ModuleUpdates, 0);
+    /* the capture stream opens and allocates: one large-configuration set names it, nothing else is sent */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Capture)->Tag, 1);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(S->H.Dsp->ModuleUpdates, 1);
+    CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Updates, 1);
+    CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Config[SOFTPLG_COPIER_NODE_ID_WORD], (1u << 8) | 0);
+    CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Words, 21);
+    CHECK_EQ(S->H.Dsp->ModuleInits, 3);
+    /* the trace: the buffer, its bound, the set (both flags, 84 bytes) */
+    CHECK_EQ(S->Streams.Trace[S->Streams.TraceCount - 1].Kind, INTCDSP_TRACE_IPC);
+    CHECK_EQ(S->Streams.Trace[S->Streams.TraceCount - 1].Primary, 0x44010005);
+    CHECK_EQ(S->Streams.Trace[S->Streams.TraceCount - 1].Extension, 0x30000054);
+    /* the render stream frees first: its copier is told its stream is going; the capture stream frees last and tears the PCM down */
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(S->H.Dsp->ModuleUpdates, 2);
+    CHECK_EQ(FakeDspModuleFind(S->H.Dsp, 5, 0) >= 0, TRUE);
+    CHECK_EQ(S->H.Dsp->Module[FakeDspModuleFind(S->H.Dsp, 5, 0)].Config[SOFTPLG_COPIER_NODE_ID_WORD], (0u << 8) | 0xFF);
+    CHECK_EQ(S->H.Dsp->ModuleDeletes, 0);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(S->H.Dsp->ModuleDeletes, 3);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+    StreamQuiescent(S, Pcm);
+Out:
+    StreamStop(S);
+    free(S);
+}
+
+/* (i7) The comparison: a capture that is the render matches at offset 0, one that is the render a number of frames behind matches at that number, a capture stream that stopped part-way into its buffer is read from there around the cyclic buffer, and a differing sample is named wherever it lies */
+static
+void
+CheckStreamCompare(
+    void)
+{
+    UINT8* Render = (UINT8*)calloc(1, 4096 * 8);
+    UINT8* Capture = (UINT8*)calloc(1, 4096 * 8);
+    INTCDSP_COMPARE Compare;
+    UINT32 I;
+    static const INT32 Peaks[] = { 0, 2147483647, 0 };
+    const INT32* Sine = IntcDspSelfTestSine();
+
+    CHECK(Render != NULL && Capture != NULL);
+    if (Render == NULL || Capture == NULL)
+        return;
+    IntcDspSelfTestFill(Render, 4096 * 8, 2, 32, 32);
+    /* no latency: offset 0, the whole buffer compared */
+    memcpy(Capture, Render, 4096 * 8);
+    IntcDspStreamCompare(Render, Capture, 4096 * 8, 2, 32, 0, &Compare);
+    CHECK(Compare.Matched);
+    CHECK_EQ(Compare.Offset, 0);
+    CHECK_EQ(Compare.Samples, 4096 * 2);
+    CHECK_EQ(Compare.Differing, 0);
+    CHECK_EQ(Compare.MaxError, 0);
+    CHECK_EQ(Compare.RenderRms, 379742706482ULL);
+    CHECK_EQ(Compare.CaptureRms, 379742706482ULL);
+    /* the capture is the render ten frames behind, around the cyclic buffer: it matches at offset 10 */
+    for (I = 0; I < 4096; I++)
+        memcpy(Capture + I * 8, Render + ((I + 4096 - 10) % 4096) * 8, 8);
+    IntcDspStreamCompare(Render, Capture, 4096 * 8, 2, 32, 0, &Compare);
+    CHECK(Compare.Matched);
+    CHECK_EQ(Compare.Offset, 10);
+    CHECK_EQ(Compare.Samples, 4096 * 2);
+    /* the capture stream stopped eight frames into the buffer: the compare starts there, and the render's first frame is two frames in */
+    IntcDspStreamCompare(Render, Capture, 4096 * 8, 2, 32, 8 * 8, &Compare);
+    CHECK(Compare.Matched);
+    CHECK_EQ(Compare.Offset, 2);
+    /* one differing sample: named with its frame, channel and both values, and the error is its size; an offset that would skip it does not */
+    memcpy(Capture, Render, 4096 * 8);
+    *(INT32*)(Capture + 100 * 8 + 4) += 5;
+    IntcDspStreamCompare(Render, Capture, 4096 * 8, 2, 32, 0, &Compare);
+    CHECK(!Compare.Matched);
+    CHECK_EQ(Compare.Offset, 0);
+    CHECK_EQ(Compare.Differing, 1);
+    CHECK_EQ(Compare.DifferingFrame, 100);
+    CHECK_EQ(Compare.DifferingChannel, 1);
+    CHECK_EQ(Compare.RenderSample, *(INT32*)(Render + 100 * 8 + 4));
+    CHECK_EQ(Compare.CaptureSample, *(INT32*)(Render + 100 * 8 + 4) + 5);
+    CHECK_EQ(Compare.MaxError, 5);
+    /* nothing written: no offset matches, and the report names the first sample at the first offset */
+    memset(Capture, 0xCD, 4096 * 8);
+    IntcDspStreamCompare(Render, Capture, 4096 * 8, 2, 32, 0, &Compare);
+    CHECK(!Compare.Matched);
+    CHECK_EQ(Compare.Offset, 0);
+    CHECK_EQ(Compare.Differing, 4096 * 2);
+    CHECK_EQ(Compare.DifferingFrame, 0);
+    CHECK_EQ(Compare.RenderSample, 0);
+    CHECK_EQ(Compare.CaptureSample, (INT32)0xCDCDCDCDu);
+    CHECK_EQ(Compare.MaxError, 1379021362);
+    /* a 16-bit container: the same, with 16-bit samples */
+    IntcDspSelfTestFill(Render, 4096 * 4, 2, 16, 16);
+    memcpy(Capture, Render, 4096 * 4);
+    IntcDspStreamCompare(Render, Capture, 4096 * 4, 2, 16, 0, &Compare);
+    CHECK(Compare.Matched);
+    CHECK_EQ(Compare.Offset, 0);
+    CHECK_EQ(Compare.RenderRms, 5793911ULL);
+    /* the sine: a period of 48 frames from zero through the positive peak and back */
+    for (I = 0; I < 3; I++)
+        CHECK_EQ(Sine[I * 12], Peaks[I]);
+    CHECK_EQ(Sine[36], -2147483647);
+    free(Render);
+    free(Capture);
+}
+
+/* (i8) The loopback self-test over the streams: three depths matched with the plan's lines, a latency found at its offset, a wire that forwards nothing and a wait that times out stop at the first run with the line that says why, a fault releases everything, and nothing is held on any way out */
+static
+void
+CheckStreamSelfTest(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    NTSTATUS Status;
+    UINT32 Pcm, Requests;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    /* the wire of the model: three runs, three matches, the lines of the plan's VM-acceptance row */
+    Status = IntcDspLoopbackSelfTest(&S->Streams, &S->SelfTestOps, STREAM_FRAMES);
+    if (Status != STATUS_SUCCESS)
+        fprintf(stderr, "%s", S->Log);
+    CHECK_EQ(Status, STATUS_SUCCESS);
+    CHECK(StreamLogCount(S, "loopback self-test: endpoint 'Loopback', 48000 Hz 2 ch 16-bit, render stream 1, capture stream 1, 4096 frames\n") == 1);
+    CHECK(StreamLogCount(S, "loopback self-test: endpoint 'Loopback', 48000 Hz 2 ch 24-bit, render stream 1, capture stream 1, 4096 frames\n") == 1);
+    CHECK(StreamLogCount(S, "loopback self-test: endpoint 'Loopback', 48000 Hz 2 ch 32-bit, render stream 1, capture stream 1, 4096 frames\n") == 1);
+    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames captured after 0 ms, offset 0 frames, max abs error 0, render rms 5793.911, capture rms 5793.911, ok\n") == 1);
+    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames captured after 0 ms, offset 0 frames, max abs error 0, render rms 379742706.482, capture rms 379742706.482, ok\n") == 2);
+    CHECK(StreamLogCount(S, "stopped at render position 0 (LPIB 0, buffer 0), capture position 0 (LPIB 0, buffer 0), 2 capture periods, released: 1 pipelines and 3 instances deleted, 2 streams freed, ok\n") == 3);
+    CHECK(StreamLogCount(S, "loopback self-test: 3 runs, 3 matched, 0 failed, 45 requests, 0 notifications, 0 timeouts, 0 DSP interrupts, ok\n") == 1);
+    CHECK_EQ(S->Waits, 3);
+    CHECK_EQ(S->H.Dsp->ModuleInits, 9);
+    CHECK_EQ(S->H.Dsp->ModuleDeletes, 9);
+    CHECK_EQ(S->H.Dsp->ModuleUpdates, 3);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 6);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 6);
+    StreamQuiescent(S, Pcm);
+    /* the wire puts ten frames of latency on the capture, and the capture stream stops eight frames into the buffer: the offset is what is left */
+    S->LogBytes = 0;
+    S->Latency = 10;
+    S->StopFrames = 8;
+    Status = IntcDspLoopbackSelfTest(&S->Streams, &S->SelfTestOps, STREAM_FRAMES);
+    if (Status != STATUS_SUCCESS)
+        fprintf(stderr, "%s", S->Log);
+    CHECK_EQ(Status, STATUS_SUCCESS);
+    CHECK(StreamLogCount(S, "offset 2 frames, max abs error 0, render rms 5793.911, capture rms 5793.911, ok\n") == 1);
+    /* the stop position is in bytes: eight frames of 16 bits are 32, of 24 and 32 bits 64 */
+    CHECK(StreamLogCount(S, "stopped at render position 0 (LPIB 0, buffer 0), capture position 32 (LPIB 32, buffer 32), 2 capture periods, released: 1 pipelines and 3 instances deleted, 2 streams freed, ok\n") == 1);
+    CHECK(StreamLogCount(S, "stopped at render position 0 (LPIB 0, buffer 0), capture position 64 (LPIB 64, buffer 64), 2 capture periods, released: 1 pipelines and 3 instances deleted, 2 streams freed, ok\n") == 2);
+    S->Latency = 0;
+    S->StopFrames = 0;
+    StreamQuiescent(S, Pcm);
+    /* the periods do not come: the wait's status is the run's, the line says how many came, one run is all */
+    S->LogBytes = 0;
+    S->WaitStatus = STATUS_IO_TIMEOUT;
+    Status = IntcDspLoopbackSelfTest(&S->Streams, &S->SelfTestOps, STREAM_FRAMES);
+    CHECK_EQ(Status, STATUS_IO_TIMEOUT);
+    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames not captured: 0 of 2 periods after 0 ms (0xc00000b5), failed\n") == 1);
+    CHECK(StreamLogCount(S, "loopback self-test: 1 runs, 0 matched, 1 failed, 15 requests, 0 notifications, 0 timeouts, 0 DSP interrupts, failed\n") == 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 14);
+    StreamQuiescent(S, Pcm);
+    /* no operations: not run */
+    CHECK_EQ(IntcDspLoopbackSelfTest(&S->Streams, NULL, STREAM_FRAMES), STATUS_NOT_FOUND);
+    /* the wire forwards nothing but the periods come: the capture keeps its poison, the stop rule's line names the first sample */
+    S->LogBytes = 0;
+    S->WaitStatus = STATUS_SUCCESS;
+    S->Wire = FALSE;
+    Status = IntcDspLoopbackSelfTest(&S->Streams, &S->SelfTestOps, STREAM_FRAMES);
+    CHECK_EQ(Status, STATUS_DEVICE_PROTOCOL_ERROR);
+    if (StreamLogCount(S, "offset 0 frames, max abs error 21042, render rms 5793.911, capture rms 12850.779, mismatch at frame 0 channel 0 (render frame 0): render 0, capture -12851, failed\n") == 0)
+        fprintf(stderr, "%s", S->Log);
+    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames captured after 0 ms, offset 0 frames, max abs error 21042, render rms 5793.911, capture rms 12850.779, mismatch at frame 0 channel 0 (render frame 0): render 0, capture -12851, failed\n") == 1);
+    CHECK(StreamLogCount(S, "loopback self-test: 1 runs, 0 matched, 1 failed, 15 requests, 0 notifications, 0 timeouts, 0 DSP interrupts, failed\n") == 1);
+    StreamQuiescent(S, Pcm);
+    /* one damaged sample in the first run: the run stops the test at that sample */
+    S->LogBytes = 0;
+    S->Wire = TRUE;
+    S->DamageFrame = 100;
+    Status = IntcDspLoopbackSelfTest(&S->Streams, &S->SelfTestOps, STREAM_FRAMES);
+    CHECK_EQ(Status, STATUS_DEVICE_PROTOCOL_ERROR);
+    CHECK(StreamLogCount(S, "offset 0 frames, max abs error 5, render rms 5793.911, capture rms 5793.911, mismatch at frame 100 channel 1 (render frame 100): render 4095, capture 4100, failed\n") == 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 18);
+    StreamQuiescent(S, Pcm);
+    /* a fault during the self-test: the fault's release, the fault's status, one run */
+    S->LogBytes = 0;
+    S->DamageFrame = 0;
+    Requests = S->H.Dsp->TransportRequests;
+    S->H.Dsp->Faults.NeverReplyAtRequest = Requests + 3;
+    Status = IntcDspLoopbackSelfTest(&S->Streams, &S->SelfTestOps, STREAM_FRAMES);
+    CHECK_EQ(Status, STATUS_IO_TIMEOUT);
+    CHECK_EQ(S->Faults, 1);
+    CHECK_EQ(S->H.Dsp->TransportRequests, Requests + 3);
+    CHECK(StreamLogCount(S, "loopback self-test: 1 runs, 0 matched, 1 failed, 3 requests, 0 notifications, 1 timeouts, 0 DSP interrupts, failed\n") == 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 20);
+    /* after a fault nothing runs until the next boot */
+    CHECK_EQ(IntcDspLoopbackSelfTest(&S->Streams, &S->SelfTestOps, STREAM_FRAMES), STATUS_DEVICE_NOT_READY);
+    StreamStop(S);
+    free(S);
+}
+
+
 int
 main(
     void)
@@ -1268,6 +2333,15 @@ main(
     CheckLargeConfig(H, &Parsed);
     CheckPollPolicy(H, &Parsed);
     CheckLink(H, &Parsed);
+
+    CheckStreamGolden();
+    CheckStreamFormats();
+    CheckStreamPool();
+    CheckStreamTimeouts();
+    CheckStreamBusy();
+    CheckStreamLate();
+    CheckStreamCompare();
+    CheckStreamSelfTest();
 
     printf("sofipc: %d checks, %d failures\n", Checks, Failures);
     free(H->Dsp);

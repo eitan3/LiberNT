@@ -9,6 +9,8 @@
 #include <fwload.h>
 #include <sofipc.h>
 #include <fake_dsp.h>
+#include <fake_bus.h>
+#include <stream.h>
 #include <ipclock.h>
 
 #define NDEBUG
@@ -788,6 +790,99 @@ CheckWords(VOID)
     ok_eq_str(SofIpcLinkName(SofIpcLinkFaulted), "faulted");
 }
 
+/*
+ * (l) The stream manager over the fake bus and the model with the loopback
+ * topology built by hand: the pair's transitions leave the golden trace of
+ * the shared rows, each copier's word 17 names its stream, and the capture
+ * copier is told its stream is going before the teardown
+ */
+static
+VOID
+CheckStreamTrace(
+    SOFIPC_HARNESS* H,
+    const SOF_RI_IMAGE* Image)
+{
+    static UINT8 State[512];
+    IPC4_STREAM_MODEL Model;
+    INTCDSP_STREAMS Streams;
+    FAKE_BUS Bus;
+    HDAUDIO_STREAM_FORMAT Format;
+    HANDLE Render = NULL, Capture = NULL, Taken;
+    const INTCDSP_TRACE* T;
+    const IPC4_STREAM_CASE* C;
+    UINT8 Tag;
+    INT32 Module;
+    UINT32 I;
+
+    Ipc4StreamLoopbackModel(&Model);
+    SofIpcHarnessBoot(H, Image, NULL);
+    SofIpcHarnessAttach(H, NULL, FALSE);
+    FakeBusInit(&Bus, 2, TRUE);
+    RtlZeroMemory(&Streams, sizeof(Streams));
+    IntcDspStreamsInit(&Streams, State, sizeof(State), &Model.Model, &H->Ipc, &Bus.Interface, NULL);
+    ok(Streams.Ready != FALSE, "streams ready\n");
+    /* the codec driver holds the first render stream and the first two capture streams: the DSP's carry the tags 2 and 3 */
+    RtlZeroMemory(&Format, sizeof(Format));
+    ok_eq_int(Bus.Interface.GetRenderStream(Bus.Interface.Context, Format, &Taken, &Tag), STATUS_SUCCESS);
+    ok_eq_uint(Tag, 1);
+    ok_eq_int(Bus.Interface.GetCaptureStream(Bus.Interface.Context, Format, &Taken, &Tag), STATUS_SUCCESS);
+    ok_eq_int(Bus.Interface.GetCaptureStream(Bus.Interface.Context, Format, &Taken, &Tag), STATUS_SUCCESS);
+    ok_eq_uint(Tag, 2);
+    ok_eq_int(IntcDspStreamOpen(&Streams, 0, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    ok_eq_int(IntcDspStreamOpen(&Streams, 0, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    ok_eq_int(IntcDspStreamAllocate(&Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    Module = FakeDspModuleFind(H->Dsp, 5, 0);
+    ok(Module >= 0, "the host-output copier is initialized\n");
+    if (Module >= 0)
+        ok_eq_hex(H->Dsp->Module[Module].Config[SOFTPLG_COPIER_NODE_ID_WORD], IPC4_STREAM_CASE_PLAYBACK_NODE);
+    Module = FakeDspModuleFind(H->Dsp, 5, 1);
+    ok(Module >= 0, "the host-input copier is initialized\n");
+    if (Module >= 0)
+        ok_eq_hex(H->Dsp->Module[Module].Config[SOFTPLG_COPIER_NODE_ID_WORD], IPC4_STREAM_CASE_CAPTURE_NODE);
+    ok_eq_int(IntcDspStreamAllocate(&Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    ok_eq_int(IntcDspStreamRun(&Streams, Capture), STATUS_SUCCESS);
+    ok_eq_int(IntcDspStreamRun(&Streams, Render), STATUS_SUCCESS);
+    ok_eq_int(IntcDspStreamPause(&Streams, Capture), STATUS_SUCCESS);
+    ok_eq_int(IntcDspStreamPause(&Streams, Render), STATUS_SUCCESS);
+    ok_eq_int(IntcDspStreamFree(&Streams, Capture), STATUS_SUCCESS);
+    if (Module >= 0)
+        ok_eq_hex(H->Dsp->Module[Module].Config[SOFTPLG_COPIER_NODE_ID_WORD], IPC4_STREAM_CASE_PLACEHOLDER_NODE);
+    ok_eq_int(IntcDspStreamFree(&Streams, Render), STATUS_SUCCESS);
+    ok_eq_int(IntcDspStreamClose(&Streams, Capture), STATUS_SUCCESS);
+    ok_eq_int(IntcDspStreamClose(&Streams, Render), STATUS_SUCCESS);
+    ok_eq_uint(Streams.TraceCount, IPC4_STREAM_TRACE_ROWS);
+    ok_eq_uint(H->Dsp->ModuleInits, 3);
+    ok_eq_uint(H->Dsp->ModuleBinds, 2);
+    ok_eq_uint(H->Dsp->ModuleDeletes, 3);
+    ok_eq_uint(H->Dsp->ModuleUpdates, 1);
+    ok_eq_uint(Streams.Faulted, FALSE);
+    ok_eq_uint(H->Ipc.Link, SofIpcLinkReady);
+    for (I = 0; I < IPC4_STREAM_TRACE_ROWS && I < Streams.TraceCount; I++)
+    {
+        T = &Streams.Trace[I];
+        C = &Ipc4StreamTrace[I];
+        ok_eq_uint(T->Kind, C->Kind);
+        ok_eq_uint(T->Capture, C->Capture);
+        ok_eq_uint(T->Tag, C->Tag);
+        ok_eq_hex(T->Primary, C->Primary);
+        ok_eq_hex(T->Extension, C->Extension);
+        if (T->Kind == INTCDSP_TRACE_IPC)
+            ok_eq_uint(T->Value, 0);
+    }
+    /* a format the copier does not offer is refused, and a request the firmware never answers faults the link and releases both streams */
+    ok_eq_int(IntcDspStreamOpen(&Streams, 0, FALSE, 44100, 2, 16, 16, &Render), STATUS_NOT_SUPPORTED);
+    ok_eq_int(IntcDspStreamOpen(&Streams, 0, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    ok_eq_int(IntcDspStreamOpen(&Streams, 0, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    H->Dsp->Faults.NeverReplyAtRequest = H->Dsp->TransportRequests + 3;
+    ok_eq_int(IntcDspStreamAllocate(&Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_IO_TIMEOUT);
+    ok_eq_uint(Streams.Faulted, TRUE);
+    ok_eq_uint(H->Ipc.Link, SofIpcLinkFaulted);
+    ok_eq_uint(FakeBusCount(&Bus, FAKE_BUS_EVENT_FREE), 4);
+    ok_eq_uint(FakeBusCount(&Bus, FAKE_BUS_EVENT_BUFFER_FREE), 1);
+    ok_eq_int(IntcDspStreamClose(&Streams, Render), STATUS_SUCCESS);
+    ok_eq_int(IntcDspStreamClose(&Streams, Capture), STATUS_SUCCESS);
+}
+
 START_TEST(SofIpc)
 {
     static UINT8 Image[FWLOAD_CASE_IMAGE_BYTES];
@@ -848,6 +943,7 @@ START_TEST(SofIpc)
     CheckTwoCallers(H, &Parsed);
     CheckLargeConfig(H, &Parsed);
     CheckPollPolicy(H, &Parsed);
+    CheckStreamTrace(H, &Parsed);
 
 Cleanup:
     if (H->Virtual) ExFreePoolWithTag(H->Virtual, SOFIPC_TEST_TAG);

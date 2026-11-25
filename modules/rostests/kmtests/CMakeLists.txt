@@ -147,6 +147,7 @@ list(APPEND KMTEST_DRV_SOURCE
     ${REACTOS_SOURCE_DIR}/submodules/host-tests/fwload/fake_bus.c
     ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/intcdsp/adspbus.c
     ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/intcdsp/ipclock.c
+    ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/intcdsp/stream.c
     ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus/policy.c
     ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus/policy_dmi.c
     ks/KsCreateItemSlot.c

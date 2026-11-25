@@ -76,6 +76,17 @@
 /* The newest requests of the host after the boot, their two header words */
 #define FAKE_DSP_REQUEST_LOG             16
 
+/* The firmware's module table of the model: the instances the host initialized, with their configurations (a model value, the simulator's) */
+#define FAKE_DSP_MODULES                 64
+#define FAKE_DSP_CONFIG_WORDS            32
+#define FAKE_DSP_NO_MODULE               (-1)
+/* What of a configuration the table reads: the copier's tail starts at the 21st word, and its gateway node id is word 17 (ipc4model.h SOFTPLG_IPC4_COPIER_CONFIG_WORDS, SOFTPLG_COPIER_NODE_ID_WORD): the index in bits 7:0, the gateway type in 12:8, the host output 0 and the host input 1, the placeholder index 0xFF naming no stream */
+#define FAKE_DSP_COPIER_CONFIG_WORDS     21
+#define FAKE_DSP_COPIER_NODE_ID_WORD     17
+#define FAKE_DSP_NODE_HOST_OUTPUT        0
+#define FAKE_DSP_NODE_HOST_INPUT         1
+#define FAKE_DSP_NODE_INDEX_PLACEHOLDER  0xFF
+
 /* Violations of the large-configuration block rules the model found */
 #define FAKE_DSP_LARGE_FIRST_MISSING     0x00000001UL /* the first block came without the first flag, or a later one with it */
 #define FAKE_DSP_LARGE_OFFSET_WRONG      0x00000002UL /* a later block did not continue where the one before ended */
@@ -144,6 +155,8 @@ typedef struct _FAKE_DSP_FAULTS
     UINT32 IpcStatusValue;
     UINT32 NeverReplyForType;
     UINT32 ReplyTypeShift;
+    /* the request after the boot, counted from 1, that is dropped like a firmware that never answers it; 0 drops none */
+    UINT32 NeverReplyAtRequest;
     /* a firmware exception, or a log-buffer notification, posted the moment a request arrives; a notification posted beside the reply */
     BOOLEAN CrashDuringRequest;
     BOOLEAN NotifyDuringRequest;
@@ -184,6 +197,26 @@ typedef struct _FAKE_DSP_PIPELINE
     BOOLEAN Used;
     UINT32 State;
 } FAKE_DSP_PIPELINE, *PFAKE_DSP_PIPELINE;
+
+/* One instance of the module table */
+typedef struct _FAKE_DSP_MODULE
+{
+    BOOLEAN Used;
+    /* a configuration of 21 words and up is a copier's */
+    BOOLEAN Copier;
+    UINT32 Id;
+    UINT32 Instance;
+    UINT32 Pipeline;
+    /* of a copier: its gateway's type and index */
+    UINT32 GwType;
+    UINT32 GwIndex;
+    /* the table index of the instance bound to feed this one */
+    INT32 Src;
+    UINT32 Words;
+    UINT32 Config[FAKE_DSP_CONFIG_WORDS];
+    /* the large-configuration sets that replaced the configuration */
+    UINT32 Updates;
+} FAKE_DSP_MODULE, *PFAKE_DSP_MODULE;
 
 typedef struct _FAKE_DSP_WRITE
 {
@@ -291,6 +324,11 @@ typedef struct _FAKE_DSP
     UINT32 DownlinkWrites;
     UINT32 LastDownlinkBytes;
     FAKE_DSP_PIPELINE Pipeline[FAKE_DSP_PIPELINES];
+    FAKE_DSP_MODULE Module[FAKE_DSP_MODULES];
+    UINT32 ModuleInits;
+    UINT32 ModuleBinds;
+    UINT32 ModuleDeletes;
+    UINT32 ModuleUpdates;
     UINT8 Downlink[FWLOAD_MAILBOX_BYTES];
     UINT8 LargeConfig[FAKE_DSP_LARGE_CONFIG_BYTES];
     UINT32 LargeConfigBytes;
@@ -335,6 +373,13 @@ FakeDspAccessBegin(
 /* The interrupt lock as the operations table models it, for a test that plays the interrupt service routine */
 VOID FakeDspInterruptLock(PFAKE_DSP Dsp);
 VOID FakeDspInterruptUnlock(PFAKE_DSP Dsp);
+/* The instance of the module table a message names, by its id and instance; FAKE_DSP_NO_MODULE when there is none */
+INT32
+FakeDspModuleFind(
+    const FAKE_DSP* Dsp,
+    UINT32 Id,
+    UINT32 Instance);
+
 /* Whether a message is pending in the model's registers */
 BOOLEAN FakeDspMessagePending(const FAKE_DSP* Dsp);
 BOOLEAN FakeDspPowerEventSeen(const FAKE_DSP* Dsp, UINT32 Event);
