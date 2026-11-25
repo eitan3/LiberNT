@@ -28,6 +28,7 @@ endfunction()
 dspparsers_test(sofipc4 t_sofipc4.c ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/sofipc4/sofipc4.c)
 dspparsers_test(disco t_disco.c ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/disco/disco.c)
 dspparsers_test(softplg t_softplg.c ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/softplg/softplg.c
+    ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/softplg/ipc4model.c
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/fwload/sof_ri.c)
 target_include_directories(softplg PRIVATE ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/fwload)
 target_compile_definitions(softplg PRIVATE

@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT host-native tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The topology walker reads a synthetic binary and the real sof-bin topologies as the independent walk says, resolves their module UUIDs against the firmware image's module table, and never reads past a short or garbled one
+ * PURPOSE:     The topology walker reads a synthetic binary and the real sof-bin topologies as the independent walk says, resolves their module UUIDs against the firmware image's module table, and never reads past a short or garbled one; the IPC4 model builds the loopback file and the shipped files as their independent decode says and refuses each malformed input with its status
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -12,6 +12,7 @@
 #include "shim.h"
 
 #include <softplg.h>
+#include <ipc4model.h>
 #include <fwload.h>
 
 #include "softplg_cases.h"
@@ -870,6 +871,16 @@ Put32(
     At[3] = (UINT8)(Value >> 24);
 }
 
+static
+void
+Put16(
+    UINT8* At,
+    UINT32 Value)
+{
+    At[0] = (UINT8)Value;
+    At[1] = (UINT8)(Value >> 8);
+}
+
 /* A heap block of exactly Length bytes holding the first Length bytes of Source: the sanitizer sees every read past it */
 static
 UINT8*
@@ -1443,6 +1454,1127 @@ Out:
     free(Topology);
 }
 
+/* The IPC4 model over the four fixtures and the malformed inputs of plan section 8 C2 */
+#include <ipc4model.h>
+
+static SOF_RI_MODULE ModelModules[64];
+static SOF_RI_IMAGE ModelImage;
+static SOFTPLG_MODEL_STATUS ModelStatus;
+static SOFTPLG_IPC4_PROBLEM ModelProblem;
+
+/* The firmware image's module table, read once for every model test */
+static
+void
+ModelLoadFirmware(
+    void)
+{
+    static BOOLEAN Loaded;
+    UINT8* Firmware;
+    SIZE_T Bytes;
+
+    if (Loaded)
+        return;
+    Loaded = TRUE;
+    Firmware = LoadExact(SOFTPLG_FW_FIXTURE_DIR "/sof-arl-s.ri", &Bytes);
+    CHECK(Firmware != NULL);
+    if (Firmware == NULL)
+        return;
+    CHECK_EQ(SofRiParse(Firmware, Bytes, ModelModules, 64, &ModelImage), FwloadOk);
+    free(Firmware);
+}
+
+/* The module id of a UUID: its index in the firmware image's module table */
+static
+UINT32
+ModelLookup(
+    PVOID Context,
+    const UINT8* Uuid)
+{
+    UINT32 M;
+
+    for (M = 0; M < ModelImage.ModuleCount; M++)
+        if (memcmp(ModelModules[M].Uuid, Uuid, SOFTPLG_UUID_BYTES) == 0)
+            return M;
+    return SOFTPLG_MODULE_NONE;
+}
+
+static
+PSOFTPLG_IPC4_MODEL
+ModelBuild(
+    const UINT8* Data,
+    SIZE_T Size,
+    SIZE_T* Bytes)
+{
+    SOFTPLG_MODEL_INPUT Input;
+    PSOFTPLG_IPC4_MODEL Model = NULL;
+    UINT8* Buffer;
+
+    memset(&Input, 0, sizeof(Input));
+    Input.Data = Data;
+    Input.Size = Size;
+    Input.Lookup = ModelLookup;
+    *Bytes = 0;
+    ModelStatus = SoftplgModelMeasure(&Input, Bytes, &ModelProblem);
+    if (ModelStatus != SoftplgModelOk)
+    {
+        fprintf(stderr, "  the model was not measured: %s\n", SoftplgModelStatusName(ModelStatus));
+        return NULL;
+    }
+    Buffer = (UINT8*)malloc(*Bytes);
+    CHECK(Buffer != NULL);
+    if (Buffer == NULL)
+        exit(2);
+    ModelStatus = SoftplgModelBuild(&Input, Buffer, *Bytes, &Model, &ModelProblem);
+    if (ModelStatus != SoftplgModelOk)
+    {
+        fprintf(stderr, "  the model was not built: %s\n", SoftplgModelStatusName(ModelStatus));
+        free(Buffer);
+        return NULL;
+    }
+    /* an exact-size heap block, so the sanitizers see every read past the model */
+    CHECK(Model == (PSOFTPLG_IPC4_MODEL)Buffer);
+    return Model;
+}
+
+static
+UINT32
+ModelWidget(
+    const SOFTPLG_IPC4_MODEL* Model,
+    const char* Name)
+{
+    UINT32 W;
+
+    for (W = 0; W < Model->WidgetCount; W++)
+        if (strcmp(Model->Widgets[W].Name, Name) == 0)
+            return W;
+    CHECK(FALSE);
+    return SOFTPLG_NO_WIDGET;
+}
+
+static
+UINT32
+ModelPcm(
+    const SOFTPLG_IPC4_MODEL* Model,
+    const char* Name)
+{
+    UINT32 P;
+
+    for (P = 0; P < Model->PcmCount; P++)
+        if (strcmp(Model->Pcms[P].Name, Name) == 0)
+            return P;
+    CHECK(FALSE);
+    return SOFTPLG_NO_PCM;
+}
+
+static
+SOFTPLG_MODEL_STATUS
+ModelValidate(
+    const SOFTPLG_IPC4_MODEL* Model,
+    UINT32 MaxPipelines,
+    UINT32 MailboxBytes,
+    const char** Widget)
+{
+    SOFTPLG_IPC4_LIMITS Limits;
+    SOFTPLG_IPC4_PROBLEM Problem;
+
+    Limits.MaxPipelines = MaxPipelines;
+    Limits.MailboxBytes = MailboxBytes;
+    *Widget = NULL;
+    if (SoftplgModelValidate(Model, &Limits, &Problem) != Problem.Status)
+        CHECK(FALSE);
+    if (Problem.Widget != SOFTPLG_NO_WIDGET)
+        *Widget = Model->Widgets[Problem.Widget].Name;
+    return Problem.Status;
+}
+
+/* One format as the model keeps it: rate, depth, the configuration word, the pin's buffer */
+#define CHECK_FORMAT(F, Rate, Depth, Cfg, Buffer, IsExpressible) \
+    do { \
+        CHECK_EQ((F)->Words[0], (Rate)); \
+        CHECK_EQ((F)->Words[1], (Depth)); \
+        CHECK_EQ((F)->Words[2], 0xFFFFFF10u); \
+        CHECK_EQ((F)->Words[3], 1); \
+        CHECK_EQ((F)->Words[4], 0); \
+        CHECK_EQ((F)->Words[5], (Cfg)); \
+        CHECK_EQ((F)->BufferBytes, (Buffer)); \
+        CHECK_EQ((F)->Expressible, (IsExpressible)); \
+    } while (0)
+
+static
+void
+check_model_expressible(void)
+{
+    CHECK(SoftplgFormatExpressible(48000, 2, 16, 16));
+    CHECK(SoftplgFormatExpressible(48000, 2, 24, 32));
+    CHECK(SoftplgFormatExpressible(48000, 2, 32, 32));
+    CHECK(SoftplgFormatExpressible(8000, 1, 8, 8));
+    CHECK(SoftplgFormatExpressible(384000, 8, 32, 32));
+    CHECK(SoftplgFormatExpressible(192000, 2, 20, 32));
+    CHECK(SoftplgFormatExpressible(44100, 2, 16, 16));
+    CHECK(SoftplgFormatExpressible(9600, 2, 16, 16));
+    /* a packed 24-bit stream, a rate the stream format word has no code for, no channel or too many, a depth without a code */
+    CHECK(!SoftplgFormatExpressible(48000, 2, 24, 24));
+    CHECK(!SoftplgFormatExpressible(48000, 2, 16, 32));
+    CHECK(!SoftplgFormatExpressible(64000, 2, 16, 16));
+    CHECK(!SoftplgFormatExpressible(24000, 2, 16, 16));
+    CHECK(!SoftplgFormatExpressible(48000, 0, 16, 16));
+    CHECK(!SoftplgFormatExpressible(48000, 9, 16, 16));
+    CHECK(!SoftplgFormatExpressible(48000, 2, 12, 16));
+    CHECK(!SoftplgFormatExpressible(48000, 2, 64, 64));
+    CHECK(!SoftplgFormatExpressible(0, 2, 16, 16));
+}
+
+/*
+ * The loopback topology: one pipeline, the host playback copier through the
+ * gain to the host capture copier, one duplex PCM. Every number comes from
+ * the build's own dump of the file and an independent walk of it.
+ */
+static
+void
+check_model_loopback(void)
+{
+    static const UINT32 PlaybackConfig[SOFTPLG_IPC4_COPIER_CONFIG_WORDS] =
+    {
+        1647, 192, 384, 1, 48000, 16, 0xFFFFFF10, 1, 0, 0x11002,
+        48000, 32, 0xFFFFFF10, 1, 0, 0x12002, 0, 0x0000FF, 384, 1, 0
+    };
+    static const UINT32 CaptureConfig[SOFTPLG_IPC4_COPIER_CONFIG_WORDS] =
+    {
+        1647, 384, 384, 1, 48000, 32, 0xFFFFFF10, 1, 0, 0x12002,
+        48000, 32, 0xFFFFFF10, 1, 0, 0x11802, 0, 0x0001FF, 768, 1, 0
+    };
+    static const UINT32 GainConfig[SOFTPLG_IPC4_BASE_CONFIG_WORDS] =
+    {
+        0, 384, 384, 0, 48000, 32, 0xFFFFFF10, 1, 0, 0x12002
+    };
+    SOFTPLG_IPC4_MANIFEST Manifest;
+    SOFTPLG_MODEL_INPUT Input;
+    SOFTPLG_IPC4_CONFIG Config;
+    SOFTPLG_BLOCK Block;
+    PSOFTPLG_IPC4_MODEL Model;
+    PSOFTPLG_IPC4_WIDGET W;
+    PSOFTPLG_IPC4_PCM Pcm;
+    UINT8* Data;
+    SIZE_T Size, Bytes, K;
+    UINT32 Index;
+    const char* Named;
+    int N;
+
+    Data = LoadExact(SOFTPLG_FIXTURE_DIR "/sof-ipc4-loopback.tplg", &Size);
+    CHECK(Data != NULL);
+    if (Data == NULL)
+        return;
+    ModelLoadFirmware();
+
+    CHECK_EQ(SoftplgReadBlock(Data, Size, 0, &Block), SoftplgOk);
+    CHECK_EQ(SoftplgIpc4ReadManifest(Data, Size, &Block, &Manifest), SoftplgModelOk);
+    CHECK_EQ(Manifest.Major, 3);
+    CHECK_EQ(Manifest.Minor, 29);
+    CHECK_EQ(Manifest.Patch, 1);
+    CHECK_EQ(Manifest.ItemCount, 0);
+    CHECK_EQ(Manifest.Nhlt.Size, 0);
+
+    Model = ModelBuild(Data, Size, &Bytes);
+    CHECK(Model != NULL);
+    if (Model == NULL)
+        goto Out;
+    CHECK_EQ(Bytes % 8, 0);
+    CHECK_EQ(Model->AbiMajor, 3);
+    CHECK_EQ(Model->AbiMinor, 29);
+    CHECK_EQ(Model->AbiPatch, 1);
+    CHECK_EQ(Model->ManifestItems, 0);
+    CHECK_EQ(Model->ControlCount, 2);
+    CHECK_EQ(Model->WidgetCount, 4);
+    CHECK_EQ(Model->EdgeCount, 2);
+    CHECK_EQ(Model->PcmCount, 1);
+    CHECK_EQ(Model->PipelineCount, 1);
+    CHECK_EQ(Model->FormatCount, 10);
+    CHECK_EQ(Model->ReachWords, 1);
+    CHECK(strcmp(Model->Widgets[0].Name, "host-copier.0.playback") == 0);
+    CHECK(strcmp(Model->Widgets[1].Name, "host-copier.0.capture") == 0);
+    CHECK(strcmp(Model->Widgets[2].Name, "gain.1.1") == 0);
+    CHECK(strcmp(Model->Widgets[3].Name, "pipeline.1") == 0);
+
+    W = &Model->Widgets[0];
+    CHECK_EQ(W->Kind, SoftplgKindHostCopierPlayback);
+    CHECK_EQ(W->Type, 11);
+    CHECK_STR(W->SName, "Loopback Playback");
+    CHECK_EQ(W->PipelineId, 1);
+    CHECK_EQ(W->Pipeline, 0);
+    CHECK_EQ(W->Pcm, 0);
+    CHECK(W->HasUuid);
+    CHECK(memcmp(W->Uuid, AceModules[2].Uuid, SOFTPLG_UUID_BYTES) == 0);
+    CHECK_EQ(W->ModuleId, 5);
+    CHECK_STR(ModelModules[W->ModuleId].Name, "COPIER");
+    CHECK(W->HasNodeType);
+    CHECK_EQ(W->NodeType, 0);
+    CHECK_EQ(W->CoreId, 0);
+    CHECK_EQ(W->Cpc, 1647);
+    CHECK_EQ(W->IsPages, 1);
+    CHECK_EQ(W->InputPins, 0);
+    CHECK_EQ(W->OutputPins, 1);
+    CHECK_EQ(W->StackBytes, 8192);
+    CHECK_EQ(W->HeapBytes, 24576);
+    CHECK_EQ(W->InputFormats, 3);
+    CHECK_EQ(W->OutputFormats, 1);
+    CHECK_EQ(W->FirstFormat, 0);
+    CHECK_EQ(W->ControlCount, 0);
+    CHECK_FORMAT(&Model->Formats[0], 48000, 16, 0x11002, 192, TRUE);
+    CHECK_FORMAT(&Model->Formats[1], 48000, 32, 0x11802, 384, TRUE);
+    CHECK_FORMAT(&Model->Formats[2], 48000, 32, 0x12002, 384, TRUE);
+    CHECK_FORMAT(&Model->Formats[3], 48000, 32, 0x12002, 384, TRUE);
+    CHECK_EQ(W->Config.Count, SOFTPLG_IPC4_COPIER_CONFIG_WORDS);
+    for (N = 0; N < SOFTPLG_IPC4_COPIER_CONFIG_WORDS; N++)
+        CHECK_EQ(W->Config.Words[N], PlaybackConfig[N]);
+    CHECK_EQ(SoftplgModelConfig(Model, 0, 0, 0, 1, &Config), SoftplgModelOk);
+    CHECK_EQ(Config.Words[SOFTPLG_COPIER_NODE_ID_WORD], 0x0000);
+    CHECK_EQ(SoftplgModelConfig(Model, 0, 0, 0, 5, &Config), SoftplgModelOk);
+    CHECK_EQ(Config.Words[SOFTPLG_COPIER_NODE_ID_WORD], 0x0004);
+    for (N = 0; N < SOFTPLG_IPC4_COPIER_CONFIG_WORDS; N++)
+        if (N != SOFTPLG_COPIER_NODE_ID_WORD)
+            CHECK_EQ(Config.Words[N], PlaybackConfig[N]);
+    /* the second input format is the 24-in-32 one: its buffer is the base configuration's */
+    CHECK_EQ(SoftplgModelConfig(Model, 0, 1, 0, 5, &Config), SoftplgModelOk);
+    CHECK_EQ(Config.Words[1], 384);
+    CHECK_EQ(Config.Words[4], 48000);
+    CHECK_EQ(Config.Words[5], 32);
+    CHECK_EQ(Config.Words[9], 0x11802);
+    CHECK_EQ(Config.Words[18], 2 * 384);
+
+    W = &Model->Widgets[1];
+    CHECK_EQ(W->Kind, SoftplgKindHostCopierCapture);
+    CHECK_EQ(W->Type, 12);
+    CHECK_STR(W->SName, "Loopback Capture");
+    CHECK_EQ(W->PipelineId, 1);
+    CHECK_EQ(W->Pcm, 0);
+    CHECK_EQ(W->ModuleId, 5);
+    CHECK(W->HasNodeType);
+    CHECK_EQ(W->NodeType, 1);
+    CHECK_EQ(W->Cpc, 1647);
+    CHECK_EQ(W->IsPages, 1);
+    CHECK_EQ(W->InputPins, 1);
+    CHECK_EQ(W->OutputPins, 0);
+    CHECK_EQ(W->InputFormats, 1);
+    CHECK_EQ(W->OutputFormats, 3);
+    CHECK_EQ(W->FirstFormat, 4);
+    CHECK_FORMAT(&Model->Formats[4], 48000, 32, 0x12002, 384, TRUE);
+    CHECK_FORMAT(&Model->Formats[5], 48000, 32, 0x11802, 384, TRUE);
+    CHECK_FORMAT(&Model->Formats[6], 48000, 32, 0x12002, 384, TRUE);
+    CHECK_FORMAT(&Model->Formats[7], 48000, 16, 0x11002, 192, TRUE);
+    CHECK_EQ(W->Config.Count, SOFTPLG_IPC4_COPIER_CONFIG_WORDS);
+    for (N = 0; N < SOFTPLG_IPC4_COPIER_CONFIG_WORDS; N++)
+        CHECK_EQ(W->Config.Words[N], CaptureConfig[N]);
+    CHECK_EQ(SoftplgModelConfig(Model, 1, 0, 0, 5, &Config), SoftplgModelOk);
+    CHECK_EQ(Config.Words[SOFTPLG_COPIER_NODE_ID_WORD], 0x0104);
+    /* the gateway buffer of a capture copier is two milliseconds of its output buffer */
+    CHECK_EQ(Config.Words[SOFTPLG_COPIER_DMA_BUFFER_WORD], 768);
+
+    W = &Model->Widgets[2];
+    CHECK_EQ(W->Kind, SoftplgKindProcessor);
+    CHECK_EQ(W->Type, 4);
+    CHECK_STR(W->SName, "");
+    CHECK_EQ(W->PipelineId, 1);
+    CHECK_EQ(W->Pipeline, 0);
+    CHECK_EQ(W->Pcm, SOFTPLG_NO_PCM);
+    CHECK(memcmp(W->Uuid, AceModules[3].Uuid, SOFTPLG_UUID_BYTES) == 0);
+    CHECK_EQ(W->ModuleId, 7);
+    CHECK_STR(ModelModules[W->ModuleId].Name, "GAIN");
+    CHECK(!W->HasNodeType);
+    CHECK_EQ(W->Cpc, 0);
+    CHECK_EQ(W->IsPages, 0);
+    CHECK_EQ(W->InputPins, 1);
+    CHECK_EQ(W->OutputPins, 1);
+    CHECK_EQ(W->ControlCount, 2);
+    CHECK_EQ(W->InputFormats, 1);
+    CHECK_EQ(W->OutputFormats, 1);
+    CHECK_EQ(W->FirstFormat, 8);
+    CHECK_FORMAT(&Model->Formats[8], 48000, 32, 0x12002, 384, TRUE);
+    CHECK_FORMAT(&Model->Formats[9], 48000, 32, 0x12002, 384, TRUE);
+    CHECK_EQ(W->GainRampType, 2);
+    CHECK_EQ(W->GainRampDuration, 200000);
+    CHECK_EQ(W->GainVal, 2147483647);
+    CHECK_EQ(W->Config.Count, SOFTPLG_IPC4_BASE_CONFIG_WORDS);
+    for (N = 0; N < SOFTPLG_IPC4_BASE_CONFIG_WORDS; N++)
+        CHECK_EQ(W->Config.Words[N], GainConfig[N]);
+    for (N = SOFTPLG_IPC4_BASE_CONFIG_WORDS; N < SOFTPLG_IPC4_CONFIG_WORDS_MAX; N++)
+        CHECK_EQ(W->Config.Words[N], 0);
+
+    W = &Model->Widgets[3];
+    CHECK_EQ(W->Kind, SoftplgKindScheduler);
+    CHECK_EQ(W->Type, 17);
+    CHECK(!W->HasUuid);
+    CHECK_EQ(W->ModuleId, SOFTPLG_MODULE_NONE);
+    CHECK_EQ(W->PipelineId, 1);
+    CHECK_EQ(W->Pipeline, 0);
+    CHECK_EQ(W->InputFormats, 0);
+    CHECK_EQ(W->OutputFormats, 0);
+    CHECK_EQ(W->FirstFormat, SOFTPLG_NO_FORMAT);
+    CHECK_EQ(W->Priority, 0);
+    CHECK_EQ(W->SchedCoreId, 0);
+    CHECK_EQ(W->TimeDomain, 1);
+    CHECK_EQ(W->DynamicPipeline, 1);
+    CHECK_EQ(W->LpMode, 0);
+    CHECK_EQ(W->MemUsage, 0);
+    CHECK_EQ(W->UseChainDma, 0);
+    CHECK_EQ(W->Kcps, 0);
+    CHECK_EQ(W->Direction, 0);
+    CHECK_EQ(W->DirectionValid, 1);
+    CHECK_EQ(W->Config.Count, 0);
+    CHECK_EQ(Model->Pipelines[0].Id, 1);
+    CHECK_EQ(Model->Pipelines[0].Scheduler, 3);
+
+    CHECK_EQ(Model->Edges[0].Source, 0);
+    CHECK_EQ(Model->Edges[0].Sink, 2);
+    CHECK_EQ(Model->Edges[1].Source, 2);
+    CHECK_EQ(Model->Edges[1].Sink, 1);
+
+    CHECK_EQ(ModelPcm(Model, "Loopback"), 0);
+    Pcm = &Model->Pcms[0];
+    CHECK_STR(Pcm->DaiName, "Loopback");
+    CHECK_EQ(Pcm->PcmId, 0);
+    CHECK_EQ(Pcm->DaiId, 0);
+    CHECK_EQ(Pcm->Playback, 1);
+    CHECK_EQ(Pcm->Capture, 1);
+    CHECK_STR(Pcm->PlaybackStream, "Loopback Playback");
+    CHECK_STR(Pcm->CaptureStream, "Loopback Capture");
+    CHECK_EQ(Pcm->PlaybackCopier, 0);
+    CHECK_EQ(Pcm->CaptureCopier, 1);
+    CHECK_EQ(Pcm->Reached, 3);
+    CHECK_EQ(Pcm->PipelineMask[0], 1);
+    for (K = 1; K < SOFTPLG_PIPELINE_MASK_WORDS; K++)
+        CHECK_EQ(Pcm->PipelineMask[K], 0);
+    CHECK(SoftplgModelReachable(Model, 0, 0));
+    CHECK(SoftplgModelReachable(Model, 0, 1));
+    CHECK(SoftplgModelReachable(Model, 0, 2));
+    /* the scheduler is not on the stream's path */
+    CHECK(!SoftplgModelReachable(Model, 0, 3));
+    CHECK(!SoftplgModelReachable(Model, 0, 4));
+    CHECK(!SoftplgModelReachable(Model, 1, 0));
+
+    /* the firmware's limits: the model's pipeline count and mailbox take it, a count equal to the pipelines does not */
+    CHECK_EQ(ModelValidate(Model, 16, 4096, &Named), SoftplgModelOk);
+    CHECK(Named == NULL);
+    CHECK_EQ(ModelValidate(Model, 1, 4096, &Named), SoftplgModelTooManyPipelines);
+    CHECK(Named == NULL);
+    CHECK_EQ(ModelValidate(Model, 2, 4096, &Named), SoftplgModelOk);
+    CHECK_EQ(ModelValidate(Model, 16, 40, &Named), SoftplgModelConfigTooLarge);
+    CHECK_STR(Named, "host-copier.0.playback");
+    CHECK_EQ(ModelValidate(Model, 16, 84, &Named), SoftplgModelOk);
+
+    /* the configuration calls outside the model */
+    CHECK_EQ(SoftplgModelConfig(Model, 4, 0, 0, 1, &Config), SoftplgModelNotFound);
+    CHECK_EQ(SoftplgModelConfig(Model, 3, 0, 0, 1, &Config), SoftplgModelNotFound);
+    CHECK_EQ(SoftplgModelConfig(Model, 0, 3, 0, 1, &Config), SoftplgModelNotFound);
+    CHECK_EQ(SoftplgModelConfig(Model, 0, 0, 1, 1, &Config), SoftplgModelNotFound);
+    CHECK_EQ(SoftplgModelConfig(Model, 2, 0, 1, 1, &Config), SoftplgModelNotFound);
+    CHECK_EQ(SoftplgModelConfig(Model, 2, 1, 0, 1, &Config), SoftplgModelNotFound);
+    CHECK_EQ(SoftplgModelConfig(NULL, 0, 0, 0, 1, &Config), SoftplgModelNotFound);
+
+    /* a buffer one byte short of the measure is refused; no buffer at all is */
+    memset(&Input, 0, sizeof(Input));
+    Input.Data = Data;
+    Input.Size = Size;
+    Input.Lookup = ModelLookup;
+    {
+        SOFTPLG_IPC4_MODEL* None = (PSOFTPLG_IPC4_MODEL)Data;
+
+        CHECK_EQ(SoftplgModelBuild(&Input, NULL, Bytes, &None, NULL), SoftplgModelBufferTooSmall);
+        CHECK(None == NULL);
+        CHECK_EQ(SoftplgModelBuild(&Input, (UINT8*)Model, Bytes - 1, &None, NULL), SoftplgModelBufferTooSmall);
+        CHECK(None == NULL);
+    }
+    Input.Data = NULL;
+    Input.Size = 0;
+    CHECK_EQ(SoftplgModelMeasure(&Input, &Bytes, &ModelProblem), SoftplgModelNoData);
+    CHECK_EQ(ModelProblem.Widget, SOFTPLG_NO_WIDGET);
+    CHECK_EQ(Bytes, 0);
+
+    for (Index = 0; Index < (UINT32)SoftplgModelNotFound + 1; Index++)
+        CHECK_STR(SoftplgModelStatusName((SOFTPLG_MODEL_STATUS)Index), SoftplgModelStatusName((SOFTPLG_MODEL_STATUS)Index));
+    CHECK_STR(SoftplgModelStatusName(SoftplgModelOk), "ok");
+    CHECK_STR(SoftplgModelStatusName(SoftplgModelGatewayData), "copier needs gateway data");
+    CHECK_STR(SoftplgModelStatusName((SOFTPLG_MODEL_STATUS)200), "unknown");
+    CHECK_STR(SoftplgWidgetKindName(SoftplgKindScheduler), "scheduler");
+    CHECK_STR(SoftplgWidgetKindName((SOFTPLG_IPC4_KIND)200), "unknown");
+
+Out:
+    free(Model);
+    free(Data);
+}
+
+/* A module kind of the shipped files: the first word of the widgets' names, the module id the UUID resolves to, and the firmware's name for it */
+typedef struct _MODEL_KIND_FACTS
+{
+    const char* Prefix;
+    UINT32 Id;
+    const char* Name;
+} MODEL_KIND_FACTS;
+
+static const MODEL_KIND_FACTS ModelKinds[] =
+{
+    { "mixin", 3, "MIXIN" }, { "mixout", 4, "MIXOUT" }, { "copier", 5, "COPIER" }, { "gain", 7, "GAIN" },
+    { "eqiir", 18, "EQIIR" }, { "eqfir", 19, "EQFIR" }, { "drc", 21, "DRC" }, { "tdfb", 25, "TDFB" }
+};
+
+/* The node type a copier's name and DAI type give it: host playback 0, host capture 1, HDA link playback 8 and capture 9, DMIC 11, ALH playback 16 and capture 17 */
+static
+UINT32
+ModelCopierNodeType(
+    const PSOFTPLG_IPC4_WIDGET W)
+{
+    SIZE_T Tail = strlen(W->Name) - 8;
+
+    CHECK(Tail > 0 && Tail < SOFTPLG_TEXT_BYTES);
+    if (strcmp(W->Name, "alh-copier.SDW0-Playback.0") == 0)
+        return 16;
+    if (strcmp(W->Name, "alh-copier.SDW0-Capture.0") == 0)
+        return 17;
+    if (strcmp(W->DaiType, "HDA") == 0)
+        return strcmp(W->Name + Tail, "playback") == 0 ? 8 : 9;
+    if (strcmp(W->DaiType, "DMIC") == 0)
+        return 11;
+    return W->Kind == SoftplgKindHostCopierPlayback ? 0 : 1;
+}
+
+/* Every module widget of a shipped file: its kind, its module id, the firmware's name, its copier's node type, and no format the controller cannot carry */
+static
+void
+check_model_widgets(
+    const PSOFTPLG_IPC4_MODEL Model,
+    UINT32 Modules,
+    UINT32 Copiers,
+    UINT32 Pins)
+{
+    PSOFTPLG_IPC4_WIDGET W;
+    PSOFTPLG_IPC4_FORMAT F;
+    SIZE_T K, Head, Length;
+    UINT32 N, I, Found, Count = 0, CopierCount = 0, PinCount = 0, ModulesSeen = 0;
+    BOOLEAN IsCopier;
+
+    for (N = 0; N < Model->WidgetCount; N++)
+    {
+        W = &Model->Widgets[N];
+        if (W->Kind == SoftplgKindNone)
+        {
+            PinCount++;
+            CHECK(!W->HasUuid);
+            CHECK_EQ(W->Pipeline, SOFTPLG_NO_PIPELINE);
+            CHECK_EQ(W->ModuleId, SOFTPLG_MODULE_NONE);
+            continue;
+        }
+        if (W->Kind == SoftplgKindScheduler)
+        {
+            CHECK(!W->HasUuid);
+            CHECK_EQ(W->Config.Count, 0);
+            CHECK(W->Pipeline < Model->PipelineCount);
+            CHECK_EQ(Model->Pipelines[W->Pipeline].Scheduler, N);
+            continue;
+        }
+        IsCopier = W->Kind != SoftplgKindProcessor;
+        Head = strlen(W->Name);
+        for (K = 0; K < Head && W->Name[K] != '.'; K++)
+            ;
+        Head = K;
+        Found = 0;
+        for (I = 0; I < sizeof(ModelKinds) / sizeof(ModelKinds[0]); I++)
+        {
+            Length = strlen(ModelKinds[I].Prefix);
+            if (Head < Length || strncmp(W->Name + Head - Length, ModelKinds[I].Prefix, Length) != 0)
+                continue;
+            CHECK(W->HasUuid);
+            CHECK_EQ(W->ModuleId, ModelKinds[I].Id);
+            CHECK(memcmp(ModelModules[W->ModuleId].Uuid, W->Uuid, SOFTPLG_UUID_BYTES) == 0);
+            CHECK_STR(ModelModules[W->ModuleId].Name, ModelKinds[I].Name);
+            Found++;
+        }
+        CHECK_EQ(Found, 1);
+        ModulesSeen++;
+        CHECK(W->InputFormats != 0 || W->OutputFormats != 0);
+        CHECK_EQ(W->Config.Count, IsCopier ? SOFTPLG_IPC4_COPIER_CONFIG_WORDS : SOFTPLG_IPC4_BASE_CONFIG_WORDS);
+        for (I = 0; I < W->InputFormats + W->OutputFormats; I++)
+        {
+            F = &Model->Formats[W->FirstFormat + I];
+            CHECK(F->Words[0] == 48000);
+            CHECK(F->Words[1] == 16 || F->Words[1] == 32);
+            CHECK(SOFTPLG_FORMAT_CHANNELS_OF(F->Words[5]) == 2 || SOFTPLG_FORMAT_CHANNELS_OF(F->Words[5]) == 4);
+            CHECK(F->Words[2] == 0xFFFFFF10u || F->Words[2] == 0xFFFF3210u);
+            CHECK(F->BufferBytes != 0);
+            CHECK(F->Expressible);
+            CHECK_EQ(F->PinIndex, 0);
+        }
+        CHECK(W->Pipeline < Model->PipelineCount);
+        if (!IsCopier)
+            continue;
+        CopierCount++;
+        if (W->Kind == SoftplgKindHostCopierPlayback || W->Kind == SoftplgKindHostCopierCapture)
+        {
+            CHECK(W->HasNodeType);
+            CHECK_EQ(W->NodeType, W->Kind == SoftplgKindHostCopierPlayback ? 0 : 1);
+            CHECK(W->Pcm != SOFTPLG_NO_PCM);
+            CHECK_EQ(W->Config.Words[SOFTPLG_COPIER_NODE_ID_WORD] & ~0xFFu, W->NodeType << 8);
+            CHECK_EQ(W->Config.Words[SOFTPLG_COPIER_NODE_ID_WORD] & 0xFF, 0xFF);
+            CHECK_EQ(W->Config.Words[SOFTPLG_COPIER_CONFIG_LENGTH_WORD], 1);
+        }
+        else if (W->Kind == SoftplgKindDaiCopierPlayback || W->Kind == SoftplgKindDaiCopierCapture)
+            CHECK_EQ(W->NodeType, ModelCopierNodeType(W));
+        else
+            CHECK_EQ(W->Config.Words[SOFTPLG_COPIER_NODE_ID_WORD], 0xFFFFFFFF);
+        CHECK(W->DaiType[0] == 0 || strcmp(W->DaiType, "HDA") == 0 || strcmp(W->DaiType, "DMIC") == 0 || strcmp(W->DaiType, "ALH") == 0);
+        Count++;
+    }
+    CHECK_EQ(Count, Copiers);
+    CHECK_EQ(CopierCount, Copiers);
+    CHECK_EQ(PinCount, Pins);
+    CHECK_EQ(ModulesSeen, Modules);
+}
+
+/* One PCM of the shipped files: its copiers, the widgets its stream reaches and the pipelines they lie in */
+typedef struct _MODEL_PCM_FACTS
+{
+    const char* Name;
+    UINT32 Id;
+    const char* PlaybackCopier;
+    const char* CaptureCopier;
+    UINT32 Reached;
+    UINT32 Pipelines[SOFTPLG_PIPELINE_MASK_WORDS * 32];
+    UINT32 PipelineCount;
+} MODEL_PCM_FACTS;
+
+static
+void
+check_model_pcms(
+    const PSOFTPLG_IPC4_MODEL Model,
+    const MODEL_PCM_FACTS* Facts,
+    UINT32 Count)
+{
+    SOFTPLG_IPC4_LIMITS Limits;
+    SOFTPLG_IPC4_PROBLEM Problem;
+    PSOFTPLG_IPC4_PCM Pcm;
+    UINT32 P, N, I, Word, Bit, Reached, Pipelines;
+    UINT32 Mask[SOFTPLG_PIPELINE_MASK_WORDS];
+    BOOLEAN On;
+
+    Limits.MaxPipelines = 256;
+    Limits.MailboxBytes = 4096;
+    CHECK_EQ(Model->PcmCount, Count);
+    for (P = 0; P < Count && P < Model->PcmCount; P++)
+    {
+        Pcm = &Model->Pcms[P];
+        CHECK_STR(Pcm->Name, Facts[P].Name);
+        CHECK_STR(Pcm->DaiName, Facts[P].Name);
+        CHECK_EQ(Pcm->PcmId, Facts[P].Id);
+        CHECK_EQ(Pcm->DaiId, Facts[P].Id);
+        CHECK_EQ(Pcm->Playback, Facts[P].PlaybackCopier != NULL);
+        CHECK_EQ(Pcm->Capture, Facts[P].CaptureCopier != NULL);
+        CHECK_EQ(Pcm->PlaybackCopier, Facts[P].PlaybackCopier != NULL ? ModelWidget(Model, Facts[P].PlaybackCopier) : SOFTPLG_NO_WIDGET);
+        CHECK_EQ(Pcm->CaptureCopier, Facts[P].CaptureCopier != NULL ? ModelWidget(Model, Facts[P].CaptureCopier) : SOFTPLG_NO_WIDGET);
+        if (Pcm->PlaybackCopier != SOFTPLG_NO_WIDGET)
+        {
+            CHECK_STR(Pcm->PlaybackStream, Model->Widgets[Pcm->PlaybackCopier].SName);
+            CHECK_EQ(Model->Widgets[Pcm->PlaybackCopier].Pcm, P);
+        }
+        if (Pcm->CaptureCopier != SOFTPLG_NO_WIDGET)
+        {
+            CHECK_STR(Pcm->CaptureStream, Model->Widgets[Pcm->CaptureCopier].SName);
+            CHECK_EQ(Model->Widgets[Pcm->CaptureCopier].Pcm, P);
+        }
+        /* the widgets the stream reaches, by the model's own claim and by the facts */
+        Reached = 0;
+        memset(Mask, 0, sizeof(Mask));
+        Pipelines = 0;
+        for (N = 0; N < Model->WidgetCount; N++)
+        {
+            On = SoftplgModelReachable(Model, P, N);
+            Reached += On ? 1 : 0;
+            if (!On)
+                continue;
+            /* the copiers of other PCMs are never reached */
+            if (Model->Widgets[N].Kind == SoftplgKindHostCopierPlayback || Model->Widgets[N].Kind == SoftplgKindHostCopierCapture)
+                CHECK(N == Pcm->PlaybackCopier || N == Pcm->CaptureCopier);
+            Word = Model->Widgets[N].Pipeline / 32;
+            Bit = Model->Widgets[N].Pipeline % 32;
+            if (Word < SOFTPLG_PIPELINE_MASK_WORDS)
+                Mask[Word] |= 1u << Bit;
+        }
+        CHECK_EQ(Reached, Facts[P].Reached);
+        CHECK_EQ(Pcm->Reached, Facts[P].Reached);
+        /* every pipeline the facts name has its bit, and no other has */
+        for (I = 0; I < Facts[P].PipelineCount; I++)
+        {
+            for (N = 0; N < Model->PipelineCount && Model->Pipelines[N].Id != Facts[P].Pipelines[I]; N++)
+                ;
+            CHECK(N < Model->PipelineCount);
+            if (N >= Model->PipelineCount)
+                continue;
+            CHECK(Pcm->PipelineMask[N / 32] & (1u << (N % 32)));
+        }
+        for (Word = 0; Word < SOFTPLG_PIPELINE_MASK_WORDS; Word++)
+            for (Bit = 0; Bit < 32; Bit++)
+                if (Pcm->PipelineMask[Word] & (1u << Bit))
+                {
+                    Pipelines++;
+                    CHECK(Mask[Word] & (1u << Bit));
+                }
+        CHECK_EQ(Pipelines, Facts[P].PipelineCount);
+    }
+    /* every host copier of the file serves a PCM of the file */
+    for (N = 0; N < Model->WidgetCount; N++)
+        if (Model->Widgets[N].Kind == SoftplgKindHostCopierPlayback || Model->Widgets[N].Kind == SoftplgKindHostCopierCapture)
+            CHECK(Model->Widgets[N].Pcm != SOFTPLG_NO_PCM);
+    CHECK_EQ(SoftplgModelValidate(Model, &Limits, &Problem), Problem.Status);
+}
+
+/*
+ * sof-hda-generic-ace1-2ch.tplg: every widget kind in one file. The copier
+ * that needs gateway data is the first DAI copier, which is where the check
+ * stops the file for P3.
+ */
+static
+void
+check_model_ace(void)
+{
+    static const MODEL_PCM_FACTS Pcms[] =
+    {
+        { "HDA Analog", 0, "host-copier.0.playback", "host-copier.0.capture", 13, { 1, 2, 3, 4 }, 4 },
+        { "Deepbuffer HDA Analog", 31, "host-copier.31.playback", NULL, 9, { 2, 15 }, 2 },
+        { "DMIC Raw", 6, NULL, "host-copier.6.capture", 7, { 11, 12 }, 2 },
+        { "HDMI1", 3, "host-copier.3.playback", NULL, 2, { 50, 51 }, 2 },
+        { "HDMI2", 4, "host-copier.4.playback", NULL, 2, { 60, 61 }, 2 },
+        { "HDMI3", 5, "host-copier.5.playback", NULL, 2, { 70, 71 }, 2 }
+    };
+    static const UINT32 PipelineIds[] = { 1, 2, 3, 4, 11, 12, 15, 50, 51, 60, 61, 70, 71 };
+    SOFTPLG_IPC4_MANIFEST Manifest;
+    SOFTPLG_BLOCK Block;
+    PSOFTPLG_IPC4_MODEL Model;
+    PSOFTPLG_IPC4_WIDGET W;
+    UINT8 *Data, *Nhlt;
+    SIZE_T Size, Bytes;
+    UINT32 N;
+    const char* Named;
+
+    Data = LoadExact(SOFTPLG_FIXTURE_DIR "/sof-hda-generic-ace1-2ch.tplg", &Size);
+    CHECK(Data != NULL);
+    if (Data == NULL)
+        return;
+    /* the manifest carries one item, the NHLT table the machine's BIOS does not */
+    CHECK_EQ(SoftplgReadBlock(Data, Size, 0, &Block), SoftplgOk);
+    CHECK_EQ(SoftplgIpc4ReadManifest(Data, Size, &Block, &Manifest), SoftplgModelOk);
+    CHECK_EQ(Manifest.Major, 3);
+    CHECK_EQ(Manifest.Minor, 29);
+    CHECK_EQ(Manifest.Patch, 1);
+    CHECK_EQ(Manifest.ItemCount, 1);
+    CHECK_EQ(Manifest.Nhlt.Size, 6211);
+    Nhlt = Data + Manifest.Nhlt.Offset;
+    CHECK(Nhlt[0] == 'N' && Nhlt[1] == 'H' && Nhlt[2] == 'L' && Nhlt[3] == 'T');
+    CHECK_EQ(Nhlt[4] | (Nhlt[5] << 8) | (Nhlt[6] << 16) | ((UINT32)Nhlt[7] << 24), 6211);
+
+    Model = ModelBuild(Data, Size, &Bytes);
+    CHECK(Model != NULL);
+    if (Model == NULL)
+        goto Out;
+    CHECK_EQ(Model->ManifestItems, 1);
+    CHECK_EQ(Model->ControlCount, 16);
+    CHECK_EQ(Model->WidgetCount, 60);
+    CHECK_EQ(Model->EdgeCount, 23);
+    CHECK_EQ(Model->PcmCount, 6);
+    CHECK_EQ(Model->PipelineCount, 13);
+    CHECK_EQ(Model->FormatCount, 72);
+    CHECK_EQ(Model->ReachWords, 2);
+    CHECK_EQ(Model->PcmCount, sizeof(Pcms) / sizeof(Pcms[0]));
+    for (N = 0; N < sizeof(PipelineIds) / sizeof(PipelineIds[0]); N++)
+        CHECK_EQ(Model->Pipelines[N].Id, PipelineIds[N]);
+
+    check_model_widgets(Model, 29, 15, 18);
+    check_model_pcms(Model, Pcms, sizeof(Pcms) / sizeof(Pcms[0]));
+
+    /* the edges the walker test names, as widget indices */
+    CHECK_EQ(Model->Edges[0].Source, ModelWidget(Model, "drc.2.1"));
+    CHECK_EQ(Model->Edges[0].Sink, ModelWidget(Model, "dai-copier.HDA.Analog.playback"));
+    CHECK_EQ(Model->Edges[3].Source, ModelWidget(Model, "host-copier.0.playback"));
+    CHECK_EQ(Model->Edges[3].Sink, ModelWidget(Model, "gain.1.1"));
+    CHECK_EQ(Model->Edges[7].Source, ModelWidget(Model, "dai-copier.DMIC.dmic01.capture"));
+    CHECK_EQ(Model->Edges[7].Sink, ModelWidget(Model, "gain.12.1"));
+    CHECK_EQ(Model->Edges[11].Source, ModelWidget(Model, "host-copier.3.playback"));
+    CHECK_EQ(Model->Edges[11].Sink, ModelWidget(Model, "dai-copier.HDA.iDisp1.playback"));
+
+    /* the analog capture path runs through a module copier into another pipeline */
+    W = &Model->Widgets[ModelWidget(Model, "module-copier.4.2")];
+    CHECK_EQ(W->Kind, SoftplgKindModuleCopier);
+    CHECK_EQ(W->ModuleId, 5);
+    CHECK(!W->HasNodeType);
+    CHECK_EQ(W->PipelineId, 4);
+    CHECK_STR(W->SName, "Analog");
+    CHECK_EQ(W->Config.Words[SOFTPLG_COPIER_NODE_ID_WORD], 0xFFFFFFFF);
+    CHECK_EQ(W->Config.Words[SOFTPLG_COPIER_DMA_BUFFER_WORD], 0);
+    W = &Model->Widgets[ModelWidget(Model, "dai-copier.DMIC.dmic01.capture")];
+    CHECK_EQ(W->Kind, SoftplgKindDaiCopierCapture);
+    CHECK_STR(W->DaiType, "DMIC");
+    CHECK_EQ(W->DaiIndex, 0);
+    CHECK_EQ(W->NodeType, 11);
+    CHECK_EQ(W->Pcm, SOFTPLG_NO_PCM);
+    W = &Model->Widgets[ModelWidget(Model, "codec0_in")];
+    CHECK_EQ(W->Kind, SoftplgKindNone);
+    CHECK_EQ(W->Type, 0);
+    W = &Model->Widgets[ModelWidget(Model, "Analog CPU Playback")];
+    CHECK_EQ(W->Kind, SoftplgKindNone);
+    CHECK_EQ(W->Type, 5);
+    W = &Model->Widgets[ModelWidget(Model, "pipeline.1")];
+    CHECK_EQ(W->Priority, 0);
+    CHECK_EQ(W->SchedCoreId, 0);
+    CHECK_EQ(W->LpMode, 0);
+
+    /* the first DAI copier needs gateway data */
+    CHECK_EQ(ModelValidate(Model, 16, 4096, &Named), SoftplgModelGatewayData);
+    CHECK_STR(Named, "dai-copier.HDA.Analog.playback");
+    CHECK_EQ(ModelValidate(Model, 13, 4096, &Named), SoftplgModelTooManyPipelines);
+    CHECK(Named == NULL);
+    CHECK_EQ(ModelValidate(Model, 14, 4096, &Named), SoftplgModelGatewayData);
+
+Out:
+    free(Model);
+    free(Data);
+}
+
+static
+void
+check_model_dmic(void)
+{
+    static const MODEL_PCM_FACTS Pcms[] =
+    {
+        { "DMIC Raw", 10, NULL, "host-copier.10.capture", 7, { 100, 101 }, 2 }
+    };
+    PSOFTPLG_IPC4_MODEL Model;
+    PSOFTPLG_IPC4_WIDGET W;
+    UINT8* Data;
+    SIZE_T Size, Bytes;
+    const char* Named;
+
+    Data = LoadExact(SOFTPLG_FIXTURE_DIR "/sof-arl-dmic-4ch-id2.tplg", &Size);
+    CHECK(Data != NULL);
+    if (Data == NULL)
+        return;
+    Model = ModelBuild(Data, Size, &Bytes);
+    CHECK(Model != NULL);
+    if (Model == NULL)
+        goto Out;
+    CHECK_EQ(Model->AbiMinor, 29);
+    CHECK_EQ(Model->ManifestItems, 1);
+    CHECK_EQ(Model->ControlCount, 8);
+    CHECK_EQ(Model->WidgetCount, 9);
+    CHECK_EQ(Model->EdgeCount, 6);
+    CHECK_EQ(Model->PcmCount, 1);
+    CHECK_EQ(Model->PipelineCount, 2);
+    CHECK_EQ(Model->FormatCount, 16);
+    CHECK_EQ(Model->Pipelines[0].Id, 100);
+    CHECK_EQ(Model->Pipelines[1].Id, 101);
+    check_model_widgets(Model, 7, 3, 0);
+    check_model_pcms(Model, Pcms, 1);
+    W = &Model->Widgets[ModelWidget(Model, "host-copier.10.capture")];
+    CHECK_EQ(W->Kind, SoftplgKindHostCopierCapture);
+    CHECK_STR(W->SName, "Gain Capture 13");
+    CHECK_EQ(W->InputFormats, 1);
+    CHECK_EQ(W->OutputFormats, 1);
+    CHECK_EQ(SOFTPLG_FORMAT_CHANNELS_OF(Model->Formats[W->FirstFormat].Words[5]), 4);
+    CHECK(SoftplgModelReachable(Model, 0, ModelWidget(Model, "dai-copier.DMIC.dmic01.capture")));
+    CHECK(!SoftplgModelReachable(Model, 0, ModelWidget(Model, "pipeline.101")));
+    CHECK_EQ(ModelValidate(Model, 16, 4096, &Named), SoftplgModelGatewayData);
+    CHECK_STR(Named, "dai-copier.DMIC.dmic01.capture");
+
+Out:
+    free(Model);
+    free(Data);
+}
+
+static
+void
+check_model_rt711(void)
+{
+    static const MODEL_PCM_FACTS Pcms[] =
+    {
+        { "DMIC Raw", 10, NULL, "host-copier.10.capture", 7, { 100, 101 }, 2 },
+        { "HDMI1", 5, "host-copier.5.playback", NULL, 2, { 50, 51 }, 2 },
+        { "HDMI2", 6, "host-copier.6.playback", NULL, 2, { 60, 61 }, 2 },
+        { "HDMI3", 7, "host-copier.7.playback", NULL, 2, { 70, 71 }, 2 },
+        { "Jack Out", 0, "host-copier.0.playback", NULL, 7, { 0, 1 }, 2 },
+        { "Jack In", 1, NULL, "host-copier.1.capture", 4, { 10, 11 }, 2 },
+        { "Deepbuffer Jack Out", 31, "host-copier.31.playback", NULL, 7, { 1, 15 }, 2 }
+    };
+    PSOFTPLG_IPC4_MODEL Model;
+    PSOFTPLG_IPC4_WIDGET W;
+    UINT32 P, Ordinal;
+    UINT8* Data;
+    SIZE_T Size, Bytes;
+    const char* Named;
+
+    Data = LoadExact(SOFTPLG_FIXTURE_DIR "/sof-arl-rt711-l0-2ch.tplg", &Size);
+    CHECK(Data != NULL);
+    if (Data == NULL)
+        return;
+    Model = ModelBuild(Data, Size, &Bytes);
+    CHECK(Model != NULL);
+    if (Model == NULL)
+        goto Out;
+    CHECK_EQ(Model->ManifestItems, 1);
+    CHECK_EQ(Model->ControlCount, 12);
+    CHECK_EQ(Model->WidgetCount, 40);
+    CHECK_EQ(Model->EdgeCount, 21);
+    CHECK_EQ(Model->PcmCount, 7);
+    CHECK_EQ(Model->PipelineCount, 13);
+    CHECK_EQ(Model->FormatCount, 70);
+    check_model_widgets(Model, 27, 16, 0);
+    check_model_pcms(Model, Pcms, 7);
+
+    /* the jack path crosses from pipeline 0 through a module copier into pipeline 1 */
+    P = ModelPcm(Model, "Jack Out");
+    CHECK(SoftplgModelReachable(Model, P, ModelWidget(Model, "alh-copier.SDW0-Playback.0")));
+    CHECK(SoftplgModelReachable(Model, P, ModelWidget(Model, "mixout.1.1")));
+    /* the deep buffer path of the same output does not pull the other PCM's widgets in */
+    P = ModelPcm(Model, "Deepbuffer Jack Out");
+    CHECK(SoftplgModelReachable(Model, P, ModelWidget(Model, "mixin.15.1")));
+    CHECK(!SoftplgModelReachable(Model, P, ModelWidget(Model, "host-copier.0.playback")));
+    CHECK(!SoftplgModelReachable(Model, P, ModelWidget(Model, "gain.0.1")));
+    P = ModelPcm(Model, "Jack Out");
+    CHECK(!SoftplgModelReachable(Model, P, ModelWidget(Model, "mixin.15.1")));
+    /* a pipeline with the ordinal 0 */
+    Ordinal = Model->Widgets[ModelWidget(Model, "gain.0.1")].Pipeline;
+    CHECK_EQ(Ordinal, 0);
+    CHECK_EQ(Model->Pipelines[0].Id, 0);
+    W = &Model->Widgets[ModelWidget(Model, "alh-copier.SDW0-Playback.0")];
+    CHECK_EQ(W->Kind, SoftplgKindDaiCopierPlayback);
+    CHECK_STR(W->DaiType, "ALH");
+    CHECK_EQ(W->DaiIndex, 0);
+    CHECK_EQ(W->NodeType, 16);
+    W = &Model->Widgets[ModelWidget(Model, "alh-copier.SDW0-Capture.0")];
+    CHECK_EQ(W->Kind, SoftplgKindDaiCopierCapture);
+    CHECK_EQ(W->NodeType, 17);
+    CHECK_EQ(ModelValidate(Model, 16, 4096, &Named), SoftplgModelGatewayData);
+    CHECK_STR(Named, "alh-copier.SDW0-Playback.0");
+
+Out:
+    free(Model);
+    free(Data);
+}
+
+/* The first place the bytes Needle occur in Data from From on, or Size */
+static
+SIZE_T
+ModelFind(
+    const UINT8* Data,
+    SIZE_T Size,
+    const UINT8* Needle,
+    SIZE_T NeedleBytes,
+    SIZE_T From)
+{
+    SIZE_T Index;
+
+    for (Index = From; Index + NeedleBytes <= Size; Index++)
+        if (memcmp(Data + Index, Needle, NeedleBytes) == 0)
+            return Index;
+    return Size;
+}
+
+/*
+ * The malformed inputs of the plan: each one a copy of a real file with the
+ * one field changed that makes it wrong, and the status the model answers.
+ */
+static
+void
+check_model_malformed(void)
+{
+    static const UINT8 GainUuid[SOFTPLG_UUID_BYTES] = { 0xA8, 0xA9, 0xBC, 0x61, 0xD0, 0x18, 0x18, 0x4A, 0x8E, 0x7B, 0x26, 0x39, 0x21, 0x98, 0x04, 0xB7 };
+    static const UINT8 Rate48k[] = { 0x6C, 0x07, 0x00, 0x00, 0x80, 0xBB, 0x00, 0x00 };
+    static const UINT8 Rate64k[] = { 0x6C, 0x07, 0x00, 0x00, 0x00, 0xFA, 0x00, 0x00 };
+    static const UINT8 TwoChannels[] = { 0x6F, 0x07, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 };
+    static const UINT8 ThreeChannels[] = { 0x6F, 0x07, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00 };
+    static const UINT8 NodeTypeCapture[] = { 0xBC, 0x07, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    static const UINT8 NodeTypePlayback[] = { 0xBC, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    /* the output rate token (1930) before the value */
+    static const UINT8 OutRate48k[] = { 0x8A, 0x07, 0x00, 0x00, 0x80, 0xBB, 0x00, 0x00 };
+    static const UINT8 OutRate64k[] = { 0x8A, 0x07, 0x00, 0x00, 0x00, 0xFA, 0x00, 0x00 };
+    SOFTPLG_MODEL_INPUT Input;
+    SOFTPLG_IPC4_MANIFEST Manifest;
+    SOFTPLG_BLOCK Block;
+    SOFTPLG_WIDGET Widget;
+    PSOFTPLG_IPC4_MODEL Model;
+    SOFTPLG_MANIFEST Container;
+    UINT8 *Loop, *Ace, *Copy = NULL;
+    SIZE_T LoopSize, AceSize, Bytes, At, Private, Offset;
+    const char* Named;
+    UINT32 K;
+
+    Loop = LoadExact(SOFTPLG_FIXTURE_DIR "/sof-ipc4-loopback.tplg", &LoopSize);
+    Ace = LoadExact(SOFTPLG_FIXTURE_DIR "/sof-hda-generic-ace1-2ch.tplg", &AceSize);
+    CHECK(Loop != NULL && Ace != NULL);
+    if (Loop == NULL || Ace == NULL)
+        goto Out;
+    ModelLoadFirmware();
+    Copy = (UINT8*)malloc(LoopSize > AceSize ? LoopSize : AceSize);
+    CHECK(Copy != NULL);
+    if (Copy == NULL)
+        goto Out;
+
+    /* the ABI header: a major version this model does not read */
+    memcpy(Copy, Loop, LoopSize);
+    CHECK_EQ(SoftplgReadBlock(Copy, LoopSize, 0, &Block), SoftplgOk);
+    CHECK_EQ(SoftplgReadManifest(Copy, LoopSize, &Block, &Container), SoftplgOk);
+    Private = Container.Private.Offset;
+    CHECK_EQ(Container.Private.Size, SOFTPLG_IPC4_MANIFEST_ABI_BYTES);
+    Copy[Private] = 4;
+    CHECK_EQ(SoftplgIpc4ReadManifest(Copy, LoopSize, &Block, &Manifest), SoftplgModelAbiMismatch);
+    Model = ModelBuild(Copy, LoopSize, &Bytes);
+    CHECK(Model == NULL);
+    CHECK_EQ(ModelStatus, SoftplgModelAbiMismatch);
+    free(Model);
+    memcpy(Copy, Loop, LoopSize);
+    Copy[Private + 2] = 28;
+    CHECK_EQ(SoftplgIpc4ReadManifest(Copy, LoopSize, &Block, &Manifest), SoftplgModelAbiMismatch);
+    /* the patch number is free */
+    memcpy(Copy, Loop, LoopSize);
+    Copy[Private + 4] = 9;
+    CHECK_EQ(SoftplgIpc4ReadManifest(Copy, LoopSize, &Block, &Manifest), SoftplgModelOk);
+    CHECK_EQ(Manifest.Patch, 9);
+    /* a manifest without its whole ABI header */
+    Copy[Private + 4] = 1;
+    Put32(Copy + Private - 4, 5);
+    CHECK_EQ(SoftplgIpc4ReadManifest(Copy, LoopSize, &Block, &Manifest), SoftplgModelManifestTruncated);
+
+    /* a manifest item whose size runs past the end of the manifest's private data */
+    memcpy(Copy, Ace, AceSize);
+    CHECK_EQ(SoftplgReadBlock(Copy, AceSize, 0, &Block), SoftplgOk);
+    CHECK_EQ(SoftplgReadManifest(Copy, AceSize, &Block, &Container), SoftplgOk);
+    Private = Container.Private.Offset;
+    Put32(Copy + Private + SOFTPLG_IPC4_MANIFEST_COUNT_OFFSET + sizeof(UINT16) + sizeof(UINT32), 7000);
+    CHECK_EQ(SoftplgIpc4ReadManifest(Copy, AceSize, &Block, &Manifest), SoftplgModelManifestTruncated);
+    Model = ModelBuild(Copy, AceSize, &Bytes);
+    CHECK(Model == NULL);
+    CHECK_EQ(ModelStatus, SoftplgModelManifestTruncated);
+    free(Model);
+    /* an item count that names more items than the data holds */
+    memcpy(Copy, Ace, AceSize);
+    Put16(Copy + Private + SOFTPLG_IPC4_MANIFEST_COUNT_OFFSET, 2);
+    CHECK_EQ(SoftplgIpc4ReadManifest(Copy, AceSize, &Block, &Manifest), SoftplgModelManifestTruncated);
+
+    /* a widget of a type the model does not read */
+    memcpy(Copy, Loop, LoopSize);
+    At = ModelFind(Copy, LoopSize, (const UINT8*)"gain.1.1", 8, 0);
+    CHECK(At >= 4);
+    Put32(Copy + At - 4, 2);
+    Model = ModelBuild(Copy, LoopSize, &Bytes);
+    CHECK(Model == NULL);
+    CHECK_EQ(ModelStatus, SoftplgModelUnknownWidget);
+    CHECK_EQ(ModelProblem.Status, SoftplgModelUnknownWidget);
+    CHECK_EQ(ModelProblem.Widget, 2);
+    free(Model);
+
+    /* a UUID the firmware image's module table does not have */
+    memcpy(Copy, Loop, LoopSize);
+    At = ModelFind(Copy, LoopSize, GainUuid, SOFTPLG_UUID_BYTES, 0);
+    CHECK(At < LoopSize);
+    Copy[At] ^= 1;
+    Model = ModelBuild(Copy, LoopSize, &Bytes);
+    CHECK(Model == NULL);
+    CHECK_EQ(ModelStatus, SoftplgModelModuleMissing);
+    CHECK_EQ(ModelProblem.Status, SoftplgModelModuleMissing);
+    CHECK_EQ(ModelProblem.Widget, 2);
+    free(Model);
+    /* with no module table at all, every module is missing */
+    memcpy(Copy, Loop, LoopSize);
+    memset(&Input, 0, sizeof(Input));
+    Input.Data = Copy;
+    Input.Size = LoopSize;
+    CHECK_EQ(SoftplgModelMeasure(&Input, &Bytes, &ModelProblem), SoftplgModelModuleMissing);
+    CHECK_EQ(ModelProblem.Widget, 0);
+
+    /* the UUID tuple coming as a word: the array's type field is twelve bytes before the UUID */
+    memcpy(Copy, Loop, LoopSize);
+    At = ModelFind(Copy, LoopSize, GainUuid, SOFTPLG_UUID_BYTES, 0);
+    CHECK(At >= 16);
+    Put32(Copy + At - 16, 12 + 8);
+    Put32(Copy + At - 12, SOFTPLG_TUPLE_WORD);
+    Model = ModelBuild(Copy, LoopSize, &Bytes);
+    CHECK(Model == NULL);
+    CHECK_EQ(ModelStatus, SoftplgModelTupleType);
+    free(Model);
+
+    /* every rate of the playback copier one the controller cannot carry */
+    memcpy(Copy, Loop, LoopSize);
+    CHECK_EQ(SoftplgReadBlock(Copy, LoopSize, 1, &Block), SoftplgOk);
+    CHECK_EQ(SoftplgReadWidget(Copy, LoopSize, &Block, 0, &Widget), SoftplgOk);
+    for (K = 0, Offset = Widget.Private.Offset; K < 3; K++)
+    {
+        At = ModelFind(Copy, Widget.Private.Offset + Widget.Private.Size, Rate48k, sizeof(Rate48k), Offset);
+        CHECK(At < Widget.Private.Offset + Widget.Private.Size);
+        memcpy(Copy + At, Rate64k, sizeof(Rate64k));
+        Offset = At + sizeof(Rate64k);
+    }
+    At = ModelFind(Copy, Widget.Private.Offset + Widget.Private.Size, OutRate48k, sizeof(OutRate48k), Widget.Private.Offset);
+    CHECK(At < Widget.Private.Offset + Widget.Private.Size);
+    memcpy(Copy + At, OutRate64k, sizeof(OutRate64k));
+    Model = ModelBuild(Copy, LoopSize, &Bytes);
+    CHECK(Model != NULL);
+    if (Model != NULL)
+    {
+        CHECK(Model->Widgets[0].Pcm != SOFTPLG_NO_PCM);
+        for (K = 0; K < 3; K++)
+            CHECK(!Model->Formats[K].Expressible);
+        /* the copier's output slot was patched with it */
+        CHECK(!Model->Formats[3].Expressible);
+        CHECK(Model->Formats[8].Expressible);
+        CHECK_EQ(ModelValidate(Model, 16, 4096, &Named), SoftplgModelFormatInexpressible);
+        CHECK_STR(Named, "host-copier.0.playback");
+        free(Model);
+    }
+
+    /* the channels token disagreeing with the configuration word */
+    memcpy(Copy, Loop, LoopSize);
+    At = ModelFind(Copy, LoopSize, TwoChannels, sizeof(TwoChannels), Widget.Private.Offset);
+    CHECK(At < Widget.Private.Offset + Widget.Private.Size);
+    memcpy(Copy + At, ThreeChannels, sizeof(ThreeChannels));
+    Model = ModelBuild(Copy, LoopSize, &Bytes);
+    CHECK(Model == NULL);
+    CHECK_EQ(ModelStatus, SoftplgModelFormatMismatch);
+    free(Model);
+
+    /* a host copier of the other gateway type */
+    memcpy(Copy, Loop, LoopSize);
+    CHECK_EQ(SoftplgReadWidget(Copy, LoopSize, &Block, 1, &Widget), SoftplgOk);
+    At = ModelFind(Copy, LoopSize, NodeTypeCapture, sizeof(NodeTypeCapture), Widget.Private.Offset);
+    CHECK(At < Widget.Private.Offset + Widget.Private.Size);
+    memcpy(Copy + At, NodeTypePlayback, sizeof(NodeTypePlayback));
+    Model = ModelBuild(Copy, LoopSize, &Bytes);
+    CHECK(Model != NULL);
+    if (Model != NULL)
+    {
+        CHECK_EQ(ModelValidate(Model, 16, 4096, &Named), SoftplgModelNodeType);
+        CHECK_STR(Named, "host-copier.0.capture");
+        free(Model);
+    }
+
+    /* a graph element that names no widget */
+    memcpy(Copy, Loop, LoopSize);
+    At = ModelFind(Copy, LoopSize, (const UINT8*)"gain.1.1", 8, LoopSize / 2);
+    CHECK(At < LoopSize);
+    Copy[At + 7] = '2';
+    Model = ModelBuild(Copy, LoopSize, &Bytes);
+    CHECK(Model == NULL);
+    CHECK_EQ(ModelStatus, SoftplgModelBadEdge);
+    free(Model);
+
+    /* not a topology at all, and a cut one */
+    memcpy(Copy, Loop, LoopSize);
+    Copy[0] = 'X';
+    CHECK_EQ(ModelBuild(Copy, LoopSize, &Bytes) == NULL, 1);
+    CHECK_EQ(ModelStatus, SoftplgModelBadFile);
+    CHECK_EQ(ModelBuild(Copy, 100, &Bytes) == NULL, 1);
+    CHECK_EQ(ModelProblem.Widget, SOFTPLG_NO_WIDGET);
+    CHECK_EQ(ModelStatus, SoftplgModelBadFile);
+
+Out:
+    free(Copy);
+    free(Ace);
+    free(Loop);
+}
+
 static
 void
 check_names(void)
@@ -1472,6 +2604,12 @@ int main(void)
     check_fixtures();
     check_ace_fixture();
     check_loopback_fixture();
+    check_model_expressible();
+    check_model_loopback();
+    check_model_ace();
+    check_model_dmic();
+    check_model_rt711();
+    check_model_malformed();
     check_names();
 
     printf("softplg: %d checks, %d failures\n", Checks, Failures);
