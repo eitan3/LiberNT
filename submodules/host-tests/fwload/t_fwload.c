@@ -458,8 +458,8 @@ CheckImageResident(
     CHECK_STR(Image.Ri.Name, "ADSPFW");
     CHECK_EQ(Image.Ri.ModuleCount, 32);
     CHECK(Image.Modules != NULL && Image.Ri.Modules == Image.Modules);
-    CHECK_STR(Image.Modules[0].Name, "BRNGUP");
-    CHECK_STR(Image.Modules[31].Name, "PHASEVOC");
+    /* the table is read behind the same guard: a failed CHECK records the failure and the test goes on */
+    CHECK(Image.Modules != NULL && strcmp(Image.Modules[0].Name, "BRNGUP") == 0 && strcmp(Image.Modules[31].Name, "PHASEVOC") == 0);
     /* the second call finds it resident: no read, no allocation, the same bytes and table */
     Status = FwloadImageEnsure(&Image, &ImageOps, &I);
     CHECK_EQ(Status, FwloadOk);
