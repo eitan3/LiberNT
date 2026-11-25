@@ -26,6 +26,7 @@ fwload_test(fwload t_fwload.c fake_dsp.c
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/fwload/sof_ri.c
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/fwload/cl_dma.c
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/fwload/fwboot.c
+    ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/fwload/fwimage.c
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/sofipc4/sofipc4.c)
 target_compile_definitions(fwload PRIVATE
     FWLOAD_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")

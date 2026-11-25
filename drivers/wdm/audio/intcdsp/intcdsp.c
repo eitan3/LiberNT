@@ -113,7 +113,6 @@ IntcDspBootStop(
     Dev->DmaBuffer = NULL;
     Dev->DmaBytes = 0;
     RtlZeroMemory(&Dev->Segment, sizeof(Dev->Segment));
-    IntcDspFreeFirmware(Dev);
 }
 
 NTSTATUS
@@ -148,11 +147,11 @@ IntcDspBoot(
     NtStatus = IntcDspLoadFirmware(Dev);
     if (!NT_SUCCESS(NtStatus))
     {
-        Dev->LastStatus = FwloadNoData;
+        Dev->LastStatus = Dev->FirmwareStatus;
         return NtStatus;
     }
 
-    Dev->DmaBytes = (SIZE_T)ROUND_TO_PAGES((ULONG)Dev->Ri.PayloadBytes);
+    Dev->DmaBytes = (SIZE_T)ROUND_TO_PAGES((ULONG)Dev->Image.Ri.PayloadBytes);
     Low.QuadPart = 0;
     High.QuadPart = -1;
     Boundary.QuadPart = 0;
@@ -164,7 +163,7 @@ IntcDspBoot(
     }
     Dev->Segment.Address = MmGetPhysicalAddress(Dev->DmaBuffer).QuadPart;
     Dev->Segment.Bytes = Dev->DmaBytes;
-    Entries = FwloadClDmaEntryCount(&Dev->Segment, 1, Dev->Ri.PayloadBytes, 0);
+    Entries = FwloadClDmaEntryCount(&Dev->Segment, 1, Dev->Image.Ri.PayloadBytes, 0);
     if (Entries == 0 || Entries > INTCDSP_BDL_ENTRIES)
     {
         IntcDspLog("the payload needs %I64u descriptors, the stream has %u\n", (ULONGLONG)Entries, (ULONG)INTCDSP_BDL_ENTRIES);
@@ -183,7 +182,7 @@ IntcDspBoot(
     if (!NT_SUCCESS(NtStatus))
         goto Fail;
     Dev->StreamFragments = (ULONG)Entries;
-    NtStatus = Dev->Bus.PrepareDSP(Dev->Bus.Context, Dev->Stream, (unsigned int)Dev->Ri.PayloadBytes,
+    NtStatus = Dev->Bus.PrepareDSP(Dev->Bus.Context, Dev->Stream, (unsigned int)Dev->Image.Ri.PayloadBytes,
                                    (int)Entries, &Bdl);
     if (!NT_SUCCESS(NtStatus))
         goto Fail;
@@ -207,7 +206,7 @@ IntcDspBoot(
     Dma.StreamTag = Dev->StreamTag;
     Dma.StreamFormat = FWLOAD_CL_STREAM_FORMAT;
     FwloadDefaultTimeouts(&Timeouts);
-    FwloadInitContext(&Dev->Fw, IntcDspOpsTable(), Dev, Platform, &Dev->Ri, &Dma, &Timeouts);
+    FwloadInitContext(&Dev->Fw, IntcDspOpsTable(), Dev, Platform, &Dev->Image.Ri, &Dma, &Timeouts);
 
     NtStatus = Dev->Bus.SetDSPPowerState(Dev->Bus.Context, PowerDeviceD0);
     if (!NT_SUCCESS(NtStatus))
@@ -215,7 +214,7 @@ IntcDspBoot(
     Dev->IdleHeld = TRUE;
 
     IntcDspLog("booting: firmware '%s' %u.%u.%u.%u, %I64u payload bytes in %u descriptors on stream %u, BAR4 %p, clock %I64u us at %I64u Hz\n",
-               Dev->Ri.Name, Dev->Ri.Major, Dev->Ri.Minor, Dev->Ri.Hotfix, Dev->Ri.Build, (ULONGLONG)Dev->Ri.PayloadBytes,
+               Dev->Image.Ri.Name, Dev->Image.Ri.Major, Dev->Image.Ri.Minor, Dev->Image.Ri.Hotfix, Dev->Image.Ri.Build, (ULONGLONG)Dev->Image.Ri.PayloadBytes,
                (ULONG)Entries, Dev->StreamTag, Dev->AdspBar.Base.Base, (ULONGLONG)IntcDspOpsTable()->NowUs(Dev),
                IntcDspClockFrequency());
 
@@ -270,7 +269,6 @@ IntcDspBoot(
     Dev->DmaBuffer = NULL;
     Dev->DmaBytes = 0;
     RtlZeroMemory(&Dev->Segment, sizeof(Dev->Segment));
-    IntcDspFreeFirmware(Dev);
     return STATUS_SUCCESS;
 
 Fail:
@@ -329,8 +327,7 @@ IntcDspEvtDevicePrepareHardware(
         Dev->PpSts = READ_REGISTER_ULONG(Ppcap + INTCDSP_PP_OFFSET_PPSTS / sizeof(ULONG));
     }
     IntcDspProbe(Dev);
-    if (NT_SUCCESS(IntcDspLoadFirmware(Dev)))
-        IntcDspFreeFirmware(Dev);
+    IntcDspLoadFirmware(Dev);
 
     Status = IntcDspReadBootDsp(&Dev->BootDsp);
     if (NT_SUCCESS(Status))

@@ -157,6 +157,76 @@ CheckInterruptGuard(
     ok_eq_str(FwloadStatusName(FwloadInterruptTimeout), "interrupt enable timeout");
 }
 
+/* The image holder in the kernel (R6 of the branch review): the read copies the synthetic image into paged pool, the module table comes from nonpaged pool, and the second call reads nothing */
+static UINT32 ImageReads;
+static const UINT8* ImageSource;
+
+static
+FWLOAD_STATUS
+KernelImageRead(
+    PVOID Context,
+    const UINT8** Data,
+    SIZE_T* Bytes)
+{
+    UINT8* Copy;
+
+    UNREFERENCED_PARAMETER(Context);
+    ImageReads++;
+    Copy = ExAllocatePoolWithTag(PagedPool, FWLOAD_CASE_IMAGE_BYTES, FWLOAD_TEST_TAG);
+    if (Copy == NULL)
+        return FwloadOutOfMemory;
+    RtlCopyMemory(Copy, ImageSource, FWLOAD_CASE_IMAGE_BYTES);
+    *Data = Copy;
+    *Bytes = FWLOAD_CASE_IMAGE_BYTES;
+    return FwloadOk;
+}
+
+static
+PVOID
+KernelImageAllocate(
+    PVOID Context,
+    SIZE_T Bytes)
+{
+    UNREFERENCED_PARAMETER(Context);
+    return ExAllocatePoolWithTag(NonPagedPool, Bytes, FWLOAD_TEST_TAG);
+}
+
+static
+VOID
+KernelImageFree(
+    PVOID Context,
+    PVOID Memory)
+{
+    UNREFERENCED_PARAMETER(Context);
+    ExFreePoolWithTag(Memory, FWLOAD_TEST_TAG);
+}
+
+static
+VOID
+CheckImageHolder(
+    const UINT8* Source)
+{
+    static const FWLOAD_IMAGE_OPS Ops =
+    {
+        KernelImageRead,
+        KernelImageAllocate,
+        KernelImageFree
+    };
+    FWLOAD_IMAGE Holder;
+
+    RtlZeroMemory(&Holder, sizeof(Holder));
+    ImageSource = Source;
+    ok_eq_int(FwloadImageEnsure(&Holder, &Ops, NULL), FwloadOk);
+    ok_eq_uint(ImageReads, 1);
+    ok_eq_str(Holder.Ri.Name, "ADSPFW");
+    ok_eq_uint(Holder.Ri.ModuleCount, 1);
+    ok(Holder.Modules != NULL && Holder.Data != Source, "no module table or no copy of the bytes\n");
+    ok_eq_int(FwloadImageEnsure(&Holder, &Ops, NULL), FwloadOk);
+    ok_eq_uint(ImageReads, 1);
+    FwloadImageFree(&Holder, &Ops, NULL);
+    ok(Holder.Data == NULL && Holder.Modules == NULL, "the holder kept something after the release\n");
+}
+
 START_TEST(Fwload)
 {
     UINT8* Image;
@@ -189,6 +259,7 @@ START_TEST(Fwload)
     CheckPerformanceCounter();
     FwloadCaseBuildImage(Image);
     ok_eq_int(SofRiParse(Image, FWLOAD_CASE_IMAGE_BYTES, Modules, 4, &Parsed), FwloadOk);
+    CheckImageHolder(Image);
 
     RtlZeroMemory(Bdl, sizeof(Bdl));
     RtlZeroMemory(&Dma, sizeof(Dma));

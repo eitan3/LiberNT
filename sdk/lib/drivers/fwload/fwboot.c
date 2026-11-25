@@ -899,7 +899,7 @@ FwloadStatusName(
         "cancelled", "power-up timeout", "ROM init timeout", "ROM status timeout", "base firmware timeout",
         "FW_READY timeout", "IPC reply timeout", "clock stalled", "ROM error", "firmware crash", "ABI mismatch", "version mismatch",
         "IPC error", "bad IPC reply", "too many DMA fragments", "DMA buffer too small",
-        "hardware fault", "bad state", "interrupt storm", "interrupt enable timeout"
+        "hardware fault", "bad state", "interrupt storm", "interrupt enable timeout", "out of memory"
     };
 
     if ((UINT32)Status >= sizeof(Names) / sizeof(Names[0]))

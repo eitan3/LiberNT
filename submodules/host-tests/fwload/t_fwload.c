@@ -364,6 +364,173 @@ HarnessFrees(
     free(H->Virtual);
 }
 
+/* The image holder's operations with counters: the read hands out a private copy, so that Free releases real memory */
+typedef struct _IMAGE_HARNESS
+{
+    const UINT8* Source;
+    SIZE_T ReadBytes;
+    FWLOAD_STATUS ReadStatus;
+    BOOLEAN AllocateFails;
+    UINT32 Reads;
+    UINT32 Allocates;
+    UINT32 Frees;
+} IMAGE_HARNESS;
+
+static
+FWLOAD_STATUS
+ImageRead(
+    PVOID Context,
+    const UINT8** Data,
+    SIZE_T* Bytes)
+{
+    IMAGE_HARNESS* I = Context;
+    UINT8* Copy;
+
+    I->Reads++;
+    *Data = NULL;
+    *Bytes = 0;
+    if (I->ReadStatus != FwloadOk)
+        return I->ReadStatus;
+    Copy = (UINT8*)malloc(I->ReadBytes);
+    if (Copy == NULL)
+        exit(2);
+    memcpy(Copy, I->Source, I->ReadBytes);
+    *Data = Copy;
+    *Bytes = I->ReadBytes;
+    return FwloadOk;
+}
+
+static
+PVOID
+ImageAllocate(
+    PVOID Context,
+    SIZE_T Bytes)
+{
+    IMAGE_HARNESS* I = Context;
+
+    I->Allocates++;
+    return I->AllocateFails ? NULL : malloc(Bytes);
+}
+
+static
+VOID
+ImageFree(
+    PVOID Context,
+    PVOID Memory)
+{
+    IMAGE_HARNESS* I = Context;
+
+    I->Frees++;
+    free(Memory);
+}
+
+static const FWLOAD_IMAGE_OPS ImageOps =
+{
+    ImageRead,
+    ImageAllocate,
+    ImageFree
+};
+
+/*
+ * R6 of the branch review: the firmware image is read once and kept. The holder reads on the first call and not on the second, two boots from one holder read once, a failed read
+ * or parse leaves nothing resident so that the next call is the re-read on demand, and the release gives back the bytes and the module table
+ */
+static
+void
+CheckImageResident(
+    HARNESS* H,
+    const UINT8* Data)
+{
+    IMAGE_HARNESS I;
+    FWLOAD_IMAGE Image;
+    FWLOAD_STATUS Status;
+
+    memset(&I, 0, sizeof(I));
+    I.Source = Data;
+    I.ReadBytes = REAL_IMAGE_BYTES;
+    memset(&Image, 0, sizeof(Image));
+    Status = FwloadImageEnsure(&Image, &ImageOps, &I);
+    CHECK_EQ(Status, FwloadOk);
+    CHECK_EQ(I.Reads, 1);
+    CHECK_EQ(I.Allocates, 1);
+    CHECK(Image.Data != NULL && Image.Data != Data);
+    CHECK_EQ(Image.Bytes, REAL_IMAGE_BYTES);
+    CHECK_STR(Image.Ri.Name, "ADSPFW");
+    CHECK_EQ(Image.Ri.ModuleCount, 32);
+    CHECK(Image.Modules != NULL && Image.Ri.Modules == Image.Modules);
+    CHECK_STR(Image.Modules[0].Name, "BRNGUP");
+    CHECK_STR(Image.Modules[31].Name, "PHASEVOC");
+    /* the second call finds it resident: no read, no allocation, the same bytes and table */
+    Status = FwloadImageEnsure(&Image, &ImageOps, &I);
+    CHECK_EQ(Status, FwloadOk);
+    CHECK_EQ(I.Reads, 1);
+    CHECK_EQ(I.Allocates, 1);
+    CHECK_EQ(I.Frees, 0);
+    /* a read that would fail changes nothing about a resident image */
+    I.ReadStatus = FwloadNoData;
+    CHECK_EQ(FwloadImageEnsure(&Image, &ImageOps, &I), FwloadOk);
+    CHECK_EQ(I.Reads, 1);
+    I.ReadStatus = FwloadOk;
+
+    /* two boots from the one holder, as the driver does across a sleep and a wake: the context takes the holder's parsed container, and the second boot reads nothing */
+    HarnessBoot(H, &Image.Ri, NULL);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Ctx->Dma.Bytes, Image.Ri.PayloadBytes);
+    CHECK(memcmp(H->Ctx->Dma.Virtual, Image.Data + Image.Ri.PayloadOffset, 0x1000) == 0);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    HarnessBoot(H, &Image.Ri, NULL);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(I.Reads, 1);
+    CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
+
+    /* released: the bytes and the table go back, the holder is empty, and the next call reads on demand */
+    FwloadImageFree(&Image, &ImageOps, &I);
+    CHECK_EQ(I.Frees, 2);
+    CHECK(Image.Data == NULL && Image.Bytes == 0 && Image.Modules == NULL);
+    CHECK(Image.Ri.Data == NULL && Image.Ri.Modules == NULL);
+    CHECK_EQ(FwloadImageEnsure(&Image, &ImageOps, &I), FwloadOk);
+    CHECK_EQ(I.Reads, 2);
+    CHECK_EQ(I.Frees, 2);
+    FwloadImageFree(&Image, &ImageOps, &I);
+    CHECK_EQ(I.Frees, 4);
+
+    /* a read that fails leaves nothing behind and is not kept: the next call reads again */
+    memset(&Image, 0, sizeof(Image));
+    I.ReadStatus = FwloadNoData;
+    CHECK_EQ(FwloadImageEnsure(&Image, &ImageOps, &I), FwloadNoData);
+    CHECK(Image.Data == NULL && Image.Bytes == 0 && Image.Modules == NULL);
+    CHECK_EQ(I.Frees, 4);
+    I.ReadStatus = FwloadOk;
+    CHECK_EQ(FwloadImageEnsure(&Image, &ImageOps, &I), FwloadOk);
+    CHECK_EQ(I.Reads, 4);
+    FwloadImageFree(&Image, &ImageOps, &I);
+    CHECK_EQ(I.Frees, 6);
+
+    /* a cut image is refused and released; the parsed facts stay for the log line */
+    I.ReadBytes = 0x3000;
+    Status = FwloadImageEnsure(&Image, &ImageOps, &I);
+    CHECK_EQ(Status, FwloadBadLength);
+    CHECK(Image.Data == NULL && Image.Modules == NULL && Image.Ri.Data == NULL);
+    CHECK_EQ(Image.Ri.BadOffset, 0x2C38);
+    CHECK_EQ(I.Reads, 5);
+    CHECK_EQ(I.Allocates, 3);
+    CHECK_EQ(I.Frees, 7);
+
+    /* a module table that cannot be allocated is out of memory, with the bytes released */
+    I.ReadBytes = REAL_IMAGE_BYTES;
+    I.AllocateFails = TRUE;
+    CHECK_EQ(FwloadImageEnsure(&Image, &ImageOps, &I), FwloadOutOfMemory);
+    CHECK(Image.Data == NULL && Image.Modules == NULL);
+    CHECK_EQ(I.Frees, 8);
+    CHECK_STR(FwloadStatusName(FwloadOutOfMemory), "out of memory");
+    I.AllocateFails = FALSE;
+    CHECK_EQ(FwloadImageEnsure(&Image, &ImageOps, &I), FwloadOk);
+    CHECK_EQ(I.Reads, 7);
+    FwloadImageFree(&Image, &ImageOps, &I);
+    CHECK_EQ(I.Frees, 10);
+}
+
 /* The documented write sequence of a cold boot, as the model recorded it */
 static
 void
@@ -2046,10 +2213,10 @@ CheckNames(
 {
     UINT32 Index, Other;
 
-    for (Index = 0; Index <= (UINT32)FwloadInterruptTimeout; Index++)
+    for (Index = 0; Index <= (UINT32)FwloadOutOfMemory; Index++)
     {
         CHECK(FwloadStatusName((FWLOAD_STATUS)Index)[0] != 0);
-        for (Other = Index + 1; Other <= (UINT32)FwloadInterruptTimeout; Other++)
+        for (Other = Index + 1; Other <= (UINT32)FwloadOutOfMemory; Other++)
             CHECK(strcmp(FwloadStatusName((FWLOAD_STATUS)Index), FwloadStatusName((FWLOAD_STATUS)Other)) != 0);
     }
     for (Index = 0; Index <= (UINT32)FwloadStateFailed; Index++)
@@ -2138,6 +2305,7 @@ main(
     HarnessInit(&H);
     Data = LoadRealImage();
     CheckRealImage(Data, Image, Modules);
+    CheckImageResident(&H, Data);
     CheckHappyPath(&H, Image);
     CheckOpsContext(&H, Image);
     CheckTimeouts(&H, Image);

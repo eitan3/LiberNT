@@ -131,10 +131,10 @@ typedef struct _INTCDSP_DEVICE
     UINT32 RomError;
     NHLT_SUMMARY NhltSummary;
     NHLT_PARSE_STATUS NhltStatus;
-    PUCHAR Image;
-    SIZE_T ImageBytes;
-    SOF_RI_IMAGE Ri;
-    PSOF_RI_MODULE Modules;
+    /* the firmware image, read once at start and kept until the hardware is released (R6) */
+    FWLOAD_IMAGE Image;
+    FWLOAD_STATUS FirmwareStatus;
+    NTSTATUS FirmwareReadStatus;
     PUCHAR DmaBuffer;
     SIZE_T DmaBytes;
     FWLOAD_DMA_SEGMENT Segment;

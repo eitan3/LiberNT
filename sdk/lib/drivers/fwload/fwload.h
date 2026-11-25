@@ -254,7 +254,8 @@ typedef enum _FWLOAD_STATUS
     FwloadHardwareFault,
     FwloadBadState,
     FwloadInterruptStorm,
-    FwloadInterruptTimeout
+    FwloadInterruptTimeout,
+    FwloadOutOfMemory
 } FWLOAD_STATUS;
 
 typedef enum _FWLOAD_STATE
@@ -376,6 +377,23 @@ typedef struct _FWLOAD_DMA_SEGMENT
     UINT64 Address;
     SIZE_T Bytes;
 } FWLOAD_DMA_SEGMENT, *PFWLOAD_DMA_SEGMENT;
+
+/* A firmware image its owner keeps resident: the bytes the read returned, the parsed container and its module table; resident once FwloadImageEnsure returned FwloadOk, and then not read again until FwloadImageFree */
+typedef struct _FWLOAD_IMAGE
+{
+    const UINT8* Data;
+    SIZE_T Bytes;
+    SOF_RI_IMAGE Ri;
+    PSOF_RI_MODULE Modules;
+} FWLOAD_IMAGE, *PFWLOAD_IMAGE;
+
+/* What the image holder cannot do itself: reading the whole image into memory that Free releases, the nonpaged module table, and releasing either */
+typedef struct _FWLOAD_IMAGE_OPS
+{
+    FWLOAD_STATUS (*Read)(_Inout_ PVOID Context, _Out_ const UINT8** Data, _Out_ SIZE_T* Bytes);
+    PVOID (*Allocate)(_Inout_ PVOID Context, SIZE_T Bytes);
+    VOID (*Free)(_Inout_ PVOID Context, PVOID Memory);
+} FWLOAD_IMAGE_OPS, *PFWLOAD_IMAGE_OPS;
 
 /* The code-loader DMA buffer: a virtual buffer, its physical layout and the descriptor list the stream walks */
 typedef struct _FWLOAD_CL_DMA
@@ -594,10 +612,24 @@ FwloadReadInterruptState(
     _In_ const FWLOAD_CONTEXT* Context,
     _Out_ PFWLOAD_INTERRUPT_STATE State);
 
-/* The body of the DSP's interrupt service routine: TRUE when a message was pending, was counted and the enables were masked; runs under the caller's interrupt lock, at the caller's interrupt level */
+/* The service routine of the DSP's IPC line: TRUE when a message was pending, was counted and the enables were masked; runs under the caller's interrupt lock, at the caller's interrupt level */
 BOOLEAN
 FwloadInterruptService(
     _Inout_ PFWLOAD_CONTEXT Context);
+
+/* Reads and parses the image the first time and keeps it; a resident image is not read again, and after a failure nothing stays resident, so the next call is the re-read on demand */
+FWLOAD_STATUS
+FwloadImageEnsure(
+    _Inout_ PFWLOAD_IMAGE Image,
+    _In_ const FWLOAD_IMAGE_OPS* Ops,
+    _Inout_ PVOID Context);
+
+/* Releases the bytes and the module table; the parsed container stays as it was, for a log line */
+VOID
+FwloadImageFree(
+    _Inout_ PFWLOAD_IMAGE Image,
+    _In_ const FWLOAD_IMAGE_OPS* Ops,
+    _Inout_ PVOID Context);
 
 #ifdef __cplusplus
 }

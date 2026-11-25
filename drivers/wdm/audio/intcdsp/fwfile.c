@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT Intel Smart Sound DSP driver
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     Reads the Sound Open Firmware image for the DSP from the driver's firmware directory and parses it with the fwload library
+ * PURPOSE:     Reads the Sound Open Firmware image for the DSP from the driver's firmware directory once, at start, and keeps it resident for the device through the fwload image holder
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -64,22 +64,66 @@ IntcDspReadFile(
     return STATUS_SUCCESS;
 }
 
+/* The image holder's operations: the whole file into paged pool, the module table into nonpaged pool, one tag for both */
+static
+FWLOAD_STATUS
+IntcDspReadImage(
+    PVOID Context,
+    const UINT8** Data,
+    SIZE_T* Bytes)
+{
+    UNICODE_STRING Path;
+    PUCHAR Buffer;
+    SIZE_T Count;
+    NTSTATUS Status;
+    PINTCDSP_DEVICE Dev = Context;
+
+    RtlInitUnicodeString(&Path, INTCDSP_FIRMWARE_PATH);
+    Status = IntcDspReadFile(INTCDSP_FIRMWARE_PATH, &Buffer, &Count);
+    Dev->FirmwareReadStatus = Status;
+    if (!NT_SUCCESS(Status))
+    {
+        IntcDspLog("firmware %wZ: not read, 0x%08lx\n", &Path, Status);
+        return Status == STATUS_INSUFFICIENT_RESOURCES ? FwloadOutOfMemory : FwloadNoData;
+    }
+    *Data = Buffer;
+    *Bytes = Count;
+    return FwloadOk;
+}
+
+static
+PVOID
+IntcDspAllocateImage(
+    PVOID Context,
+    SIZE_T Bytes)
+{
+    UNREFERENCED_PARAMETER(Context);
+    return ExAllocatePoolWithTag(NonPagedPool, Bytes, INTCDSP_POOL_TAG);
+}
+
+static
+VOID
+IntcDspFreeImage(
+    PVOID Context,
+    PVOID Memory)
+{
+    UNREFERENCED_PARAMETER(Context);
+    ExFreePoolWithTag(Memory, INTCDSP_POOL_TAG);
+}
+
+static const FWLOAD_IMAGE_OPS IntcDspImageOps =
+{
+    IntcDspReadImage,
+    IntcDspAllocateImage,
+    IntcDspFreeImage
+};
+
 VOID
 IntcDspFreeFirmware(
     _Inout_ PINTCDSP_DEVICE Dev)
 {
-    if (Dev->Modules)
-    {
-        ExFreePoolWithTag(Dev->Modules, INTCDSP_POOL_TAG);
-        Dev->Modules = NULL;
-    }
-    if (Dev->Image)
-    {
-        ExFreePoolWithTag(Dev->Image, INTCDSP_POOL_TAG);
-        Dev->Image = NULL;
-    }
-    Dev->ImageBytes = 0;
-    RtlZeroMemory(&Dev->Ri, sizeof(Dev->Ri));
+    FwloadImageFree(&Dev->Image, &IntcDspImageOps, Dev);
+    RtlZeroMemory(&Dev->Image.Ri, sizeof(Dev->Image.Ri));
 }
 
 NTSTATUS
@@ -87,50 +131,25 @@ IntcDspLoadFirmware(
     _Inout_ PINTCDSP_DEVICE Dev)
 {
     UNICODE_STRING Path;
+    const SOF_RI_IMAGE* Ri = &Dev->Image.Ri;
     FWLOAD_STATUS Status;
-    NTSTATUS NtStatus;
-    ULONG Count;
 
+    /* read at the first call that finds no image, at start, and kept for the device: a power-up callback finds it resident and reads nothing */
+    Status = FwloadImageEnsure(&Dev->Image, &IntcDspImageOps, Dev);
+    Dev->FirmwareStatus = Status;
     RtlInitUnicodeString(&Path, INTCDSP_FIRMWARE_PATH);
-    IntcDspFreeFirmware(Dev);
-
-    NtStatus = IntcDspReadFile(INTCDSP_FIRMWARE_PATH, &Dev->Image, &Dev->ImageBytes);
-    if (!NT_SUCCESS(NtStatus))
-    {
-        IntcDspLog("firmware %wZ: not read, 0x%08lx\n", &Path, NtStatus);
-        return NtStatus;
-    }
-
-    Status = SofRiParse(Dev->Image, Dev->ImageBytes, NULL, 0, &Dev->Ri);
-    if (Status != FwloadOk && Status != FwloadTooManyModules)
-        goto Invalid;
-    Count = Dev->Ri.ModuleCount;
-    if (Count == 0 || Count > SOF_RI_MAX_EXT_MAN_MODULES)
-    {
-        Status = FwloadTooManyModules;
-        goto Invalid;
-    }
-
-    Dev->Modules = ExAllocatePoolWithTag(NonPagedPool, Count * sizeof(SOF_RI_MODULE), INTCDSP_POOL_TAG);
-    if (!Dev->Modules)
-    {
-        NtStatus = STATUS_INSUFFICIENT_RESOURCES;
-        goto Fail;
-    }
-    Status = SofRiParse(Dev->Image, Dev->ImageBytes, Dev->Modules, Count, &Dev->Ri);
     if (Status != FwloadOk)
-        goto Invalid;
+    {
+        if (Status != FwloadNoData && Status != FwloadOutOfMemory)
+            IntcDspLog("firmware %wZ: %s at offset 0x%I64x\n", &Path, FwloadStatusName(Status), (ULONGLONG)Ri->BadOffset);
+        if (Status == FwloadOutOfMemory)
+            return STATUS_INSUFFICIENT_RESOURCES;
+        return Status == FwloadNoData ? Dev->FirmwareReadStatus : STATUS_INVALID_IMAGE_FORMAT;
+    }
 
     IntcDspLog("firmware %wZ: %I64u bytes, %s, image '%s' version %u.%u.%u.%u, %u modules, payload 0x%I64x + 0x%I64x, %u preload pages\n",
-               &Path, (ULONGLONG)Dev->ImageBytes, FwloadStatusName(FwloadOk), Dev->Ri.Name, Dev->Ri.Major, Dev->Ri.Minor,
-               Dev->Ri.Hotfix, Dev->Ri.Build, Dev->Ri.ModuleCount, (ULONGLONG)Dev->Ri.PayloadOffset,
-               (ULONGLONG)Dev->Ri.PayloadBytes, Dev->Ri.PreloadPageCount);
+               &Path, (ULONGLONG)Dev->Image.Bytes, FwloadStatusName(FwloadOk), Ri->Name, Ri->Major, Ri->Minor,
+               Ri->Hotfix, Ri->Build, Ri->ModuleCount, (ULONGLONG)Ri->PayloadOffset,
+               (ULONGLONG)Ri->PayloadBytes, Ri->PreloadPageCount);
     return STATUS_SUCCESS;
-
-Invalid:
-    IntcDspLog("firmware %wZ: %s at offset 0x%I64x\n", &Path, FwloadStatusName(Status), (ULONGLONG)Dev->Ri.BadOffset);
-    NtStatus = STATUS_INVALID_IMAGE_FORMAT;
-Fail:
-    IntcDspFreeFirmware(Dev);
-    return NtStatus;
 }
