@@ -318,6 +318,13 @@ IntcDspProbe(
         IntcDspLog("NHLT table: the bus driver reports none\n");
     }
 
+    /* BAR4 is read only for the controller this driver boots (R9): on the others, probe-only, the DSP's registers are left alone while the DSP is powered down */
+    if (!Dev->Platform)
+    {
+        IntcDspLog("controller %04x has no register map: BAR4 is not read, the DSP is left alone\n", Dev->DevId);
+        return;
+    }
+
     if (!Dev->AdspBar.Base.Base || Dev->AdspBar.Len < Platform->RomError + sizeof(ULONG))
     {
         IntcDspLog("BAR4 (%p, 0x%lx bytes) is too short for the ACE 1.0 register map (needs 0x%x bytes); no DSP register read\n",
