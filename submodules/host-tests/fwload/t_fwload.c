@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT host-native tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The firmware loader boots a DSP model from the real sof-arl-s.ri and from a synthetic image, times out or reports every fault the model injects, powers down from every state, never trusts a malformed image or descriptor list, and reaches the model only through the harness it was given
+ * PURPOSE:     The firmware loader boots a DSP model from the real sof-arl-s.ri and from a synthetic image, times out or reports every fault the model injects, powers down from every state, never trusts a malformed image or descriptor list, bounds its buffer by the DMA capability the bus reports, and reaches the model only through the harness it was given
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -12,6 +12,7 @@
 #include "shim.h"
 
 #include "fake_dsp.h"
+#include "fake_bus.h"
 #include "fwload_cases.h"
 
 static int Checks;
@@ -2133,6 +2134,69 @@ CheckBoundaryRows(
     }
 }
 
+/* R8 of the branch review: the bus interface binds by size, in version 1 or 2, and the 64-bit DMA capability it reports bounds the code-loader buffer */
+static
+void
+CheckBusBound(void)
+{
+    const SIZE_T V1Bytes = RTL_SIZEOF_THROUGH_FIELD(ADSP_BUS_INTERFACE, ReleaseInterruptLock);
+    FAKE_BUS Bus;
+    ADSP_BUS_INTERFACE Queried;
+
+    /* version 2, a controller that addresses 64 bits: the whole range */
+    FakeBusInit(&Bus, 2, TRUE);
+    CHECK_EQ(Bus.Interface.Size, sizeof(ADSP_BUS_INTERFACE));
+    CHECK_EQ(Bus.Interface.Version, 2);
+    RtlZeroMemory(&Queried, sizeof(Queried));
+    CHECK_EQ(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    CHECK(IntcDspBusComplete(&Queried));
+    CHECK_EQ(IntcDspDmaHighBound(&Queried), MAXULONG64);
+    CHECK_EQ(Bus.InfoCalls, 1);
+
+    /* version 2, a controller without 64-bit DMA: below 4 GiB */
+    FakeBusInit(&Bus, 2, FALSE);
+    RtlZeroMemory(&Queried, sizeof(Queried));
+    CHECK_EQ(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspDmaHighBound(&Queried), 0xFFFFFFFFULL);
+
+    /* version 2, a capability query that fails: below 4 GiB */
+    Bus.InfoStatus = STATUS_NO_SUCH_DEVICE;
+    RtlZeroMemory(&Queried, sizeof(Queried));
+    CHECK_EQ(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspDmaHighBound(&Queried), 0xFFFFFFFFULL);
+
+    /* an older bus: version 1 answers the version 2 query with its shorter structure, reports no capability, and the buffer stays below 4 GiB */
+    FakeBusInit(&Bus, 1, TRUE);
+    CHECK_EQ(Bus.Interface.Size, V1Bytes);
+    memset(&Queried, 0xA5, sizeof(Queried));
+    CHECK_EQ(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    CHECK_EQ(Queried.Size, V1Bytes);
+    CHECK_EQ(Queried.Version, 1);
+    CHECK(IntcDspBusComplete(&Queried));
+    /* what the caller's buffer holds beyond the bus's structure is not the bus's, and is never followed */
+    CHECK(Queried.GetPlatformInfo != NULL);
+    CHECK_EQ(IntcDspDmaHighBound(&Queried), 0xFFFFFFFFULL);
+    CHECK_EQ(Bus.InfoCalls, 0);
+
+    /* the query's rule: the bus may not exceed the caller's buffer or version, and a refused query writes nothing */
+    FakeBusInit(&Bus, 2, TRUE);
+    memset(&Queried, 0x5A, sizeof(Queried));
+    CHECK_EQ(FakeBusQueryInterface(&Bus, &Queried, (ULONG)V1Bytes, ADSP_BUS_INTERFACE_VERSION), STATUS_INVALID_BUFFER_SIZE);
+    CHECK_EQ(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), 1), STATUS_INVALID_BUFFER_SIZE);
+    CHECK(((const UINT8*)&Queried)[0] == 0x5A && ((const UINT8*)&Queried)[sizeof(Queried) - 1] == 0x5A);
+
+    /* a bus shorter than version 1, or without one of its members, does not bind */
+    RtlZeroMemory(&Queried, sizeof(Queried));
+    CHECK(!IntcDspBusComplete(&Queried));
+    FakeBusInit(&Bus, 2, TRUE);
+    CHECK_EQ(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    Queried.Size = (USHORT)(V1Bytes - 1);
+    CHECK(!IntcDspBusComplete(&Queried));
+    Queried.Size = sizeof(ADSP_BUS_INTERFACE);
+    Queried.TriggerDSP = NULL;
+    CHECK(!IntcDspBusComplete(&Queried));
+}
+
 static
 void
 CheckDma(
@@ -2166,6 +2230,22 @@ CheckDma(
     CHECK_EQ(Dma.StreamTag, 1);
     CHECK_EQ(Dma.StreamFormat, 0x40);
     CHECK(memcmp(Dma.Virtual, Data + Image->PayloadOffset, Image->PayloadBytes) == 0);
+
+    /* R8 of the branch review: the payload copy is byte-exact for an odd length and leaves the byte after it alone */
+    {
+        static const SIZE_T OddLengths[] = { 1, 3, 4097, REAL_PAYLOAD_BYTES - 1 };
+        SIZE_T Odd;
+
+        for (Odd = 0; Odd < sizeof(OddLengths) / sizeof(OddLengths[0]); Odd++)
+        {
+            memset(Dma.Virtual, 0xA5, Dma.Capacity);
+            CHECK_EQ(FwloadClDmaPrepare(&Dma, Data + Image->PayloadOffset, OddLengths[Odd]), FwloadOk);
+            CHECK(memcmp(Dma.Virtual, Data + Image->PayloadOffset, OddLengths[Odd]) == 0);
+            CHECK_EQ(Dma.Virtual[OddLengths[Odd]], 0xA5);
+            CHECK_EQ(Dma.Bytes, OddLengths[Odd]);
+            CHECK_EQ(Dma.FragmentCount, 1);
+        }
+    }
 
     /* the 4 KiB rule as a caller option: one descriptor per page, more than the stream has */
     CHECK_EQ(FwloadClDmaEntryCount(Dma.Segment, 1, Image->PayloadBytes, 0x1000), 282);
@@ -2444,6 +2524,7 @@ main(
     CheckCancellation(&H, Image);
     CheckBadPayload(&H, Data, Image);
     CheckDma(&H, Data, Image);
+    CheckBusBound();
     CheckSyntheticImage(&H);
     CheckMalformedReal(Data);
     CheckNames();

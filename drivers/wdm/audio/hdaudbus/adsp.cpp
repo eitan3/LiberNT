@@ -377,6 +377,19 @@ void ADSPReleaseInterruptLock(_In_ PVOID _context) {
 	WdfInterruptReleaseLock(devData->FdoContext->Interrupt);
 }
 
+NTSTATUS ADSPGetPlatformInfo(_In_ PVOID _context, _Out_ PADSP_PLATFORM_INFO platformInfo) {
+	if (!_context)
+		return STATUS_NO_SUCH_DEVICE;
+
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+	if (!devData->FdoContext) {
+		return STATUS_NO_SUCH_DEVICE;
+	}
+
+	platformInfo->Dma64Bit = devData->FdoContext->is64BitOK;
+	return STATUS_SUCCESS;
+}
+
 ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
 	ADSP_BUS_INTERFACE busInterface;
 	RtlZeroMemory(&busInterface, sizeof(ADSP_BUS_INTERFACE));
@@ -384,7 +397,7 @@ ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
 	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)Context;
 
 	busInterface.Size = sizeof(ADSP_BUS_INTERFACE);
-	busInterface.Version = 1;
+	busInterface.Version = 2;
 	busInterface.Context = Context;
 	busInterface.InterfaceReference = WdfDeviceInterfaceReferenceNoOp;
 	busInterface.InterfaceDereference = WdfDeviceInterfaceDereferenceNoOp;
@@ -407,6 +420,7 @@ ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
 
 	busInterface.AcquireInterruptLock = ADSPAcquireInterruptLock;
 	busInterface.ReleaseInterruptLock = ADSPReleaseInterruptLock;
+	busInterface.GetPlatformInfo = ADSPGetPlatformInfo;
 
 	return busInterface;
 }

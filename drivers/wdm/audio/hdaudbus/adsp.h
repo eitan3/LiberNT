@@ -28,6 +28,12 @@ typedef void (*PDSP_ENABLE_SPIB)(_In_ PVOID _context, _In_ HANDLE Handle, UINT32
 typedef void (*PDSP_DISABLE_SPIB)(_In_ PVOID _context, _In_ HANDLE Handle);
 /* The bus driver's interrupt spin lock (WdfInterruptAcquireLock), raised to DIRQL; hda_interrupt runs under it while it calls the DSP callback */
 typedef void (*PADSP_INTERRUPT_LOCK) (_In_ PVOID _context);
+/* What the controller offers a DSP child; version 2 of the interface reports it */
+typedef struct _ADSP_PLATFORM_INFO {
+	/* The controller addresses 64 bits of DMA address (hda_registers.h HDA_GCAP_64OK) */
+	BOOLEAN Dma64Bit;
+} ADSP_PLATFORM_INFO, * PADSP_PLATFORM_INFO;
+typedef _Must_inspect_result_ NTSTATUS (*PADSP_GET_PLATFORM_INFO) (_In_ PVOID _context, _Out_ PADSP_PLATFORM_INFO platformInfo);
 
 typedef struct _ADSP_BUS_INTERFACE
 {
@@ -62,6 +68,9 @@ typedef struct _ADSP_BUS_INTERFACE
     /* Appended for intcdsp: the interrupt lock its interrupt enable read-modify-writes are serialized with */
     PADSP_INTERRUPT_LOCK          AcquireInterruptLock;
     PADSP_INTERRUPT_LOCK          ReleaseInterruptLock;
+
+    /* Appended for version 2: the controller's facts; a driver built for version 1 reads the structure through ReleaseInterruptLock */
+    PADSP_GET_PLATFORM_INFO       GetPlatformInfo;
 } ADSP_BUS_INTERFACE, * PADSP_BUS_INTERFACE;
 
 #ifndef ADSP_DECL

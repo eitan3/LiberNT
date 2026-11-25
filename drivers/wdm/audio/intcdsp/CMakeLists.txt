@@ -7,6 +7,7 @@
 
 list(APPEND SOURCE
     intcdsp.c
+    adspbus.c
     hwops.c
     fwfile.c)
 

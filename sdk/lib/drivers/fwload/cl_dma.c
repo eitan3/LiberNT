@@ -97,7 +97,7 @@ FwloadClDmaPrepare(
     const UINT8* Payload,
     SIZE_T PayloadBytes)
 {
-    SIZE_T Index, Needed;
+    SIZE_T Needed;
 
     if (Dma == NULL)
         return FwloadBadLength;
@@ -116,8 +116,7 @@ FwloadClDmaPrepare(
         Needed * FWLOAD_BDL_ENTRY_BYTES > Dma->BdlBytes)
         return FwloadDmaTooManyFragments;
 
-    for (Index = 0; Index < PayloadBytes; Index++)
-        Dma->Virtual[Index] = Payload[Index];
+    RtlCopyMemory(Dma->Virtual, Payload, PayloadBytes);
     Needed = FwloadClDmaWalk(Dma->Segment, Dma->SegmentCount, PayloadBytes, Dma->EntryBoundary, Dma);
     Dma->Bytes = PayloadBytes;
     Dma->FragmentCount = Needed;

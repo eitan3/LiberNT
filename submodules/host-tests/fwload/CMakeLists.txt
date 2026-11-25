@@ -1,6 +1,6 @@
 # PROJECT:     LiberNT host-native tests
 # LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
-# PURPOSE:     The firmware loader boots a DSP model from the real sof-arl-s.ri and from malformed images under ASan and UBSan
+# PURPOSE:     The firmware loader boots a DSP model from the real sof-arl-s.ri and from malformed images under ASan and UBSan, with the DSP child's bus binding
 # COPYRIGHT:   Copyright 2026 LiberNT contributors
 
 add_library(fwload_common INTERFACE)
@@ -9,6 +9,7 @@ target_include_directories(fwload_common INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/fwload
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/sofipc4
+    ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/intcdsp
     ${REACTOS_HOST_SOURCE_ROOT}/modules/rostests/kmtests/fwload)
 
 function(fwload_test name)
@@ -22,11 +23,12 @@ function(fwload_test name)
     set_tests_properties(${name}.boot PROPERTIES TIMEOUT 120)
 endfunction()
 
-fwload_test(fwload t_fwload.c fake_dsp.c
+fwload_test(fwload t_fwload.c fake_dsp.c fake_bus.c
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/fwload/sof_ri.c
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/fwload/cl_dma.c
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/fwload/fwboot.c
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/fwload/fwimage.c
-    ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/sofipc4/sofipc4.c)
+    ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/sofipc4/sofipc4.c
+    ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/intcdsp/adspbus.c)
 target_compile_definitions(fwload PRIVATE
     FWLOAD_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")

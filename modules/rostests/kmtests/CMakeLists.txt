@@ -143,6 +143,8 @@ list(APPEND KMTEST_DRV_SOURCE
     hdaudbus/Softplg.c
     fwload/Fwload.c
     ${REACTOS_SOURCE_DIR}/submodules/host-tests/fwload/fake_dsp.c
+    ${REACTOS_SOURCE_DIR}/submodules/host-tests/fwload/fake_bus.c
+    ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/intcdsp/adspbus.c
     ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus/policy.c
     ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus/policy_dmi.c
     ks/KsCreateItemSlot.c
@@ -573,11 +575,14 @@ endif()
 add_library(kmtest_drv MODULE ${KMTEST_DRV_SOURCE})
 set_source_files_properties(${REACTOS_SOURCE_DIR}/submodules/host-tests/fwload/fake_dsp.c PROPERTIES
     COMPILE_DEFINITIONS FAKE_DSP_KERNEL)
+set_source_files_properties(${REACTOS_SOURCE_DIR}/submodules/host-tests/fwload/fake_bus.c PROPERTIES
+    COMPILE_DEFINITIONS FAKE_BUS_KERNEL)
 target_include_directories(kmtest_drv PRIVATE
     ${REACTOS_SOURCE_DIR}/drivers/bus/acpi
     ${REACTOS_SOURCE_DIR}/drivers/input/i8042prt
     ${REACTOS_SOURCE_DIR}/drivers/directx/dxgkrnl
     ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus
+    ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/intcdsp
     ${REACTOS_SOURCE_DIR}/modules/rostests/kmtests/fwload
     ${REACTOS_SOURCE_DIR}/submodules/host-tests/fwload
     ${REACTOS_SOURCE_DIR}/drivers/directx/dxgmms2

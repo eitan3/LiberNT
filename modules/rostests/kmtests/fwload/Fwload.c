@@ -1,13 +1,14 @@
 /*
  * PROJECT:     LiberNT kernel-mode tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The firmware loader reads a synthetic ACE image and boots the DSP model from it inside the kernel, and reports the model's faults
+ * PURPOSE:     The firmware loader reads a synthetic ACE image and boots the DSP model from it inside the kernel, reports the model's faults, and binds the DSP child's bus interface by size and DMA capability
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
 #include <kmt_test.h>
 #include <fwload.h>
 #include <fake_dsp.h>
+#include <fake_bus.h>
 
 #define NDEBUG
 #include <debug.h>
@@ -227,6 +228,66 @@ CheckImageHolder(
     ok(Holder.Data == NULL && Holder.Modules == NULL, "the holder kept something after the release\n");
 }
 
+/* R8 of the branch review: the bus interface binds by size, in version 1 or 2, and the 64-bit DMA capability it reports bounds the code-loader buffer */
+static
+VOID
+CheckBusBound(
+    VOID)
+{
+    const SIZE_T V1Bytes = RTL_SIZEOF_THROUGH_FIELD(ADSP_BUS_INTERFACE, ReleaseInterruptLock);
+    FAKE_BUS Bus;
+    ADSP_BUS_INTERFACE Queried;
+
+    FakeBusInit(&Bus, 2, TRUE);
+    ok_eq_uint(Bus.Interface.Size, (ULONG)sizeof(ADSP_BUS_INTERFACE));
+    ok_eq_uint(Bus.Interface.Version, 2);
+    RtlZeroMemory(&Queried, sizeof(Queried));
+    ok_eq_int(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    ok(IntcDspBusComplete(&Queried) != FALSE, "a version 2 bus does not bind\n");
+    ok_eq_ulonglong(IntcDspDmaHighBound(&Queried), MAXULONG64);
+    ok_eq_uint(Bus.InfoCalls, 1);
+
+    FakeBusInit(&Bus, 2, FALSE);
+    RtlZeroMemory(&Queried, sizeof(Queried));
+    ok_eq_int(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    ok_eq_ulonglong(IntcDspDmaHighBound(&Queried), 0xFFFFFFFFULL);
+
+    Bus.InfoStatus = STATUS_NO_SUCH_DEVICE;
+    RtlZeroMemory(&Queried, sizeof(Queried));
+    ok_eq_int(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    ok_eq_ulonglong(IntcDspDmaHighBound(&Queried), 0xFFFFFFFFULL);
+
+    /* an older bus answers with its shorter structure: it reports no capability, and the buffer stays below 4 GiB */
+    FakeBusInit(&Bus, 1, TRUE);
+    ok_eq_uint(Bus.Interface.Size, (ULONG)V1Bytes);
+    RtlFillMemory(&Queried, sizeof(Queried), 0xA5);
+    ok_eq_int(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    ok_eq_uint(Queried.Size, (ULONG)V1Bytes);
+    ok_eq_uint(Queried.Version, 1);
+    ok(IntcDspBusComplete(&Queried) != FALSE, "a version 1 bus does not bind\n");
+    ok(Queried.GetPlatformInfo != NULL, "the tail of the caller's buffer was overwritten\n");
+    ok_eq_ulonglong(IntcDspDmaHighBound(&Queried), 0xFFFFFFFFULL);
+    ok_eq_uint(Bus.InfoCalls, 0);
+
+    /* the query's rule: the bus may not exceed the caller's buffer or version, and a refused query writes nothing */
+    FakeBusInit(&Bus, 2, TRUE);
+    RtlFillMemory(&Queried, sizeof(Queried), 0x5A);
+    ok_eq_int(FakeBusQueryInterface(&Bus, &Queried, (ULONG)V1Bytes, ADSP_BUS_INTERFACE_VERSION), STATUS_INVALID_BUFFER_SIZE);
+    ok_eq_int(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), 1), STATUS_INVALID_BUFFER_SIZE);
+    ok(((PUCHAR)&Queried)[0] == 0x5A && ((PUCHAR)&Queried)[sizeof(Queried) - 1] == 0x5A, "a refused query wrote into the buffer\n");
+
+    /* a bus shorter than version 1, or without one of its members, does not bind */
+    RtlZeroMemory(&Queried, sizeof(Queried));
+    ok(!IntcDspBusComplete(&Queried), "an empty interface binds\n");
+    FakeBusInit(&Bus, 2, TRUE);
+    ok_eq_int(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    Queried.Size = (USHORT)(V1Bytes - 1);
+    ok(!IntcDspBusComplete(&Queried), "a bus shorter than version 1 binds\n");
+    Queried.Size = sizeof(ADSP_BUS_INTERFACE);
+    Queried.TriggerDSP = NULL;
+    ok(!IntcDspBusComplete(&Queried), "a bus without a member binds\n");
+}
+
 START_TEST(Fwload)
 {
     UINT8* Image;
@@ -239,6 +300,7 @@ START_TEST(Fwload)
     SOF_RI_IMAGE Parsed;
     SOF_RI_MODULE Modules[4];
     FAKE_DSP_FAULTS Faults;
+    static const SIZE_T OddLengths[] = { 1, 3, 4097, FWLOAD_TEST_PAYLOAD - 1 };
     UINT32 Index;
 
     Image = ExAllocatePoolWithTag(NonPagedPool, FWLOAD_CASE_IMAGE_BYTES, FWLOAD_TEST_TAG);
@@ -389,6 +451,23 @@ START_TEST(Fwload)
     FakeDspInit(Dsp, FwloadPlatformArlS(), NULL);
     ok_eq_int(FakeDspOps()->StreamSubmit(Dsp, &Dma), FwloadOk);
     ok_eq_uint(Dsp->DmaErrors, 0);
+
+    /* R8 of the branch review: the payload copy is byte-exact for an odd length and leaves the byte after it alone */
+    Segment.Address = 0x10000000ULL;
+    Segment.Bytes = FWLOAD_TEST_PAYLOAD;
+    Dma.Capacity = FWLOAD_TEST_PAYLOAD;
+    Dma.EntryBoundary = 0;
+    for (Index = 0; Index < sizeof(OddLengths) / sizeof(OddLengths[0]); Index++)
+    {
+        RtlFillMemory(Virtual, FWLOAD_TEST_PAYLOAD, 0xA5);
+        ok_eq_int(FwloadClDmaPrepare(&Dma, Image + Parsed.PayloadOffset, OddLengths[Index]), FwloadOk);
+        ok(RtlCompareMemory(Virtual, Image + Parsed.PayloadOffset, OddLengths[Index]) == OddLengths[Index],
+           "the copy of %Iu bytes differs\n", OddLengths[Index]);
+        ok_eq_uint(Virtual[OddLengths[Index]], 0xA5);
+        ok_eq_uint(Dma.Bytes, OddLengths[Index]);
+    }
+
+    CheckBusBound();
 
     ExFreePoolWithTag(Virtual, FWLOAD_TEST_TAG);
     ExFreePoolWithTag(Context, FWLOAD_TEST_TAG);

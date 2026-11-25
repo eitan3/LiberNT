@@ -49,63 +49,7 @@
 DEFINE_GUID(GUID_ADSP_BUS_INTERFACE,
     0x752a2cae, 0x3455, 0x4d18, 0xa1, 0x84, 0x8b, 0x34, 0xb2, 0x26, 0x32, 0xce);
 
-typedef struct _PCI_BAR
-{
-    union
-    {
-        PVOID Base;
-        UINT8* BasePtr;
-    } Base;
-    ULONG Len;
-} PCI_BAR, *PPCI_BAR;
-
-typedef struct _NHLT_INFO
-{
-    PVOID Nhlt;
-    UINT64 NhltSz;
-} NHLT_INFO, *PNHLT_INFO;
-
-/* The private bus interface hdaudbus exposes on the CSAUDIO\ADSP child: drivers/wdm/audio/hdaudbus/adsp.h (CoolStar, BSD-3-Clause); the member order is the ABI and its BOOL is windef's int */
-typedef _Must_inspect_result_ NTSTATUS(*PGET_ADSP_RESOURCES)(_In_ PVOID Context, _Out_ PCI_BAR* HdaBar, _Out_ PCI_BAR* AdspBar, PVOID* Ppcap, PNHLT_INFO NhltInfo, _Out_ BUS_INTERFACE_STANDARD* PciConfig);
-typedef _Must_inspect_result_ NTSTATUS(*PDSP_SET_POWER_STATE)(_In_ PVOID Context, _In_ DEVICE_POWER_STATE NewPowerState);
-typedef _Must_inspect_result_ int(*PADSP_INTERRUPT_CALLBACK)(PVOID Context);
-typedef _Must_inspect_result_ NTSTATUS(*PREGISTER_ADSP_INTERRUPT)(_In_ PVOID Context, _In_ PADSP_INTERRUPT_CALLBACK Callback, _In_ PVOID CallbackContext);
-typedef _Must_inspect_result_ NTSTATUS(*PUNREGISTER_ADSP_INTERRUPT)(_In_ PVOID Context);
-typedef _Must_inspect_result_ NTSTATUS(*PGET_STREAM)(_In_ PVOID Context, HDAUDIO_STREAM_FORMAT StreamFormat, PHANDLE Handle, _Out_ UINT8* StreamTag);
-typedef _Must_inspect_result_ NTSTATUS(*PFREE_STREAM)(_In_ PVOID Context, _In_ HANDLE Handle);
-typedef _Must_inspect_result_ NTSTATUS(*PDSP_PREPARE_STREAM)(_In_ PVOID Context, _In_ HANDLE Handle, _In_ unsigned int ByteSize, _In_ int Frags, _Out_ PVOID* BdlBuf);
-typedef _Must_inspect_result_ NTSTATUS(*PDSP_CLEANUP_STREAM)(_In_ PVOID Context, _In_ HANDLE Handle);
-typedef _Must_inspect_result_ UINT32(*PDSP_STREAM_POSITION)(_In_ PVOID Context, _In_ HANDLE Handle);
-typedef void(*PDSP_START_STOP_STREAM)(_In_ PVOID Context, _In_ HANDLE Handle, int StartStop);
-typedef void(*PDSP_ENABLE_SPIB)(_In_ PVOID Context, _In_ HANDLE Handle, UINT32 Value);
-typedef void(*PDSP_DISABLE_SPIB)(_In_ PVOID Context, _In_ HANDLE Handle);
-/* Added by this driver's request: the bus driver's interrupt spin lock, raised to DIRQL, which its interrupt service routine holds while it calls the DSP callback */
-typedef void(*PADSP_INTERRUPT_LOCK)(_In_ PVOID Context);
-
-typedef struct _ADSP_BUS_INTERFACE
-{
-    USHORT Size;
-    USHORT Version;
-    PVOID Context;
-    PINTERFACE_REFERENCE InterfaceReference;
-    PINTERFACE_DEREFERENCE InterfaceDereference;
-    UINT16 CtlrDevId;
-    PGET_ADSP_RESOURCES GetResources;
-    PDSP_SET_POWER_STATE SetDSPPowerState;
-    PREGISTER_ADSP_INTERRUPT RegisterInterrupt;
-    PUNREGISTER_ADSP_INTERRUPT UnregisterInterrupt;
-    PGET_STREAM GetRenderStream;
-    PGET_STREAM GetCaptureStream;
-    PFREE_STREAM FreeStream;
-    PDSP_PREPARE_STREAM PrepareDSP;
-    PDSP_CLEANUP_STREAM CleanupDSP;
-    PDSP_START_STOP_STREAM TriggerDSP;
-    PDSP_STREAM_POSITION StreamPosition;
-    PDSP_ENABLE_SPIB DSPEnableSPIB;
-    PDSP_DISABLE_SPIB DSPDisableSPIB;
-    PADSP_INTERRUPT_LOCK AcquireInterruptLock;
-    PADSP_INTERRUPT_LOCK ReleaseInterruptLock;
-} ADSP_BUS_INTERFACE, *PADSP_BUS_INTERFACE;
+#include "adspbus.h"
 
 typedef struct _INTCDSP_DEVICE
 {

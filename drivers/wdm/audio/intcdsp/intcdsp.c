@@ -155,7 +155,7 @@ IntcDspBoot(
 
     Dev->DmaBytes = (SIZE_T)ROUND_TO_PAGES((ULONG)Dev->Image.Ri.PayloadBytes);
     Low.QuadPart = 0;
-    High.QuadPart = -1;
+    High.QuadPart = (LONGLONG)IntcDspDmaHighBound(&Dev->Bus);
     Boundary.QuadPart = 0;
     Dev->DmaBuffer = MmAllocateContiguousMemorySpecifyCache((ULONG)Dev->DmaBytes, Low, High, Boundary, MmNonCached);
     if (!Dev->DmaBuffer)
@@ -302,17 +302,14 @@ IntcDspEvtDevicePrepareHardware(
     UNREFERENCED_PARAMETER(ResourcesRaw);
     UNREFERENCED_PARAMETER(ResourcesTranslated);
 
-    Status = WdfFdoQueryForInterface(Device, &GUID_ADSP_BUS_INTERFACE, (PINTERFACE)&Dev->Bus, sizeof(Dev->Bus), 1, NULL);
+    RtlZeroMemory(&Dev->Bus, sizeof(Dev->Bus));
+    Status = WdfFdoQueryForInterface(Device, &GUID_ADSP_BUS_INTERFACE, (PINTERFACE)&Dev->Bus, sizeof(Dev->Bus), ADSP_BUS_INTERFACE_VERSION, NULL);
     if (!NT_SUCCESS(Status))
     {
         IntcDspLog("no ADSP bus interface on the stack: 0x%08lx\n", Status);
         return Status;
     }
-    if (Dev->Bus.Size < sizeof(ADSP_BUS_INTERFACE) || !Dev->Bus.Context || !Dev->Bus.GetResources ||
-        !Dev->Bus.SetDSPPowerState || !Dev->Bus.RegisterInterrupt || !Dev->Bus.UnregisterInterrupt ||
-        !Dev->Bus.GetRenderStream || !Dev->Bus.FreeStream || !Dev->Bus.PrepareDSP || !Dev->Bus.CleanupDSP ||
-        !Dev->Bus.TriggerDSP || !Dev->Bus.DSPEnableSPIB ||
-        !Dev->Bus.AcquireInterruptLock || !Dev->Bus.ReleaseInterruptLock)
+    if (!IntcDspBusComplete(&Dev->Bus))
     {
         IntcDspLog("ADSP bus interface version %u, size %u: incomplete\n", Dev->Bus.Version, Dev->Bus.Size);
         return STATUS_DEVICE_PROTOCOL_ERROR;
