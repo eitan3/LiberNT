@@ -5,6 +5,7 @@ list(APPEND SOURCE
     buspdo.cpp
     fdo.cpp
     hdac_controller.cpp
+    hdac_bdl.c
     hdac_stream.cpp
     hdaudio.cpp
     nhlt.cpp

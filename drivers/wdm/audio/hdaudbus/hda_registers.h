@@ -1,3 +1,6 @@
+#if !defined(_HDA_REGISTERS_H_)
+#define _HDA_REGISTERS_H_
+
 #define HDA_REG_GCAP			0x00
 #define   HDA_GCAP_64OK		(1 << 0)   /* 64bit address support */
 #define   HDA_GCAP_NSDO		(3 << 1)   /* # of serial data out signals */
@@ -319,3 +322,5 @@ enum { SDI0, SDI1, SDI2, SDI3, SDO0, SDO1, SDO2, SDO3 };
 #define INTEL_HDA_CGCTL_MISCBDCGE        (0x1 << 6)
 #define INTEL_SCH_HDA_DEVC      0x78
 #define INTEL_SCH_HDA_DEVC_NOSNOOP       (0x1<<11)
+
+#endif

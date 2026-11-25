@@ -14,6 +14,7 @@ typedef struct _PCI_BAR {
 #include <nhlt_parse.h>
 #include "policy.h"
 #include "adsp.h"
+#include "hdac_bdl.h"
 
 #define HDA_UNSOL_QUEUE_SIZE	64
 #define MAX_NOTIF_EVENTS 16
@@ -34,13 +35,6 @@ typedef struct _HDAC_ISR_CALLBACK {
     PHDAUDIO_BDL_ISR IsrCallback;
     PVOID CallbackContext;
 } HDAC_ISR_CALLBACK, *PHDAC_ISR_CALLBACK;
-
-typedef struct _HDAC_BDLENTRY {
-    UINT32 lowAddr;
-    UINT32 highAddr;
-    UINT32 len;
-    UINT32 ioc;
-} HDAC_BDLENTRY, *PHDAC_BDLENTRY;
 
 typedef struct _HDAC_STREAM {
     struct _FDO_CONTEXT* FdoContext;
