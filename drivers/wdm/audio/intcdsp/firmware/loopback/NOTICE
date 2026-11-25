@@ -1,0 +1,12 @@
+sof-ipc4-loopback.tplg
+
+NOTICE: sof-ipc4-loopback.tplg was built by the LiberNT project from
+sof-ipc4-loopback.conf and the topology2 classes of Sound Open Firmware
+(https://github.com/thesofproject/sof), BSD-3-Clause, Copyright Intel.
+It embeds no NHLT table and no third-party binary. It is shipped under
+LICENCE.Intel, the licence the firmware release ships with, for uniformity.
+
+The file is the topology the Intel Smart Sound DSP driver (intcdsp.sys)
+runs when the registry value Topology under
+HKLM\SYSTEM\CurrentControlSet\Services\intcdsp\Settings names it:
+    reg add "HKLM\SYSTEM\CurrentControlSet\Services\intcdsp\Settings" /v Topology /t REG_SZ /d sof-ipc4-loopback.tplg

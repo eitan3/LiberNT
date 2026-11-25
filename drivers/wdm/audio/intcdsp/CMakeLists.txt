@@ -26,3 +26,7 @@ add_driver_inf(intcdsp intcdsp.inf)
 # Sound Open Firmware for Arrow Lake-S/HX from sof-firmware 2026.09.2-1 (intel-signed/sof-arl-s.ri, sha256 f37a055cefef26bbe14906ec6cd5fe5532c2a4419de87612d8b45b45dc647c6e) with its licence
 add_cd_file(FILE ${CMAKE_CURRENT_SOURCE_DIR}/firmware/sof-arl-s.ri DESTINATION reactos/system32/drivers/intel/sof NO_CAB FOR all)
 add_cd_file(FILE ${CMAKE_CURRENT_SOURCE_DIR}/firmware/LICENCE.Intel DESTINATION reactos/system32/drivers/intel/sof NO_CAB FOR all)
+# The loopback topology the DSP driver runs by the registry override (loopback/build.sh builds it; sha256 0e002de8d92e94f9f961a94a72654750f42d21afbdea09a2f6f6ee7196965601), with the licence and the notice beside it
+add_cd_file(FILE ${CMAKE_CURRENT_SOURCE_DIR}/firmware/sof-ipc4-loopback.tplg DESTINATION reactos/system32/drivers/intel/sof-tplg NO_CAB FOR all)
+add_cd_file(FILE ${CMAKE_CURRENT_SOURCE_DIR}/firmware/LICENCE.Intel DESTINATION reactos/system32/drivers/intel/sof-tplg NO_CAB FOR all)
+add_cd_file(FILE ${CMAKE_CURRENT_SOURCE_DIR}/firmware/loopback/NOTICE DESTINATION reactos/system32/drivers/intel/sof-tplg NO_CAB FOR all)
