@@ -1,11 +1,12 @@
 # PROJECT:     LiberNT host-native tests
 # LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
-# PURPOSE:     NHLT parser and audio path decision of hdaudbus, run over the shared case tables
+# PURPOSE:     NHLT parser, audio path decision and stream buffer layout of hdaudbus, run over the shared case tables
 # COPYRIGHT:   Copyright 2026 LiberNT contributors
 
 add_executable(dsppath
     t_dsppath.c
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/nhlt/nhlt_parse.c
+    ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/hdaudbus/hdac_bdl.c
     ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/hdaudbus/policy.c
     ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/hdaudbus/policy_dmi.c)
 target_include_directories(dsppath PRIVATE

@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT host-native tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     Runs the NHLT parser, the audio path decision and the topology file selection of hdaudbus over the shared case tables
+ * PURPOSE:     Runs the NHLT parser, the audio path decision, the topology file selection and the stream buffer's descriptor list of hdaudbus over the shared case tables
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -12,6 +12,7 @@
 
 #include <nhlt_parse.h>
 #include <policy.h>
+#include <hdac_bdl.h>
 
 #include "dsp_cases.h"
 #include "dmi_cases.h"
@@ -692,6 +693,203 @@ check_short_and_garbage_inputs(void)
     CHECK_EQ(NhltEndpointView(NhltEmptyTable, sizeof(NhltEmptyTable), 0, &View), NhltParseNotFound);
 }
 
+/* ---- The descriptor list of a stream's buffer (hdac_bdl.c) ---- */
+
+/* One row: a request, and the layout and the list the driver must build; a descriptor is the page of the allocation it names, where in it, its bytes, and its interrupt on completion */
+#define BDL_ROW_ENTRIES     8
+#define BDL_ROW_PAGES       300
+/* the frames the rows give the pages: their addresses cross the 4 GiB boundary, so the high word counts */
+#define BDL_FIRST_FRAME     0x100000
+
+typedef struct _BDL_ENTRY_CASE
+{
+    UINT32 Page;
+    UINT32 Offset;
+    UINT32 Bytes;
+    UINT32 Ioc;
+} BDL_ENTRY_CASE;
+
+typedef struct _BDL_CASE
+{
+    const char* Name;
+    ULONG NotificationCount;
+    SIZE_T RequestedBytes;
+    UINT32 FrameBytes;
+    UINT32 BufferBytes;
+    UINT32 HalfBytes;
+    UINT32 OffsetBytes;
+    UINT32 Pages;
+    UINT32 Entries;
+    BDL_ENTRY_CASE Entry[BDL_ROW_ENTRIES];
+} BDL_CASE;
+
+static const BDL_CASE BdlCases[] =
+{
+    /* the DSP child's self-test: 4096 frames of 16 bits in two channels, two notifications of 2048 frames, whole pages */
+    { "the self-test at 16 bits", 2, 16384, 4, 16384, 8192, 0, 4, 4,
+      { { 0, 0, 4096, 0 }, { 1, 0, 4096, 1 }, { 2, 0, 4096, 0 }, { 3, 0, 4096, 1 } } },
+    /* 4096 frames of 24 or 32 valid bits in a 32-bit container: two notifications of four pages */
+    { "the self-test at 24 and 32 bits", 2, 32768, 8, 32768, 16384, 0, 8, 8,
+      { { 0, 0, 4096, 0 }, { 1, 0, 4096, 0 }, { 2, 0, 4096, 0 }, { 3, 0, 4096, 1 },
+        { 4, 0, 4096, 0 }, { 5, 0, 4096, 0 }, { 6, 0, 4096, 0 }, { 7, 0, 4096, 1 } } },
+    /* the codec path's: the audio engine's 8192 bytes at 48 kHz 16-bit stereo is two notifications of 1024 frames, a whole page each */
+    { "the codec path, a half of whole pages", 2, 8192, 4, 8192, 4096, 0, 2, 2,
+      { { 0, 0, 4096, 1 }, { 1, 0, 4096, 1 } } },
+    /* the codec path's: the engine's 10 ms at 48 kHz 16-bit stereo, two notifications of 480 frames, padded to the page boundary as before */
+    { "the codec path, a half that is not whole pages", 2, 3840, 4, 3840, 1920, 2176, 2, 2,
+      { { 0, 2176, 1920, 1 }, { 1, 0, 1920, 1 } } },
+    /* six channels of 16 bits: the frame is 12 bytes and the halves are multiples of 384 */
+    { "six channels, a half between page boundaries", 2, 11520, 12, 11520, 5760, 2432, 4, 4,
+      { { 0, 2432, 1664, 0 }, { 1, 0, 4096, 1 }, { 2, 0, 4096, 0 }, { 3, 0, 1664, 1 } } },
+    /* 8000 bytes asked: the half of 4000 is rounded up to its 128-byte frame boundary, 4096, and so to whole pages */
+    { "a half rounded up to a whole page", 2, 8000, 4, 8192, 4096, 0, 2, 2,
+      { { 0, 0, 4096, 1 }, { 1, 0, 4096, 1 } } },
+    /* the smallest half: two notifications of 128 bytes */
+    { "the smallest half", 2, 256, 4, 256, 128, 3968, 2, 2,
+      { { 0, 3968, 128, 1 }, { 1, 0, 128, 1 } } },
+    /* the codec interface's AllocateDmaBuffer: one notification, the whole buffer one period, the interrupt at its end */
+    { "one notification, whole pages", 1, 16384, 4, 16384, 0, 0, 4, 4,
+      { { 0, 0, 4096, 0 }, { 1, 0, 4096, 0 }, { 2, 0, 4096, 0 }, { 3, 0, 4096, 1 } } },
+    { "one notification, a size between pages", 1, 10000, 4, 10000, 0, 0, 3, 3,
+      { { 0, 0, 4096, 0 }, { 1, 0, 4096, 0 }, { 2, 0, 1808, 1 } } },
+    /* a count the DDI does not name is one notification */
+    { "a count the DDI does not name", 3, 8192, 4, 8192, 0, 0, 2, 2,
+      { { 0, 0, 4096, 0 }, { 1, 0, 4096, 1 } } },
+    /* nothing asked: no buffer, no padding, no descriptor */
+    { "nothing asked", 2, 0, 4, 0, 0, 0, 0, 0,
+      { { 0, 0, 0, 0 } } },
+};
+
+/* A descriptor's address back to the page it names and the offset in it */
+static
+void
+bdl_entry_place(
+    const HDAC_BDLENTRY* Entry,
+    UINT32* Page,
+    UINT32* Offset)
+{
+    ULONGLONG Address = ((ULONGLONG)Entry->highAddr << 32) | Entry->lowAddr;
+
+    *Page = (UINT32)((Address >> PAGE_SHIFT) - BDL_FIRST_FRAME);
+    *Offset = (UINT32)(Address & (PAGE_SIZE - 1));
+}
+
+static
+void
+check_bdl(
+    const BDL_CASE* Case)
+{
+    HDAC_BDL_LAYOUT Layout;
+    HDAC_BDLENTRY Bdl[HDA_MAX_BDL_ENTRIES];
+    PFN_NUMBER Frames[BDL_ROW_PAGES];
+    UINT32 I, Page, Offset, Sum, Iocs;
+    UINT16 Entries;
+    int FailuresBefore = Failures;
+
+    for (I = 0; I < BDL_ROW_PAGES; I++)
+        Frames[I] = BDL_FIRST_FRAME + I;
+    memset(Bdl, 0xAA, sizeof(Bdl));
+    Entries = 0xFFFF;
+    HdacBdlLayout(Case->NotificationCount, Case->RequestedBytes, Case->FrameBytes, &Layout);
+    /* the layout: the buffer, its halves, the padding, and the pages the allocation takes */
+    CHECK_EQ(Layout.BufferBytes, Case->BufferBytes);
+    CHECK_EQ(Layout.HalfBytes, Case->HalfBytes);
+    CHECK_EQ(Layout.OffsetBytes, Case->OffsetBytes);
+    CHECK_EQ(Layout.AllocBytes, Case->BufferBytes + Case->OffsetBytes);
+    CHECK_EQ((Layout.AllocBytes + PAGE_SIZE - 1) / PAGE_SIZE, Case->Pages);
+    CHECK(Case->Pages <= BDL_ROW_PAGES);
+    CHECK(HdacBdlBuild(Bdl, Frames, &Layout, &Entries));
+    CHECK_EQ(Entries, Case->Entries);
+    /* every descriptor as the row names it, inside the allocation and inside one page */
+    for (I = 0; I < Case->Entries && I < Entries && I < HDA_MAX_BDL_ENTRIES; I++)
+    {
+        bdl_entry_place(&Bdl[I], &Page, &Offset);
+        if (Page != Case->Entry[I].Page || Offset != Case->Entry[I].Offset || Bdl[I].len != Case->Entry[I].Bytes || Bdl[I].ioc != Case->Entry[I].Ioc)
+            fprintf(stderr, "  %s: descriptor %u: page %u/%u, offset %u/%u, bytes %u/%u, interrupt %u/%u\n", Case->Name, I,
+                    Page, Case->Entry[I].Page, Offset, Case->Entry[I].Offset, Bdl[I].len, Case->Entry[I].Bytes, Bdl[I].ioc, Case->Entry[I].Ioc);
+        CHECK_EQ(Page, Case->Entry[I].Page);
+        CHECK_EQ(Offset, Case->Entry[I].Offset);
+        CHECK_EQ(Bdl[I].len, Case->Entry[I].Bytes);
+        CHECK_EQ(Bdl[I].ioc, Case->Entry[I].Ioc);
+        CHECK(Page < Case->Pages);
+        CHECK(Offset + Bdl[I].len <= PAGE_SIZE);
+    }
+    if (Entries == 0)
+        return;
+    /* the list starts where the client fills the buffer from, offsetFromFirstPage into the pages: the first descriptor is the buffer's first byte (the live capture's shape) */
+    bdl_entry_place(&Bdl[0], &Page, &Offset);
+    CHECK_EQ(Page, Case->OffsetBytes / PAGE_SIZE);
+    CHECK_EQ(Offset, Case->OffsetBytes % PAGE_SIZE);
+    /* the descriptors cover the buffer exactly, in order, and the interrupts on completion end the halves and the buffer */
+    Sum = Case->OffsetBytes;
+    Iocs = 0;
+    for (I = 0; I < Entries; I++)
+    {
+        Sum += Bdl[I].len;
+        if (Bdl[I].ioc == 0)
+            continue;
+        Iocs++;
+        CHECK_EQ(Sum, Iocs == 1 && Case->HalfBytes != 0 ? Case->OffsetBytes + Case->HalfBytes : Case->OffsetBytes + Case->BufferBytes);
+    }
+    CHECK_EQ(Sum, Case->OffsetBytes + Case->BufferBytes);
+    CHECK_EQ(Iocs, Case->HalfBytes != 0 ? 2 : 1);
+    if (Failures != FailuresBefore)
+        fprintf(stderr, "  (in the row '%s')\n", Case->Name);
+}
+
+/* A request past what the list can describe: one notification is cut to the list's 256 pages, two to 128 pages a half; every page is a descriptor, and the interrupts end the halves and the buffer */
+static
+void
+check_bdl_limits(void)
+{
+    HDAC_BDL_LAYOUT Layout;
+    static HDAC_BDLENTRY Bdl[HDA_MAX_BDL_ENTRIES];
+    PFN_NUMBER Frames[HDA_MAX_BDL_ENTRIES];
+    UINT32 I, Page, Offset, Iocs;
+    UINT16 Entries;
+
+    for (I = 0; I < HDA_MAX_BDL_ENTRIES; I++)
+        Frames[I] = BDL_FIRST_FRAME + I;
+
+    HdacBdlLayout(1, 4 * 1024 * 1024, 4, &Layout);
+    CHECK_EQ(Layout.BufferBytes, HDA_MAX_BDL_ENTRIES * PAGE_SIZE);
+    CHECK_EQ(Layout.HalfBytes, 0);
+    CHECK_EQ(Layout.OffsetBytes, 0);
+    CHECK_EQ(Layout.AllocBytes, Layout.BufferBytes);
+    CHECK(HdacBdlBuild(Bdl, Frames, &Layout, &Entries));
+    CHECK_EQ(Entries, HDA_MAX_BDL_ENTRIES);
+    Iocs = 0;
+    for (I = 0; I < HDA_MAX_BDL_ENTRIES; I++)
+    {
+        bdl_entry_place(&Bdl[I], &Page, &Offset);
+        CHECK_EQ(Page, I);
+        CHECK_EQ(Offset, 0);
+        CHECK_EQ(Bdl[I].len, PAGE_SIZE);
+        CHECK_EQ(Bdl[I].ioc, I == HDA_MAX_BDL_ENTRIES - 1);
+        Iocs += Bdl[I].ioc;
+    }
+    CHECK_EQ(Iocs, 1);
+
+    HdacBdlLayout(2, 4 * 1024 * 1024, 4, &Layout);
+    CHECK_EQ(Layout.HalfBytes, (HDA_MAX_BDL_ENTRIES / 2) * PAGE_SIZE);
+    CHECK_EQ(Layout.BufferBytes, HDA_MAX_BDL_ENTRIES * PAGE_SIZE);
+    CHECK_EQ(Layout.OffsetBytes, 0);
+    CHECK_EQ(Layout.AllocBytes, Layout.BufferBytes);
+    CHECK(HdacBdlBuild(Bdl, Frames, &Layout, &Entries));
+    CHECK_EQ(Entries, HDA_MAX_BDL_ENTRIES);
+    Iocs = 0;
+    for (I = 0; I < HDA_MAX_BDL_ENTRIES; I++)
+    {
+        bdl_entry_place(&Bdl[I], &Page, &Offset);
+        CHECK_EQ(Page, I);
+        CHECK_EQ(Offset, 0);
+        CHECK_EQ(Bdl[I].len, PAGE_SIZE);
+        CHECK_EQ(Bdl[I].ioc, I == HDA_MAX_BDL_ENTRIES / 2 - 1 || I == HDA_MAX_BDL_ENTRIES - 1);
+        Iocs += Bdl[I].ioc;
+    }
+    CHECK_EQ(Iocs, 2);
+}
+
 int main(void)
 {
     unsigned int Index;
@@ -730,6 +928,10 @@ int main(void)
     check_dmi_lookup();
 
     check_short_and_garbage_inputs();
+
+    for (Index = 0; Index < sizeof(BdlCases) / sizeof(BdlCases[0]); Index++)
+        check_bdl(&BdlCases[Index]);
+    check_bdl_limits();
 
     CHECK_STR(NhltParseStatusName(NhltParseOk), "ok");
     CHECK_STR(NhltParseStatusName(NhltParseNoTable), "no table");

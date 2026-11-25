@@ -1283,17 +1283,29 @@ typedef struct _STREAM_HARNESS
     CHAR Log[STREAM_LOG_BYTES];
     SIZE_T LogBytes;
     UINT32 Faults;
+    /* the device's period event, as the driver's wait registers it on the capture stream */
     KEVENT Event;
     UINT32 Waits;
-    /* the wire of the model's pipeline: whether it forwards, the latency it puts on the capture in frames, where the capture stream stands when it stops, in frames, and the capture sample it damages */
+    /* the wire of the model's pipeline: whether it forwards, the latency it puts on the capture in frames, where the capture stream stands when it stops, in frames, and the capture frame whose second channel the wire gets wrong, by five */
     BOOLEAN Wire;
     UINT32 Latency;
     UINT32 StopFrames;
     UINT32 DamageFrame;
-    NTSTATUS WaitStatus;
+    /* the periods while the driver waits: how many the model still moves before they stall, the bytes one moves an entry by (the buffer's half when 0), the wakes so far */
+    UINT32 PeriodsLeft;
+    UINT32 PeriodBytes;
+    UINT32 Wakes;
 } STREAM_HARNESS;
 
 static const INTCDSP_SELFTEST_OPS StreamSelfTestOps;
+
+/* The model's answer to a wait on a period event, as the fake bus's wait hook takes it */
+static
+NTSTATUS
+StreamWaitModel(
+    PVOID Context,
+    PKEVENT Event,
+    PLARGE_INTEGER Timeout);
 
 static
 void
@@ -1442,6 +1454,10 @@ StreamStart(
     IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
     CHECK(S->Streams.Ready);
     S->Wire = TRUE;
+    S->PeriodsLeft = MAXULONG32;
+    /* the driver's waits on a period event are answered by the model, with this harness */
+    FakeBusWaitHook = StreamWaitModel;
+    FakeBusWaitContext = S;
 }
 
 /* The PCM of the loopback, in a harness that is up */
@@ -1451,6 +1467,8 @@ void
 StreamStop(
     STREAM_HARNESS* S)
 {
+    FakeBusWaitHook = NULL;
+    FakeBusWaitContext = NULL;
     free(S->State);
     free(S->ModelBuffer);
     free(S->File);
@@ -1490,15 +1508,138 @@ StreamMap(
     return Stream != NULL ? Stream->Memory : NULL;
 }
 
+/* The fake stream a period event is registered on, NULL for any other event */
+static
+PFAKE_BUS_STREAM
+StreamByEvent(
+    STREAM_HARNESS* S,
+    PKEVENT Event)
+{
+    UINT32 D, I, E;
+
+    for (D = 0; D < 2; D++)
+        for (I = 0; I < FAKE_BUS_STREAMS; I++)
+        {
+            if (!S->Bus.Stream[D][I].Used)
+                continue;
+            for (E = 0; E < FAKE_BUS_EVENTS; E++)
+                if (S->Bus.Stream[D][I].Events[E] == Event)
+                    return &S->Bus.Stream[D][I];
+        }
+    return NULL;
+}
+
+/* The first running render stream, NULL when none runs */
+static
+PFAKE_BUS_STREAM
+StreamRender(
+    STREAM_HARNESS* S)
+{
+    UINT32 D, I;
+
+    for (D = 0; D < 2; D++)
+        for (I = 0; I < FAKE_BUS_STREAMS; I++)
+            if (S->Bus.Stream[D][I].Used && !S->Bus.Stream[D][I].Capture && S->Bus.Stream[D][I].Running)
+                return &S->Bus.Stream[D][I];
+    return NULL;
+}
+
 /*
- * The model's wire, as the self-test's wait: at the periods the capture
- * buffer takes what the render buffer holds, Latency frames behind around
- * the cyclic buffer, when the wire forwards at all; the capture's events are
- * set as the bus's DPC would set them. The handle is the manager's.
+ * One period of the model, as the bus's interrupt sees it: both streams'
+ * entries move Step bytes on around their buffers, and the wire has the
+ * capture buffer take what the render buffer holds, Latency frames behind
+ * around the cyclic buffer, when it forwards at all, with its one wrong
+ * sample: channel 1 of DamageFrame, five over the render's.
+ */
+static
+void
+StreamPeriod(
+    STREAM_HARNESS* S,
+    PFAKE_BUS_STREAM Capture,
+    UINT32 Step)
+{
+    PFAKE_BUS_STREAM Render = StreamRender(S);
+    PUCHAR Damage, Source;
+    UINT32 FrameBytes, Frames, I;
+
+    FrameBytes = Capture->Format.NumberOfChannels * (Capture->Format.ContainerSize / 8);
+    Frames = (UINT32)(Capture->Bytes / FrameBytes);
+    Capture->Position = Capture->DmaPosition = (Capture->Position + Step) % (UINT32)Capture->Bytes;
+    if (Render == NULL)
+        return;
+    Render->Position = Render->DmaPosition = (Render->Position + Step) % (UINT32)Render->Bytes;
+    if (!S->Wire)
+        return;
+    for (I = 0; I < Frames; I++)
+        memcpy((PUCHAR)Capture->Memory + (SIZE_T)I * FrameBytes,
+               (PUCHAR)Render->Memory + (SIZE_T)((I + Frames - S->Latency) % Frames) * FrameBytes, FrameBytes);
+    if (S->DamageFrame == 0 || S->DamageFrame >= Frames)
+        return;
+    /* the sample in its container's width: 16 bits, or 32 for 24 valid bits and more */
+    Damage = (PUCHAR)Capture->Memory + (SIZE_T)S->DamageFrame * FrameBytes + FrameBytes / 2;
+    Source = (PUCHAR)Render->Memory + (SIZE_T)((S->DamageFrame + Frames - S->Latency) % Frames) * FrameBytes + FrameBytes / 2;
+    if (FrameBytes == 4)
+        *(INT16*)Damage = (INT16)(*(INT16*)Source + 5);
+    else
+        *(INT32*)Damage = *(INT32*)Source + 5;
+}
+
+/*
+ * The model's answer to the driver's wait on a period event, as the
+ * kernel's wait: the wait's time passes on the model's clock, and either
+ * the periods come before its end, each moving the entries and setting
+ * the events as the bus's DPC would, or they stall, and the wait ends in
+ * STATUS_TIMEOUT when the time is up. Timeout is relative, in 100 ns
+ * units, as the driver's wait gives it. The context is the harness's.
  */
 static
 NTSTATUS
-StreamWait(
+StreamWaitModel(
+    PVOID Context,
+    PKEVENT Event,
+    PLARGE_INTEGER Timeout)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)Context;
+    PFAKE_BUS_STREAM Capture;
+    UINT64 LeftUs, PeriodUs;
+    UINT32 Step, FrameBytes;
+
+    CHECK(Timeout != NULL && Timeout->QuadPart < 0);
+    if (Timeout == NULL)
+        return STATUS_TIMEOUT;
+    S->Wakes++;
+    LeftUs = (UINT64)(-(LONGLONG)Timeout->QuadPart) / 10;
+    Capture = StreamByEvent(S, Event);
+    CHECK(Capture != NULL);
+    if (Capture == NULL)
+        return STATUS_TIMEOUT;
+    Step = S->PeriodBytes != 0 ? S->PeriodBytes : (UINT32)(Capture->Bytes / 2);
+    FrameBytes = Capture->Format.NumberOfChannels * (Capture->Format.ContainerSize / 8);
+    PeriodUs = (UINT64)Step * 1000000 / (Capture->Format.SampleRate * FrameBytes);
+    if (S->PeriodsLeft == 0 || PeriodUs > LeftUs)
+    {
+        /* no period before the wait's end: the time passes, the wait is over */
+        FakeDspOps()->DelayUs(S->H.Dsp, (UINT32)LeftUs);
+        return STATUS_TIMEOUT;
+    }
+    S->PeriodsLeft--;
+    FakeDspOps()->DelayUs(S->H.Dsp, (UINT32)PeriodUs);
+    StreamPeriod(S, Capture, Step);
+    /* the event is set as the bus's DPC sets it, and taken by the wait, as a synchronization event's is */
+    FakeBusSignal(&S->Bus, (HANDLE)Capture);
+    Event->Signaled = FALSE;
+    return STATUS_SUCCESS;
+}
+
+/*
+ * The self-test's wait is the driver's own, IntcDspStreamWaitPeriods, on
+ * the device's period event; the model above answers it through the fake
+ * bus's wait hook. The capture stream runs on until the pause takes it:
+ * StopFrames frames past the last period. The handle is the manager's.
+ */
+static
+NTSTATUS
+StreamSelfTestWait(
     PVOID Context,
     HANDLE Handle,
     UINT32 Count,
@@ -1507,16 +1648,13 @@ StreamWait(
 {
     STREAM_HARNESS* S = (STREAM_HARNESS*)Context;
     PINTCDSP_STREAM Managed = IntcDspStreamOf(&S->Streams, Handle);
-    PFAKE_BUS_STREAM Capture, Render = NULL;
-    UINT32 D, I, FrameBytes, Frames;
-    INT32* Damage;
+    PFAKE_BUS_STREAM Capture, Render;
+    NTSTATUS Status;
 
     *Periods = 0;
     CHECK_EQ(Count, 2);
     CHECK(TimeoutMs != 0);
     S->Waits++;
-    if (S->WaitStatus != STATUS_SUCCESS)
-        return S->WaitStatus;
     CHECK(Managed != NULL && Managed->Capture);
     if (Managed == NULL)
         return STATUS_INVALID_DEVICE_REQUEST;
@@ -1524,39 +1662,22 @@ StreamWait(
     CHECK(Capture != NULL && Capture->Running);
     if (Capture == NULL || !Capture->Running)
         return STATUS_INVALID_DEVICE_REQUEST;
-    for (D = 0; D < 2 && Render == NULL; D++)
-        for (I = 0; I < FAKE_BUS_STREAMS; I++)
-            if (S->Bus.Stream[D][I].Used && !S->Bus.Stream[D][I].Capture && S->Bus.Stream[D][I].Running)
-                Render = &S->Bus.Stream[D][I];
+    Render = StreamRender(S);
     CHECK(Render != NULL);
-    if (Render == NULL)
-        return STATUS_INVALID_DEVICE_REQUEST;
-    FrameBytes = Capture->Format.NumberOfChannels * (Capture->Format.ContainerSize / 8);
-    Frames = (UINT32)(Capture->Bytes / FrameBytes);
-    CHECK_EQ(Render->Bytes, Capture->Bytes);
-    if (S->Wire)
-    {
-        for (I = 0; I < Frames; I++)
-            memcpy((PUCHAR)Capture->Memory + (SIZE_T)I * FrameBytes,
-                   (PUCHAR)Render->Memory + (SIZE_T)((I + Frames - S->Latency) % Frames) * FrameBytes, FrameBytes);
-    }
-    if (S->DamageFrame != 0 && S->DamageFrame < Frames)
-    {
-        Damage = (INT32*)((PUCHAR)Capture->Memory + (SIZE_T)S->DamageFrame * FrameBytes + FrameBytes / 2);
-        *Damage += 5;
-    }
-    Capture->Position = Capture->DmaPosition = S->StopFrames * FrameBytes;
-    for (I = 0; I < Count; I++)
-        FakeBusSignal(&S->Bus, Managed->Handle);
-    *Periods = Count;
-    return STATUS_SUCCESS;
+    if (Render != NULL)
+        CHECK_EQ(Render->Bytes, Capture->Bytes);
+    Status = IntcDspStreamWaitPeriods(&S->Streams, Handle, Count, TimeoutMs, &S->Event, Periods);
+    if (NT_SUCCESS(Status))
+        Capture->Position = Capture->DmaPosition =
+            (Capture->Position + S->StopFrames * Capture->Format.NumberOfChannels * (Capture->Format.ContainerSize / 8)) % (UINT32)Capture->Bytes;
+    return Status;
 }
 
 static const INTCDSP_SELFTEST_OPS StreamSelfTestOps =
 {
     NULL,
     StreamMap,
-    StreamWait
+    StreamSelfTestWait
 };
 
 /* The model booted and the transport attached, as the driver's boot leaves them */
@@ -2208,7 +2329,7 @@ CheckStreamCompare(
     free(Capture);
 }
 
-/* (i8) The loopback self-test over the streams: three depths matched with the plan's lines, a latency found at its offset, a wire that forwards nothing and a wait that times out stop at the first run with the line that says why, a fault releases everything, and nothing is held on any way out */
+/* (i8) The loopback self-test over the streams: three depths matched with the plan's lines, a latency found at its offset, a wire that forwards nothing and periods that stall stop at the first run with the line that says why, a fault releases everything, and nothing is held on any way out */
 static
 void
 CheckStreamSelfTest(
@@ -2223,7 +2344,7 @@ CheckStreamSelfTest(
         return;
     StreamStart(S, NULL);
     Pcm = StreamPcm(S);
-    /* the wire of the model: three runs, three matches, the lines of the plan's VM-acceptance row */
+    /* the wire of the model: three runs, three matches, the lines of the plan's VM-acceptance row; the driver's wait takes two periods a run, 85 ms of the model's clock for 4096 frames, and the event is registered for each and released after it */
     Status = IntcDspLoopbackSelfTest(&S->Streams, &S->SelfTestOps, STREAM_FRAMES);
     if (Status != STATUS_SUCCESS)
         fprintf(stderr, "%s", S->Log);
@@ -2231,11 +2352,14 @@ CheckStreamSelfTest(
     CHECK(StreamLogCount(S, "loopback self-test: endpoint 'Loopback', 48000 Hz 2 ch 16-bit, render stream 1, capture stream 1, 4096 frames\n") == 1);
     CHECK(StreamLogCount(S, "loopback self-test: endpoint 'Loopback', 48000 Hz 2 ch 24-bit, render stream 1, capture stream 1, 4096 frames\n") == 1);
     CHECK(StreamLogCount(S, "loopback self-test: endpoint 'Loopback', 48000 Hz 2 ch 32-bit, render stream 1, capture stream 1, 4096 frames\n") == 1);
-    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames captured after 0 ms, offset 0 frames, max abs error 0, render rms 5793.911, capture rms 5793.911, ok\n") == 1);
-    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames captured after 0 ms, offset 0 frames, max abs error 0, render rms 379742706.482, capture rms 379742706.482, ok\n") == 2);
+    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames captured after 85 ms, offset 0 frames, max abs error 0, render rms 5793.911, capture rms 5793.911, ok\n") == 1);
+    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames captured after 85 ms, offset 0 frames, max abs error 0, render rms 379742706.482, capture rms 379742706.482, ok\n") == 2);
     CHECK(StreamLogCount(S, "stopped at render position 0 (LPIB 0, buffer 0), capture position 0 (LPIB 0, buffer 0), 2 capture periods, released: 1 pipelines and 3 instances deleted, 2 streams freed, ok\n") == 3);
     CHECK(StreamLogCount(S, "loopback self-test: 3 runs, 3 matched, 0 failed, 45 requests, 0 notifications, 0 timeouts, 0 DSP interrupts, ok\n") == 1);
     CHECK_EQ(S->Waits, 3);
+    CHECK_EQ(S->Wakes, 6);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_REGISTER), 3);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_UNREGISTER), 3);
     CHECK_EQ(S->H.Dsp->ModuleInits, 9);
     CHECK_EQ(S->H.Dsp->ModuleDeletes, 9);
     CHECK_EQ(S->H.Dsp->ModuleUpdates, 3);
@@ -2254,29 +2378,31 @@ CheckStreamSelfTest(
     /* the stop position is in bytes: eight frames of 16 bits are 32, of 24 and 32 bits 64 */
     CHECK(StreamLogCount(S, "stopped at render position 0 (LPIB 0, buffer 0), capture position 32 (LPIB 32, buffer 32), 2 capture periods, released: 1 pipelines and 3 instances deleted, 2 streams freed, ok\n") == 1);
     CHECK(StreamLogCount(S, "stopped at render position 0 (LPIB 0, buffer 0), capture position 64 (LPIB 64, buffer 64), 2 capture periods, released: 1 pipelines and 3 instances deleted, 2 streams freed, ok\n") == 2);
+    CHECK_EQ(S->Wakes, 12);
     S->Latency = 0;
     S->StopFrames = 0;
     StreamQuiescent(S, Pcm);
-    /* the periods do not come: the wait's status is the run's, the line says how many came, one run is all */
+    /* the periods stall: the driver's wait ends at its own timeout, 670 ms, with the periods that came; the wait's status is the run's, the line says how many came and when, one run is all */
     S->LogBytes = 0;
-    S->WaitStatus = STATUS_IO_TIMEOUT;
+    S->PeriodsLeft = 0;
     Status = IntcDspLoopbackSelfTest(&S->Streams, &S->SelfTestOps, STREAM_FRAMES);
     CHECK_EQ(Status, STATUS_IO_TIMEOUT);
-    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames not captured: 0 of 2 periods after 0 ms (0xc00000b5), failed\n") == 1);
+    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames not captured: 0 of 2 periods after 670 ms (0xc00000b5), failed\n") == 1);
     CHECK(StreamLogCount(S, "loopback self-test: 1 runs, 0 matched, 1 failed, 15 requests, 0 notifications, 0 timeouts, 0 DSP interrupts, failed\n") == 1);
+    CHECK_EQ(S->Wakes, 13);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 14);
     StreamQuiescent(S, Pcm);
     /* no operations: not run */
     CHECK_EQ(IntcDspLoopbackSelfTest(&S->Streams, NULL, STREAM_FRAMES), STATUS_NOT_FOUND);
     /* the wire forwards nothing but the periods come: the capture keeps its poison, the stop rule's line names the first sample */
     S->LogBytes = 0;
-    S->WaitStatus = STATUS_SUCCESS;
+    S->PeriodsLeft = MAXULONG32;
     S->Wire = FALSE;
     Status = IntcDspLoopbackSelfTest(&S->Streams, &S->SelfTestOps, STREAM_FRAMES);
     CHECK_EQ(Status, STATUS_DEVICE_PROTOCOL_ERROR);
     if (StreamLogCount(S, "offset 0 frames, max abs error 21042, render rms 5793.911, capture rms 12850.779, mismatch at frame 0 channel 0 (render frame 0): render 0, capture -12851, failed\n") == 0)
         fprintf(stderr, "%s", S->Log);
-    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames captured after 0 ms, offset 0 frames, max abs error 21042, render rms 5793.911, capture rms 12850.779, mismatch at frame 0 channel 0 (render frame 0): render 0, capture -12851, failed\n") == 1);
+    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames captured after 85 ms, offset 0 frames, max abs error 21042, render rms 5793.911, capture rms 12850.779, mismatch at frame 0 channel 0 (render frame 0): render 0, capture -12851, failed\n") == 1);
     CHECK(StreamLogCount(S, "loopback self-test: 1 runs, 0 matched, 1 failed, 15 requests, 0 notifications, 0 timeouts, 0 DSP interrupts, failed\n") == 1);
     StreamQuiescent(S, Pcm);
     /* one damaged sample in the first run: the run stops the test at that sample */
@@ -2305,6 +2431,149 @@ CheckStreamSelfTest(
     free(S);
 }
 
+/* (i9) The driver's wait for the capture's periods, as the kernel calls it: the entry advances by a period at every wake, and two periods end the wait with Periods 2, the clock two periods on and nothing further; an entry that wraps on its first step counts the same; an entry that moves by half a period needs four wakes, and two of four asked periods at every wake need two; an entry that stalls ends the wait at its timeout with the periods that came before, and a period due after the timeout does not count; nothing is waited for on a count of 0 or a handle that is not a stream's; the event is registered for each wait and released after it; at 16 and 32 bits, the self-test's two buffer sizes */
+static
+void
+CheckStreamWait(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    static const ULONG Depths[] = { 16, 32 };
+    HANDLE Capture = NULL;
+    PINTCDSP_STREAM Managed;
+    PFAKE_BUS_STREAM Stream;
+    NTSTATUS Status;
+    ULONG Periods;
+    UINT32 D, Pcm, Bytes, Half, FrameBytes, Wake0, PeriodUs;
+    UINT64 Clock;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    for (D = 0; D < 2; D++)
+    {
+        FrameBytes = Depths[D] / 4;
+        CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, Depths[D], Depths[D], &Capture), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, (SIZE_T)STREAM_FRAMES * FrameBytes, 2), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamRun(&S->Streams, Capture), STATUS_SUCCESS);
+        Managed = IntcDspStreamOf(&S->Streams, Capture);
+        Stream = FakeBusOwned(&S->Bus, Managed->Handle);
+        /* the self-test's sizes: 16384 bytes at 16 bits, 32768 at 32, two periods each */
+        Bytes = (UINT32)Managed->Bytes;
+        Half = Bytes / 2;
+        PeriodUs = (UINT32)((UINT64)Half * 1000000 / (48000 * FrameBytes));
+
+        /* two periods at two wakes: success, Periods 2, the clock two periods on, the entry back where it began */
+        Wake0 = S->Wakes;
+        Clock = FakeDspOps()->NowUs(S->H.Dsp);
+        Periods = 99;
+        Status = IntcDspStreamWaitPeriods(&S->Streams, Capture, 2, 670, &S->Event, &Periods);
+        CHECK_EQ(Status, STATUS_SUCCESS);
+        CHECK_EQ(Periods, 2);
+        CHECK_EQ(S->Wakes - Wake0, 2);
+        CHECK_EQ(FakeDspOps()->NowUs(S->H.Dsp) - Clock, 2 * (UINT64)PeriodUs);
+        CHECK_EQ(Stream->Position, 0);
+        CHECK_EQ(Stream->DmaPosition, 0);
+
+        /* the entry wraps on its first step: the same two periods, at the same two wakes */
+        Stream->Position = Stream->DmaPosition = Bytes - Half / 2;
+        Wake0 = S->Wakes;
+        Clock = FakeDspOps()->NowUs(S->H.Dsp);
+        Periods = 99;
+        Status = IntcDspStreamWaitPeriods(&S->Streams, Capture, 2, 670, &S->Event, &Periods);
+        CHECK_EQ(Status, STATUS_SUCCESS);
+        CHECK_EQ(Periods, 2);
+        CHECK_EQ(S->Wakes - Wake0, 2);
+        CHECK_EQ(FakeDspOps()->NowUs(S->H.Dsp) - Clock, 2 * (UINT64)PeriodUs);
+        CHECK_EQ(Stream->Position, Bytes - Half / 2);
+        Stream->Position = Stream->DmaPosition = 0;
+
+        /* the entry moves by half a period at every wake: four wakes, both periods counted */
+        S->PeriodBytes = Half / 2;
+        Wake0 = S->Wakes;
+        Clock = FakeDspOps()->NowUs(S->H.Dsp);
+        Periods = 99;
+        Status = IntcDspStreamWaitPeriods(&S->Streams, Capture, 2, 670, &S->Event, &Periods);
+        CHECK_EQ(Status, STATUS_SUCCESS);
+        CHECK_EQ(Periods, 2);
+        CHECK_EQ(S->Wakes - Wake0, 4);
+        CHECK_EQ(FakeDspOps()->NowUs(S->H.Dsp) - Clock, 2 * (UINT64)PeriodUs);
+        S->PeriodBytes = 0;
+        Stream->Position = Stream->DmaPosition = 0;
+
+        /* four periods asked, two of them at every wake: two wakes */
+        Wake0 = S->Wakes;
+        Periods = 99;
+        Status = IntcDspStreamWaitPeriods(&S->Streams, Capture, 4, 670, &S->Event, &Periods);
+        CHECK_EQ(Status, STATUS_SUCCESS);
+        CHECK_EQ(Periods, 4);
+        CHECK_EQ(S->Wakes - Wake0, 2);
+
+        /* one period, then a stall: the wait ends at its timeout with the one period; the driver's remaining time is in whole milliseconds, so the wait runs the fraction of the period's millisecond past the timeout */
+        S->PeriodsLeft = 1;
+        Wake0 = S->Wakes;
+        Clock = FakeDspOps()->NowUs(S->H.Dsp);
+        Periods = 99;
+        Status = IntcDspStreamWaitPeriods(&S->Streams, Capture, 2, 670, &S->Event, &Periods);
+        CHECK_EQ(Status, STATUS_IO_TIMEOUT);
+        CHECK_EQ(Periods, 1);
+        CHECK_EQ(S->Wakes - Wake0, 2);
+        CHECK_EQ(FakeDspOps()->NowUs(S->H.Dsp) - Clock, PeriodUs + (670 - PeriodUs / 1000) * 1000);
+
+        /* a stall from the first wake: no period, the whole timeout */
+        S->PeriodsLeft = 0;
+        Wake0 = S->Wakes;
+        Clock = FakeDspOps()->NowUs(S->H.Dsp);
+        Periods = 99;
+        Status = IntcDspStreamWaitPeriods(&S->Streams, Capture, 2, 670, &S->Event, &Periods);
+        CHECK_EQ(Status, STATUS_IO_TIMEOUT);
+        CHECK_EQ(Periods, 0);
+        CHECK_EQ(S->Wakes - Wake0, 1);
+        CHECK_EQ(FakeDspOps()->NowUs(S->H.Dsp) - Clock, 670000);
+        S->PeriodsLeft = MAXULONG32;
+
+        /* a period due after the wait's end: the wait ends at its end, nothing counted */
+        Wake0 = S->Wakes;
+        Clock = FakeDspOps()->NowUs(S->H.Dsp);
+        Periods = 99;
+        Status = IntcDspStreamWaitPeriods(&S->Streams, Capture, 2, 1, &S->Event, &Periods);
+        CHECK_EQ(Status, STATUS_IO_TIMEOUT);
+        CHECK_EQ(Periods, 0);
+        CHECK_EQ(S->Wakes - Wake0, 1);
+        CHECK_EQ(FakeDspOps()->NowUs(S->H.Dsp) - Clock, 1000);
+
+        /* one period asked: the driver's period is the whole buffer then, two of the model's halves at two wakes */
+        Wake0 = S->Wakes;
+        Periods = 99;
+        Status = IntcDspStreamWaitPeriods(&S->Streams, Capture, 1, 670, &S->Event, &Periods);
+        CHECK_EQ(Status, STATUS_SUCCESS);
+        CHECK_EQ(Periods, 1);
+        CHECK_EQ(S->Wakes - Wake0, 2);
+
+        /* nothing to wait for: the entry is left alone and no wake comes */
+        Wake0 = S->Wakes;
+        Periods = 99;
+        CHECK_EQ(IntcDspStreamWaitPeriods(&S->Streams, Capture, 0, 670, &S->Event, &Periods), STATUS_INVALID_PARAMETER);
+        CHECK_EQ(Periods, 0);
+        Periods = 99;
+        CHECK_EQ(IntcDspStreamWaitPeriods(&S->Streams, (HANDLE)&S->Streams, 2, 670, &S->Event, &Periods), STATUS_INVALID_PARAMETER);
+        CHECK_EQ(Periods, 0);
+        CHECK_EQ(S->Wakes, Wake0);
+        /* the event was registered for each of the eight waits and released after it */
+        CHECK_EQ(Managed->Events, 0);
+        CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_REGISTER), (D + 1) * 8);
+        CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_UNREGISTER), (D + 1) * 8);
+
+        CHECK_EQ(IntcDspStreamPause(&S->Streams, Capture), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+        StreamQuiescent(S, Pcm);
+    }
+    StreamStop(S);
+    free(S);
+}
 
 int
 main(
@@ -2342,6 +2611,7 @@ main(
     CheckStreamLate();
     CheckStreamCompare();
     CheckStreamSelfTest();
+    CheckStreamWait();
 
     printf("sofipc: %d checks, %d failures\n", Checks, Failures);
     free(H->Dsp);

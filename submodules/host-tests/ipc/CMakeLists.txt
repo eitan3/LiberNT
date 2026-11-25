@@ -1,6 +1,6 @@
 # PROJECT:     LiberNT host-native tests
 # LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
-# PURPOSE:     The IPC4 transport carries requests to a DSP model and their replies back: the loader's register order, a budget per message class, status and crash replies, notifications, the interrupt mode and its storm guard, two callers, large configurations in blocks and the poll policy; and the DSP driver's stream manager runs its transitions over a fake hdaudbus and the model with the loopback topology, over the shared case rows, under ASan and UBSan
+# PURPOSE:     The IPC4 transport carries requests to a DSP model and their replies back: the loader's register order, a budget per message class, status and crash replies, notifications, the interrupt mode and its storm guard, two callers, large configurations in blocks and the poll policy; and the DSP driver's stream manager runs its transitions over a fake hdaudbus and the model with the loopback topology, over the shared case rows, the self-test's period wait being the driver's own and answered by a fake clock and fake positions, under ASan and UBSan
 # COPYRIGHT:   Copyright 2026 LiberNT contributors
 
 add_library(ipc_common INTERFACE)
