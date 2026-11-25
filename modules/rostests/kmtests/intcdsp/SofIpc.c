@@ -525,7 +525,7 @@ CheckInterruptMode(
     ok_eq_uint(H->Dsp->HostIpcEnable, 1);
     ok_eq_uint(H->Dsp->IpcControl, 3);
     Writes = H->Dsp->InterruptWritesLocked;
-    ok_eq_uint(Writes, 6);
+    ok_eq_uint(Writes, 9);
     H->InterruptsPerDelay = 1;
     for (Index = 0; Index < IPC4_TRANSPORT_SELF_TEST_EXCHANGES; Index++)
     {

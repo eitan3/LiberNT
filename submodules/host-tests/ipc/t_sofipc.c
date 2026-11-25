@@ -814,9 +814,9 @@ CheckInterruptMode(
     CHECK_EQ(H->Dsp->HostIpcEnable, 1);
     CHECK_EQ(H->Dsp->IpcControl, 3);
     CHECK(H->Ctx->InterruptsEnabled);
-    /* three writes to mask at the boot's power-up and three to set at the initialization, then per exchange three to mask and three to set again */
+    /* the two masks of the boot and the set at the initialization, three writes each, then per exchange three to mask and three to set again */
     Writes = H->Dsp->InterruptWritesLocked;
-    CHECK_EQ(Writes, 6);
+    CHECK_EQ(Writes, 9);
     H->InterruptsPerDelay = 1;
     for (Index = 0; Index < IPC4_TRANSPORT_SELF_TEST_EXCHANGES; Index++)
     {

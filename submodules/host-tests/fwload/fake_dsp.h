@@ -127,7 +127,9 @@ typedef struct _FAKE_DSP_FAULTS
     /* the raw value the interrupt pointer reads while the subsystem is powered, when InterruptPointerOverride is set */
     UINT32 InterruptPointer;
     BOOLEAN InterruptPointerOverride;
+    /* the pointer answers all ones until the subsystem is powered, or until the core is: the simulator round's N5, where a DSP-domain register wakes one step after the subsystem */
     BOOLEAN PointerNeedsPower;
+    BOOLEAN PointerNeedsCore;
     BOOLEAN SubsystemNeverPowers;
     BOOLEAN CoreNeverPowers;
     BOOLEAN NeverAckRom;

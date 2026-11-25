@@ -709,20 +709,21 @@ CheckHappyPath(
     CHECK_STR(H->Logs[1], "ROM ready for the firmware");
     CHECK_STR(H->Logs[2], "firmware entered");
     CHECK_STR(H->Logs[3], "FW_READY received");
-    /* the boot polls: the three enables are masked right after the power-up and never set */
-    CHECK_EQ(H->Dsp->PowerOrderCount, 5);
+    /* the boot polls: the three enables are masked right after the power-up and again at ROM ready, when the interrupt pointer can first name its register, and never set */
+    CHECK_EQ(H->Dsp->PowerOrderCount, 6);
     CHECK_EQ(H->Dsp->PowerOrder[0], FAKE_POWER_GPROCEN_ON);
     CHECK_EQ(H->Dsp->PowerOrder[1], FAKE_POWER_SUBSYSTEM_ON);
     CHECK_EQ(H->Dsp->PowerOrder[2], FAKE_POWER_INTERRUPTS_OFF);
     CHECK_EQ(H->Dsp->PowerOrder[3], FAKE_POWER_CORE_ON);
-    CHECK_EQ(H->Dsp->PowerOrder[4], FAKE_POWER_STREAM_RELEASE);
+    CHECK_EQ(H->Dsp->PowerOrder[4], FAKE_POWER_INTERRUPTS_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[5], FAKE_POWER_STREAM_RELEASE);
     CHECK(!FakeDspPowerEventSeen(H->Dsp, FAKE_POWER_CORE_OFF));
     CHECK_EQ(H->Dsp->InterruptEnable, 0);
     CHECK_EQ(H->Dsp->HostIpcEnable, 0);
     CHECK_EQ(H->Dsp->IpcControl, 0);
     CHECK(!H->Ctx->InterruptsEnabled);
     CHECK_EQ(H->Ctx->InterruptCount, 0);
-    CheckBootWrites(H, 1);
+    CheckBootWrites(H, 2);
 
     /* power down from ready: the interrupts, core, subsystem, GPROCEN, and nothing else */
     Status = FwloadPowerDown(H->Ctx);
@@ -730,11 +731,11 @@ CheckHappyPath(
     CHECK_EQ(H->Ctx->State, FwloadStateOff);
     CHECK_EQ(H->Ctx->Status, FwloadOk);
     CHECK_EQ(H->Ctx->CleanupStatus, FwloadOk);
-    CHECK_EQ(H->Dsp->PowerOrderCount, 9);
-    CHECK_EQ(H->Dsp->PowerOrder[5], FAKE_POWER_INTERRUPTS_OFF);
-    CHECK_EQ(H->Dsp->PowerOrder[6], FAKE_POWER_CORE_OFF);
-    CHECK_EQ(H->Dsp->PowerOrder[7], FAKE_POWER_SUBSYSTEM_OFF);
-    CHECK_EQ(H->Dsp->PowerOrder[8], FAKE_POWER_GPROCEN_OFF);
+    CHECK_EQ(H->Dsp->PowerOrderCount, 10);
+    CHECK_EQ(H->Dsp->PowerOrder[6], FAKE_POWER_INTERRUPTS_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[7], FAKE_POWER_CORE_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[8], FAKE_POWER_SUBSYSTEM_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[9], FAKE_POWER_GPROCEN_OFF);
     CHECK((H->Dsp->CoreControl & 0x100) == 0);
     CHECK((H->Dsp->SubsystemControl & 0x01000000) == 0);
     CHECK((H->Dsp->PpControl & FWLOAD_PPCTL_GPROCEN) == 0);
@@ -743,12 +744,12 @@ CheckHappyPath(
     CHECK_EQ(H->Dsp->IpcControl, 0);
     CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
     CHECK_EQ(H->Dsp->StreamReleases, 1);
-    /* both masks ran under the interrupt lock, one write per enable each, and nothing waited under it */
-    CHECK_EQ(H->Dsp->InterruptWritesLocked, 6);
+    /* the three masks ran under the interrupt lock, one write per enable each, and nothing waited under it */
+    CHECK_EQ(H->Dsp->InterruptWritesLocked, 9);
     CHECK_EQ(H->Dsp->InterruptWritesUnlocked, 0);
     CHECK_EQ(H->Dsp->InterruptLockRecursions, 0);
     CHECK_EQ(H->Dsp->InterruptLockDelays, 0);
-    CheckBootWrites(H, 2);
+    CheckBootWrites(H, 3);
     /* powering down twice is harmless; booting again after that boots again */
     CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
     HarnessBoot(H, Image, NULL);
@@ -1252,7 +1253,10 @@ CheckInterruptPointer(
     /* zero, an odd address, the last address of the pointer's field, and the bus's all ones */
     static const UINT32 NoRegister[] = { 0, 1, 0x1D01, 0x1FFFFF, 0xFFFFFFFF };
     FAKE_DSP_FAULTS Faults;
-    UINT32 Index, EnableWrites;
+    const FAKE_DSP_WRITE* IntenWrite;
+    const FAKE_DSP_WRITE* RomAck;
+    static FAKE_DSP_ACCESS Access[4096];
+    UINT32 Index, EnableWrites, RomAckIndex, IntenIndex, StatusPoll;
 
     /* all ones until the subsystem is powered: the pointer is read where it is used, so every write to the three enables arrives powered and the boot is the model's */
     Faults = *FakeDspDefaultFaults();
@@ -1271,13 +1275,65 @@ CheckInterruptPointer(
             EnableWrites++;
         }
     }
-    CHECK_EQ(EnableWrites, 3);
-    CHECK_EQ(H->Dsp->InterruptPointerReads, 1);
+    /* the two masks of the boot, three writes each */
+    CHECK_EQ(EnableWrites, 6);
+    CHECK_EQ(H->Dsp->InterruptPointerReads, 2);
     CHECK_EQ(H->Dsp->InterruptPointerReadsUnpowered, 0);
     CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
     CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
-    CHECK_EQ(H->Dsp->InterruptPointerReads, 2);
+    CHECK_EQ(H->Dsp->InterruptPointerReads, 3);
     CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
+
+    /* N5 of the simulator round: all ones until the core is powered, the first mask of the boot cannot reach the enable, and the enable is one a BIOS left set; the mask at ROM ready, the first the pointer answers, clears it: one write to it in the whole boot, powered, after the ROM's acknowledgement and before the firmware is loaded */
+    Faults = *FakeDspDefaultFaults();
+    Faults.PointerNeedsCore = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    H->Dsp->InterruptEnable = 1;
+    FakeDspAccessBegin(H->Dsp, Access, sizeof(Access) / sizeof(Access[0]));
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Dsp->InterruptEnable, 0);
+    CHECK_EQ(H->Dsp->HostIpcEnable, 0);
+    CHECK_EQ(H->Dsp->IpcControl, 0);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, FAKE_DSP_INTERRUPT_POINTER), 1);
+    IntenWrite = FakeDspWriteFind(H->Dsp, FWLOAD_BAR_DSP, FAKE_DSP_INTERRUPT_POINTER, 0);
+    RomAck = FakeDspWriteFind(H->Dsp, FWLOAD_BAR_DSP, Platform->IpcReply, FWLOAD_IPC_DONE);
+    CHECK(IntenWrite != NULL && IntenWrite->Powered && (IntenWrite->Value & 1) == 0);
+    CHECK(RomAck != NULL && IntenWrite > RomAck);
+    /* in the access log: the write comes after the ROM's acknowledgement and after the ROM's own status was polled to ready, and before the first status poll of the firmware load */
+    RomAckIndex = IntenIndex = StatusPoll = 0;
+    for (Index = 0; Index < H->Dsp->AccessCount; Index++)
+    {
+        const FAKE_DSP_ACCESS* Step = &Access[Index];
+
+        if (Step->Op == FAKE_DSP_ACCESS_WRITE32 && Step->Offset == Platform->IpcReply && (Step->Value & FWLOAD_IPC_DONE) && RomAckIndex == 0)
+            RomAckIndex = Index + 1;
+        else if (Step->Op == FAKE_DSP_ACCESS_WRITE32 && Step->Offset == FAKE_DSP_INTERRUPT_POINTER)
+            IntenIndex = Index + 1;
+        else if (Step->Op == FAKE_DSP_ACCESS_READ32 && Step->Offset == Platform->RomStatus && RomAckIndex != 0)
+            StatusPoll = Index + 1;
+    }
+    CHECK(RomAckIndex != 0 && IntenIndex != 0 && StatusPoll != 0);
+    /* the last status read before the write is the ROM's ready poll; the write precedes the load's polls, which end at the last one */
+    CHECK(RomAckIndex < IntenIndex && IntenIndex < StatusPoll);
+    /* the pointer was read once unpowered, by the mask of the power-up, and once by the mask at ROM ready */
+    CHECK_EQ(H->Dsp->InterruptPointerReads, 2);
+    CHECK_EQ(H->Dsp->InterruptPointerReadsUnpowered, 1);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, Platform->HostIpcInterruptEnable), 2);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, Platform->IpcControl), 2);
+    CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, FAKE_DSP_INTERRUPT_POINTER), 2);
+    CHECK_EQ(H->Dsp->InterruptPointerReads, 3);
+    FakeDspAccessBegin(H->Dsp, NULL, 0);
+    /* in that shape too the enables are asked for after the mask at ROM ready, so the BIOS's bit is cleared before the line is used */
+    HarnessBoot(H, Image, &Faults);
+    H->Dsp->InterruptEnable = 1;
+    H->Ctx->UseInterrupts = TRUE;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Dsp->InterruptEnable, 1);
+    CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, FAKE_DSP_INTERRUPT_POINTER), 2);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Dsp->InterruptEnable, 0);
 
     /* the subsystem never powers up: the cleanup meets all ones and writes nothing through the pointer */
     Faults = *FakeDspDefaultFaults();
@@ -1304,8 +1360,9 @@ CheckInterruptPointer(
         CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, NoRegister[Index] & 0x1FFFFF), 0);
         /* no register was written through the pointer, so the model never saw the interrupt go off */
         CHECK(!FakeDspPowerEventSeen(H->Dsp, FAKE_POWER_INTERRUPTS_OFF));
-        CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, Platform->HostIpcInterruptEnable), 1);
-        CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, Platform->IpcControl), 1);
+        /* the two masks of the boot reach the two enables the pointer does not name */
+        CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, Platform->HostIpcInterruptEnable), 2);
+        CHECK_EQ(FakeDspWriteCount(H->Dsp, FWLOAD_BAR_DSP, Platform->IpcControl), 2);
         CHECK_EQ(H->Dsp->HostIpcEnable, 0);
         CHECK_EQ(H->Dsp->IpcControl, 0);
         CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
@@ -1453,7 +1510,7 @@ CheckInterruptService(
     H->InterruptsPerDelay = 0;
     CheckFailedBootIsOff(H, FwloadInterruptStorm, FwloadStateLoading);
 
-    /* FWLOAD_CONTEXT.UseInterrupts, the later phases' mode: the enables are set once the ROM acknowledged and stay set until the power-down; every write to them is under the lock */
+    /* FWLOAD_CONTEXT.UseInterrupts, the later phases' mode: the enables are set once the ROM is ready and stay set until the power-down; every write to them is under the lock */
     HarnessBoot(H, Image, NULL);
     H->Ctx->UseInterrupts = TRUE;
     CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
@@ -1461,16 +1518,17 @@ CheckInterruptService(
     CHECK_EQ(H->Dsp->InterruptEnable, 1);
     CHECK_EQ(H->Dsp->HostIpcEnable, 1);
     CHECK_EQ(H->Dsp->IpcControl, 3);
-    CHECK_EQ(H->Dsp->PowerOrderCount, 5);
+    CHECK_EQ(H->Dsp->PowerOrderCount, 6);
     CHECK_EQ(H->Dsp->PowerOrder[2], FAKE_POWER_INTERRUPTS_OFF);
     CHECK_EQ(H->Dsp->PowerOrder[3], FAKE_POWER_CORE_ON);
-    CHECK_EQ(H->Dsp->PowerOrder[4], FAKE_POWER_STREAM_RELEASE);
-    /* the mask after the power-up and the enable after the ROM: three writes each */
-    CHECK_EQ(H->Dsp->InterruptWritesLocked, 6);
+    CHECK_EQ(H->Dsp->PowerOrder[4], FAKE_POWER_INTERRUPTS_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[5], FAKE_POWER_STREAM_RELEASE);
+    /* the two masks and the enable: three writes each */
+    CHECK_EQ(H->Dsp->InterruptWritesLocked, 9);
     CHECK_EQ(H->Dsp->InterruptWritesUnlocked, 0);
     CHECK_EQ(H->Dsp->InterruptLockRecursions, 0);
     CHECK_EQ(H->Dsp->InterruptLockDelays, 0);
-    CheckBootWrites(H, 2);
+    CheckBootWrites(H, 3);
     /* in that mode too the routine's mask and the poll's acknowledging are serialized: one interrupt per message still boots */
     H->Dsp->IpcTarget = FWLOAD_IPC_BUSY | SOFIPC4_FW_READY_PRIMARY;
     CHECK(HarnessInterrupt(H));
@@ -1478,9 +1536,9 @@ CheckInterruptService(
     CHECK_EQ(H->Dsp->InterruptEnable, 0);
     CHECK_EQ(H->Dsp->HostIpcEnable, 0);
     CHECK_EQ(H->Dsp->IpcControl, 0);
-    CHECK_EQ(H->Dsp->InterruptWritesLocked, 9);
-    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
     CHECK_EQ(H->Dsp->InterruptWritesLocked, 12);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Dsp->InterruptWritesLocked, 15);
     CHECK_EQ(H->Dsp->InterruptWritesUnlocked, 0);
     CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
 }
@@ -1574,7 +1632,8 @@ CheckRetry(
     CHECK_EQ(H->Dsp->DroppedRequests, 2);
     CHECK_EQ(H->Ctx->Status, FwloadOk);
     CHECK(H->Ctx->BootUs >= 2 * H->Timeouts.RomInitUs);
-    CheckBootWrites(H, 3);
+    /* the mask of the power-up, one after each missed request, and the one at ROM ready */
+    CheckBootWrites(H, 4);
     CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
 }
 

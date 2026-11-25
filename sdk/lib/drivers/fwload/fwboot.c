@@ -445,13 +445,6 @@ FwloadRomInit(
     if (Status != FwloadOk)
         return Status;
     FwloadIpcDone(Context, TRUE);
-    /* the boot polls every wait, so the interrupts stay masked unless the caller asked for them (FWLOAD_CONTEXT.UseInterrupts) */
-    if (Context->UseInterrupts)
-    {
-        Status = FwloadInterruptsEnable(Context, TRUE);
-        if (Status != FwloadOk)
-            return Status;
-    }
     return FwloadRomStatus(Context, FWLOAD_FSR_INIT_DONE, Context->Timeouts.RomStatusUs, FwloadTimeoutRomStatus);
 }
 
@@ -1074,6 +1067,17 @@ FwloadBoot(
     }
     if (Status != FwloadOk)
         return FwloadFail(Context, Context->State, Status);
+    /* the interrupt pointer is a register of the DSP's own power domain and can name its register only now that the core is powered: the mask of the power-up is repeated, so that the enable it could not reach is cleared too, whatever the BIOS or a former OS left set */
+    Status = FwloadInterruptsEnable(Context, FALSE);
+    if (Status != FwloadOk)
+        return FwloadFail(Context, Context->State, Status);
+    /* the boot polls every wait, so the interrupts stay masked unless the caller asked for them (FWLOAD_CONTEXT.UseInterrupts) */
+    if (Context->UseInterrupts)
+    {
+        Status = FwloadInterruptsEnable(Context, TRUE);
+        if (Status != FwloadOk)
+            return FwloadFail(Context, Context->State, Status);
+    }
     FwloadLog(Context, "ROM ready for the firmware");
 
     Context->State = FwloadStateLoading;

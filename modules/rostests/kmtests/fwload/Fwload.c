@@ -346,12 +346,12 @@ START_TEST(Fwload)
     ok_eq_uint(Context->FwConfig.Registers.AbiVersion, SOFIPC4_FW_REGS_ABI_VER);
     ok_eq_uint(Context->Dma.FragmentCount, 1);
     ok_eq_uint(Context->Dma.StreamTag, FWLOAD_CL_STREAM_TAG);
-    /* the boot polls: the three enables were masked after the power-up and never set, and every passive-level write to them ran under the interrupt lock */
+    /* the boot polls: the three enables were masked after the power-up and again at ROM ready, never set, and once more by the power-down; every passive-level write to them ran under the interrupt lock */
     ok_eq_uint(Dsp->InterruptEnable, 0);
     ok_eq_uint(Dsp->HostIpcEnable, 0);
     ok_eq_uint(Dsp->IpcControl, 0);
     ok_eq_uint(Context->InterruptCount, 0);
-    ok_eq_uint(Dsp->InterruptWritesLocked, 6);
+    ok_eq_uint(Dsp->InterruptWritesLocked, 9);
     ok_eq_uint(Dsp->InterruptWritesUnlocked, 0);
     ok_eq_uint(Dsp->InterruptLockRecursions, 0);
 

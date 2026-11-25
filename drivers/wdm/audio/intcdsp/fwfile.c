@@ -132,9 +132,11 @@ IntcDspLoadFirmware(
 {
     UNICODE_STRING Path;
     const SOF_RI_IMAGE* Ri = &Dev->Image.Ri;
+    BOOLEAN Resident;
     FWLOAD_STATUS Status;
 
     /* read at the first call that finds no image, at start, and kept for the device: a power-up callback finds it resident and reads nothing */
+    Resident = Dev->Image.Data != NULL && Dev->Image.Bytes != 0;
     Status = FwloadImageEnsure(&Dev->Image, &IntcDspImageOps, Dev);
     Dev->FirmwareStatus = Status;
     RtlInitUnicodeString(&Path, INTCDSP_FIRMWARE_PATH);
@@ -147,8 +149,9 @@ IntcDspLoadFirmware(
         return Status == FwloadNoData ? Dev->FirmwareReadStatus : STATUS_INVALID_IMAGE_FORMAT;
     }
 
+    /* the line says whether the bytes were read by this call or were already resident for the device, so that the log of a resume shows no second read (R6) */
     IntcDspLog("firmware %wZ: %I64u bytes, %s, image '%s' version %u.%u.%u.%u, %u modules, payload 0x%I64x + 0x%I64x, %u preload pages\n",
-               &Path, (ULONGLONG)Dev->Image.Bytes, FwloadStatusName(FwloadOk), Ri->Name, Ri->Major, Ri->Minor,
+               &Path, (ULONGLONG)Dev->Image.Bytes, Resident ? "resident" : "read", Ri->Name, Ri->Major, Ri->Minor,
                Ri->Hotfix, Ri->Build, Ri->ModuleCount, (ULONGLONG)Ri->PayloadOffset,
                (ULONGLONG)Ri->PayloadBytes, Ri->PreloadPageCount);
     return STATUS_SUCCESS;

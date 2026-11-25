@@ -975,12 +975,17 @@ FakeDspRead32Raw(
         if (Offset == Platform->InterruptPointer)
         {
             Dsp->InterruptPointerReads++;
-            /* a register of the DSP's own power domain: all ones until the subsystem reports power active */
+            /* a register of the DSP's own power domain: all ones until the subsystem reports power active, and with PointerNeedsCore until the core does */
             if (!(Dsp->SubsystemControl & FAKE_DSP_SUBSYSTEM_CPA))
             {
                 Dsp->InterruptPointerReadsUnpowered++;
                 if (Dsp->Faults.PointerNeedsPower)
                     return FAKE_DSP_POINTER_UNPOWERED;
+            }
+            else if (Dsp->Faults.PointerNeedsCore && !Dsp->CorePowered)
+            {
+                Dsp->InterruptPointerReadsUnpowered++;
+                return FAKE_DSP_POINTER_UNPOWERED;
             }
             return Dsp->Faults.InterruptPointerOverride ? Dsp->Faults.InterruptPointer : FAKE_DSP_INTERRUPT_POINTER;
         }
@@ -1416,8 +1421,11 @@ static const FAKE_DSP_FAULTS FakeDspDefaults =
 {
     100, 200, 100, 500, 2000, 200, 50, 0, FAKE_DSP_HALT_NONE, 0, 0, SOFIPC4_FW_REGS_ABI_VER,
     SofIpc4Success, FAKE_DSP_TUPLES_GOOD, FAKE_DSP_STORM_NONE, 0, 0, FALSE, FALSE,
-    FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE,
-    FAKE_DSP_NO_TYPE, 0, FAKE_DSP_NO_TYPE, 0, FALSE, FALSE, FALSE, FALSE
+    FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE,
+    .IpcStatusForType = FAKE_DSP_NO_TYPE,
+    .IpcStatusValue = 0,
+    .NeverReplyForType = FAKE_DSP_NO_TYPE,
+    .ReplyTypeShift = 0
 };
 
 const FAKE_DSP_FAULTS*
