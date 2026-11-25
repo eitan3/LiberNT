@@ -62,6 +62,13 @@ DEFINE_GUID(GUID_ADSP_BUS_INTERFACE,
 
 #include "adspbus.h"
 #include "ipclock.h"
+#include "stream.h"
+
+/* The loopback self-test after a boot with a topology (SelfTest = 2): a render and a capture stream of 4096 frames each, the plan's VM-acceptance row */
+#define INTCDSP_SELFTEST_LOOPBACK      2
+#define INTCDSP_SELFTEST_FRAMES        4096
+#define INTCDSP_SELFTEST_MAPPINGS      2
+#define INTCDSP_STREAM_LINE_BYTES      384
 
 typedef struct _INTCDSP_DEVICE
 {
@@ -117,6 +124,18 @@ typedef struct _INTCDSP_DEVICE
     INTCDSP_REQUEST_LOCK RequestLock;
     SOFIPC_CONTEXT Ipc;
     BOOLEAN IpcArmed;
+    /* the stream manager after a boot with a topology: its state in one nonpaged buffer kept for the device, its operations' kernel side (the mappings of the buffers the self-test maps, its period event) */
+    INTCDSP_STREAMS Streams;
+    PUCHAR StreamsState;
+    SIZE_T StreamsStateBytes;
+    INTCDSP_STREAMS_OPS StreamOps;
+    INTCDSP_SELFTEST_OPS SelfTestOps;
+    struct
+    {
+        PMDL Mdl;
+        PVOID Virtual;
+    } Mapped[INTCDSP_SELFTEST_MAPPINGS];
+    KEVENT SelfTestEvent;
 } INTCDSP_DEVICE, *PINTCDSP_DEVICE;
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(INTCDSP_DEVICE, IntcDspGetData)
@@ -186,6 +205,11 @@ IntcDspProbe(
 
 NTSTATUS
 IntcDspBoot(
+    _Inout_ PINTCDSP_DEVICE Dev);
+
+/* The stream manager of a booted device with a topology, and the loopback self-test (SelfTest = 2) over it */
+NTSTATUS
+IntcDspStreamsStart(
     _Inout_ PINTCDSP_DEVICE Dev);
 
 VOID

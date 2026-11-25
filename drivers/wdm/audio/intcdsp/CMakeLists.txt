@@ -12,6 +12,7 @@ list(APPEND SOURCE
     ipclock.c
     fwfile.c
     topology.c
+    stream.c
     # the topology file selection decides through the bus's policy, so the decision compiles into this driver too
     ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus/policy.c)
 

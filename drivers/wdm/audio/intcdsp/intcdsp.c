@@ -6,6 +6,7 @@
  */
 
 #include "intcdsp.h"
+#include <ntstrsafe.h>
 
 static
 EVT_WDF_DEVICE_PREPARE_HARDWARE IntcDspEvtDevicePrepareHardware;
@@ -197,6 +198,186 @@ IntcDspIpcSelfTest(
         IntcDspPowerDown(Dev);
         Dev->Booted = FALSE;
     }
+}
+
+/* One line of the stream manager in the driver's log, as the transport's own lines are printed */
+static
+VOID
+IntcDspStreamLog(
+    _In_opt_ PVOID Context,
+    _In_z_ const char* Format,
+    va_list Arguments)
+{
+    CHAR Line[INTCDSP_STREAM_LINE_BYTES];
+
+    UNREFERENCED_PARAMETER(Context);
+    if (RtlStringCbVPrintfA(Line, sizeof(Line), Format, Arguments) == STATUS_INVALID_PARAMETER)
+        return;
+    IntcDspLog("%s", Line);
+}
+
+/* A request faulted the link: as every faulted link ends, the DSP is powered down and booted again at the next D0 entry */
+static
+VOID
+IntcDspStreamFault(
+    _In_opt_ PVOID Context)
+{
+    PINTCDSP_DEVICE Dev = (PINTCDSP_DEVICE)Context;
+
+    IntcDspPowerDown(Dev);
+    Dev->Booted = FALSE;
+}
+
+/* A buffer goes back to the bus: the self-test's mapping of it is gone first */
+static
+VOID
+IntcDspStreamUnmap(
+    _In_opt_ PVOID Context,
+    _In_ PMDL Mdl)
+{
+    PINTCDSP_DEVICE Dev = (PINTCDSP_DEVICE)Context;
+    ULONG Index;
+
+    for (Index = 0; Index < INTCDSP_SELFTEST_MAPPINGS; Index++)
+    {
+        if (Dev->Mapped[Index].Mdl != Mdl)
+            continue;
+        MmUnmapLockedPages(Dev->Mapped[Index].Virtual, Mdl);
+        Dev->Mapped[Index].Mdl = NULL;
+        Dev->Mapped[Index].Virtual = NULL;
+    }
+}
+
+/* The pages of a buffer as the CPU sees them: the codec streams' mapping of an MDL from MmAllocatePagesForMdlEx (appleaudio/adapter.cpp), nonpaged and non-cached, PASSIVE_LEVEL */
+static
+PVOID
+IntcDspSelfTestMap(
+    _In_opt_ PVOID Context,
+    _In_ PMDL Mdl,
+    SIZE_T Bytes)
+{
+    PINTCDSP_DEVICE Dev = (PINTCDSP_DEVICE)Context;
+    PVOID Virtual;
+    ULONG Index;
+
+    UNREFERENCED_PARAMETER(Bytes);
+    for (Index = 0; Index < INTCDSP_SELFTEST_MAPPINGS && Dev->Mapped[Index].Mdl != NULL; Index++)
+        ;
+    if (Index == INTCDSP_SELFTEST_MAPPINGS || Mdl == NULL)
+        return NULL;
+    Virtual = MmMapLockedPagesSpecifyCache(Mdl, KernelMode, MmNonCached, NULL, FALSE, NormalPagePriority);
+    if (Virtual == NULL)
+        return NULL;
+    Dev->Mapped[Index].Mdl = Mdl;
+    Dev->Mapped[Index].Virtual = Virtual;
+    return Virtual;
+}
+
+/*
+ * The periods of a stream, counted by the position buffer's entry: an
+ * event is registered on the stream, the bus's interrupt DPC sets it at
+ * every period, and each wake reads how far the position moved, so that
+ * two periods that came between two wakes still count. The wait ends with
+ * Count periods or when TimeoutMs passed, whichever comes first.
+ */
+static
+NTSTATUS
+IntcDspSelfTestWait(
+    _In_opt_ PVOID Context,
+    HANDLE Stream,
+    UINT32 Count,
+    UINT32 TimeoutMs,
+    _Out_ PULONG Periods)
+{
+    PINTCDSP_DEVICE Dev = (PINTCDSP_DEVICE)Context;
+    PINTCDSP_STREAM Managed = IntcDspStreamOf(&Dev->Streams, Stream);
+    ULONG Bytes, Half, Last, Position, Progress = 0;
+    UINT64 StartUs, ElapsedMs;
+    LARGE_INTEGER Timeout;
+    NTSTATUS Status;
+
+    *Periods = 0;
+    if (Managed == NULL || Managed->Handle == NULL || Managed->Bytes == 0 || Count == 0)
+        return STATUS_INVALID_PARAMETER;
+    Bytes = (ULONG)Managed->Bytes;
+    Half = Bytes / Count;
+    KeClearEvent(&Dev->SelfTestEvent);
+    Status = IntcDspStreamRegisterEvent(&Dev->Streams, Stream, &Dev->SelfTestEvent);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    StartUs = Dev->Fw.Ops->NowUs(Dev->Fw.OpsContext);
+    Last = Dev->Bus.StreamPosition(Dev->Bus.Context, Managed->Handle) % Bytes;
+    Status = STATUS_IO_TIMEOUT;
+    for (;;)
+    {
+        Position = Dev->Bus.StreamPosition(Dev->Bus.Context, Managed->Handle) % Bytes;
+        Progress = (Position - Last + Bytes) % Bytes;
+        Last = Position;
+        if (Progress >= Half * Count)
+        {
+            Status = STATUS_SUCCESS;
+            break;
+        }
+        ElapsedMs = (Dev->Fw.Ops->NowUs(Dev->Fw.OpsContext) - StartUs) / 1000;
+        if (ElapsedMs >= TimeoutMs)
+            break;
+        Timeout.QuadPart = -((LONGLONG)(TimeoutMs - (ULONG)ElapsedMs) * 10000);
+        Status = KeWaitForSingleObject(&Dev->SelfTestEvent, Executive, KernelMode, FALSE, &Timeout);
+        KeClearEvent(&Dev->SelfTestEvent);
+        if (Status == STATUS_TIMEOUT)
+        {
+            Status = STATUS_IO_TIMEOUT;
+            break;
+        }
+    }
+    Position = Dev->Bus.StreamPosition(Dev->Bus.Context, Managed->Handle) % Bytes;
+    Progress += (Position - Last + Bytes) % Bytes;
+    IntcDspStreamUnregisterEvent(&Dev->Streams, Stream, &Dev->SelfTestEvent);
+    *Periods = Progress / Half > Count ? Count : Progress / Half;
+    return Status;
+}
+
+NTSTATUS
+IntcDspStreamsStart(
+    _Inout_ PINTCDSP_DEVICE Dev)
+{
+    SIZE_T Bytes = IntcDspStreamsBytes(Dev->TopologyModel);
+    NTSTATUS Status;
+
+    /* the state is one allocation for the device, made when the first topology is measured and kept through the power cycles */
+    if (Dev->StreamsState == NULL || Dev->StreamsStateBytes < Bytes)
+    {
+        if (Dev->StreamsState != NULL)
+            ExFreePoolWithTag(Dev->StreamsState, INTCDSP_POOL_TAG);
+        Dev->StreamsState = (PUCHAR)ExAllocatePoolWithTag(NonPagedPool, Bytes, INTCDSP_POOL_TAG);
+        if (Dev->StreamsState == NULL)
+        {
+            Dev->StreamsStateBytes = 0;
+            IntcDspLog("streams: no %I64u bytes of state; no stream, no self-test\n", (ULONGLONG)Bytes);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        Dev->StreamsStateBytes = Bytes;
+    }
+    Dev->StreamOps.Context = Dev;
+    Dev->StreamOps.Log = IntcDspStreamLog;
+    Dev->StreamOps.Fault = IntcDspStreamFault;
+    Dev->StreamOps.Unmap = IntcDspStreamUnmap;
+    Dev->SelfTestOps.Context = Dev;
+    Dev->SelfTestOps.Map = IntcDspSelfTestMap;
+    Dev->SelfTestOps.WaitPeriods = IntcDspSelfTestWait;
+    KeInitializeEvent(&Dev->SelfTestEvent, SynchronizationEvent, FALSE);
+    IntcDspStreamsInit(&Dev->Streams, Dev->StreamsState, Dev->StreamsStateBytes, Dev->TopologyModel, &Dev->Ipc, &Dev->Bus, &Dev->StreamOps);
+    /* a bus without the stream members, or a link that is not ready: the DSP stays as the earlier checkpoints left it, with no stream and no self-test */
+    if (!Dev->Streams.Ready)
+        return STATUS_SUCCESS;
+    if (Dev->SelfTest == INTCDSP_SELFTEST_LOOPBACK)
+    {
+        Status = IntcDspLoopbackSelfTest(&Dev->Streams, &Dev->SelfTestOps, INTCDSP_SELFTEST_FRAMES);
+        /* the manager logged the lines; a fault powered the DSP down, a capture that does not match leaves it up, as the plan's stop rule says */
+        IntcDspLog("loopback self-test: %s (0x%08lx), the DSP is %s\n", NT_SUCCESS(Status) ? "ran" : "failed", Status,
+                   Dev->Booted ? "left running" : "powered down");
+    }
+    return STATUS_SUCCESS;
 }
 
 VOID
@@ -524,6 +705,10 @@ IntcDspEvtDeviceReleaseHardware(
     Dev->TopologyBytes = 0;
     Dev->TopologyModel = NULL;
     Dev->TopologyName[0] = 0;
+    if (Dev->StreamsState)
+        ExFreePoolWithTag(Dev->StreamsState, INTCDSP_POOL_TAG);
+    Dev->StreamsState = NULL;
+    Dev->StreamsStateBytes = 0;
     if (Dev->BusValid && Dev->Bus.InterfaceDereference)
         Dev->Bus.InterfaceDereference(Dev->Bus.Context);
     Dev->BusValid = FALSE;
@@ -554,6 +739,9 @@ IntcDspEvtDeviceD0Entry(
         /* the plan's fail-safe: a booted DSP with no topology the firmware can run is powered down again and gets no endpoint */
         if (Dev->Booted && !IntcDspTopologyLoad(Dev))
             IntcDspPowerDown(Dev);
+        /* the streams hang off the booted loader and its topology from here; the self-test is the opt-in check of the plan, and a fault of it powers the DSP down itself */
+        if (Dev->Booted)
+            IntcDspStreamsStart(Dev);
     }
     return STATUS_SUCCESS;
 }

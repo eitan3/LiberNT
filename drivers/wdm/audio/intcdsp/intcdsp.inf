@@ -44,7 +44,7 @@ intcdsp.sys
 AddService=intcdsp,0x00000002,IntcDsp_Service_Inst
 
 ; BootDsp (REG_DWORD) under the service's Settings key: 0, the default, only logs the controller's facts; 1 boots the DSP at the next D0 entry
-; SelfTest: 1 runs the IPC self-test after a boot; UseInterrupts: 1 lets the IPC transport use the DSP's interrupt line; IpcTimeoutMs: the budget of every IPC message in milliseconds
+; SelfTest: 1 runs the IPC self-test after a boot, 2 the loopback self-test (a render and a capture stream of the topology's PCM 'Loopback', 16, 24 and 32 bits); UseInterrupts: 1 lets the IPC transport use the DSP's interrupt line; IpcTimeoutMs: the budget of every IPC message in milliseconds
 ; Topology (REG_SZ): the topology file the booted DSP runs, a plain file name under System32\drivers\intel\sof-tplg (sof-ipc4-loopback.tplg ships there); absent, the DMI quirk table and the controller's _DSD names decide, and with neither the DSP is powered down again
 [IntcDsp_Service_Inst]
 DisplayName=%IntcDsp.ServiceDesc%
