@@ -695,7 +695,7 @@ check_short_and_garbage_inputs(void)
 
 /* ---- The descriptor list of a stream's buffer (hdac_bdl.c) ---- */
 
-/* One row: a request, and the layout and the list the driver must build; a descriptor is the page of the allocation it names, where in it, its bytes, and its interrupt on completion */
+/* One row: a request, and the layout and the list the driver must build; a descriptor is the page of the allocation it names, where in it, its bytes, and its interrupt on completion; a row names at most BDL_ROW_ENTRIES descriptors */
 #define BDL_ROW_ENTRIES     8
 #define BDL_ROW_PAGES       300
 /* the frames the rows give the pages: their addresses cross the 4 GiB boundary, so the high word counts */
@@ -801,7 +801,7 @@ check_bdl(
     CHECK(HdacBdlBuild(Bdl, Frames, &Layout, &Entries));
     CHECK_EQ(Entries, Case->Entries);
     /* every descriptor as the row names it, inside the allocation and inside one page */
-    for (I = 0; I < Case->Entries && I < Entries && I < HDA_MAX_BDL_ENTRIES; I++)
+    for (I = 0; I < Case->Entries && I < Entries && I < BDL_ROW_ENTRIES; I++)
     {
         bdl_entry_place(&Bdl[I], &Page, &Offset);
         if (Page != Case->Entry[I].Page || Offset != Case->Entry[I].Offset || Bdl[I].len != Case->Entry[I].Bytes || Bdl[I].ioc != Case->Entry[I].Ioc)
