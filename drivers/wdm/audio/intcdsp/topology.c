@@ -310,7 +310,8 @@ IntcDspTopologyLoad(
     CHAR Override[DSP_TOPOLOGY_NAME_BYTES];
     WCHAR Path[INTCDSP_TOPOLOGY_PATH_CHARS + DSP_TOPOLOGY_NAME_BYTES];
     PUCHAR Data = NULL;
-    SIZE_T Bytes = 0, Index;
+    /* the file's bytes and the model's: the measure answers the model's size into the same variable the file's size was read into (T1) */
+    SIZE_T Bytes = 0, FileBytes, Index;
     SOFTPLG_MODEL_STATUS Result;
     NTSTATUS Status;
 
@@ -371,6 +372,7 @@ IntcDspTopologyLoad(
     RtlZeroMemory(&Input, sizeof(Input));
     Input.Data = Data;
     Input.Size = Bytes;
+    FileBytes = Bytes;
     Input.Lookup = IntcDspModuleLookup;
     Input.LookupContext = Dev;
     Result = SoftplgModelMeasure(&Input, &Bytes, &Problem);
@@ -392,8 +394,8 @@ IntcDspTopologyLoad(
     for (Index = 0; Selection.Name[Index] != 0 && Index + 1 < sizeof(Dev->TopologyName); Index++)
         Dev->TopologyName[Index] = Selection.Name[Index];
     Dev->TopologyName[Index] = 0;
-    IntcDspLog("topology '%s': ABI %u.%u.%u, %I64u bytes, %u control%s, %u widget%s, %u edge%s, %u pcm%s, %u pipeline%s, %u manifest item%s, from %s\n",
-        Dev->TopologyName, Model->AbiMajor, Model->AbiMinor, Model->AbiPatch, (ULONGLONG)Bytes, Model->ControlCount, IntcDspPlural(Model->ControlCount),
+    IntcDspLog("topology '%s': ABI %u.%u.%u, %I64u bytes (model %I64u bytes), %u control%s, %u widget%s, %u edge%s, %u pcm%s, %u pipeline%s, %u manifest item%s, from %s\n",
+        Dev->TopologyName, Model->AbiMajor, Model->AbiMinor, Model->AbiPatch, (ULONGLONG)FileBytes, (ULONGLONG)Bytes, Model->ControlCount, IntcDspPlural(Model->ControlCount),
         Model->WidgetCount, IntcDspPlural(Model->WidgetCount), Model->EdgeCount, IntcDspPlural(Model->EdgeCount), Model->PcmCount, IntcDspPlural(Model->PcmCount),
         Model->PipelineCount, IntcDspPlural(Model->PipelineCount), Model->ManifestItems, IntcDspPlural(Model->ManifestItems), DspTopologySourceName(Selection.Source));
 
