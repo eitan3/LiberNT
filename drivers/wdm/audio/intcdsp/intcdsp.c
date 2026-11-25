@@ -519,6 +519,12 @@ IntcDspEvtDeviceReleaseHardware(
     Dev->DmaBuffer = NULL;
     Dev->DmaBytes = 0;
     IntcDspFreeFirmware(Dev);
+    if (Dev->Topology)
+        ExFreePoolWithTag(Dev->Topology, INTCDSP_POOL_TAG);
+    Dev->Topology = NULL;
+    Dev->TopologyBytes = 0;
+    Dev->TopologyModel = NULL;
+    Dev->TopologyName[0] = 0;
     if (Dev->BusValid && Dev->Bus.InterfaceDereference)
         Dev->Bus.InterfaceDereference(Dev->Bus.Context);
     Dev->BusValid = FALSE;
@@ -544,7 +550,12 @@ IntcDspEvtDeviceD0Entry(
     IntcDspReadSetting(INTCDSP_SETTINGS_VALUE, &Dev->BootDsp);
     IntcDspReadIpcSettings(Dev);
     if (Dev->BootDsp)
+    {
         IntcDspBoot(Dev);
+        /* the plan's fail-safe: a booted DSP with no topology the firmware can run is powered down again and gets no endpoint */
+        if (Dev->Booted && !IntcDspTopologyLoad(Dev))
+            IntcDspPowerDown(Dev);
+    }
     return STATUS_SUCCESS;
 }
 

@@ -8,6 +8,9 @@
 #ifndef _DSP_CASES_H_
 #define _DSP_CASES_H_
 
+/* The topology selection's types (every test that includes this file compiles policy.c's decision) */
+#include <policy.h>
+
 #define DSP_U16(Value)   (unsigned char)((Value) & 0xff), (unsigned char)(((Value) >> 8) & 0xff)
 #define DSP_U32(Value)   DSP_U16((unsigned long)(Value) & 0xffff), DSP_U16(((unsigned long)(Value) >> 16) & 0xffff)
 #define DSP_U64(Value)   DSP_U32((unsigned long long)(Value) & 0xffffffffULL), DSP_U32(((unsigned long long)(Value) >> 32) & 0xffffffffULL)
@@ -509,6 +512,87 @@ static const POLICY_CASE PolicyCases[] =
     { 0x0002, 0, 1, 1, NULL, NULL, 0, 0, 0, "None" },
     { 0x0002, 0, 1, 1, NULL, NULL, 2, 0, 2, "DspOptional" },
     { 0x0002, 0, 1, 1, NULL, NULL, 3, 0, 3, "DspRequired" }
+};
+
+/* Quirk tables for the topology lookup: vendor and product compare without regard to case, a NULL string matches any value */
+static const DSP_TOPOLOGY_QUIRK DspTestTopologyQuirks[] =
+{
+    { "Vendor A", "Product A", "a.tplg" },
+    { "VENDOR B", NULL, "b.tplg" },
+    { NULL, "Product C", "c.tplg" },
+    { NULL, NULL, NULL }
+};
+
+static const DSP_TOPOLOGY_QUIRK DspEmptyTopologyQuirks[] =
+{
+    { NULL, NULL, NULL }
+};
+
+/* Topology file names of 63 and 64 characters: the first fits the driver's buffer, the second does not */
+#define TOPOLOGY_NAME_63 \
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+#define TOPOLOGY_NAME_64 \
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+/* Override, the DMI strings and the _DSD names a machine presents, and the file the selection names. Truncated sets the vendor string's truncation mark; TestTable 1 decides with DspTestTopologyQuirks instead of the driver's empty table; NameValid says whether the name is one the driver may open */
+typedef struct _TOPOLOGY_CASE
+{
+    const char* Name;
+    const char* Override;
+    const char* SysVendor;
+    const char* SysProduct;
+    int Truncated;
+    const char* SpeakerTplg;
+    const char* HpTplg;
+    const char* MicTplg;
+    int TestTable;
+    int Expected;
+    const char* ExpectedName;
+    const char* ExpectedProperty;
+    int NameValid;
+} TOPOLOGY_CASE;
+
+static const TOPOLOGY_CASE TopologyCases[] =
+{
+    { "nothing at all", NULL, NULL, NULL, 0, NULL, NULL, NULL, 0, 0, NULL, NULL, 0 },
+    { "the override alone", "loopback.tplg", NULL, NULL, 0, NULL, NULL, NULL, 0, 1, "loopback.tplg", NULL, 1 },
+    { "the override over a DMI match", "o.tplg", "Vendor A", "Product A", 0, NULL, NULL, NULL, 1, 1, "o.tplg", NULL, 1 },
+    { "the override over a _DSD name", "o.tplg", NULL, NULL, 0, "s.tplg", NULL, NULL, 0, 1, "o.tplg", NULL, 1 },
+    { "an empty override is no override", "", NULL, NULL, 0, NULL, NULL, NULL, 0, 0, NULL, NULL, 0 },
+    { "an empty override, then a DMI match", "", "vendor a", "PRODUCT A", 0, NULL, NULL, NULL, 1, 2, "a.tplg", NULL, 1 },
+    { "a DMI match alone", NULL, "Vendor A", "Product A", 0, NULL, NULL, NULL, 1, 2, "a.tplg", NULL, 1 },
+    { "a DMI match by vendor only", NULL, "vendor b", "anything", 0, NULL, NULL, NULL, 1, 2, "b.tplg", NULL, 1 },
+    { "a DMI match by product only", NULL, "anyone", "product c", 0, NULL, NULL, NULL, 1, 2, "c.tplg", NULL, 1 },
+    { "a DMI match over a _DSD name", NULL, "Vendor A", "Product A", 0, "s.tplg", "hp.tplg", "mic.tplg", 1, 2, "a.tplg", NULL, 1 },
+    { "a vendor string the table does not name", NULL, "Vendor X", "Product A", 0, "s.tplg", NULL, NULL, 1, 3, "s.tplg", "speaker-tplg", 1 },
+    { "a truncated vendor string matches nothing", NULL, "Vendor A", "Product A", 1, NULL, NULL, NULL, 1, 0, NULL, NULL, 0 },
+    { "the driver's table names no machine", NULL, "Vendor A", "Product A", 0, NULL, NULL, NULL, 0, 0, NULL, NULL, 0 },
+    { "the driver's table, then a _DSD name", NULL, "Vendor A", "Product A", 0, "speaker.tplg", NULL, NULL, 0, 3, "speaker.tplg", "speaker-tplg", 1 },
+    { "the speaker name", NULL, NULL, NULL, 0, "speaker.tplg", NULL, NULL, 0, 3, "speaker.tplg", "speaker-tplg", 1 },
+    { "the headphone name", NULL, NULL, NULL, 0, NULL, "hp.tplg", NULL, 0, 3, "hp.tplg", "hp-tplg", 1 },
+    { "the microphone name", NULL, NULL, NULL, 0, NULL, NULL, "mic.tplg", 0, 3, "mic.tplg", "mic-tplg", 1 },
+    { "all three names: the speaker one first", NULL, NULL, NULL, 0, "speaker.tplg", "hp.tplg", "mic.tplg", 0, 3, "speaker.tplg", "speaker-tplg", 1 },
+    { "an empty speaker name, then the headphone one", NULL, NULL, NULL, 0, "", "hp.tplg", "mic.tplg", 0, 3, "hp.tplg", "hp-tplg", 1 },
+    { "three empty names", NULL, NULL, NULL, 0, "", "", "", 0, 0, NULL, NULL, 0 },
+    { "an override that climbs out of the directory", "../x.tplg", NULL, NULL, 0, NULL, NULL, NULL, 0, 1, "../x.tplg", NULL, 0 },
+    { "an override with a directory", "dir\\x.tplg", NULL, NULL, 0, NULL, NULL, NULL, 0, 1, "dir\\x.tplg", NULL, 0 },
+    { "an override with a space", "my topology.tplg", NULL, NULL, 0, NULL, NULL, NULL, 0, 1, "my topology.tplg", NULL, 0 },
+    { "an override of 64 characters", TOPOLOGY_NAME_64, NULL, NULL, 0, NULL, NULL, NULL, 0, 1, TOPOLOGY_NAME_64, NULL, 0 },
+    { "an override of 63 characters", TOPOLOGY_NAME_63, NULL, NULL, 0, NULL, NULL, NULL, 0, 1, TOPOLOGY_NAME_63, NULL, 1 },
+    { "an override that names a dot", ".", NULL, NULL, 0, NULL, NULL, NULL, 0, 1, ".", NULL, 0 },
+    { "an override that names two dots", "..", NULL, NULL, 0, NULL, NULL, NULL, 0, 1, "..", NULL, 0 },
+    { "an override that names this directory's file", ".hidden.tplg", NULL, NULL, 0, NULL, NULL, NULL, 0, 1, ".hidden.tplg", NULL, 1 },
+    { "a _DSD name of 64 characters", NULL, NULL, NULL, 0, TOPOLOGY_NAME_64, NULL, NULL, 0, 3, TOPOLOGY_NAME_64, "speaker-tplg", 0 }
+};
+
+static const TOPOLOGY_CASE TopologyNameCases[] =
+{
+    { "plain", "sof-ipc4-loopback.tplg", NULL, NULL, 0, NULL, NULL, NULL, 0, 1, "sof-ipc4-loopback.tplg", NULL, 1 },
+    { "a colon", "c:x.tplg", NULL, NULL, 0, NULL, NULL, NULL, 0, 1, "c:x.tplg", NULL, 0 },
+    { "a slash", "a/b.tplg", NULL, NULL, 0, NULL, NULL, NULL, 0, 1, "a/b.tplg", NULL, 0 },
+    { "a tilde", "~.tplg", NULL, NULL, 0, NULL, NULL, NULL, 0, 1, "~.tplg", NULL, 0 },
+    { "a non-ASCII byte", "\x81.tplg", NULL, NULL, 0, NULL, NULL, NULL, 0, 1, "\x81.tplg", NULL, 0 },
+    { "a plain dot-file name", "..tplg", NULL, NULL, 0, NULL, NULL, NULL, 0, 1, "..tplg", NULL, 1 }
 };
 
 #endif

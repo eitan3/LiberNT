@@ -1,6 +1,9 @@
 #ifndef __ADSP_INTERFACE
 #define __ADSP_INTERFACE
 
+/* the appended members carry the bus's own types */
+#include "policy.h"
+
 //
 // The ADSP_BUS_INTERFACE interface GUID
 //
@@ -34,6 +37,19 @@ typedef struct _ADSP_PLATFORM_INFO {
 	BOOLEAN Dma64Bit;
 } ADSP_PLATFORM_INFO, * PADSP_PLATFORM_INFO;
 typedef _Must_inspect_result_ NTSTATUS (*PADSP_GET_PLATFORM_INFO) (_In_ PVOID _context, _Out_ PADSP_PLATFORM_INFO platformInfo);
+/* The names a topology selection reads: the machine's DMI strings (policy.h) and the controller's _DSD topology names (sof-tplg.h SOF_TPLG); each name is at most 31 characters and terminated */
+#define ADSP_TOPOLOGY_NAME_BYTES 32
+typedef struct _ADSP_TOPOLOGY_SOURCES {
+	/* the DMI strings were read, in full or truncated */
+	BOOLEAN DmiValid;
+	DSP_DMI_STRINGS Dmi;
+	/* the controller's _DSD carried the three topology names */
+	BOOLEAN DsdValid;
+	char SpeakerTplg[ADSP_TOPOLOGY_NAME_BYTES];
+	char HpTplg[ADSP_TOPOLOGY_NAME_BYTES];
+	char MicTplg[ADSP_TOPOLOGY_NAME_BYTES];
+} ADSP_TOPOLOGY_SOURCES, * PADSP_TOPOLOGY_SOURCES;
+typedef _Must_inspect_result_ NTSTATUS (*PADSP_GET_TOPOLOGY_SOURCES) (_In_ PVOID _context, _Out_ PADSP_TOPOLOGY_SOURCES sources);
 
 typedef struct _ADSP_BUS_INTERFACE
 {
@@ -71,6 +87,9 @@ typedef struct _ADSP_BUS_INTERFACE
 
     /* Appended for version 2: the controller's facts; a driver built for version 1 reads the structure through ReleaseInterruptLock */
     PADSP_GET_PLATFORM_INFO       GetPlatformInfo;
+
+    /* Appended for the DSP driver's topology selection: the machine's DMI strings and the controller's _DSD topology names; a driver built before it reads the structure through GetPlatformInfo */
+    PADSP_GET_TOPOLOGY_SOURCES     GetTopologySources;
 } ADSP_BUS_INTERFACE, * PADSP_BUS_INTERFACE;
 
 #ifndef ADSP_DECL

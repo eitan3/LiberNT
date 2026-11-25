@@ -10,6 +10,8 @@ target_include_directories(fwload_common INTERFACE
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/fwload
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/sofipc4
     ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/intcdsp
+    # the child's bus interface mirror carries the bus's policy.h types
+    ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/hdaudbus
     ${REACTOS_HOST_SOURCE_ROOT}/modules/rostests/kmtests/fwload)
 
 function(fwload_test name)

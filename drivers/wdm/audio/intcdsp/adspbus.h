@@ -11,6 +11,7 @@
 #include <ntddk.h>
 #include <wdm.h>
 #include <hdaudio.h>
+#include <policy.h>
 
 /* The version of GUID_ADSP_BUS_INTERFACE this driver asks for; a bus of version 1 answers with its shorter structure (drivers/wdm/audio/hdaudbus/adsp.h) */
 #define ADSP_BUS_INTERFACE_VERSION  2
@@ -54,6 +55,18 @@ typedef struct _ADSP_PLATFORM_INFO
     BOOLEAN Dma64Bit;
 } ADSP_PLATFORM_INFO, *PADSP_PLATFORM_INFO;
 typedef _Must_inspect_result_ NTSTATUS(*PGET_ADSP_PLATFORM_INFO)(_In_ PVOID Context, _Out_ PADSP_PLATFORM_INFO Info);
+/* Appended to version 2 for the topology selection: the machine's DMI strings (drivers/wdm/audio/hdaudbus/policy.h DSP_DMI_STRINGS, which this driver compiles for the decision itself) and the controller's _DSD topology names (sof-tplg.h SOF_TPLG), each at most 31 characters and terminated */
+#define ADSP_TOPOLOGY_NAME_BYTES  32
+typedef struct _ADSP_TOPOLOGY_SOURCES
+{
+    BOOLEAN DmiValid;
+    DSP_DMI_STRINGS Dmi;
+    BOOLEAN DsdValid;
+    CHAR SpeakerTplg[ADSP_TOPOLOGY_NAME_BYTES];
+    CHAR HpTplg[ADSP_TOPOLOGY_NAME_BYTES];
+    CHAR MicTplg[ADSP_TOPOLOGY_NAME_BYTES];
+} ADSP_TOPOLOGY_SOURCES, *PADSP_TOPOLOGY_SOURCES;
+typedef _Must_inspect_result_ NTSTATUS(*PGET_ADSP_TOPOLOGY_SOURCES)(_In_ PVOID Context, _Out_ PADSP_TOPOLOGY_SOURCES Sources);
 
 typedef struct _ADSP_BUS_INTERFACE
 {
@@ -79,6 +92,7 @@ typedef struct _ADSP_BUS_INTERFACE
     PADSP_INTERRUPT_LOCK AcquireInterruptLock;
     PADSP_INTERRUPT_LOCK ReleaseInterruptLock;
     PGET_ADSP_PLATFORM_INFO GetPlatformInfo;
+    PGET_ADSP_TOPOLOGY_SOURCES GetTopologySources;
 } ADSP_BUS_INTERFACE, *PADSP_BUS_INTERFACE;
 
 /* Whether the interface a query returned binds this driver: the bus reported at least the size of version 1 and none of its members is missing */
@@ -90,5 +104,11 @@ IntcDspBusComplete(
 UINT64
 IntcDspDmaHighBound(
     _In_ const ADSP_BUS_INTERFACE* Bus);
+
+/* The names a topology selection reads, from a bus that carries the appended member; FALSE for a bus that does not, which leaves the names empty */
+BOOLEAN
+IntcDspTopologySources(
+    _In_ const ADSP_BUS_INTERFACE* Bus,
+    _Out_ PADSP_TOPOLOGY_SOURCES Sources);
 
 #endif

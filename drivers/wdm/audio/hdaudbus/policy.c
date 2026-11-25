@@ -14,6 +14,12 @@ static const DSP_DMI_QUIRK DspDmiQuirks[] =
     { NULL, NULL, DspAudioPathNone }
 };
 
+/* TODO: name machines here once a LiberNT run shows that their _DSD names no topology the image carries; the table ends with a row of two NULL strings */
+static const DSP_TOPOLOGY_QUIRK DspTopologyQuirks[] =
+{
+    { NULL, NULL, NULL }
+};
+
 static
 BOOLEAN
 DspTextEqual(
@@ -171,4 +177,117 @@ DmiStatusName(
     if ((UINT32)Status >= sizeof(Names) / sizeof(Names[0]))
         return "unknown";
     return Names[Status];
+}
+
+static
+BOOLEAN
+DspTopologyNamePresent(
+    _In_opt_z_ const char* Name)
+{
+    return Name != NULL && Name[0] != 0;
+}
+
+const DSP_TOPOLOGY_QUIRK*
+DspTopologyDmiLookup(
+    const DSP_DMI_STRINGS* Strings,
+    const DSP_TOPOLOGY_QUIRK* Table)
+{
+    const DSP_TOPOLOGY_QUIRK* Quirk;
+
+    if (Strings == NULL)
+        return NULL;
+    for (Quirk = Table; Quirk->SysVendor != NULL || Quirk->SysProduct != NULL; Quirk++)
+    {
+        if ((Quirk->SysVendor == NULL || DspDmiFieldMatches(Strings, DSP_DMI_SYS_VENDOR, Quirk->SysVendor)) &&
+            (Quirk->SysProduct == NULL || DspDmiFieldMatches(Strings, DSP_DMI_SYS_PRODUCT, Quirk->SysProduct)))
+        {
+            return Quirk;
+        }
+    }
+    return NULL;
+}
+
+VOID
+DspTopologySelectWith(
+    const DSP_TOPOLOGY_EVIDENCE* Evidence,
+    const DSP_TOPOLOGY_QUIRK* Table,
+    DSP_TOPOLOGY_SELECTION* Selection)
+{
+    const DSP_TOPOLOGY_QUIRK* Quirk;
+    static const char* const Properties[3] = { "speaker-tplg", "hp-tplg", "mic-tplg" };
+    const char* Names[3];
+    UINT32 Index;
+
+    Selection->Source = DspTopologySourceNone;
+    Selection->Name = NULL;
+    Selection->Property = NULL;
+    /* the override is used as it reads, whether or not the file exists: a missing file is the driver's error line, never a fall-through */
+    if (DspTopologyNamePresent(Evidence->Override))
+    {
+        Selection->Source = DspTopologySourceOverride;
+        Selection->Name = Evidence->Override;
+        return;
+    }
+    Quirk = DspTopologyDmiLookup(Evidence->Dmi, Table);
+    if (Quirk != NULL && DspTopologyNamePresent(Quirk->Topology))
+    {
+        Selection->Source = DspTopologySourceQuirk;
+        Selection->Name = Quirk->Topology;
+        return;
+    }
+    /* the driver loads one topology file: of several _DSD names it takes the first, speaker before headphone before microphone */
+    Names[0] = Evidence->SpeakerTplg;
+    Names[1] = Evidence->HpTplg;
+    Names[2] = Evidence->MicTplg;
+    for (Index = 0; Index < 3; Index++)
+    {
+        if (!DspTopologyNamePresent(Names[Index]))
+            continue;
+        Selection->Source = DspTopologySourceDsd;
+        Selection->Name = Names[Index];
+        Selection->Property = Properties[Index];
+        return;
+    }
+}
+
+VOID
+DspTopologySelect(
+    const DSP_TOPOLOGY_EVIDENCE* Evidence,
+    DSP_TOPOLOGY_SELECTION* Selection)
+{
+    DspTopologySelectWith(Evidence, Evidence->TestTable != NULL ? Evidence->TestTable : DspTopologyQuirks, Selection);
+}
+
+BOOLEAN
+DspTopologyNameValid(
+    const char* Name)
+{
+    SIZE_T Index;
+
+    if (!DspTopologyNamePresent(Name))
+        return FALSE;
+    for (Index = 0; Name[Index] != 0; Index++)
+    {
+        if (Index + 1 >= DSP_TOPOLOGY_NAME_BYTES)
+            return FALSE;
+        if (!((Name[Index] >= 'A' && Name[Index] <= 'Z') || (Name[Index] >= 'a' && Name[Index] <= 'z') ||
+              (Name[Index] >= '0' && Name[Index] <= '9') || Name[Index] == '.' || Name[Index] == '_' || Name[Index] == '-'))
+            return FALSE;
+    }
+    /* "." and ".." name directories */
+    return Name[0] != '.' || (Name[1] != 0 && !(Name[1] == '.' && Name[2] == 0));
+}
+
+const char*
+DspTopologySourceName(
+    DSP_TOPOLOGY_SOURCE Source)
+{
+    static const char* const Names[] =
+    {
+        "none", "the registry override", "the DMI quirk table", "the _DSD name"
+    };
+
+    if ((UINT32)Source >= sizeof(Names) / sizeof(Names[0]))
+        return "unknown";
+    return Names[Source];
 }

@@ -227,6 +227,8 @@ Fdo_ReportAudioPath(
 
     RtlZeroMemory(&dmi, sizeof(dmi));
     dmiStatus = Fdo_ReadDmi(&dmi);
+    fdoCtx->Dmi = dmi;
+    fdoCtx->DmiStatus = dmiStatus;
 
     RtlZeroMemory(&evidence, sizeof(evidence));
     evidence.CodecMask = codecMask;

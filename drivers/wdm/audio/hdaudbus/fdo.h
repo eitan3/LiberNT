@@ -165,6 +165,9 @@ typedef struct _FDO_CONTEXT
     NHLT_PARSE_STATUS nhltStatus;
     PVOID sofTplg;
     UINT64 sofTplgSz;
+    /* the machine's DMI strings as the audio path read them, for the DSP child's topology selection */
+    DSP_DMI_STRINGS Dmi;
+    DSP_DMI_STATUS DmiStatus;
     DSP_AUDIO_PATH AudioPath;
 
     //bit flags of detected codecs

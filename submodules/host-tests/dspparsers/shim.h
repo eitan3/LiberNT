@@ -39,6 +39,7 @@ typedef void VOID, *PVOID;
 #define _Out_writes_opt_(x)
 #define _In_opt_
 #define _In_z_
+#define _In_opt_z_
 #define _Inout_
 #define _Out_opt_
 

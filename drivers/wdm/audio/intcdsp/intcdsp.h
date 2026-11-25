@@ -16,6 +16,7 @@
 #include <fwload.h>
 #include <sofipc.h>
 #include <nhlt_parse.h>
+#include <ipc4model.h>
 
 #define INTCDSP_POOL_TAG 'PcDI'
 
@@ -30,6 +31,8 @@
 #define INTCDSP_SETTINGS_SELFTEST L"SelfTest"
 #define INTCDSP_SETTINGS_USEINTERRUPTS L"UseInterrupts"
 #define INTCDSP_SETTINGS_IPCTIMEOUTMS  L"IpcTimeoutMs"
+/* The topology file name, REG_SZ: the first source of the topology selection */
+#define INTCDSP_SETTINGS_TOPOLOGY L"Topology"
 /* The budget of every IPC message class when the value is absent, zero or past a minute: the plan's default */
 #define INTCDSP_IPC_TIMEOUT_MS_DEFAULT  500
 #define INTCDSP_IPC_TIMEOUT_MS_MAX      60000
@@ -99,6 +102,11 @@ typedef struct _INTCDSP_DEVICE
     BOOLEAN StreamPrepared;
     BOOLEAN Booted;
     BOOLEAN IdleHeld;
+    /* the topology the device's boot runs: its model in one nonpaged buffer, kept for the device and rebuilt at the next boot only when none is resident (R6) */
+    PUCHAR Topology;
+    SIZE_T TopologyBytes;
+    PSOFTPLG_IPC4_MODEL TopologyModel;
+    CHAR TopologyName[DSP_TOPOLOGY_NAME_BYTES];
     FWLOAD_STATUS LastStatus;
     BOOLEAN InterruptArmed;
     BOOLEAN InterruptRegistered;
@@ -157,6 +165,19 @@ IntcDspLoadFirmware(
 
 VOID
 IntcDspFreeFirmware(
+    _Inout_ PINTCDSP_DEVICE Dev);
+
+/* A whole file of at most MaxBytes into paged pool */
+NTSTATUS
+IntcDspReadFile(
+    _In_ PCWSTR Path,
+    _Out_ PUCHAR* Data,
+    _Out_ PSIZE_T Bytes,
+    ULONGLONG MaxBytes);
+
+/* The topology of a booted device, selected, read and kept as its model; FALSE powers the DSP down with no endpoint */
+BOOLEAN
+IntcDspTopologyLoad(
     _Inout_ PINTCDSP_DEVICE Dev);
 
 VOID

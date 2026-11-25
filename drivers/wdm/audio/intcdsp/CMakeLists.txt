@@ -10,11 +10,15 @@ list(APPEND SOURCE
     adspbus.c
     hwops.c
     ipclock.c
-    fwfile.c)
+    fwfile.c
+    topology.c
+    # the topology file selection decides through the bus's policy, so the decision compiles into this driver too
+    ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus/policy.c)
 
 add_library(intcdsp MODULE ${SOURCE} intcdsp.rc)
 set_module_type(intcdsp kmdfdriver)
-target_link_libraries(intcdsp libcntpr ${PSEH_LIB} fwload sofipc nhlt)
+target_include_directories(intcdsp PRIVATE ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus)
+target_link_libraries(intcdsp libcntpr ${PSEH_LIB} fwload sofipc nhlt softplg)
 add_importlibs(intcdsp wdfldr ntoskrnl hal)
 add_cd_file(TARGET intcdsp DESTINATION reactos/system32/drivers FOR all)
 add_driver_inf(intcdsp intcdsp.inf)

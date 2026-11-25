@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT host-native tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     Runs the NHLT parser and the audio path decision of hdaudbus over the shared case tables
+ * PURPOSE:     Runs the NHLT parser, the audio path decision and the topology file selection of hdaudbus over the shared case tables
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -382,6 +382,133 @@ check_dmi_lookup(void)
 }
 
 static
+int
+TextIgnoreCaseEqual(
+    const char* Left,
+    const char* Right)
+{
+    unsigned int Index = 0;
+    int L, R;
+
+    do
+    {
+        L = (unsigned char)Left[Index];
+        R = (unsigned char)Right[Index];
+        if (L >= 'A' && L <= 'Z')
+            L += 'a' - 'A';
+        if (R >= 'A' && R <= 'Z')
+            R += 'a' - 'A';
+        Index++;
+    } while (L != 0 && L == R);
+    return L == R;
+}
+
+/* The row of the test table a case's strings match, by the table's own rules: -1 for none */
+static
+int
+TestTableQuirk(
+    const TOPOLOGY_CASE* Case)
+{
+    if (Case->Truncated)
+        return -1;
+    if (Case->SysVendor != NULL && TextIgnoreCaseEqual(Case->SysVendor, "vendor a") &&
+        Case->SysProduct != NULL && TextIgnoreCaseEqual(Case->SysProduct, "product a"))
+        return 0;
+    if (Case->SysVendor != NULL && TextIgnoreCaseEqual(Case->SysVendor, "vendor b"))
+        return 1;
+    if (Case->SysProduct != NULL && TextIgnoreCaseEqual(Case->SysProduct, "product c"))
+        return 2;
+    return -1;
+}
+
+static
+void
+check_topology(const TOPOLOGY_CASE* Case)
+{
+    DSP_TOPOLOGY_EVIDENCE Evidence;
+    DSP_TOPOLOGY_SELECTION Selection;
+    DSP_DMI_STRINGS Dmi;
+    const DSP_TOPOLOGY_QUIRK* Match;
+    int ExpectedQuirk;
+    unsigned int FailuresBefore = Failures;
+
+    memset(&Dmi, 0, sizeof(Dmi));
+    if (Case->SysVendor != NULL)
+    {
+        strcpy(Dmi.Strings[DSP_DMI_SYS_VENDOR], Case->SysVendor);
+        Dmi.Present |= 1UL << DSP_DMI_SYS_VENDOR;
+    }
+    if (Case->SysProduct != NULL)
+    {
+        strcpy(Dmi.Strings[DSP_DMI_SYS_PRODUCT], Case->SysProduct);
+        Dmi.Present |= 1UL << DSP_DMI_SYS_PRODUCT;
+    }
+    Dmi.Truncated = Case->Truncated ? 0xFF : 0;
+
+    memset(&Evidence, 0, sizeof(Evidence));
+    Evidence.Override = Case->Override;
+    Evidence.Dmi = (Case->SysVendor != NULL || Case->SysProduct != NULL) ? &Dmi : NULL;
+    Evidence.SpeakerTplg = Case->SpeakerTplg;
+    Evidence.HpTplg = Case->HpTplg;
+    Evidence.MicTplg = Case->MicTplg;
+    Evidence.TestTable = Case->TestTable ? DspTestTopologyQuirks : NULL;
+
+    /* an unselected name stays so whatever was in the selection before */
+    Selection.Source = DspTopologySourceOverride;
+    Selection.Name = "stale";
+    Selection.Property = "stale";
+    DspTopologySelect(&Evidence, &Selection);
+    CHECK_EQ(Selection.Source, Case->Expected);
+    CHECK_EQ(Selection.Name != NULL ? strcmp(Selection.Name, Case->ExpectedName != NULL ? Case->ExpectedName : "") : -1,
+        Case->ExpectedName != NULL ? 0 : -1);
+    CHECK_EQ(Selection.Property != NULL ? strcmp(Selection.Property, Case->ExpectedProperty != NULL ? Case->ExpectedProperty : "") : -1,
+        Case->ExpectedProperty != NULL ? 0 : -1);
+    if (Case->ExpectedName != NULL)
+    {
+        /* the name is the evidence's own text, used as it reads */
+        if (Case->Expected == 1)
+            CHECK(Selection.Name == Case->Override);
+        if (Case->Expected == 3)
+            CHECK(Selection.Name == Case->SpeakerTplg || Selection.Name == Case->HpTplg || Selection.Name == Case->MicTplg);
+        CHECK_EQ(DspTopologyNameValid(Selection.Name), Case->NameValid);
+    }
+    /* the empty table matches no machine; the test table names three machines, the second by vendor only and the third by product only */
+    Match = DspTopologyDmiLookup(Evidence.Dmi, DspEmptyTopologyQuirks);
+    CHECK(Match == NULL);
+    ExpectedQuirk = TestTableQuirk(Case);
+    Match = DspTopologyDmiLookup(Evidence.Dmi, DspTestTopologyQuirks);
+    CHECK_EQ(Match != NULL ? Match - DspTestTopologyQuirks : -1, ExpectedQuirk);
+    if (Failures != FailuresBefore)
+        fprintf(stderr, "  in topology case \"%s\"\n", Case->Name);
+}
+
+static
+void
+check_topology_names(void)
+{
+    unsigned int Index;
+    unsigned int FailuresBefore;
+
+    for (Index = 0; Index < sizeof(TopologyNameCases) / sizeof(TopologyNameCases[0]); Index++)
+    {
+        FailuresBefore = Failures;
+        check_topology(&TopologyNameCases[Index]);
+        CHECK_EQ(DspTopologyNameValid(TopologyNameCases[Index].Override), TopologyNameCases[Index].NameValid);
+        if (Failures != FailuresBefore)
+            fprintf(stderr, "  in topology name case \"%s\"\n", TopologyNameCases[Index].Name);
+    }
+    CHECK(!DspTopologyNameValid(NULL));
+    CHECK(!DspTopologyNameValid(""));
+    CHECK(DspTopologyNameValid("a"));
+    CHECK(DspTopologyNameValid("A0._-"));
+    CHECK_STR(DspTopologySourceName(DspTopologySourceNone), "none");
+    CHECK_STR(DspTopologySourceName(DspTopologySourceOverride), "the registry override");
+    CHECK_STR(DspTopologySourceName(DspTopologySourceQuirk), "the DMI quirk table");
+    CHECK_STR(DspTopologySourceName(DspTopologySourceDsd), "the _DSD name");
+    CHECK_STR(DspTopologySourceName((DSP_TOPOLOGY_SOURCE)4), "unknown");
+}
+
+static
 UINT32
 RandomStep(
     UINT32* State)
@@ -594,6 +721,10 @@ int main(void)
 
     for (Index = 0; Index < sizeof(PolicyCases) / sizeof(PolicyCases[0]); Index++)
         check_policy(&PolicyCases[Index]);
+
+    for (Index = 0; Index < sizeof(TopologyCases) / sizeof(TopologyCases[0]); Index++)
+        check_topology(&TopologyCases[Index]);
+    check_topology_names();
 
     check_dmi_tables();
     check_dmi_lookup();

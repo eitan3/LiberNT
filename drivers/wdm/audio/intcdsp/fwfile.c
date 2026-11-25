@@ -1,18 +1,19 @@
 /*
  * PROJECT:     LiberNT Intel Smart Sound DSP driver
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     Reads the Sound Open Firmware image for the DSP from the driver's firmware directory once, at start, and keeps it resident for the device through the fwload image holder
+ * PURPOSE:     Reads a file of the driver's directories into pool for the device: the Sound Open Firmware image, once at start and resident for the device through the fwload image holder, and the topology file
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
 #include "intcdsp.h"
 
-static
+/* A whole file of at most MaxBytes into paged pool; the firmware image and the topology file both come through here */
 NTSTATUS
 IntcDspReadFile(
     _In_ PCWSTR Path,
     _Out_ PUCHAR* Data,
-    _Out_ PSIZE_T Bytes)
+    _Out_ PSIZE_T Bytes,
+    ULONGLONG MaxBytes)
 {
     FILE_STANDARD_INFORMATION Info;
     OBJECT_ATTRIBUTES Attributes;
@@ -33,7 +34,7 @@ IntcDspReadFile(
 
     Status = ZwQueryInformationFile(Handle, &IoStatus, &Info, sizeof(Info), FileStandardInformation);
     if (!NT_SUCCESS(Status) || Info.EndOfFile.QuadPart <= 0 ||
-        (ULONGLONG)Info.EndOfFile.QuadPart > INTCDSP_FIRMWARE_MAX_BYTES)
+        (ULONGLONG)Info.EndOfFile.QuadPart > MaxBytes)
     {
         ZwClose(Handle);
         return NT_SUCCESS(Status) ? STATUS_INVALID_IMAGE_FORMAT : Status;
@@ -79,7 +80,7 @@ IntcDspReadImage(
     PINTCDSP_DEVICE Dev = Context;
 
     RtlInitUnicodeString(&Path, INTCDSP_FIRMWARE_PATH);
-    Status = IntcDspReadFile(INTCDSP_FIRMWARE_PATH, &Buffer, &Count);
+    Status = IntcDspReadFile(INTCDSP_FIRMWARE_PATH, &Buffer, &Count, INTCDSP_FIRMWARE_MAX_BYTES);
     Dev->FirmwareReadStatus = Status;
     if (!NT_SUCCESS(Status))
     {

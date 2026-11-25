@@ -71,6 +71,51 @@ typedef struct _DSP_AUDIO_PATH_EVIDENCE
     DSP_AUDIO_PATH Override;
 } DSP_AUDIO_PATH_EVIDENCE, *PDSP_AUDIO_PATH_EVIDENCE;
 
+/* A machine whose topology file is named here instead of by the controller's ACPI _DSD; a NULL string matches any value. The driver's table is empty until a LiberNT run shows a machine that needs a row */
+typedef struct _DSP_TOPOLOGY_QUIRK
+{
+    const char* SysVendor;
+    const char* SysProduct;
+    const char* Topology;
+} DSP_TOPOLOGY_QUIRK, *PDSP_TOPOLOGY_QUIRK;
+
+/* Where the topology file name comes from, in the order the DSP driver asks */
+typedef enum _DSP_TOPOLOGY_SOURCE
+{
+    DspTopologySourceNone = 0,
+    /* the Topology value under the driver's Settings key */
+    DspTopologySourceOverride,
+    /* the DMI quirk table */
+    DspTopologySourceQuirk,
+    /* a topology name in the controller's _DSD */
+    DspTopologySourceDsd
+} DSP_TOPOLOGY_SOURCE;
+
+#define DSP_TOPOLOGY_NAME_BYTES    64
+
+typedef struct _DSP_TOPOLOGY_EVIDENCE
+{
+    /* the registry value as it reads, NULL when it is absent or empty */
+    const char* Override;
+    /* the machine's strings, NULL when they could not be read */
+    const DSP_DMI_STRINGS* Dmi;
+    /* the three names the controller's _DSD carries, NULL or empty when it carries none */
+    const char* SpeakerTplg;
+    const char* HpTplg;
+    const char* MicTplg;
+    /* a test's quirk table instead of the driver's */
+    const DSP_TOPOLOGY_QUIRK* TestTable;
+} DSP_TOPOLOGY_EVIDENCE, *PDSP_TOPOLOGY_EVIDENCE;
+
+typedef struct _DSP_TOPOLOGY_SELECTION
+{
+    DSP_TOPOLOGY_SOURCE Source;
+    /* the file name as it was given, NULL when none was selected */
+    const char* Name;
+    /* the _DSD property that named it, NULL for every other source */
+    const char* Property;
+} DSP_TOPOLOGY_SELECTION, *PDSP_TOPOLOGY_SELECTION;
+
 DSP_DMI_STATUS
 DmiParseRawSMBiosTables(
     _In_reads_bytes_opt_(Size) const UINT8* Raw,
@@ -99,6 +144,30 @@ DspAudioPathDecideWith(
     _In_ const DSP_DMI_QUIRK* Table);
 const char* DspAudioPathName(DSP_AUDIO_PATH Path);
 const char* DmiStatusName(DSP_DMI_STATUS Status);
+
+const DSP_TOPOLOGY_QUIRK*
+DspTopologyDmiLookup(
+    _In_opt_ const DSP_DMI_STRINGS* Strings,
+    _In_ const DSP_TOPOLOGY_QUIRK* Table);
+
+/* The topology file the evidence names: the override, then the machine's quirk, then the first _DSD name in the order speaker, headphone, microphone, then none */
+VOID
+DspTopologySelect(
+    _In_ const DSP_TOPOLOGY_EVIDENCE* Evidence,
+    _Out_ DSP_TOPOLOGY_SELECTION* Selection);
+
+VOID
+DspTopologySelectWith(
+    _In_ const DSP_TOPOLOGY_EVIDENCE* Evidence,
+    _In_ const DSP_TOPOLOGY_QUIRK* Table,
+    _Out_ DSP_TOPOLOGY_SELECTION* Selection);
+
+/* Whether a selected name is a plain file name the driver may open under its topology directory: letters, digits, dot, underline and dash only */
+BOOLEAN
+DspTopologyNameValid(
+    _In_opt_z_ const char* Name);
+
+const char* DspTopologySourceName(DSP_TOPOLOGY_SOURCE Source);
 
 #ifdef __cplusplus
 }

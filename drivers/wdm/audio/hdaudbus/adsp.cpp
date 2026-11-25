@@ -1,6 +1,7 @@
 #include "driver.h"
 #define ADSP_DECL 1
 #include "adsp.h"
+#include "sof-tplg.h"
 
 NTSTATUS ADSPGetResources(_In_ PVOID _context, _PCI_BAR* hdaBar, _PCI_BAR* adspBar, PVOID *ppcap, PNHLT_INFO nhltInfo, BUS_INTERFACE_STANDARD* pciConfig) {
 	if (!_context)
@@ -390,6 +391,43 @@ NTSTATUS ADSPGetPlatformInfo(_In_ PVOID _context, _Out_ PADSP_PLATFORM_INFO plat
 	return STATUS_SUCCESS;
 }
 
+/* The machine's DMI strings and the controller's _DSD topology names; a name the firmware fills to its last byte gets its terminator here */
+static void copyTopologyName(char* destination, const char* source) {
+	size_t length = 0;
+
+	RtlZeroMemory(destination, ADSP_TOPOLOGY_NAME_BYTES);
+	while (length < ADSP_TOPOLOGY_NAME_BYTES - 1 && source[length] != 0) {
+		destination[length] = source[length];
+		length++;
+	}
+}
+
+NTSTATUS ADSPGetTopologySources(_In_ PVOID _context, _Out_ PADSP_TOPOLOGY_SOURCES sources) {
+	if (!_context)
+		return STATUS_NO_SUCH_DEVICE;
+
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+	if (!devData->FdoContext) {
+		return STATUS_NO_SUCH_DEVICE;
+	}
+
+	RtlZeroMemory(sources, sizeof(*sources));
+	if (devData->FdoContext->DmiStatus == DmiOk || devData->FdoContext->DmiStatus == DmiTruncated) {
+		sources->DmiValid = TRUE;
+		sources->Dmi = devData->FdoContext->Dmi;
+	}
+	if (devData->FdoContext->sofTplg) {
+		const SOF_TPLG* names = (const SOF_TPLG*)devData->FdoContext->sofTplg;
+		if (devData->FdoContext->sofTplgSz >= sizeof(*names) && names->magic == SOFTPLG_MAGIC) {
+			sources->DsdValid = TRUE;
+			copyTopologyName(sources->SpeakerTplg, names->speaker_tplg);
+			copyTopologyName(sources->HpTplg, names->hp_tplg);
+			copyTopologyName(sources->MicTplg, names->dmic_tplg);
+		}
+	}
+	return STATUS_SUCCESS;
+}
+
 ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
 	ADSP_BUS_INTERFACE busInterface;
 	RtlZeroMemory(&busInterface, sizeof(ADSP_BUS_INTERFACE));
@@ -421,6 +459,7 @@ ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
 	busInterface.AcquireInterruptLock = ADSPAcquireInterruptLock;
 	busInterface.ReleaseInterruptLock = ADSPReleaseInterruptLock;
 	busInterface.GetPlatformInfo = ADSPGetPlatformInfo;
+	busInterface.GetTopologySources = ADSPGetTopologySources;
 
 	return busInterface;
 }
