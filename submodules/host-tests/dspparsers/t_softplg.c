@@ -667,7 +667,7 @@ check_short_and_garbage_inputs(void)
     }
 }
 
-/* Real topologies from sof-bin 2026.09.2 (package sof-firmware, LICENCE.Intel in the fixtures directory); the facts come from an independent Python walk of the same files */
+/* Real topologies from sof-bin 2026.09.2 (package sof-firmware, LICENCE.Intel in the fixtures directory), the loopback file this project builds from Sound Open Firmware's topology2 classes (drivers/wdm/audio/intcdsp/firmware/loopback, the same licence for uniformity); the facts come from an independent walk of the same files */
 typedef struct _FIXTURE_FACTS
 {
     const char* Name;
@@ -697,7 +697,10 @@ static const FIXTURE_FACTS Fixtures[] =
         "", "", "", "", "" },
     { "sof-hda-generic-ace1-2ch.tplg", 67203, 28, 60, 16, 23, 6, 6, 6, 2480, 8,
         { 8, 1, 5, 1, 5, 6, 5, 9, 5, 4, 5, 6, 5, 2, 5, 2, 5, 2, 5, 2, 5, 1, 5, 4, 5, 5, 5, 4, 5, 2, 5, 2, 5, 2, 5, 2, 5, 2, 5, 2, 7, 6, 10, 6, 4, 14, 4, 1, 4, 4, 4, 1, 4, 2, 4, 1, 0, 0 },
-        "iDisp3 Tx", "HDA Analog", "Analog", "dai-copier.HDA.Analog.playback", "drc.2.1" }
+        "iDisp3 Tx", "HDA Analog", "Analog", "dai-copier.HDA.Analog.playback", "drc.2.1" },
+    { "sof-ipc4-loopback.tplg", 4286, 4, 4, 2, 2, 1, 0, 0, 149, 1,
+        { 8, 1, 5, 4, 7, 1, 4, 2, 0, 0 },
+        "host-copier.0.playback", "Loopback", "", "gain.1.1", "host-copier.0.playback" }
 };
 
 static unsigned char Fixture[131072];
@@ -776,7 +779,7 @@ check_fixtures(void)
                 if (Facts->Sequence[Index * 2] == SoftplgTypeGraph && GraphBlock == 0)
                     GraphBlock = Index;
             }
-            CHECK(WidgetBlock != 0 && PcmBlock != 0 && LinkBlock != 0 && GraphBlock != 0);
+            CHECK(WidgetBlock != 0 && PcmBlock != 0 && GraphBlock != 0 && (Facts->Links != 0) == (LinkBlock != 0));
             CHECK_EQ(SoftplgReadBlock(Fixture, Size, WidgetBlock, &Block), SoftplgOk);
             CHECK_EQ(Block.Type, SoftplgTypeWidget);
             CHECK_EQ(SoftplgReadWidget(Fixture, Size, &Block, 0, &Widget), SoftplgOk);
@@ -785,10 +788,13 @@ check_fixtures(void)
             CHECK_EQ(Block.Type, SoftplgTypePcm);
             CHECK_EQ(SoftplgReadPcm(Fixture, Size, &Block, 0, &Pcm), SoftplgOk);
             CHECK_STR(Pcm.PcmName, Facts->Pcm0);
-            CHECK_EQ(SoftplgReadBlock(Fixture, Size, LinkBlock, &Block), SoftplgOk);
-            CHECK_EQ(Block.Type, SoftplgTypeBackendLink);
-            CHECK_EQ(SoftplgReadLink(Fixture, Size, &Block, 0, &Link), SoftplgOk);
-            CHECK_STR(Link.Name, Facts->Link0);
+            if (Facts->Links != 0)
+            {
+                CHECK_EQ(SoftplgReadBlock(Fixture, Size, LinkBlock, &Block), SoftplgOk);
+                CHECK_EQ(Block.Type, SoftplgTypeBackendLink);
+                CHECK_EQ(SoftplgReadLink(Fixture, Size, &Block, 0, &Link), SoftplgOk);
+                CHECK_STR(Link.Name, Facts->Link0);
+            }
             CHECK_EQ(SoftplgReadBlock(Fixture, Size, GraphBlock, &Block), SoftplgOk);
             CHECK_EQ(Block.Type, SoftplgTypeGraph);
             CHECK_EQ(SoftplgReadGraphEdge(Fixture, Size, &Block, 0, &Edge), SoftplgOk);
@@ -1186,6 +1192,257 @@ Out:
     free(Topology);
 }
 
+/* Topology tokens the loopback case reads: the numbers of the plan's Appendix B, which come from Linux include/uapi/sound/sof/tokens.h studied under LICENSING.md rule 7 */
+#define LOOP_NODE_TYPE            1980
+#define LOOP_INPUT_FORMATS        415
+#define LOOP_OUTPUT_FORMATS       416
+#define LOOP_IN_RATE              1900
+#define LOOP_IN_DEPTH             1901
+#define LOOP_IN_VALID             1902
+#define LOOP_IN_IBS               1970
+#define LOOP_OUT_RATE              1930
+#define LOOP_OUT_DEPTH            1931
+#define LOOP_OUT_VALID            1932
+#define LOOP_OUT_OBS              1971
+
+/* One audio format as the copier's tuples give it: container depth, valid depth and the buffer size in bytes */
+typedef struct _LOOP_FORMAT
+{
+    UINT32 Depth;
+    UINT32 Valid;
+    UINT32 Buffer;
+} LOOP_FORMAT;
+
+/*
+ * The loopback topology this project builds from Sound Open Firmware's topology2 classes
+ * (drivers/wdm/audio/intcdsp/firmware/loopback): one pipeline, the host playback copier into a gain
+ * into the host capture copier, and a duplex PCM. Both copiers and the gain carry their module's UUID as
+ * sof-arl-s.ri's module table knows it (copier at id 5, gain at id 7); the scheduler carries none. The
+ * copiers' gateway types are host output 0 and host input 1. The playback copier offers three input
+ * formats (16, 24-in-32 and 32 bits at 48 kHz in two channels) and one output format, the capture copier
+ * one input and three output formats, as the plan's §4.2 asks. The facts come from the build's own dump
+ * of the file and an independent walk of it.
+ */
+static
+void
+check_loopback_fixture(void)
+{
+    static const LOOP_FORMAT PlaybackInputs[3] = { { 16, 16, 192 }, { 32, 24, 384 }, { 32, 32, 384 } };
+    static const LOOP_FORMAT CaptureOutputs[3] = { { 32, 24, 384 }, { 32, 32, 384 }, { 16, 16, 192 } };
+    static const LOOP_FORMAT ThirtyTwo = { 32, 32, 384 };
+    static const char* const LoopEdges[][2] =
+    {
+        { "gain.1.1", "host-copier.0.playback" }, { "host-copier.0.capture", "gain.1.1" }
+    };
+    SOF_RI_IMAGE Image;
+    PSOF_RI_MODULE Modules;
+    SOFTPLG_SUMMARY Summary;
+    SOFTPLG_BLOCK Block;
+    SOFTPLG_WIDGET Widget;
+    SOFTPLG_CONTROL Control;
+    SOFTPLG_GRAPH_EDGE Edge;
+    SOFTPLG_PCM Pcm;
+    SOFTPLG_STREAM_CAPS Caps;
+    SOFTPLG_TUPLE_ITER Iterator;
+    SOFTPLG_TUPLE Tuple;
+    UINT8 *Topology, *Firmware, Uuid[SOFTPLG_UUID_BYTES];
+    SIZE_T TopologyBytes, FirmwareBytes, B, N, K, E, Edges = 0, Carrying = 0, Plain = 0;
+    SIZE_T Found[sizeof(LoopEdges) / sizeof(LoopEdges[0])];
+    UINT32 NodeType = 0xFFFFFFFF, InputFormats = 0, OutputFormats = 0, InputSeen = 0, OutputSeen = 0, Rates = 0;
+    LOOP_FORMAT Inputs[3], Outputs[3];
+
+    memset(Found, 0, sizeof(Found));
+    Topology = LoadExact(SOFTPLG_FIXTURE_DIR "/sof-ipc4-loopback.tplg", &TopologyBytes);
+    Firmware = LoadExact(SOFTPLG_FW_FIXTURE_DIR "/sof-arl-s.ri", &FirmwareBytes);
+    Modules = (PSOF_RI_MODULE)calloc(64, sizeof(SOF_RI_MODULE));
+    CHECK(Modules != NULL);
+    if (Topology == NULL || Firmware == NULL || Modules == NULL)
+        goto Out;
+    CHECK_EQ(TopologyBytes, 4286);
+    CHECK_EQ(SofRiParse(Firmware, FirmwareBytes, Modules, 64, &Image), FwloadOk);
+
+    memset(&Summary, 0, sizeof(Summary));
+    CHECK_EQ(SoftplgWalk(Topology, TopologyBytes, NULL, NULL, &Summary), SoftplgOk);
+    CHECK_EQ(Summary.Abi, 5);
+    CHECK_EQ(Summary.BlockCount, 4);
+    CHECK_EQ(Summary.Counts[SoftplgTypeManifest], 1);
+    CHECK_EQ(Summary.Counts[SoftplgTypeWidget], 1);
+    CHECK_EQ(Summary.Counts[SoftplgTypeMixer], 0);
+    CHECK_EQ(Summary.Counts[SoftplgTypeGraph], 1);
+    CHECK_EQ(Summary.Counts[SoftplgTypePcm], 1);
+    CHECK_EQ(Summary.Counts[SoftplgTypeBackendLink], 0);
+    CHECK_EQ(Summary.Counts[SoftplgTypeDai], 0);
+
+    for (B = 0; B < Summary.BlockCount; B++)
+    {
+        CHECK_EQ(SoftplgReadBlock(Topology, TopologyBytes, B, &Block), SoftplgOk);
+        if (Block.Type == SoftplgTypeManifest)
+        {
+            SOFTPLG_MANIFEST Manifest;
+            CHECK_EQ(SoftplgReadManifest(Topology, TopologyBytes, &Block, &Manifest), SoftplgOk);
+            CHECK_EQ(Manifest.ControlElements, 2);
+            CHECK_EQ(Manifest.WidgetElements, 4);
+            CHECK_EQ(Manifest.GraphElements, 2);
+            CHECK_EQ(Manifest.PcmElements, 1);
+            CHECK_EQ(Manifest.DaiLinkElements, 0);
+            CHECK_EQ(Manifest.DaiElements, 0);
+            /* the ABI block of the build: 3.29.1, the firmware's ABI at the revision the tree cites */
+            CHECK_EQ(Manifest.Private.Size, 6);
+            CHECK_EQ(Topology[Manifest.Private.Offset], 3);
+            CHECK_EQ(Topology[Manifest.Private.Offset + 2], 29);
+            CHECK_EQ(Topology[Manifest.Private.Offset + 4], 1);
+            continue;
+        }
+        if (Block.Type == SoftplgTypeGraph)
+        {
+            for (N = 0; N < Block.Count; N++)
+            {
+                CHECK_EQ(SoftplgReadGraphEdge(Topology, TopologyBytes, &Block, N, &Edge), SoftplgOk);
+                Edges++;
+                for (E = 0; E < sizeof(LoopEdges) / sizeof(LoopEdges[0]); E++)
+                    if (strcmp(Edge.Sink, LoopEdges[E][0]) == 0 && strcmp(Edge.Source, LoopEdges[E][1]) == 0)
+                    {
+                        CHECK_EQ(Edge.Control[0], 0);
+                        Found[E]++;
+                    }
+            }
+            continue;
+        }
+        if (Block.Type == SoftplgTypePcm)
+        {
+            CHECK_EQ(Block.Count, 1);
+            CHECK_EQ(SoftplgReadPcm(Topology, TopologyBytes, &Block, 0, &Pcm), SoftplgOk);
+            CHECK_STR(Pcm.PcmName, "Loopback");
+            CHECK_STR(Pcm.DaiName, "Loopback");
+            CHECK_EQ(Pcm.PcmId, 0);
+            CHECK_EQ(Pcm.Playback, 1);
+            CHECK_EQ(Pcm.Capture, 1);
+            CHECK_EQ(Pcm.Compress, 0);
+            for (K = 0; K < 2; K++)
+            {
+                CHECK_EQ(SoftplgReadPcmCaps(Topology, TopologyBytes, &Block, 0, (UINT32)K, &Caps), SoftplgOk);
+                /* S16_LE, S24_LE and S32_LE; 48000; two channels */
+                CHECK_EQ(Caps.Formats, 0x444);
+                CHECK_EQ(Caps.Rates, 0x80);
+                CHECK_EQ(Caps.ChannelsMin, 2);
+                CHECK_EQ(Caps.ChannelsMax, 2);
+            }
+            CHECK_STR(Caps.Name, "Loopback Capture");
+            CHECK_EQ(SoftplgReadPcmCaps(Topology, TopologyBytes, &Block, 0, 0, &Caps), SoftplgOk);
+            CHECK_STR(Caps.Name, "Loopback Playback");
+            continue;
+        }
+        if (Block.Type != SoftplgTypeWidget)
+            continue;
+        for (N = 0; N < Block.Count; N++)
+        {
+            CHECK_EQ(SoftplgReadWidget(Topology, TopologyBytes, &Block, N, &Widget), SoftplgOk);
+            NodeType = 0xFFFFFFFF;
+            InputFormats = OutputFormats = InputSeen = OutputSeen = Rates = 0;
+            memset(Inputs, 0, sizeof(Inputs));
+            memset(Outputs, 0, sizeof(Outputs));
+            if (SoftplgTupleBegin(Topology, TopologyBytes, &Widget.Private, &Iterator) == SoftplgOk)
+            {
+                while (SoftplgTupleNext(&Iterator, &Tuple) == SoftplgOk)
+                {
+                    if (Tuple.Token == LOOP_NODE_TYPE) NodeType = Tuple.Value;
+                    else if (Tuple.Token == LOOP_INPUT_FORMATS) InputFormats = Tuple.Value;
+                    else if (Tuple.Token == LOOP_OUTPUT_FORMATS) OutputFormats = Tuple.Value;
+                    else if (Tuple.Token == LOOP_IN_RATE) CHECK_EQ(Tuple.Value, 48000);
+                    /* a format's tuples come as its buffer size, its flags, then rate, container depth and valid depth: the slot advances on the last of them */
+                    else if (Tuple.Token == LOOP_IN_IBS && InputSeen < 3) Inputs[InputSeen].Buffer = Tuple.Value;
+                    else if (Tuple.Token == LOOP_IN_DEPTH && InputSeen < 3) Inputs[InputSeen].Depth = Tuple.Value;
+                    else if (Tuple.Token == LOOP_IN_VALID && InputSeen < 3)
+                    {
+                        Inputs[InputSeen].Valid = Tuple.Value;
+                        InputSeen++;
+                    }
+                    else if (Tuple.Token == LOOP_OUT_OBS && OutputSeen < 3) Outputs[OutputSeen].Buffer = Tuple.Value;
+                    else if (Tuple.Token == LOOP_OUT_DEPTH && OutputSeen < 3) Outputs[OutputSeen].Depth = Tuple.Value;
+                    else if (Tuple.Token == LOOP_OUT_VALID && OutputSeen < 3)
+                    {
+                        Outputs[OutputSeen].Valid = Tuple.Value;
+                        OutputSeen++;
+                    }
+                    else if (Tuple.Token == LOOP_OUT_RATE) Rates++;
+                }
+            }
+            if (strcmp(Widget.Name, "host-copier.0.playback") == 0)
+            {
+                CHECK(WidgetUuid(Topology, TopologyBytes, &Widget, Uuid));
+                CHECK(memcmp(Uuid, AceModules[2].Uuid, SOFTPLG_UUID_BYTES) == 0);
+                CHECK(memcmp(Modules[AceModules[2].Id].Uuid, Uuid, SOFTPLG_UUID_BYTES) == 0);
+                CHECK_STR(Widget.SName, "Loopback Playback");
+                CHECK_EQ(Widget.Id, 11);
+                CHECK_EQ(NodeType, 0);
+                CHECK_EQ(InputFormats, 3);
+                CHECK_EQ(OutputFormats, 1);
+                CHECK_EQ(InputSeen, 3);
+                CHECK_EQ(OutputSeen, 1);
+                CHECK(memcmp(Inputs, PlaybackInputs, sizeof(Inputs)) == 0);
+                CHECK(memcmp(Outputs, &ThirtyTwo, sizeof(ThirtyTwo)) == 0);
+                CHECK_EQ(Rates, 1);
+                Carrying++;
+            }
+            else if (strcmp(Widget.Name, "host-copier.0.capture") == 0)
+            {
+                CHECK(WidgetUuid(Topology, TopologyBytes, &Widget, Uuid));
+                CHECK(memcmp(Uuid, AceModules[2].Uuid, SOFTPLG_UUID_BYTES) == 0);
+                CHECK_STR(Widget.SName, "Loopback Capture");
+                CHECK_EQ(Widget.Id, 12);
+                CHECK_EQ(NodeType, 1);
+                CHECK_EQ(InputFormats, 1);
+                CHECK_EQ(OutputFormats, 3);
+                CHECK_EQ(InputSeen, 1);
+                CHECK_EQ(OutputSeen, 3);
+                CHECK(memcmp(Inputs, &ThirtyTwo, sizeof(ThirtyTwo)) == 0);
+                CHECK(memcmp(Outputs, CaptureOutputs, sizeof(Outputs)) == 0);
+                CHECK_EQ(Rates, 3);
+                Carrying++;
+            }
+            else if (strcmp(Widget.Name, "gain.1.1") == 0)
+            {
+                CHECK(WidgetUuid(Topology, TopologyBytes, &Widget, Uuid));
+                CHECK(memcmp(Uuid, AceModules[3].Uuid, SOFTPLG_UUID_BYTES) == 0);
+                CHECK_STR(Modules[AceModules[3].Id].Name, "GAIN");
+                CHECK_EQ(Widget.Id, 4);
+                CHECK_EQ(Widget.ControlCount, 2);
+                CHECK_EQ(SoftplgReadWidgetControl(Topology, TopologyBytes, &Block, (UINT32)N, 0, &Control), SoftplgOk);
+                CHECK_STR(Control.Name, "Loopback Volume");
+                CHECK_EQ(Control.Minimum, 0);
+                CHECK_EQ(Control.Maximum, 45);
+                CHECK_EQ(SoftplgReadWidgetControl(Topology, TopologyBytes, &Block, (UINT32)N, 1, &Control), SoftplgOk);
+                CHECK_STR(Control.Name, "Loopback Switch");
+                CHECK_EQ(Control.Minimum, 0);
+                CHECK_EQ(Control.Maximum, 1);
+                CHECK_EQ(NodeType, 0xFFFFFFFF);
+                CHECK_EQ(InputFormats, 1);
+                CHECK_EQ(OutputFormats, 1);
+                Carrying++;
+            }
+            else if (strcmp(Widget.Name, "pipeline.1") == 0)
+            {
+                CHECK(!WidgetUuid(Topology, TopologyBytes, &Widget, Uuid));
+                CHECK_EQ(Widget.Id, 17);
+                CHECK_EQ(NodeType, 0xFFFFFFFF);
+                Plain++;
+            }
+            else
+                CHECK(FALSE);
+        }
+    }
+    CHECK_EQ(Carrying, 3);
+    CHECK_EQ(Plain, 1);
+    CHECK_EQ(Edges, 2);
+    for (E = 0; E < sizeof(LoopEdges) / sizeof(LoopEdges[0]); E++)
+        CHECK_EQ(Found[E], 1);
+
+Out:
+    free(Modules);
+    free(Firmware);
+    free(Topology);
+}
+
 static
 void
 check_names(void)
@@ -1214,6 +1471,7 @@ int main(void)
     check_short_and_garbage_inputs();
     check_fixtures();
     check_ace_fixture();
+    check_loopback_fixture();
     check_names();
 
     printf("softplg: %d checks, %d failures\n", Checks, Failures);
