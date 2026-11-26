@@ -7,6 +7,7 @@
  */
 
 #include "private.h"
+#include "adapterpnp.h"
 
 #define NDEBUG
 #include <debug.h>
@@ -24,8 +25,8 @@ HDAUDIO_Pnp(
 
     // get current stack location
     IoStack = IoGetCurrentIrpStackLocation(Irp);
-    if (IoStack->MinorFunction == IRP_MN_REMOVE_DEVICE || IoStack->MinorFunction == IRP_MN_STOP_DEVICE ||
-        IoStack->MinorFunction == IRP_MN_SURPRISE_REMOVAL)
+    /* the adapter goes with the device's removal and surprise removal; a stop leaves it, with its subdevices and their registrations, for the start that follows (adapterpnp.h HDAudioPnpReleasesAdapter, FA-02) */
+    if (HDAudioPnpReleasesAdapter(IoStack->MinorFunction))
     {
         DeviceExtension = (PHDAUDIO_DEVICE_EXTENSION)DeviceObject->DeviceExtension;
         if (DeviceExtension->AdapterCommon)
@@ -58,6 +59,13 @@ HDAUDIO_StartDevice(
 
     // get device extension
     DeviceExtension = (PHDAUDIO_DEVICE_EXTENSION)DeviceObject->DeviceExtension;
+
+    /* the start after a stop finds the adapter the stop left (HDAUDIO_Pnp): its subdevices are registered still, and nothing is registered a second time (FA-02) */
+    if (DeviceExtension->AdapterCommon != NULL)
+    {
+        DPRINT("HDAUDIO: the adapter of the stop before is kept; its subdevices stay registered\n");
+        return STATUS_SUCCESS;
+    }
 
     // allocate common adapter
     Status = HDAUDIO_AllocateCommonAdapter(&DeviceExtension->AdapterCommon);

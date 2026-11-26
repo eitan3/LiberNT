@@ -11,6 +11,7 @@
 #include "shim.h"
 
 #include "capture_amps.h"
+#include "adapterpnp.h"
 
 static int Checks;
 static int Failures;
@@ -170,6 +171,21 @@ check_select(
     }
 }
 
+/* A PnP request ends the codec driver's adapter on the removal and the surprise removal only; a stop keeps it, with its registered subdevices, for the start that follows (FA-02) */
+static
+void
+CheckPnpRelease(
+    void)
+{
+    CHECK(HDAudioPnpReleasesAdapter(IRP_MN_REMOVE_DEVICE));
+    CHECK(HDAudioPnpReleasesAdapter(IRP_MN_SURPRISE_REMOVAL));
+    CHECK(!HDAudioPnpReleasesAdapter(IRP_MN_STOP_DEVICE));
+    CHECK(!HDAudioPnpReleasesAdapter(IRP_MN_START_DEVICE));
+    CHECK(!HDAudioPnpReleasesAdapter(IRP_MN_QUERY_REMOVE_DEVICE));
+    CHECK(!HDAudioPnpReleasesAdapter(IRP_MN_QUERY_REMOVE_DEVICE + 0x10));
+    CHECK(!HDAudioPnpReleasesAdapter(0xFF));
+}
+
 int main(void)
 {
     HDA_WIDGET Widgets[HDA_WIDGETS_MAX];
@@ -216,6 +232,8 @@ int main(void)
     /* a count past the array's own bound is cut to it */
     Count = HdaCaptureAmpsSelect(Widgets, HDA_WIDGETS_MAX + 100, 0, Selected, HDA_WIDGETS_MAX);
     CHECK_EQ(Count, HDA_WIDGETS_MAX - 1);
+
+    CheckPnpRelease();
 
     printf("hdaudio: %d checks, %d failures\n", Checks, Failures);
     return Failures ? 1 : 0;
