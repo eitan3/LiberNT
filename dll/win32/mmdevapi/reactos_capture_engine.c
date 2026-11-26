@@ -400,7 +400,7 @@ reactos_shared_capture_live_format(DWORD endpoint_index, WAVEFORMATEXTENSIBLE *f
         swprintf(mapping_name, ARRAY_SIZE(mapping_name), L"Local\\LiberNT.CoreAudio.Capture.%lu.v1", endpoint_index);
         swprintf(mutex_name, ARRAY_SIZE(mutex_name), L"%s.Lock", mapping_name);
         mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, mapping_name);
-        mutex = OpenMutexW(SYNCHRONIZE, FALSE, mutex_name);
+        mutex = OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, mutex_name);
         if (mapping && mutex)
             region = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(*region));
         if (region)
