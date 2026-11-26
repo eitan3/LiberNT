@@ -40,6 +40,7 @@ option(HOST_TEST_DSPPATH "Build native Intel SST audio path rule tests" ON)
 option(HOST_TEST_DSPPARSERS "Build native Intel SST IPC4 and DisCo parser tests" ON)
 option(HOST_TEST_FWLOAD "Build native Intel SST firmware loader boot tests" ON)
 option(HOST_TEST_IPC "Build native Intel SST IPC4 transport tests" ON)
+option(HOST_TEST_DSPPCM "Build native Intel SST DSP endpoint driver tests" ON)
 
 if(BUILD_TESTING AND HOST_TEST_DHCPCSVC)
     add_subdirectory(dhcpcsvc)
@@ -100,6 +101,10 @@ endif()
 
 if(BUILD_TESTING AND HOST_TEST_IPC)
     add_subdirectory(ipc)
+endif()
+
+if(BUILD_TESTING AND HOST_TEST_DSPPCM)
+    add_subdirectory(dsppcm)
 endif()
 
 if(BUILD_TESTING AND HOST_TEST_NDIS)
