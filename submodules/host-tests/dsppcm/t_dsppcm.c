@@ -388,8 +388,10 @@ CheckBridgePin(
     CHECK_EQ(Pin->KsPinDescriptor.Communication, KSPIN_COMMUNICATION_NONE);
     CHECK_EQ(Pin->KsPinDescriptor.DataFlow, Flow);
     CHECK_EQ(Pin->KsPinDescriptor.DataRangesCount, 1);
-    CHECK(Pin->KsPinDescriptor.DataRanges != NULL);
-    CHECK(Pin->KsPinDescriptor.DataRanges[0] != NULL);
+    CHECK(Pin->KsPinDescriptor.DataRanges != NULL && Pin->KsPinDescriptor.DataRanges[0] != NULL);
+    /* a failed check counts and goes on: the ranges are read only when there are any */
+    if (Pin->KsPinDescriptor.DataRanges == NULL || Pin->KsPinDescriptor.DataRanges[0] == NULL)
+        return;
     CHECK_EQ(Pin->KsPinDescriptor.DataRanges[0]->FormatSize, sizeof(KSDATARANGE));
     CHECK(SameGuid(&Pin->KsPinDescriptor.DataRanges[0]->MajorFormat, &IntelDspAudioTypeAudio));
     CHECK(SameGuid(&Pin->KsPinDescriptor.DataRanges[0]->SubFormat, &KSDATAFORMAT_SUBTYPE_ANALOG));
