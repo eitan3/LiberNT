@@ -1,0 +1,122 @@
+; PROJECT:     LiberNT Intel Smart Sound DSP endpoint driver
+; LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+; PURPOSE:     The endpoint driver of an audio child of the Intel audio DSP: the function driver of the PCM children intcdsp.sys enumerates; class MEDIA with the core audio registration, as the codec driver's
+; COPYRIGHT:   Copyright 2026 LiberNT contributors
+
+[Version]
+Signature="$Windows NT$"
+Class=MEDIA
+ClassGuid={4d36e96c-e325-11ce-bfc1-08002be10318}
+Provider=%ProviderName%
+DriverVer=11/26/2026,1.0.0.0
+PnPLockdown=1
+
+[DestinationDirs]
+DefaultDestDir=12
+
+[Manufacturer]
+%ManufacturerName%=DsppcmMfg,NTx86,NTamd64
+
+; The audio children of the DSP driver (drivers/wdm/audio/intcdsp/audioif.c): the controller's hardware ID, and the compatible ID every controller's child carries
+[DsppcmMfg.NTx86]
+%Dsppcm.DeviceDesc%=Dsppcm_Inst,INTCDSP\PCM&CTLR_VEN_8086&CTLR_DEV_7F50
+%Dsppcm.DeviceDesc%=Dsppcm_Inst, ,INTCDSP\PCM
+
+[DsppcmMfg.NTamd64]
+%Dsppcm.DeviceDesc%=Dsppcm_Inst,INTCDSP\PCM&CTLR_VEN_8086&CTLR_DEV_7F50
+%Dsppcm.DeviceDesc%=Dsppcm_Inst, ,INTCDSP\PCM
+
+[Dsppcm_Inst]
+Include=ks.inf,wdmaudio.inf
+Needs=KS.Registration,WDMAUDIO.Registration
+CopyFiles=Dsppcm_CopyFiles
+AddReg=Dsppcm_AddReg
+
+[Dsppcm_Inst.Services]
+AddService=dsppcm,0x00000002,Dsppcm_Service_Inst
+
+[Dsppcm_Service_Inst]
+DisplayName=%Dsppcm.ServiceDesc%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\dsppcm.sys
+
+[Dsppcm_CopyFiles]
+dsppcm.sys
+
+; The winmm audio registration of an adapter, as the codec driver's (hdaudio.inf HdAudModel.AddReg)
+[Dsppcm_AddReg]
+HKR,,AssociatedFilters,,"wdmaud"
+HKR,,Driver,,dsppcm.sys
+HKR,Drivers,SubClasses,,"wave,mixer"
+HKR,Drivers\wave\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\wave\wdmaud.drv,Description,,%Dsppcm.DeviceDesc%
+HKR,Drivers\mixer\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\mixer\wdmaud.drv,Description,,%Dsppcm.DeviceDesc%
+
+; The subdevices of the loopback topology's PCM 'Loopback' (the P3 test topology), by the names the driver registers them under: the PCM's name and Topo or Wave for render, InTopo or InWave for capture; the FriendlyName is what the audio device list shows
+[Dsppcm_Inst.Interfaces]
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_LoopbackTopo%,Dsppcm.LoopbackTopo
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_LoopbackTopo%,Dsppcm.LoopbackTopo
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_LoopbackWave%,Dsppcm.LoopbackWave
+AddInterface=%KSCATEGORY_RENDER%,%KSNAME_LoopbackWave%,Dsppcm.LoopbackWave
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_LoopbackWave%,Dsppcm.LoopbackWave
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_LoopbackInTopo%,Dsppcm.LoopbackInTopo
+AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_LoopbackInTopo%,Dsppcm.LoopbackInTopo
+AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_LoopbackInWave%,Dsppcm.LoopbackInWave
+AddInterface=%KSCATEGORY_CAPTURE%,%KSNAME_LoopbackInWave%,Dsppcm.LoopbackInWave
+AddInterface=%KSCATEGORY_REALTIME%,%KSNAME_LoopbackInWave%,Dsppcm.LoopbackInWave
+
+[Dsppcm.LoopbackTopo]
+AddReg=Dsppcm.LoopbackTopo.AddReg
+
+[Dsppcm.LoopbackTopo.AddReg]
+HKR,,FriendlyName,,%Dsppcm.LoopbackRenderName%
+HKR,,CLSID,,%Proxy.CLSID%
+
+[Dsppcm.LoopbackWave]
+AddReg=Dsppcm.LoopbackWave.AddReg
+
+[Dsppcm.LoopbackWave.AddReg]
+HKR,,FriendlyName,,%Dsppcm.LoopbackRenderName%
+HKR,,CLSID,,%Proxy.CLSID%
+
+[Dsppcm.LoopbackInTopo]
+AddReg=Dsppcm.LoopbackInTopo.AddReg
+
+[Dsppcm.LoopbackInTopo.AddReg]
+HKR,,FriendlyName,,%Dsppcm.LoopbackCaptureName%
+HKR,,CLSID,,%Proxy.CLSID%
+
+[Dsppcm.LoopbackInWave]
+AddReg=Dsppcm.LoopbackInWave.AddReg
+
+[Dsppcm.LoopbackInWave.AddReg]
+HKR,,FriendlyName,,%Dsppcm.LoopbackCaptureName%
+HKR,,CLSID,,%Proxy.CLSID%
+
+[SourceDisksNames]
+1=%DiskName%,,,
+
+[SourceDisksFiles]
+dsppcm.sys=1
+
+[Strings]
+ProviderName="LiberNT"
+ManufacturerName="Intel"
+DiskName="LiberNT Installation Media"
+Dsppcm.DeviceDesc="Intel Smart Sound Technology DSP Audio"
+Dsppcm.ServiceDesc="Intel Smart Sound DSP endpoint driver"
+Dsppcm.LoopbackRenderName="Speakers - Intel Smart Sound DSP Loopback"
+Dsppcm.LoopbackCaptureName="Microphone - Intel Smart Sound DSP Loopback"
+Proxy.CLSID = "{17CCA71B-ECD7-11D0-B908-00A0C9223196}"
+KSCATEGORY_AUDIO = "{6994AD04-93EF-11D0-A3CC-00A0C9223196}"
+KSCATEGORY_RENDER = "{65E8773E-8F56-11D0-A3B9-00A0C9223196}"
+KSCATEGORY_CAPTURE = "{65E8773D-8F56-11D0-A3B9-00A0C9223196}"
+KSCATEGORY_TOPOLOGY = "{DDA54A40-1E4C-11D1-A050-405705C10000}"
+KSCATEGORY_REALTIME = "{EB115FFC-10C8-4964-831D-6DCB02E6F23F}"
+KSNAME_LoopbackTopo = "LoopbackTopo"
+KSNAME_LoopbackWave = "LoopbackWave"
+KSNAME_LoopbackInTopo = "LoopbackInTopo"
+KSNAME_LoopbackInWave = "LoopbackInWave"
