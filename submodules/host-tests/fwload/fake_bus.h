@@ -154,6 +154,15 @@ FakeBusFind(
 typedef NTSTATUS (*FAKE_BUS_WAIT_HOOK)(_In_opt_ PVOID Context, _Inout_ PKEVENT Event, _In_opt_ PLARGE_INTEGER Timeout);
 extern FAKE_BUS_WAIT_HOOK FakeBusWaitHook;
 extern PVOID FakeBusWaitContext;
+/*
+ * The stream manager's lock on the host, which runs one thread: a wait
+ * without a timeout (the manager's mutex, intcdsp/stream.h) takes it and
+ * KeReleaseMutex gives it back, the depth saying how often it is held; and
+ * the IRQL the kernel would report, which a test raises to ask what a
+ * transition does above PASSIVE_LEVEL.
+ */
+extern LONG FakeBusLockDepth;
+extern KIRQL FakeBusIrql;
 #endif
 
 #endif

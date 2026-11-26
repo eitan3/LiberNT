@@ -557,6 +557,36 @@ FakeBusSignal(
 #ifndef FAKE_BUS_KERNEL
 FAKE_BUS_WAIT_HOOK FakeBusWaitHook;
 PVOID FakeBusWaitContext;
+LONG FakeBusLockDepth;
+KIRQL FakeBusIrql;
+
+/* The host's mutex of the stream manager: made as nothing, taken without a wait (KeWaitForSingleObject below), and given back with the depth it was taken to */
+VOID
+KeInitializeMutex(
+    PKMUTEX Mutex,
+    ULONG Level)
+{
+    (VOID)Mutex;
+    (VOID)Level;
+}
+
+VOID
+KeReleaseMutex(
+    PKMUTEX Mutex,
+    BOOLEAN Wait)
+{
+    (VOID)Mutex;
+    (VOID)Wait;
+    FakeBusLockDepth--;
+}
+
+/* The host runs at PASSIVE_LEVEL unless a test raises it */
+KIRQL
+KeGetCurrentIrql(
+    VOID)
+{
+    return FakeBusIrql;
+}
 
 /* The host's event primitives, as the kernel's: an event is cleared by hand, and a wait is the test's model's to answer */
 VOID
@@ -577,6 +607,13 @@ KeWaitForSingleObject(
     (VOID)WaitReason;
     (VOID)WaitMode;
     (VOID)Alertable;
+    (VOID)Object;
+    /* a wait without a timeout is the stream manager's lock, which nothing else holds on a host that runs one thread */
+    if (Timeout == NULL)
+    {
+        FakeBusLockDepth++;
+        return STATUS_SUCCESS;
+    }
     if (FakeBusWaitHook == NULL)
         return STATUS_TIMEOUT;
     return FakeBusWaitHook(FakeBusWaitContext, (PKEVENT)Object, Timeout);

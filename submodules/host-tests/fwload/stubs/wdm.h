@@ -40,6 +40,17 @@ typedef enum _KPROCESSOR_MODE
 {
     KernelMode = 0
 } KPROCESSOR_MODE;
+/* The stream manager's lock (intcdsp/stream.h INTCDSP_STREAMS.Lock) and the IRQL a transition is refused above: the mutex's layout is never used on the host, and the IRQL is the test's to raise (fake_bus.h FakeBusIrql) */
+typedef UCHAR KIRQL, *PKIRQL;
+#define PASSIVE_LEVEL           0
+#define DISPATCH_LEVEL          2
+typedef struct _KMUTEX
+{
+    UCHAR Opaque[16];
+} KMUTEX, *PKMUTEX;
+VOID KeInitializeMutex(PKMUTEX Mutex, ULONG Level);
+VOID KeReleaseMutex(PKMUTEX Mutex, BOOLEAN Wait);
+KIRQL KeGetCurrentIrql(VOID);
 /* Declared as the kernel's are; fake_bus.c defines them for the host, a wait being the test's model's to answer through the fake bus's wait hook */
 VOID KeClearEvent(PKEVENT Event);
 NTSTATUS KeWaitForSingleObject(PVOID Object, KWAIT_REASON WaitReason, KPROCESSOR_MODE WaitMode, BOOLEAN Alertable, PLARGE_INTEGER Timeout);

@@ -77,6 +77,9 @@ typedef struct _HARNESS
     /* the lock acquisitions so far, and the one that answers busy as a second caller would find the lock taken: 0 never */
     UINT32 LockAttempts;
     UINT32 LockBusyAtRequest;
+    /* the stream manager's lock depth (fake_bus.h FakeBusLockDepth) at each request lock: the least and the most seen, reset by the stream cases */
+    UINT32 LockDepthMin;
+    UINT32 LockDepthMax;
     /* the line raises this many interrupts per delay while a message is pending; IpcArmed picks the transport's service routine over the loader's */
     UINT32 InterruptsPerDelay;
     BOOLEAN IpcArmed;
@@ -239,6 +242,10 @@ HIpcRequestLock(
     HARNESS* H = (HARNESS*)Context;
 
     H->LockAttempts++;
+    if ((UINT32)FakeBusLockDepth < H->LockDepthMin)
+        H->LockDepthMin = (UINT32)FakeBusLockDepth;
+    if ((UINT32)FakeBusLockDepth > H->LockDepthMax)
+        H->LockDepthMax = (UINT32)FakeBusLockDepth;
     if (H->LockBusyAtRequest != 0 && H->LockAttempts == H->LockBusyAtRequest)
     {
         H->LockWaits++;
@@ -350,6 +357,8 @@ HarnessBoot(
     H->LockUnlocks = 0;
     H->LockAttempts = 0;
     H->LockBusyAtRequest = 0;
+    H->LockDepthMin = MAXULONG32;
+    H->LockDepthMax = 0;
     memset(&H->Ipc, 0, sizeof(H->Ipc));
 }
 
@@ -1283,6 +1292,9 @@ typedef struct _STREAM_HARNESS
     CHAR Log[STREAM_LOG_BYTES];
     SIZE_T LogBytes;
     UINT32 Faults;
+    /* the manager's lock depth (fake_bus.h) when the fault callback came, and how often a buffer went back through the unmap operation */
+    UINT32 FaultDepth;
+    UINT32 Unmaps;
     /* the device's period event, as the driver's wait registers it on the capture stream */
     KEVENT Event;
     UINT32 Waits;
@@ -1326,7 +1338,23 @@ void
 StreamFault(
     PVOID Context)
 {
-    ((STREAM_HARNESS*)Context)->Faults++;
+    STREAM_HARNESS* S = (STREAM_HARNESS*)Context;
+
+    S->Faults++;
+    S->FaultDepth = (UINT32)FakeBusLockDepth;
+}
+
+/* A buffer goes back to the bus: the driver's mappings of it go first; the harness counts them */
+static
+void
+StreamUnmap(
+    PVOID Context,
+    PMDL Mdl)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)Context;
+
+    (VOID)Mdl;
+    S->Unmaps++;
 }
 
 static const INTCDSP_STREAMS_OPS StreamOpsTemplate =
@@ -1334,7 +1362,7 @@ static const INTCDSP_STREAMS_OPS StreamOpsTemplate =
     NULL,
     StreamLog,
     StreamFault,
-    NULL
+    StreamUnmap
 };
 
 /* How often the log holds a line */
@@ -2599,6 +2627,294 @@ CheckStreamWait(
     free(S);
 }
 
+/* (i10) The generation (R1-01): the manager is initialized again at every D0 entry while a pin holds its handle; a new pin takes the object the first one had, and the stale handle names nothing at any entry: it acts neither on the new stream nor on a free object */
+static
+void
+CheckStreamGeneration(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    HANDLE Stale = NULL, Fresh = NULL;
+    PINTCDSP_STREAM Stream;
+    PULONG Register;
+    UINT32 Pcm, Requests;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    /* a handle is the manager's own word, never a pointer into its table */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Stale), STATUS_SUCCESS);
+    CHECK(Stale != NULL);
+    CHECK((UINT_PTR)Stale != (UINT_PTR)&S->Streams.Stream[0]);
+    Stream = IntcDspStreamOf(&S->Streams, Stale);
+    CHECK(Stream == &S->Streams.Stream[0]);
+    /* the D0 entry boots the DSP again and initializes the manager while the pin holds its handle, and a new pin opens the object the first one had */
+    StreamBoot(S, NULL);
+    IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
+    CHECK(S->Streams.Ready && !S->Streams.Faulted);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_SUCCESS);
+    CHECK(Fresh != NULL);
+    CHECK(IntcDspStreamOf(&S->Streams, Fresh) == &S->Streams.Stream[0]);
+    Requests = S->H.Dsp->TransportRequests;
+    /* the stale handle names nothing: every entry refuses it before it reads, nothing is sent, and the new stream is as its open left it */
+    CHECK(IntcDspStreamOf(&S->Streams, Stale) == NULL);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Stale), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamPause(&S->Streams, Stale), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Stale), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Stale, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamPositionRegister(&S->Streams, Stale, &Register), STATUS_INVALID_HANDLE);
+    CHECK(Register == NULL);
+    CHECK_EQ(IntcDspStreamLinkPositionRegister(&S->Streams, Stale, &Register), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamPosition(&S->Streams, Stale), 0);
+    CHECK_EQ(IntcDspStreamRegisterEvent(&S->Streams, Stale, &S->Event), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamUnregisterEvent(&S->Streams, Stale, &S->Event), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Stale), STATUS_INVALID_HANDLE);
+    CHECK_EQ(S->H.Dsp->TransportRequests, Requests);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 0);
+    Stream = IntcDspStreamOf(&S->Streams, Fresh);
+    CHECK(Stream != NULL);
+    if (Stream != NULL)
+    {
+        CHECK_EQ(Stream->State, IntcDspStreamStateOpen);
+        CHECK(Stream->Handle != NULL);
+        CHECK(Stream->Mdl == NULL);
+    }
+    /* the new pin's handle works, and the state, not the handle, refuses what the stream is not ready for */
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Fresh), STATUS_INVALID_DEVICE_REQUEST);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Fresh, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Fresh), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamPause(&S->Streams, Fresh), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Fresh), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Fresh), STATUS_SUCCESS);
+    /* a closed handle is stale too: its object is free */
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Fresh), STATUS_INVALID_HANDLE);
+    /* values that are no handle at all: none, and pointers into the manager */
+    CHECK(IntcDspStreamOf(&S->Streams, NULL) == NULL);
+    CHECK(IntcDspStreamOf(&S->Streams, (HANDLE)&S->Streams) == NULL);
+    CHECK(IntcDspStreamOf(&S->Streams, (HANDLE)S->State) == NULL);
+    StreamStop(S);
+    free(S);
+}
+
+/* (i11) The power-down's release (R1-01): every stream gives the bus what it gave it, as after a fault but with nothing sent and the driver not told, the paths forget what they built, the manager is not ready until its next initialization, and every handle is refused; the stale handle of a pin that held a stream across the transition names nothing once the next boot gave its object to a new pin. The handle's word is the index and one in the low bits, the generation above them */
+static
+void
+CheckStreamPowerDown(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    HANDLE Render = NULL, Capture = NULL, Fresh = NULL;
+    PINTCDSP_STREAM Stream;
+    PULONG Register;
+    UINT32 Pcm, Requests, D, I;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(S->Streams.Generation, 1);
+    /* a pin of each direction with a buffer, both running: what two WaveRT pins hold at a suspend */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    CHECK_EQ((UINT_PTR)Render & INTCDSP_STREAM_INDEX_MASK, 1);
+    CHECK_EQ((UINT_PTR)Capture & INTCDSP_STREAM_INDEX_MASK, 2);
+    CHECK_EQ((UINT_PTR)Render >> INTCDSP_STREAM_INDEX_BITS, 1);
+    CHECK_EQ((UINT_PTR)Capture >> INTCDSP_STREAM_INDEX_BITS, 1);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_SUCCESS);
+    Requests = S->H.Dsp->TransportRequests;
+    /* the power-down (intcdsp.c IntcDspPowerDown, from D0 exit): everything goes back to the bus, nothing is sent, the driver is not told */
+    IntcDspStreamsRelease(&S->Streams);
+    CHECK(!S->Streams.Ready);
+    CHECK(!S->Streams.Faulted);
+    CHECK_EQ(S->Faults, 0);
+    CHECK_EQ(S->H.Dsp->TransportRequests, Requests);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_STOP), 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_SPIB_OFF), 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 2);
+    CHECK_EQ(S->Unmaps, 2);
+    for (D = 0; D < 2; D++)
+        for (I = 0; I < FAKE_BUS_STREAMS; I++)
+            CHECK(!S->Bus.Stream[D][I].Used);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 0);
+    CHECK_EQ(S->Streams.Path[Pcm].Running, 0);
+    CHECK(S->Streams.Path[Pcm].Built == FALSE);
+    CHECK_EQ(S->Streams.PipelineInstance[0], 0);
+    for (I = 0; I < INTCDSP_STREAMS_MAX; I++)
+        CHECK(S->Streams.Stream[I].State == IntcDspStreamStateFree || S->Streams.Stream[I].State == IntcDspStreamStateReleased);
+    CHECK(StreamLogCount(S, "streams: released for the power-down; nothing is sent until the DSP is booted again\n") == 1);
+    CHECK_EQ(S->Streams.Generation, 2);
+    /* between the power-down and the next D0 entry the handles are refused, and an open fails fast: no request pays the budget */
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamPosition(&S->Streams, Render), 0);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_DEVICE_NOT_READY);
+    CHECK(Fresh == NULL);
+    CHECK_EQ(S->H.Dsp->TransportRequests, Requests);
+    /* a manager that holds nothing is released without a line, and its generation moves on */
+    IntcDspStreamsRelease(&S->Streams);
+    CHECK_EQ(S->Streams.Generation, 3);
+    CHECK(StreamLogCount(S, "streams: released for the power-down; nothing is sent until the DSP is booted again\n") == 1);
+    /* the next D0 entry boots the DSP and initializes the manager: a new pin takes the object the render pin had */
+    StreamBoot(S, NULL);
+    IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
+    CHECK(S->Streams.Ready && !S->Streams.Faulted);
+    CHECK_EQ(S->Streams.Generation, 4);
+    for (I = 0; I < INTCDSP_STREAMS_MAX; I++)
+        CHECK_EQ(S->Streams.Stream[I].State, IntcDspStreamStateFree);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_SUCCESS);
+    CHECK(IntcDspStreamOf(&S->Streams, Fresh) == &S->Streams.Stream[0]);
+    CHECK_EQ((UINT_PTR)Fresh & INTCDSP_STREAM_INDEX_MASK, 1);
+    CHECK_EQ((UINT_PTR)Fresh >> INTCDSP_STREAM_INDEX_BITS, 4);
+    /* the stale render handle: refused at every entry, the new stream untouched and nothing sent */
+    CHECK(IntcDspStreamOf(&S->Streams, Render) == NULL);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamPositionRegister(&S->Streams, Render, &Register), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamRegisterEvent(&S->Streams, Render, &S->Event), STATUS_INVALID_HANDLE);
+    Stream = IntcDspStreamOf(&S->Streams, Fresh);
+    CHECK(Stream != NULL);
+    if (Stream != NULL)
+    {
+        CHECK_EQ(Stream->State, IntcDspStreamStateOpen);
+        CHECK(Stream->Handle != NULL);
+        CHECK(Stream->Events == 0);
+    }
+    CHECK_EQ(S->H.Dsp->TransportRequests, 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 2);
+    /* the new pin's stream runs its course */
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Fresh, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Fresh), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamPause(&S->Streams, Fresh), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Fresh), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Fresh), STATUS_SUCCESS);
+    CHECK(IntcDspStreamOf(&S->Streams, Fresh) == NULL);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 3);
+    StreamQuiescent(S, Pcm);
+    StreamStop(S);
+    free(S);
+}
+
+/* (i12) The lock of the transitions (R1-02): every public entry takes it at PASSIVE_LEVEL before anything of a stream is read and gives it back on every way out, a call above PASSIVE_LEVEL is refused before it takes anything, and every request the transitions send is sent under it, the transport's request lock taken inside it; the register reads take none */
+static
+void
+CheckStreamLock(
+    void)
+{
+    STREAM_HARNESS* S;
+    FAKE_DSP_FAULTS Faults;
+    HANDLE Render = NULL, Capture = NULL;
+    PULONG Register;
+    NTSTATUS Status;
+    UINT32 Pcm, K;
+
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    /* above PASSIVE_LEVEL every entry refuses, and nothing is taken */
+    FakeBusIrql = DISPATCH_LEVEL;
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_INVALID_DEVICE_STATE);
+    CHECK(Render == NULL);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, NULL, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_INVALID_DEVICE_STATE);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, NULL), STATUS_INVALID_DEVICE_STATE);
+    CHECK_EQ(IntcDspStreamPause(&S->Streams, NULL), STATUS_INVALID_DEVICE_STATE);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, NULL), STATUS_INVALID_DEVICE_STATE);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, NULL), STATUS_INVALID_DEVICE_STATE);
+    CHECK_EQ(IntcDspStreamRegisterEvent(&S->Streams, NULL, &S->Event), STATUS_INVALID_DEVICE_STATE);
+    CHECK_EQ(IntcDspStreamUnregisterEvent(&S->Streams, NULL, &S->Event), STATUS_INVALID_DEVICE_STATE);
+    FakeBusIrql = PASSIVE_LEVEL;
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+
+    /* the transitions: each request under the manager's lock, the lock free again after each */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    S->H.LockDepthMin = MAXULONG32;
+    S->H.LockDepthMax = 0;
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamPause(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamPause(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK(S->H.Dsp->TransportRequests != 0);
+    CHECK_EQ(S->H.LockDepthMin, 1);
+    CHECK_EQ(S->H.LockDepthMax, 1);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    /* the event registrations are serialized with the close: under the lock, none above PASSIVE_LEVEL */
+    CHECK_EQ(IntcDspStreamRegisterEvent(&S->Streams, Render, &S->Event), STATUS_SUCCESS);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_REGISTER), 1);
+    FakeBusIrql = DISPATCH_LEVEL;
+    CHECK_EQ(IntcDspStreamUnregisterEvent(&S->Streams, Render, &S->Event), STATUS_INVALID_DEVICE_STATE);
+    FakeBusIrql = PASSIVE_LEVEL;
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_UNREGISTER), 0);
+    CHECK_EQ(IntcDspStreamUnregisterEvent(&S->Streams, Render, &S->Event), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->Events, 0);
+    /* the register reads take no lock */
+    CHECK_EQ(IntcDspStreamPositionRegister(&S->Streams, Render, &Register), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamLinkPositionRegister(&S->Streams, Render, &Register), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamPosition(&S->Streams, Render), 0);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    /* the power-down's release and a re-initialization leave the lock as they found it */
+    IntcDspStreamsRelease(&S->Streams);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+
+    /* a fault's way out: the driver is told under the lock, and the lock is given back after it, at every request the link may drop */
+    for (K = 1; K <= IPC4_STREAM_TRACE_ALLOCATE_REQUESTS; K++)
+    {
+        S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+        CHECK(S != NULL);
+        if (S == NULL)
+            return;
+        Faults = *FakeDspDefaultFaults();
+        Faults.NeverReplyAtRequest = K;
+        StreamStart(S, &Faults);
+        Pcm = StreamPcm(S);
+        CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+        S->H.LockDepthMin = MAXULONG32;
+        S->H.LockDepthMax = 0;
+        Status = IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2);
+        CHECK_EQ(Status, STATUS_IO_TIMEOUT);
+        CHECK_EQ(S->Faults, 1);
+        CHECK_EQ(S->FaultDepth, 1);
+        CHECK_EQ(S->H.LockDepthMin, 1);
+        CHECK_EQ(S->H.LockDepthMax, 1);
+        CHECK_EQ(FakeBusLockDepth, 0);
+        CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+        CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+        CHECK_EQ(FakeBusLockDepth, 0);
+        StreamStop(S);
+        free(S);
+    }
+}
+
 int
 main(
     void)
@@ -2636,6 +2952,9 @@ main(
     CheckStreamCompare();
     CheckStreamSelfTest();
     CheckStreamWait();
+    CheckStreamGeneration();
+    CheckStreamPowerDown();
+    CheckStreamLock();
 
     printf("sofipc: %d checks, %d failures\n", Checks, Failures);
     free(H->Dsp);

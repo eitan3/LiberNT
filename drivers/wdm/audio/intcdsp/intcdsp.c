@@ -16,6 +16,10 @@ static
 EVT_WDF_DEVICE_D0_ENTRY IntcDspEvtDeviceD0Entry;
 static
 EVT_WDF_DEVICE_D0_EXIT IntcDspEvtDeviceD0Exit;
+static
+VOID
+IntcDspPowerOff(
+    _Inout_ PINTCDSP_DEVICE Dev);
 
 /* The code-loader stream carries 48 kHz, 32 bits, one channel: Linux hda.h HDA_CL_STREAM_FORMAT (the stream descriptor format register value 0x40) */
 #define INTCDSP_CL_SAMPLE_RATE       48000
@@ -216,7 +220,12 @@ IntcDspStreamLog(
     IntcDspLog("%s", Line);
 }
 
-/* A request faulted the link: as every faulted link ends, the DSP is powered down and booted again at the next D0 entry */
+/*
+ * A request faulted the link: as every faulted link ends, the DSP is powered
+ * down and booted again at the next D0 entry. The manager released every
+ * stream itself before it called here, under its own lock (stream.c
+ * IntcDspStreamsFault), so only the hardware goes off: nothing is released twice.
+ */
 static
 VOID
 IntcDspStreamFault(
@@ -224,7 +233,7 @@ IntcDspStreamFault(
 {
     PINTCDSP_DEVICE Dev = (PINTCDSP_DEVICE)Context;
 
-    IntcDspPowerDown(Dev);
+    IntcDspPowerOff(Dev);
     Dev->Booted = FALSE;
 }
 
@@ -360,6 +369,17 @@ IntcDspReleaseStream(
 
 VOID
 IntcDspPowerDown(
+    _Inout_ PINTCDSP_DEVICE Dev)
+{
+    /* the streams of the boot go back to the bus before the DSP is off, as after a fault; the manager is not ready from here until the next boot initializes it, and every handle of the boot is refused (stream.c IntcDspStreamsRelease) */
+    IntcDspStreamsRelease(&Dev->Streams);
+    IntcDspPowerOff(Dev);
+}
+
+/* The DSP off: the loader's power-down, the interrupt off the line and the idle reference given back */
+static
+VOID
+IntcDspPowerOff(
     _Inout_ PINTCDSP_DEVICE Dev)
 {
     FWLOAD_STATUS Status = FwloadOk;
@@ -779,6 +799,8 @@ IntcDspEvtDeviceAdd(
         return Status;
     /* the device's own handle, which the audio children's report takes (audioif.c) */
     IntcDspGetData(Device)->Device = Device;
+    /* the lock of the stream manager's transitions, made once for the device: a power transition may release what the manager never started, before its first initialization (stream.c) */
+    KeInitializeMutex(&IntcDspGetData(Device)->Streams.Lock, 0);
     IntcDspLog("loaded for the Intel audio DSP child\n");
     return STATUS_SUCCESS;
 }

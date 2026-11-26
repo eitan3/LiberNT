@@ -21,6 +21,7 @@ typedef uint16_t UINT16, *PUINT16;
 typedef uint32_t UINT32, *PUINT32;
 typedef uint64_t UINT64, *PUINT64;
 typedef size_t SIZE_T, *PSIZE_T;
+typedef SIZE_T UINT_PTR, *PUINT_PTR;
 typedef char CHAR, *PCHAR;
 typedef unsigned char UCHAR, *PUCHAR, BOOLEAN, *PBOOLEAN;
 typedef void VOID, *PVOID;

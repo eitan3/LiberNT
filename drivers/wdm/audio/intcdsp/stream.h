@@ -43,6 +43,9 @@ extern "C" {
 
 /* The stream objects of a device: one per open stream, taken and returned by index */
 #define INTCDSP_STREAMS_MAX            16
+/* The low bits of a stream handle name its object, the index and one, and the bits above them carry the generation the stream was opened in (INTCDSP_STREAMS.Generation) */
+#define INTCDSP_STREAM_INDEX_BITS      8
+#define INTCDSP_STREAM_INDEX_MASK      0xFFu
 /* The pipelines one PCM's stream may reach: more is refused at the open */
 #define INTCDSP_PCM_PIPELINES_MAX      8
 /* The parameter id of the large-configuration set that names a host copier's stream once the copier exists: INFO_NEEDED 11 of the model notes (the simulator's qtest sends 0; the firmware's own value is silicon's to say) */
@@ -92,6 +95,8 @@ typedef enum _INTCDSP_STREAM_STATE
 typedef struct _INTCDSP_STREAM
 {
     INTCDSP_STREAM_STATE State;
+    /* the generation of the manager the stream was opened in, which its handle carries too */
+    UINT32 Generation;
     BOOLEAN Capture;
     UINT8 Tag;
     UINT32 Pcm;
@@ -155,6 +160,28 @@ typedef struct _INTCDSP_STREAMS_OPS
 
 typedef struct _INTCDSP_STREAMS
 {
+    /*
+     * The lock of the transitions: a kernel mutex, taken by each public
+     * transition of the manager at PASSIVE_LEVEL before anything of a stream
+     * is read, and released on its every way out. It is made once for a
+     * manager and kept through its re-initializations, since a stale
+     * handle's call may be leaving it as the device comes back. The order
+     * is this lock, then the transport's request lock inside a request
+     * (ipclock.c): nothing takes them the other way round, and the
+     * transport's lock is never held while this one is waited for. The
+     * register reads (the positions and the clock) take no lock: they may
+     * run at DISPATCH_LEVEL, and the bus refuses a handle that went back to
+     * its pool.
+     */
+    KMUTEX Lock;
+    /*
+     * The generation: counted up when the manager is initialized and when
+     * it releases its streams for a power-down. A stream object carries the
+     * generation it was opened in, and so does its handle; a handle of
+     * another generation names nothing (IntcDspStreamOf), so a stale pin
+     * acts neither on the stream that took its object nor on a free one.
+     */
+    UINT32 Generation;
     const INTCDSP_STREAMS_OPS* Ops;
     const ADSP_BUS_INTERFACE* Bus;
     SOFIPC_CONTEXT* Ipc;
@@ -191,6 +218,9 @@ IntcDspStreamsBytes(
 /*
  * The manager of a booted DSP: its model, the transport, the bus and the
  * operations; the buffer holds the per-model state and stays the manager's.
+ * A manager zeroed by its caller gets its lock here; the driver makes the
+ * lock at the device's creation, before any power transition can release
+ * what a manager never started.
  */
 VOID
 IntcDspStreamsInit(
@@ -202,7 +232,24 @@ IntcDspStreamsInit(
     _In_ const ADSP_BUS_INTERFACE* Bus,
     _In_opt_ const INTCDSP_STREAMS_OPS* Ops);
 
-/* The stream object a handle names, NULL for any other pointer */
+/*
+ * The power-down's release: every stream gives the bus what it gave it,
+ * as after a fault (IntcDspStreamsFault's release, without the firmware
+ * messages), the paths forget what they built, the manager is not ready
+ * until its next initialization, and every handle is of an older generation.
+ * The driver calls it before the DSP goes off. The streams are not
+ * re-created at the next D0 entry: a pin that held one finds its handle
+ * refused (STATUS_INVALID_HANDLE) for the rest of its life.
+ */
+VOID
+IntcDspStreamsRelease(
+    _Inout_ PINTCDSP_STREAMS Streams);
+
+/*
+ * The stream object a handle names: NULL for a handle of another
+ * generation, for a free object, and for any other value. A handle is the
+ * manager's own word, never a pointer (INTCDSP_STREAM_INDEX_BITS).
+ */
 PINTCDSP_STREAM
 IntcDspStreamOf(
     _In_ const INTCDSP_STREAMS* Streams,
@@ -216,7 +263,10 @@ IntcDspStreamPcm(
 
 /*
  * The transitions of the plan's §5.10, each PASSIVE_LEVEL and serialized
- * with every other request by the transport's lock. Open: the format is
+ * with every other transition by the manager's lock (the transport's lock
+ * serializes the requests within them); a call at a raised IRQL is refused
+ * with STATUS_INVALID_DEVICE_STATE, and a handle of another generation with
+ * STATUS_INVALID_HANDLE, before anything is read. Open: the format is
  * matched against the host copier's formats of that direction and the bus
  * gives a stream of its pool its tag. Allocate: the buffer, then the PCM's
  * pipelines created, its widgets initialized and bound, a copier that

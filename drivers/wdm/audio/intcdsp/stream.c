@@ -52,6 +52,23 @@ IntcDspTrace(
     Trace->Value = Value;
 }
 
+/* The lock of the transitions (stream.h): taken at PASSIVE_LEVEL, where a mutex may be waited for; a caller that may run higher is refused before it */
+static
+VOID
+IntcDspStreamsLock(
+    _Inout_ PINTCDSP_STREAMS Streams)
+{
+    KeWaitForSingleObject(&Streams->Lock, Executive, KernelMode, FALSE, NULL);
+}
+
+static
+VOID
+IntcDspStreamsUnlock(
+    _Inout_ PINTCDSP_STREAMS Streams)
+{
+    KeReleaseMutex(&Streams->Lock, FALSE);
+}
+
 /* The status the driver answers for a transport outcome */
 static
 NTSTATUS
@@ -510,23 +527,19 @@ IntcDspStreamLetGo(
 }
 
 /*
- * A request faulted the link: the firmware's objects are gone once the
- * driver powers the DSP down, so every stream gives back what the bus gave
- * it, the paths forget what they built, and the driver is told. The manager
- * refuses every transition until the next boot initializes it.
+ * Everything the streams hold, given back: each stream what the bus gave
+ * it, the paths what they built, the instance ids; a stream object in use
+ * is Released from here and waits for its close. The fault and the
+ * power-down's release end here, the caller holding the lock.
  */
 static
 VOID
-IntcDspStreamsFault(
+IntcDspStreamsLetGo(
     _Inout_ PINTCDSP_STREAMS Streams)
 {
     const SOFTPLG_IPC4_MODEL* Model = Streams->Model;
     UINT32 S;
 
-    if (Streams->Faulted)
-        return;
-    Streams->Faulted = TRUE;
-    Streams->Faults++;
     for (S = 0; S < INTCDSP_STREAMS_MAX; S++)
     {
         PINTCDSP_STREAM Stream = &Streams->Stream[S];
@@ -542,9 +555,43 @@ IntcDspStreamsFault(
     RtlZeroMemory(Streams->WidgetInstance, (SIZE_T)Model->WidgetCount * 2);
     RtlZeroMemory(Streams->ModuleInstances, INTCDSP_STREAM_MODULES_MAX);
     Streams->NextPipelineInstance = 1;
+}
+
+/*
+ * A request faulted the link: the firmware's objects are gone once the
+ * driver powers the DSP down, so every stream gives back what the bus gave
+ * it, the paths forget what they built, and the driver is told. The manager
+ * refuses every transition until the next boot initializes it.
+ */
+static
+VOID
+IntcDspStreamsFault(
+    _Inout_ PINTCDSP_STREAMS Streams)
+{
+    if (Streams->Faulted)
+        return;
+    Streams->Faulted = TRUE;
+    Streams->Faults++;
+    IntcDspStreamsLetGo(Streams);
     IntcDspStreamLog(Streams, "streams: released after the fault; nothing is sent until the DSP is booted again\n");
     if (Streams->Ops != NULL && Streams->Ops->Fault != NULL)
         Streams->Ops->Fault(Streams->Ops->Context);
+}
+
+VOID
+IntcDspStreamsRelease(
+    _Inout_ PINTCDSP_STREAMS Streams)
+{
+    IntcDspStreamsLock(Streams);
+    /* only a manager that was started holds anything: its streams were opened while it was ready */
+    if (Streams->Ready)
+    {
+        IntcDspStreamsLetGo(Streams);
+        IntcDspStreamLog(Streams, "streams: released for the power-down; nothing is sent until the DSP is booted again\n");
+    }
+    Streams->Ready = FALSE;
+    Streams->Generation++;
+    IntcDspStreamsUnlock(Streams);
 }
 
 /* The end of a transition a request failed in: the fault's release when the link was lost, the status otherwise */
@@ -579,14 +626,22 @@ IntcDspStreamsInit(
 {
     SIZE_T Offset = 0, Needed = IntcDspStreamsBytes(Model);
 
-    RtlZeroMemory(Streams, sizeof(*Streams));
+    /* the lock is made once for a manager and kept through its re-initializations, and so is the generation, which every handle of the manager before is of (stream.h) */
+    if (Streams->Generation == 0)
+        KeInitializeMutex(&Streams->Lock, 0);
+    IntcDspStreamsLock(Streams);
+    Streams->Generation++;
+    RtlZeroMemory(&Streams->Ops, sizeof(*Streams) - FIELD_OFFSET(INTCDSP_STREAMS, Ops));
     Streams->Ops = Ops;
     Streams->Bus = Bus;
     Streams->Ipc = Ipc;
     Streams->Model = Model;
     Streams->NextPipelineInstance = 1;
     if (Bytes < Needed)
+    {
+        IntcDspStreamsUnlock(Streams);
         return;
+    }
     RtlZeroMemory(Buffer, Needed);
     Streams->Path = (PINTCDSP_PATH)(Buffer + Offset);
     Offset += (SIZE_T)Model->PcmCount * sizeof(INTCDSP_PATH);
@@ -608,6 +663,18 @@ IntcDspStreamsInit(
     if (!Streams->Ready)
         IntcDspStreamLog(Streams, "streams: not started (%s)\n",
                          Bus != NULL && !IntcDspBusStreams(Bus) ? "the bus carries no stream members" : "the IPC link is not ready");
+    IntcDspStreamsUnlock(Streams);
+}
+
+/* The handle of a stream object: its index and one in the low bits, the generation above them */
+static
+HANDLE
+IntcDspStreamHandle(
+    _In_ const INTCDSP_STREAMS* Streams,
+    _In_ const INTCDSP_STREAM* Stream)
+{
+    return (HANDLE)(UINT_PTR)(((UINT_PTR)Stream->Generation << INTCDSP_STREAM_INDEX_BITS) |
+                              (UINT_PTR)(Stream - Streams->Stream + 1));
 }
 
 PINTCDSP_STREAM
@@ -615,13 +682,18 @@ IntcDspStreamOf(
     _In_ const INTCDSP_STREAMS* Streams,
     HANDLE Handle)
 {
-    PINTCDSP_STREAM Stream = (PINTCDSP_STREAM)Handle;
-    UINT32 S;
+    UINT_PTR Word = (UINT_PTR)Handle;
+    UINT32 Index = (UINT32)(Word & INTCDSP_STREAM_INDEX_MASK);
+    PINTCDSP_STREAM Stream;
 
-    for (S = 0; S < INTCDSP_STREAMS_MAX; S++)
-        if (Stream == (PINTCDSP_STREAM)&Streams->Stream[S])
-            return Stream;
-    return NULL;
+    /* the index is one-based: no value below the first object names one */
+    if (Index == 0 || Index > INTCDSP_STREAMS_MAX)
+        return NULL;
+    Stream = (PINTCDSP_STREAM)&Streams->Stream[Index - 1];
+    if ((Word >> INTCDSP_STREAM_INDEX_BITS) != Streams->Generation || Stream->Generation != Streams->Generation ||
+        Stream->State == IntcDspStreamStateFree)
+        return NULL;
+    return Stream;
 }
 
 UINT32
@@ -690,8 +762,9 @@ IntcDspStreamFrameBytes(
     return Channels * (ContainerBits / 8);
 }
 
+static
 NTSTATUS
-IntcDspStreamOpen(
+IntcDspStreamOpenLocked(
     _Inout_ PINTCDSP_STREAMS Streams,
     UINT32 Pcm,
     BOOLEAN Capture,
@@ -765,10 +838,33 @@ IntcDspStreamOpen(
     Found->OffsetFromFirstPage = 0;
     Found->Events = 0;
     Found->State = IntcDspStreamStateOpen;
+    Found->Generation = Streams->Generation;
     Streams->Path[Pcm].Open++;
     IntcDspTrace(Streams, Found, INTCDSP_TRACE_OPEN, 0, 0, SampleRate);
-    *Stream = (HANDLE)Found;
+    *Stream = IntcDspStreamHandle(Streams, Found);
     return STATUS_SUCCESS;
+}
+
+NTSTATUS
+IntcDspStreamOpen(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    UINT32 Pcm,
+    BOOLEAN Capture,
+    ULONG SampleRate,
+    ULONG Channels,
+    ULONG ValidBits,
+    ULONG ContainerBits,
+    _Out_ PHANDLE Stream)
+{
+    NTSTATUS Status;
+
+    *Stream = NULL;
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return STATUS_INVALID_DEVICE_STATE;
+    IntcDspStreamsLock(Streams);
+    Status = IntcDspStreamOpenLocked(Streams, Pcm, Capture, SampleRate, Channels, ValidBits, ContainerBits, Stream);
+    IntcDspStreamsUnlock(Streams);
+    return Status;
 }
 
 /* The buffer of a stream, then the firmware told about the PCM; on a failure the buffer is released and the stream is as an open left it */
@@ -835,8 +931,9 @@ IntcDspStreamBuffer(
     return Status;
 }
 
+static
 NTSTATUS
-IntcDspStreamAllocate(
+IntcDspStreamAllocateLocked(
     _Inout_ PINTCDSP_STREAMS Streams,
     HANDLE Handle,
     SIZE_T Bytes,
@@ -855,6 +952,23 @@ IntcDspStreamAllocate(
     if (Bytes == 0 || FrameBytes == 0 || Bytes % FrameBytes != 0 || (NotificationCount != 1 && NotificationCount != 2))
         return STATUS_INVALID_PARAMETER;
     return IntcDspStreamBuffer(Streams, Stream, Bytes, NotificationCount);
+}
+
+NTSTATUS
+IntcDspStreamAllocate(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    HANDLE Handle,
+    SIZE_T Bytes,
+    ULONG NotificationCount)
+{
+    NTSTATUS Status;
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return STATUS_INVALID_DEVICE_STATE;
+    IntcDspStreamsLock(Streams);
+    Status = IntcDspStreamAllocateLocked(Streams, Handle, Bytes, NotificationCount);
+    IntcDspStreamsUnlock(Streams);
+    return Status;
 }
 
 /* The pipelines a start moved to running go back to paused: a start that failed after them */
@@ -883,8 +997,9 @@ IntcDspPauseStarted(
     }
 }
 
+static
 NTSTATUS
-IntcDspStreamRun(
+IntcDspStreamRunLocked(
     _Inout_ PINTCDSP_STREAMS Streams,
     HANDLE Handle)
 {
@@ -952,7 +1067,23 @@ IntcDspStreamRun(
 }
 
 NTSTATUS
-IntcDspStreamPause(
+IntcDspStreamRun(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    HANDLE Handle)
+{
+    NTSTATUS Status;
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return STATUS_INVALID_DEVICE_STATE;
+    IntcDspStreamsLock(Streams);
+    Status = IntcDspStreamRunLocked(Streams, Handle);
+    IntcDspStreamsUnlock(Streams);
+    return Status;
+}
+
+static
+NTSTATUS
+IntcDspStreamPauseLocked(
     _Inout_ PINTCDSP_STREAMS Streams,
     HANDLE Handle)
 {
@@ -997,7 +1128,23 @@ IntcDspStreamPause(
 }
 
 NTSTATUS
-IntcDspStreamFree(
+IntcDspStreamPause(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    HANDLE Handle)
+{
+    NTSTATUS Status;
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return STATUS_INVALID_DEVICE_STATE;
+    IntcDspStreamsLock(Streams);
+    Status = IntcDspStreamPauseLocked(Streams, Handle);
+    IntcDspStreamsUnlock(Streams);
+    return Status;
+}
+
+static
+NTSTATUS
+IntcDspStreamFreeLocked(
     _Inout_ PINTCDSP_STREAMS Streams,
     HANDLE Handle)
 {
@@ -1015,7 +1162,7 @@ IntcDspStreamFree(
         return STATUS_SUCCESS;
     if (Stream->State == IntcDspStreamStateRunning)
     {
-        Status = IntcDspStreamPause(Streams, Handle);
+        Status = IntcDspStreamPauseLocked(Streams, Handle);
         if (!NT_SUCCESS(Status))
             return Status;
     }
@@ -1054,7 +1201,23 @@ IntcDspStreamFree(
 }
 
 NTSTATUS
-IntcDspStreamClose(
+IntcDspStreamFree(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    HANDLE Handle)
+{
+    NTSTATUS Status;
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return STATUS_INVALID_DEVICE_STATE;
+    IntcDspStreamsLock(Streams);
+    Status = IntcDspStreamFreeLocked(Streams, Handle);
+    IntcDspStreamsUnlock(Streams);
+    return Status;
+}
+
+static
+NTSTATUS
+IntcDspStreamCloseLocked(
     _Inout_ PINTCDSP_STREAMS Streams,
     HANDLE Handle)
 {
@@ -1071,6 +1234,21 @@ IntcDspStreamClose(
     }
     Stream->State = IntcDspStreamStateFree;
     return STATUS_SUCCESS;
+}
+
+NTSTATUS
+IntcDspStreamClose(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    HANDLE Handle)
+{
+    NTSTATUS Status;
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return STATUS_INVALID_DEVICE_STATE;
+    IntcDspStreamsLock(Streams);
+    Status = IntcDspStreamCloseLocked(Streams, Handle);
+    IntcDspStreamsUnlock(Streams);
+    return Status;
 }
 
 NTSTATUS
@@ -1129,8 +1307,9 @@ IntcDspStreamPosition(
     return Streams->Bus->StreamPosition(Streams->Bus->Context, Stream->Handle);
 }
 
+static
 NTSTATUS
-IntcDspStreamRegisterEvent(
+IntcDspStreamRegisterEventLocked(
     _Inout_ PINTCDSP_STREAMS Streams,
     HANDLE Handle,
     _In_ PKEVENT NotificationEvent)
@@ -1147,7 +1326,24 @@ IntcDspStreamRegisterEvent(
 }
 
 NTSTATUS
-IntcDspStreamUnregisterEvent(
+IntcDspStreamRegisterEvent(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    HANDLE Handle,
+    _In_ PKEVENT NotificationEvent)
+{
+    NTSTATUS Status;
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return STATUS_INVALID_DEVICE_STATE;
+    IntcDspStreamsLock(Streams);
+    Status = IntcDspStreamRegisterEventLocked(Streams, Handle, NotificationEvent);
+    IntcDspStreamsUnlock(Streams);
+    return Status;
+}
+
+static
+NTSTATUS
+IntcDspStreamUnregisterEventLocked(
     _Inout_ PINTCDSP_STREAMS Streams,
     HANDLE Handle,
     _In_ PKEVENT NotificationEvent)
@@ -1160,6 +1356,22 @@ IntcDspStreamUnregisterEvent(
     Status = Streams->Bus->UnregisterNotificationEvent(Streams->Bus->Context, Stream->Handle, NotificationEvent);
     if (NT_SUCCESS(Status) && Stream->Events != 0)
         Stream->Events--;
+    return Status;
+}
+
+NTSTATUS
+IntcDspStreamUnregisterEvent(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    HANDLE Handle,
+    _In_ PKEVENT NotificationEvent)
+{
+    NTSTATUS Status;
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return STATUS_INVALID_DEVICE_STATE;
+    IntcDspStreamsLock(Streams);
+    Status = IntcDspStreamUnregisterEventLocked(Streams, Handle, NotificationEvent);
+    IntcDspStreamsUnlock(Streams);
     return Status;
 }
 
