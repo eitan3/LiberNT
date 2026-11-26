@@ -462,6 +462,32 @@ CFunctionGroupNode::ClearVisitedState()
     }
 }
 
+ULONG
+NTAPI
+CFunctionGroupNode::GetWidgets(
+    OUT PHDA_WIDGET Widgets,
+    ULONG Max)
+{
+    PLIST_ENTRY Entry;
+    PNODE_CONTEXT NodeContext;
+    ULONG Count = 0;
+
+    /* the widgets as the capture amplifier's selection sees them (capture_amps.h): one record each, its connection list the context's */
+    Entry = m_Nodes.Flink;
+    while (Entry != &m_Nodes && Count < Max)
+    {
+        NodeContext = (PNODE_CONTEXT)CONTAINING_RECORD(Entry, NODE_CONTEXT, ListEntry);
+        Widgets[Count].Id = NodeContext->NodeId;
+        Widgets[Count].Type = NodeContext->NodeType;
+        Widgets[Count].Digital = NodeContext->Digital;
+        Widgets[Count].ConnectionCount = NodeContext->ConnectionCount;
+        Widgets[Count].Connections = NodeContext->Connections;
+        Count++;
+        Entry = Entry->Flink;
+    }
+    return Count;
+}
+
 NTSTATUS
 NTAPI
 CFunctionGroupNode::GetNodesWithType(IN UCHAR NodeType, OUT PULONG NodeCount, OUT PULONG *NodesAddress)

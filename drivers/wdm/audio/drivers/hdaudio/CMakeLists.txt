@@ -7,7 +7,8 @@ list(APPEND SOURCE
     prophnd.cpp
     purecall.cpp
     stream.cpp
-    guid.cpp)
+    guid.cpp
+    capture_amps.c)
 
 add_library(hdaudio MODULE
     ${SOURCE}

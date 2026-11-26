@@ -18,6 +18,7 @@
 #include "hda_verbs.h"
 #include "hdaudio_format.h"
 #include "tables.h"
+#include "capture_amps.h"
 
 #define TAG_HDAUDIO 'UADH'
 #define HDAUDIO_MAX_FORMAT_RANGES 3
@@ -365,6 +366,8 @@ class CFunctionGroupNode
     NTSTATUS NTAPI EnumConnections();
     VOID NTAPI PrintNodeInfo(UCHAR NodeType, ULONG NodeId);
     NTSTATUS NTAPI GetNodesWithType(IN UCHAR NodeType, OUT PULONG NodeCount, OUT PULONG *NodesAddress);
+    /* The widgets of the group as the capture amplifier's selection sees them (capture_amps.h HDA_CAPTURE_AMP): one record each, its connection list the context's; the count written, at most Max */
+    ULONG NTAPI GetWidgets(OUT PHDA_WIDGET Widgets, ULONG Max);
     NTSTATUS NTAPI GetSupportedPCMSizeRates(ULONG NodeId, OUT PNODE_PCM_RATES OutRates);
     NTSTATUS NTAPI GetPinConfigurationDefault(IN ULONG NodeId, IN PPIN_CONFIGURATION_DEFAULT PinConfiguration);
     NTSTATUS NTAPI AddNode(ULONG NodeId);
@@ -456,6 +459,28 @@ class CFunctionGroupNode
     LIST_ENTRY m_Nodes;
 };
 
+/*
+ * The amplifiers a topology's volume and mute act on (prophnd.cpp): the
+ * DACs' output amps, or the Audio Input converters' input amps that make the
+ * capture gain, each at the connection that reaches the jack. The set is
+ * found once at the miniport's initialization (HDAUDIO_InitAmplifiers) and
+ * kept until the miniport goes: no request walks the widgets, asks the codec
+ * for the pin's capabilities, or allocates (R1-12).
+ */
+typedef struct _HDA_AMP_SET
+{
+    PULONG Nids;
+    PULONG Indices;
+    ULONG Count;
+    AMPLIFIER_CAPABILITIES Caps;
+    BOOLEAN Input;
+} HDA_AMP_SET, *PHDA_AMP_SET;
+
+/* A set's arrays go back to the pool and the set is empty again */
+VOID
+HdaFreeAmpSet(
+    IN PHDA_AMP_SET Set);
+
 class CMiniportTopology : public CUnknownImpl<IMiniportTopology>
 {
   public:
@@ -468,13 +493,14 @@ class CMiniportTopology : public CUnknownImpl<IMiniportTopology>
         CFunctionGroupNode *Node,
         CAdapterCommon *Adapter,
         PPCFILTER_DESCRIPTOR Filter)
-        : m_Port(0), m_Node(Node), m_Adapter(Adapter), m_FilterDescription(Filter), m_PinCount(0)
+        : m_Port(0), m_Node(Node), m_Adapter(Adapter), m_FilterDescription(Filter), m_PinCount(0), mAmps()
     {
         for (ULONG Index = 0; Index < AssociatedPinCount && Index < ARRAYSIZE(m_PinIds); Index++)
             m_PinIds[m_PinCount++] = AssociatedPinIds[Index];
     }
     virtual ~CMiniportTopology()
     {
+        HdaFreeAmpSet(&mAmps);
     }
 
     CFunctionGroupNode*
@@ -517,6 +543,13 @@ class CMiniportTopology : public CUnknownImpl<IMiniportTopology>
         return m_PinIds[Index];
     }
 
+    /* The amplifiers of the topology's volume and mute, found at the initialization; an empty set when the topology has none */
+    PHDA_AMP_SET
+    GetAmps()
+    {
+        return &mAmps;
+    }
+
   private:
     PPORTTOPOLOGY m_Port;
     CFunctionGroupNode *m_Node;
@@ -524,6 +557,7 @@ class CMiniportTopology : public CUnknownImpl<IMiniportTopology>
     PPCFILTER_DESCRIPTOR m_FilterDescription;
     ULONG m_PinCount;
     ULONG m_PinIds[16];
+    HDA_AMP_SET mAmps;
 };
 
 class CMiniportWaveRT : public CUnknownImpl<IMiniportWaveRT>
@@ -635,6 +669,10 @@ HDAUDIO_NewMiniportTopology(
     IN CFunctionGroupNode * Node,
     IN CAdapterCommon * Adapter,
     IN PPCFILTER_DESCRIPTOR FilterDescription);
+
+VOID
+HDAUDIO_InitAmplifiers(
+    IN CMiniportTopology *Miniport);
 
 VOID
 HDAUDIO_RestoreMasterSettings(

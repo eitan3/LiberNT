@@ -64,6 +64,8 @@ CMiniportTopology::Init(
 {
     m_Port = Port;
     m_Port->AddRef();
+    /* the amplifiers of the volume and mute are found once, then the saved levels go into them (R1-11, R1-12) */
+    HDAUDIO_InitAmplifiers(this);
     HDAUDIO_RestoreMasterSettings(this);
     return STATUS_SUCCESS;
 }
