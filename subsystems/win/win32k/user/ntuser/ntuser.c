@@ -55,6 +55,8 @@ ATOM AtomDwmNcRenderingPolicy;
 ATOM AtomDwmTransition;
 ATOM AtomDwmTransitionFromLT;
 ATOM AtomDwmTransitionFromRB;
+ATOM AtomDwmLiberMaterial;
+ATOM AtomDwmLiberMaterialTint;
 
 /* PRIVATE FUNCTIONS **********************************************************/
 
@@ -155,6 +157,8 @@ static const PCWSTR PrivatePropertyNames[] =
     DWM_PROP_TRANSITION_FROM_LT,
     DWM_PROP_TRANSITION_FROM_RB,
     DWM_PROP_GPU_OUTPUT,
+    DWM_PROP_LIBER_MATERIAL,
+    DWM_PROP_LIBER_MATERIAL_TINT,
 };
 
 static ATOM PrivatePropertyAtoms[RTL_NUMBER_OF(PrivatePropertyNames)];
@@ -243,6 +247,8 @@ InitUserAtoms(VOID)
     AtomDwmTransition = IntAddUserPropertyAtom(DWM_PROP_TRANSITION);
     AtomDwmTransitionFromLT = IntAddUserPropertyAtom(DWM_PROP_TRANSITION_FROM_LT);
     AtomDwmTransitionFromRB = IntAddUserPropertyAtom(DWM_PROP_TRANSITION_FROM_RB);
+    AtomDwmLiberMaterial = IntAddUserPropertyAtom(DWM_PROP_LIBER_MATERIAL);
+    AtomDwmLiberMaterialTint = IntAddUserPropertyAtom(DWM_PROP_LIBER_MATERIAL_TINT);
 
     for (i = 0; i < RTL_NUMBER_OF(PrivatePropertyNames); i++)
         PrivatePropertyAtoms[i] = IntAddUserPropertyAtom(PrivatePropertyNames[i]);

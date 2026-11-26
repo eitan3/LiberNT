@@ -299,6 +299,32 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
     ((((ULONG)((LONG)(x) + 0x8000)) & 0xFFFFu) | \
      ((((ULONG)((LONG)(y) + 0x8000)) & 0xFFFFu) << 16))
 #define DWM_PROP_GPU_OUTPUT           L"ReactOS.Dwm.GpuOutput"
+#define DWM_PROP_LIBER_MATERIAL       L"LiberNT.Dwm.Material"
+#define DWM_PROP_LIBER_MATERIAL_TINT  L"LiberNT.Dwm.MaterialTint"
+
+/* Liber material kinds are LIBER_MATERIAL_KIND + 1, so 0 means no material. */
+#define DWM_LIBER_MATERIAL_NONE       0u
+#define DWM_LIBER_MATERIAL_MAX        5u
+#define DWM_LIBER_LAYER_DESKTOP       0u
+#define DWM_LIBER_LAYER_WINDOW        1u
+#define DWM_LIBER_LAYER_SHELL         2u
+#define DWM_LIBER_ELEVATION_MAX       7u
+#define DWM_LIBER_EDGE_NONE           0u
+#define DWM_LIBER_EDGE_GLASS          1u
+#define DWM_LIBER_EDGE_WINDOW         2u
+#define DWM_LIBER_EDGE_SEAM           3u
+#define DWM_LIBER_MATERIAL_ADAPTIVE   0x00000010u
+#define DWM_LIBER_MATERIAL_VALID      0x80000000u
+#define DWM_LIBER_MATERIAL_PACK(Kind, Adaptive, Layer, Elevation, Edge, Alpha) \
+    (DWM_LIBER_MATERIAL_VALID | ((ULONG)(Kind) & 0xFu) | ((Adaptive) ? DWM_LIBER_MATERIAL_ADAPTIVE : 0u) | \
+     (((ULONG)(Layer) & 0x3u) << 5) | (((ULONG)(Elevation) & 0xFu) << 8) | (((ULONG)(Edge) & 0x3u) << 12) | \
+     (((ULONG)(Alpha) & 0xFFu) << 16))
+#define DWM_LIBER_MATERIAL_KIND(Packed)      ((ULONG)(Packed) & 0xFu)
+#define DWM_LIBER_MATERIAL_LAYER(Packed)     (((ULONG)(Packed) >> 5) & 0x3u)
+#define DWM_LIBER_MATERIAL_ELEVATION(Packed) (((ULONG)(Packed) >> 8) & 0xFu)
+#define DWM_LIBER_MATERIAL_EDGE(Packed)      (((ULONG)(Packed) >> 12) & 0x3u)
+#define DWM_LIBER_MATERIAL_ALPHA(Packed)     (((ULONG)(Packed) >> 16) & 0xFFu)
+#define DWM_LIBER_MATERIAL_MASK              0x80FF3F7Fu
 
 /* Values intentionally match DWM_SYSTEMBACKDROP_TYPE in dwmapi.h. */
 #define DWM_BACKDROP_NONE       1u
@@ -421,6 +447,8 @@ typedef struct _DWM_WIN
     LONG  ResizeBorderBottom;
     LONG  SourceX;
     LONG  SourceY;
+    ULONG LiberMaterial;
+    ULONG LiberMaterialTint;
 } DWM_WIN, *PDWM_WIN;
 
 typedef struct _DWM_FRAME_HEADER

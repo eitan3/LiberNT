@@ -203,7 +203,46 @@ IntCompositionIsFrameAtom(_In_ ATOM Atom)
             Atom == AtomDwmCaptionMaximize ||
             Atom == AtomDwmCaptionMinimize ||
             Atom == AtomDwmCaptionRow ||
-            Atom == AtomDwmCaptionState);
+            Atom == AtomDwmCaptionState ||
+            Atom == AtomDwmLiberMaterial ||
+            Atom == AtomDwmLiberMaterialTint);
+}
+
+static ULONG
+IntCompositionLiberMaterial(_In_ PWND Wnd, _Out_ PULONG Tint)
+{
+    ULONG_PTR Packed, Encoded;
+    ULONG Material;
+
+    ASSERT(Wnd != NULL);
+    ASSERT(Tint != NULL);
+    *Tint = 0;
+    if (AtomDwmLiberMaterial == 0)
+        return 0;
+
+    Packed = (ULONG_PTR)UserGetProp(Wnd, AtomDwmLiberMaterial, FALSE);
+    Material = (ULONG)Packed;
+    if ((ULONG_PTR)Material != Packed ||
+        !(Material & DWM_LIBER_MATERIAL_VALID) ||
+        (Material & ~DWM_LIBER_MATERIAL_MASK) != 0 ||
+        DWM_LIBER_MATERIAL_KIND(Material) == DWM_LIBER_MATERIAL_NONE ||
+        DWM_LIBER_MATERIAL_KIND(Material) > DWM_LIBER_MATERIAL_MAX ||
+        DWM_LIBER_MATERIAL_LAYER(Material) > DWM_LIBER_LAYER_SHELL ||
+        DWM_LIBER_MATERIAL_ELEVATION(Material) > DWM_LIBER_ELEVATION_MAX)
+    {
+        return 0;
+    }
+
+    if (AtomDwmLiberMaterialTint != 0)
+    {
+        Encoded = (ULONG_PTR)UserGetProp(Wnd, AtomDwmLiberMaterialTint, FALSE);
+        if (Encoded != 0 && Encoded <= 0x01000000)
+            *Tint = (ULONG)(Encoded - 1);
+    }
+
+    ASSERT(DWM_LIBER_MATERIAL_KIND(Material) >= 1 && DWM_LIBER_MATERIAL_KIND(Material) <= DWM_LIBER_MATERIAL_MAX);
+    ASSERT(*Tint <= 0x00FFFFFF);
+    return Material;
 }
 
 static ULONG
@@ -3544,6 +3583,8 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
                       sizeof(g_DwmFrameWindows[count].CaptionButtons));
         g_DwmFrameWindows[count].CaptionState = 0;
         g_DwmFrameWindows[count].CornerRadius = IntCompositionCornerRadius(w);
+        g_DwmFrameWindows[count].LiberMaterial =
+            IntCompositionLiberMaterial(w, &g_DwmFrameWindows[count].LiberMaterialTint);
         {
             const RECTL *Client = Held ? &e->Redirect.rcFrontClient : &e->Redirect.rcClient;
 

@@ -1,0 +1,34 @@
+/*
+ * PROJECT:     LiberNT Desktop Window Manager
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Decode the Liber material a window requests
+ * COPYRIGHT:   Copyright 2026 Eitan Hadar <eitanhadar4@gmail.com>
+ */
+
+#pragma once
+
+#include <libernt/dwmframe.h>
+#include <liberdesign/liber_tokens.h>
+
+typedef struct _DWM_LIBER_MATERIAL_INFO
+{
+    LIBER_MATERIAL_KIND Kind;
+    ULONG BlurRadius;
+    ULONG Layer;
+    BOOLEAN Adaptive;
+    BOOLEAN HasElevation;
+    LIBER_ELEVATION Elevation;
+    ULONG Edge;
+    BYTE TintAlpha;
+    COLORREF TintColor;
+} DWM_LIBER_MATERIAL_INFO, *PDWM_LIBER_MATERIAL_INFO;
+
+BOOLEAN
+DwmLiberResolveMaterial(
+    _In_ const DWM_WIN *Window,
+    _In_ ULONG Dpi,
+    _Out_ PDWM_LIBER_MATERIAL_INFO Info);
+
+ULONG
+DwmLiberSolidColor(
+    _In_ const DWM_LIBER_MATERIAL_INFO *Info);
