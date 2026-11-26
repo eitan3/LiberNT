@@ -287,7 +287,7 @@ RunLoop(
                     &Capture.Client, &Capture.Event);
     if (hr == AUDCLNT_E_UNSUPPORTED_FORMAT)
     {
-        trace("dsploop%s: the shared-mode engine does not take the format for capture; skipped\n", Label);
+        skip("dsploop%s: the shared-mode engine does not take the format for capture; the run is skipped\n", Label);
         return DSPLOOP_SKIPPED;
     }
     ok(hr == S_OK, "dsploop%s: capture: Initialize 0x%08lx\n", Label, hr);
@@ -298,7 +298,7 @@ RunLoop(
                     &IID_IAudioRenderClient, (void **)&Render.Render, &Render.Client, &Render.Event);
     if (hr == AUDCLNT_E_UNSUPPORTED_FORMAT)
     {
-        trace("dsploop%s: the shared-mode engine does not take the format for render; skipped\n", Label);
+        skip("dsploop%s: the shared-mode engine does not take the format for render; the run is skipped\n", Label);
         CloseClient((IUnknown *)Capture.Capture, Capture.Client, Capture.Event);
         return DSPLOOP_SKIPPED;
     }
@@ -453,6 +453,7 @@ START_TEST(dsploop)
     IMMDevice *Render = NULL, *Capture = NULL;
     HRESULT hr;
     unsigned I;
+    UINT RunsCompared = 0;
     int Result;
 
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -478,7 +479,8 @@ START_TEST(dsploop)
     for (I = 0; I < ARRAY_SIZE(Runs); I++)
     {
         Result = RunLoop(Render, Capture, Runs[I].ValidBits, Runs[I].Label);
-        /* the plan's stop rule: a run that does not match ends the test at its first differing sample; a format the engine refuses is not a mismatch */
+        RunsCompared += Result == DSPLOOP_OK;
+        /* the plan's stop rule: a run that does not match ends the test at its first differing sample; a format the engine refuses is a skip, counted by the harness */
         if (Result == DSPLOOP_FAILED)
         {
             trace("dsploop: stopped after the run above, the plan's stop rule\n");
@@ -494,4 +496,8 @@ Done:
     if (Enumerator)
         IMMDeviceEnumerator_Release(Enumerator);
     CoUninitialize();
+    /* the count is the program's own: a run the engine refused, or that failed, leaves it below three; under the expected switch that is a failure as well */
+    if (ApitestRequired())
+        ok(RunsCompared == 3, "dsploop: %u of 3 depths compared\n", RunsCompared);
+    ApitestSummary("dsploop", RunsCompared, 3, "depths compared");
 }
