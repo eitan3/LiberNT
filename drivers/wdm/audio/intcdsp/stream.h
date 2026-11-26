@@ -132,6 +132,8 @@ typedef struct _INTCDSP_PATH
     UINT32 Held;
     UINT32 Running;
     BOOLEAN Built;
+    /* the firmware holds what the state still records of a path whose teardown a busy transport cut short: the next transition of the PCM finishes it before anything is built or named on it (FA-03) */
+    BOOLEAN Undo;
 } INTCDSP_PATH, *PINTCDSP_PATH;
 
 /* The flags of a widget of a built path */

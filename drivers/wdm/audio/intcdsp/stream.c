@@ -361,7 +361,17 @@ IntcDspPathTearDown(
             Streams->PipelineDeletes++;
         }
     }
-    Streams->Path[Stream->Pcm].Built = FALSE;
+    if (NT_SUCCESS(Status))
+    {
+        Streams->Path[Stream->Pcm].Built = FALSE;
+        Streams->Path[Stream->Pcm].Undo = FALSE;
+    }
+    else
+    {
+        /* what could not be deleted the firmware still holds: the path stays built and its undo is finished by the next transition of the PCM (FA-03) */
+        Streams->Path[Stream->Pcm].Built = TRUE;
+        Streams->Path[Stream->Pcm].Undo = TRUE;
+    }
     return Status;
 }
 
@@ -370,6 +380,70 @@ NTSTATUS
 IntcDspStuck(
     _Inout_ PINTCDSP_STREAMS Streams,
     NTSTATUS Status);
+
+/* The tries an undo is given while the transport answers busy (STATUS_RETRY): the first and the retries (FA-03) */
+#define INTCDSP_UNDO_TRIES 3
+
+/*
+ * A teardown sent again while the transport answers busy, the tries of
+ * INTCDSP_UNDO_TRIES in all (FA-03): the walk goes on from what the state
+ * still records, so a try finishes what the ones before it could not; the
+ * last status is the undo's.
+ */
+static
+NTSTATUS
+IntcDspPathTearDownRetried(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    _In_ const INTCDSP_STREAM* Stream,
+    _In_reads_(Count) const UINT8* Order,
+    UINT32 Count)
+{
+    NTSTATUS Status;
+    UINT32 Try;
+
+    Status = IntcDspPathTearDown(Streams, Stream, Order, Count);
+    for (Try = 1; Try < INTCDSP_UNDO_TRIES && Status == STATUS_RETRY; Try++)
+        Status = IntcDspPathTearDown(Streams, Stream, Order, Count);
+    return Status;
+}
+
+/*
+ * The undo a path still owes, finished before anything is built or named
+ * on the PCM and before a stream lets go of its hold (FA-03): a teardown
+ * the transport answered busy to is sent again, the tries of
+ * INTCDSP_UNDO_TRIES. Busy again, what the firmware holds stays recorded
+ * and the transition fails with STATUS_RETRY; any other failure forces the
+ * fault.
+ */
+static
+NTSTATUS
+IntcDspPathUndoFinish(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    _In_ const INTCDSP_STREAM* Stream)
+{
+    PINTCDSP_PATH Path = &Streams->Path[Stream->Pcm];
+    UINT8 Order[INTCDSP_PCM_PIPELINES_MAX];
+    NTSTATUS Status;
+    UINT32 Count;
+
+    if (!Path->Undo)
+        return STATUS_SUCCESS;
+    Count = IntcDspPipelineOrder(Streams, Stream->Pcm, FALSE, Order);
+    Status = Count != 0xFFFFFFFF ? IntcDspPathTearDownRetried(Streams, Stream, Order, Count) : STATUS_NOT_SUPPORTED;
+    if (!NT_SUCCESS(Status))
+    {
+        if (Status == STATUS_RETRY)
+        {
+            IntcDspStreamLog(Streams, "stream %u: the undo of the PCM's pipelines is still busy after %u tries; the firmware keeps what the state records and the next attempt deletes it\n",
+                             Stream->Tag, (UINT32)INTCDSP_UNDO_TRIES);
+            return Status;
+        }
+        IntcDspStreamLog(Streams, "stream %u: the undo of the PCM's pipelines could not be finished (0x%08x); released as after a fault\n",
+                         Stream->Tag, (UINT32)Status);
+        return IntcDspStuck(Streams, Status);
+    }
+    return Status;
+}
 
 /*
  * What the firmware is told about a PCM, once for all its streams: its
@@ -478,9 +552,16 @@ IntcDspPathBuild(
     if (IntcDspLinkLost(Streams))
         return Status;
     /* undone while the link still carries requests: the walk deletes what the state says was built; what it cannot delete is not kept (R1-04) */
-    Step = IntcDspPathTearDown(Streams, Stream, Order, Count);
+    Step = IntcDspPathTearDownRetried(Streams, Stream, Order, Count);
     if (!NT_SUCCESS(Step))
     {
+        if (Step == STATUS_RETRY)
+        {
+            /* a busy transport is not a fault (FA-03): the firmware keeps what the state records and the next transition of the PCM deletes it */
+            IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be built (0x%08x) and the transport answered busy to the undo of what was built; the firmware keeps it and the next attempt deletes it\n",
+                             Stream->Tag, (UINT32)Status);
+            return Status;
+        }
         IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be built (0x%08x) and what was built could not be deleted again (0x%08x); released as after a fault\n",
                          Stream->Tag, (UINT32)Status, (UINT32)Step);
         return IntcDspStuck(Streams, Status);
@@ -620,7 +701,11 @@ IntcDspFailed(
  * the firmware while the link still carries requests (R1-04): the firmware
  * holds what the manager no longer records, so the uniform release is
  * forced as after a lost link, every stream's buffer and tag go back and
- * the driver powers the DSP down; the status is the step's.
+ * the driver powers the DSP down; the status is the step's. A busy
+ * transport (STATUS_RETRY) is not such a failure (FA-03): the undo was
+ * sent again a bounded number of times, what the firmware holds stays
+ * recorded for the next attempt and the transition fails with the status
+ * alone; the fault is forced for failures that are not busy only.
  */
 static
 NTSTATUS
@@ -628,6 +713,8 @@ IntcDspStuck(
     _Inout_ PINTCDSP_STREAMS Streams,
     NTSTATUS Status)
 {
+    if (Status == STATUS_RETRY)
+        return Status;
     IntcDspStreamsFault(Streams);
     return Status;
 }
@@ -925,6 +1012,11 @@ IntcDspStreamBuffer(
     UINT8 Order[INTCDSP_PCM_PIPELINES_MAX];
     UINT32 Count;
 
+    /* a path whose undo a busy transport cut short is finished before the buffer is taken and anything is built or named on it (FA-03) */
+    Status = IntcDspPathUndoFinish(Streams, Stream);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
     Status = Bus->AllocateDmaBufferWithNotification(Bus->Context, Stream->Handle, NotificationCount, Bytes, &Stream->Mdl, &Stream->Bytes,
                                                      &Stream->OffsetFromFirstPage, &StreamId, &Stream->FifoSize);
     if (!NT_SUCCESS(Status))
@@ -963,9 +1055,17 @@ IntcDspStreamBuffer(
     if (Path->Held == 0 && Path->Built)
     {
         Count = IntcDspPipelineOrder(Streams, Stream->Pcm, FALSE, Order);
-        Step = Count != 0xFFFFFFFF ? IntcDspPathTearDown(Streams, Stream, Order, Count) : STATUS_NOT_SUPPORTED;
+        Step = Count != 0xFFFFFFFF ? IntcDspPathTearDownRetried(Streams, Stream, Order, Count) : STATUS_NOT_SUPPORTED;
         if (!NT_SUCCESS(Step))
         {
+            if (Step == STATUS_RETRY)
+            {
+                /* a busy transport is not a fault (FA-03): what the firmware holds stays recorded and the next transition of the PCM deletes it; the buffer goes back and the stream is as an open left it */
+                IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be deleted after the failed build (0x%08x): the transport answered busy; the firmware keeps what the state records and the next attempt deletes it\n",
+                                 Stream->Tag, (UINT32)Step);
+                IntcDspStreamReleaseBuffer(Streams, Stream);
+                return Step;
+            }
             /* what was built could not be deleted again: nothing of it is kept */
             IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be deleted after the failed build (0x%08x); released as after a fault\n",
                              Stream->Tag, (UINT32)Step);
@@ -1066,6 +1166,9 @@ IntcDspStreamRunLocked(
     if (Stream->State != IntcDspStreamStatePrepared && Stream->State != IntcDspStreamStatePaused)
         return STATUS_INVALID_DEVICE_REQUEST;
     Path = &Streams->Path[Stream->Pcm];
+    /* a stream does not start on a path a busy transport is still undoing (FA-03) */
+    if (Path->Undo)
+        return STATUS_RETRY;
     Count = IntcDspPipelineOrder(Streams, Stream->Pcm, TRUE, Order);
     if (Count == 0xFFFFFFFF || Count == 0)
         return STATUS_NOT_SUPPORTED;
@@ -1199,7 +1302,7 @@ IntcDspStreamFreeLocked(
     PINTCDSP_PATH Path;
     NTSTATUS Status = STATUS_SUCCESS;
     UINT8 Order[INTCDSP_PCM_PIPELINES_MAX];
-    UINT32 Count;
+    UINT32 Count, Try;
 
     if (Stream == NULL)
         return STATUS_INVALID_HANDLE;
@@ -1216,30 +1319,56 @@ IntcDspStreamFreeLocked(
     if (Stream->State != IntcDspStreamStatePrepared && Stream->State != IntcDspStreamStatePaused)
         return STATUS_INVALID_DEVICE_REQUEST;
     Path = &Streams->Path[Stream->Pcm];
+    /* a path whose undo a busy transport cut short is finished before the stream lets go of its hold (FA-03) */
+    Status = IntcDspPathUndoFinish(Streams, Stream);
+    if (!NT_SUCCESS(Status))
+        return Status;
     Count = IntcDspPipelineOrder(Streams, Stream->Pcm, FALSE, Order);
     Path->Held--;
     /* while another stream holds the PCM, the copier's gateway must not keep naming a stream that goes back to the pool */
     if (Path->Held != 0 && (Streams->WidgetFlags[Stream->Copier] & INTCDSP_WIDGET_NAMED) != 0)
     {
         Status = IntcDspNameStream(Streams, Stream, Stream->Copier, SOFTPLG_STREAM_TAG_NONE);
+        for (Try = 1; Try < INTCDSP_UNDO_TRIES && Status == STATUS_RETRY; Try++)
+            Status = IntcDspNameStream(Streams, Stream, Stream->Copier, SOFTPLG_STREAM_TAG_NONE);
         if (NT_SUCCESS(Status))
             Streams->WidgetFlags[Stream->Copier] &= (UINT8)~INTCDSP_WIDGET_NAMED;
         else
         {
-            /* the copier still names a stream that goes back to the pool: nothing is kept */
-            IntcDspStreamLog(Streams, "stream %u: its copier could not be told the stream is going (0x%08x); released as after a fault\n",
-                             Stream->Tag, (UINT32)Status);
+            if (Status == STATUS_RETRY)
+            {
+                /* a busy transport is not a fault (FA-03): the copier still names the stream, so the stream keeps its hold on the PCM and its buffer for the free that is asked again */
+                Path->Held++;
+                IntcDspStreamLog(Streams, "stream %u: its copier could not be told the stream is going (0x%08x): the transport answered busy; the firmware keeps what the state records and the stream is kept for the next free\n",
+                                 Stream->Tag, (UINT32)Status);
+            }
+            else
+            {
+                /* the copier still names a stream that goes back to the pool: nothing is kept */
+                IntcDspStreamLog(Streams, "stream %u: its copier could not be told the stream is going (0x%08x); released as after a fault\n",
+                                 Stream->Tag, (UINT32)Status);
+            }
             return IntcDspStuck(Streams, Status);
         }
     }
     /* the last holder: the pipeline is reset, the instances and the pipeline deleted (the plan's §5.10) */
     if (Path->Held == 0 && Path->Built)
     {
-        Status = Count != 0xFFFFFFFF ? IntcDspPathTearDown(Streams, Stream, Order, Count) : STATUS_NOT_SUPPORTED;
+        Status = Count != 0xFFFFFFFF ? IntcDspPathTearDownRetried(Streams, Stream, Order, Count) : STATUS_NOT_SUPPORTED;
         if (!NT_SUCCESS(Status))
         {
-            IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be deleted (0x%08x); released as after a fault\n", Stream->Tag,
-                             (UINT32)Status);
+            if (Status == STATUS_RETRY)
+            {
+                /* a busy transport is not a fault (FA-03): what the firmware holds stays recorded and the stream keeps its hold and its buffer for the free that is asked again */
+                Path->Held++;
+                IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be deleted (0x%08x): the transport answered busy; the firmware keeps what the state records and the stream is kept for the next free\n",
+                                 Stream->Tag, (UINT32)Status);
+            }
+            else
+            {
+                IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be deleted (0x%08x); released as after a fault\n", Stream->Tag,
+                                 (UINT32)Status);
+            }
             return IntcDspStuck(Streams, Status);
         }
     }

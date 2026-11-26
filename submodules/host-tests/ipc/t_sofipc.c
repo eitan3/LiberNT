@@ -79,6 +79,8 @@ typedef struct _HARNESS
     UINT32 LockBusyAtRequest;
     /* a second attempt that answers busy as well (R1-04's case: the build's and its undo's) */
     UINT32 LockBusyAlsoAtRequest;
+    /* from this lock attempt on every attempt answers busy (FA-03's case: busy after all the tries): 0 never */
+    UINT32 LockBusyFromRequest;
     /* the stream manager's lock depth (fake_bus.h FakeBusLockDepth) at each request lock: the least and the most seen, reset by the stream cases */
     UINT32 LockDepthMin;
     UINT32 LockDepthMax;
@@ -249,7 +251,8 @@ HIpcRequestLock(
     if ((UINT32)FakeBusLockDepth > H->LockDepthMax)
         H->LockDepthMax = (UINT32)FakeBusLockDepth;
     if ((H->LockBusyAtRequest != 0 && H->LockAttempts == H->LockBusyAtRequest) ||
-        (H->LockBusyAlsoAtRequest != 0 && H->LockAttempts == H->LockBusyAlsoAtRequest))
+        (H->LockBusyAlsoAtRequest != 0 && H->LockAttempts == H->LockBusyAlsoAtRequest) ||
+        (H->LockBusyFromRequest != 0 && H->LockAttempts >= H->LockBusyFromRequest))
     {
         H->LockWaits++;
         H->LastLockTimeout = TimeoutUs;
@@ -361,6 +364,7 @@ HarnessBoot(
     H->LockAttempts = 0;
     H->LockBusyAtRequest = 0;
     H->LockBusyAlsoAtRequest = 0;
+    H->LockBusyFromRequest = 0;
     H->LockDepthMin = MAXULONG32;
     H->LockDepthMax = 0;
     memset(&H->Ipc, 0, sizeof(H->Ipc));
@@ -3028,18 +3032,18 @@ CheckStreamLock(
     }
 }
 
-/* (i13) An undo that fails while the link still carries requests (R1-04): the build's teardown, the free's copier and the free's teardown; the uniform release is forced as after a lost link, every stream's buffer and tag go back, the paths forget what they built, the driver is told once, and nothing of the half-built path is kept */
+/* (i13) An undo that fails while the link still carries requests (R1-04, FA-03): the build's teardown, the free's copier and the free's teardown. A busy transport (STATUS_RETRY) is not a fault: the undo is sent again a bounded number of times, the driver is not told, no tag goes back and the DSP is not powered down. Still busy after the tries, the transition fails with STATUS_RETRY, the state records what the firmware holds and the next transition of the PCM finishes the undo. A failure that is not busy still forces the uniform release, as after a lost link */
 static
 void
 CheckStreamStuckUndo(
     void)
 {
     STREAM_HARNESS* S;
-    HANDLE Render = NULL, Capture = NULL, Fresh = NULL;
+    HANDLE Render = NULL, Capture = NULL;
     NTSTATUS Status;
-    UINT32 Pcm;
+    UINT32 Pcm, Requests, I, Used;
 
-    /* the build's third request is busy and the undo's second, an instance's deletion, is busy too */
+    /* the build's third request is busy and the undo's second, an instance's deletion, is busy once: the try after deletes it */
     S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
     CHECK(S != NULL);
     if (S == NULL)
@@ -3052,40 +3056,48 @@ CheckStreamStuckUndo(
     S->H.LockBusyAlsoAtRequest = 5;
     Status = IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2);
     CHECK_EQ(Status, STATUS_RETRY);
-    /* the link is not lost: the two busy answers fault nothing of the transport's */
+    /* the link is not lost and the DSP is not powered down: no fault, the driver not told */
     CHECK_EQ(S->H.Ipc.Link, SofIpcLinkReady);
     CHECK_EQ(S->H.Ipc.Faults, 0);
-    /* the manager's uniform release: told once, under the lock; every buffer and tag back, the path as after a boot */
-    CHECK_EQ(S->Streams.Faulted, TRUE);
-    CHECK_EQ(S->Faults, 1);
-    CHECK_EQ(S->FaultDepth, 1);
+    CHECK_EQ(S->Streams.Faulted, FALSE);
+    CHECK_EQ(S->Faults, 0);
+    CHECK_EQ(S->FaultDepth, 0);
+    /* the stream table is as after a build undone: the buffer back, the tag kept for the close, the path and the pipelines as after a boot */
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 1);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_SPIB_OFF), 1);
-    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 0);
     CHECK_EQ(S->Unmaps, 1);
     CHECK_EQ(S->Streams.Path[Pcm].Held, 0);
     CHECK(S->Streams.Path[Pcm].Built == FALSE);
+    CHECK(S->Streams.Path[Pcm].Undo == FALSE);
     CHECK_EQ(S->Streams.PipelineInstance[0], 0);
-    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStateReleased);
+    for (I = Used = 0; I < FAKE_DSP_PIPELINES; I++)
+        Used += S->H.Dsp->Pipeline[I].Used ? 1 : 0;
+    CHECK_EQ(Used, 0);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStateOpen);
     CHECK(IntcDspStreamOf(&S->Streams, Render)->Mdl == NULL);
-    CHECK(IntcDspStreamOf(&S->Streams, Render)->Handle == NULL);
+    CHECK(IntcDspStreamOf(&S->Streams, Render)->Handle != NULL);
     for (Pcm = 0; Pcm < S->Model->WidgetCount; Pcm++)
         CHECK_EQ(S->Streams.WidgetFlags[Pcm], 0);
     Pcm = StreamPcm(S);
-    CHECK(StreamLogCount(S, "could not be built (0xc0000227) and what was built could not be deleted again (0xc0000227); released as after a fault\n") == 1);
-    CHECK(StreamLogCount(S, "streams: released after the fault; nothing is sent until the DSP is booted again\n") == 1);
-    /* the firmware saw the build's two requests and the undo's first, the reset */
-    CHECK_EQ(S->H.Dsp->TransportRequests, 3);
-    /* nothing more runs until the next boot; the closes of the released streams are answered and the lock is free */
-    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_DEVICE_NOT_READY);
-    CHECK(Fresh == NULL);
+    /* the firmware saw the build's two requests, the undo's reset and, after the busy answer, the instance's deletion and the pipeline's */
+    CHECK_EQ(S->H.Dsp->TransportRequests, 5);
+    /* the try after the busy answer deleted the rest: the build's undo is one that succeeded, on its second try */
+    CHECK(StreamLogCount(S, "could not be built (0xc0000227); what was built is deleted again\n") == 1);
+    CHECK(StreamLogCount(S, "the transport answered busy") == 0);
+    CHECK(StreamLogCount(S, "released as after a fault\n") == 0);
+    CHECK(StreamLogCount(S, "released after the fault") == 0);
+    /* the DSP up: the next allocation builds afresh, and the stream frees */
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(S->Faults, 0);
     CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
     CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
     CHECK_EQ(FakeBusLockDepth, 0);
     StreamStop(S);
     free(S);
 
-    /* the free's teardown: the last holder's pipelines could not be deleted, the link still ready */
+    /* the free's teardown: the last holder's pipelines, an instance's deletion busy once; the try after deletes everything, and the stream is as a free leaves it */
     S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
     CHECK(S != NULL);
     if (S == NULL)
@@ -3096,21 +3108,24 @@ CheckStreamStuckUndo(
     CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
     S->H.LockBusyAtRequest = S->H.LockAttempts + 2;
     Status = IntcDspStreamFree(&S->Streams, Render);
-    CHECK_EQ(Status, STATUS_RETRY);
+    CHECK_EQ(Status, STATUS_SUCCESS);
     CHECK_EQ(S->H.Ipc.Link, SofIpcLinkReady);
-    CHECK_EQ(S->Streams.Faulted, TRUE);
-    CHECK_EQ(S->Faults, 1);
+    CHECK_EQ(S->Streams.Faulted, FALSE);
+    CHECK_EQ(S->Faults, 0);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 1);
-    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 0);
     CHECK_EQ(S->Streams.Path[Pcm].Held, 0);
-    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStateReleased);
-    CHECK(StreamLogCount(S, "the PCM's pipelines could not be deleted (0xc0000227); released as after a fault\n") == 1);
+    CHECK(S->Streams.Path[Pcm].Built == FALSE);
+    CHECK(S->Streams.Path[Pcm].Undo == FALSE);
+    CHECK_EQ(S->Streams.PipelineInstance[0], 0);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStateOpen);
+    CHECK(StreamLogCount(S, "released as after a fault\n") == 0);
     CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
     CHECK_EQ(FakeBusLockDepth, 0);
     StreamStop(S);
     free(S);
 
-    /* the free's copier: a stream that goes while another holds the PCM, and its copier is not told */
+    /* the free's copier: a stream that goes while another holds the PCM, and its copier is told busy once; the try after tells it, the other stream's path is built still */
     S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
     CHECK(S != NULL);
     if (S == NULL)
@@ -3122,18 +3137,174 @@ CheckStreamStuckUndo(
     CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
     CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
     S->H.LockBusyAtRequest = S->H.LockAttempts + 1;
+    Requests = S->H.LockAttempts;
+    Status = IntcDspStreamFree(&S->Streams, Capture);
+    CHECK_EQ(Status, STATUS_SUCCESS);
+    CHECK_EQ(S->H.Ipc.Link, SofIpcLinkReady);
+    CHECK_EQ(S->Streams.Faulted, FALSE);
+    CHECK_EQ(S->Faults, 0);
+    /* one busy answer, one taken: the copier is told twice in all */
+    CHECK_EQ(S->H.LockAttempts, Requests + 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 0);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 1);
+    CHECK(S->Streams.Path[Pcm].Built == TRUE);
+    CHECK(S->Streams.Path[Pcm].Undo == FALSE);
+    CHECK_EQ(S->Streams.WidgetFlags[IntcDspStreamOf(&S->Streams, Capture)->Copier] & INTCDSP_WIDGET_NAMED, 0);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Capture)->State, IntcDspStreamStateOpen);
+    CHECK(IntcDspStreamOf(&S->Streams, Capture)->Mdl == NULL);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStatePrepared);
+    CHECK(IntcDspStreamOf(&S->Streams, Render)->Mdl != NULL);
+    CHECK(StreamLogCount(S, "released as after a fault\n") == 0);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(S->Faults, 0);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+
+    /* still busy after the tries, at the free's copier: a stream that goes while another holds the PCM, and its copier is busy to every try. The free fails with STATUS_RETRY and the stream keeps its hold and its buffer, the copier still naming it; asked again with the transport free, the free tells the copier */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    S->H.LockBusyFromRequest = S->H.LockAttempts + 1;
+    Requests = S->H.LockAttempts;
     Status = IntcDspStreamFree(&S->Streams, Capture);
     CHECK_EQ(Status, STATUS_RETRY);
     CHECK_EQ(S->H.Ipc.Link, SofIpcLinkReady);
-    CHECK_EQ(S->Streams.Faulted, TRUE);
-    CHECK_EQ(S->Faults, 1);
-    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 2);
-    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 2);
-    CHECK_EQ(S->Streams.Path[Pcm].Held, 0);
-    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStateReleased);
-    CHECK(StreamLogCount(S, "its copier could not be told the stream is going (0xc0000227); released as after a fault\n") == 1);
+    CHECK_EQ(S->Streams.Faulted, FALSE);
+    CHECK_EQ(S->Faults, 0);
+    /* the copier is told in each of the three tries, busy every time */
+    CHECK_EQ(S->H.LockAttempts, Requests + 3);
+    CHECK_EQ(S->H.LockWaits, 3);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 0);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 2);
+    CHECK(S->Streams.Path[Pcm].Built == TRUE);
+    CHECK(S->Streams.Path[Pcm].Undo == FALSE);
+    CHECK((S->Streams.WidgetFlags[IntcDspStreamOf(&S->Streams, Capture)->Copier] & INTCDSP_WIDGET_NAMED) == INTCDSP_WIDGET_NAMED);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Capture)->State, IntcDspStreamStatePrepared);
+    CHECK(IntcDspStreamOf(&S->Streams, Capture)->Mdl != NULL);
+    CHECK(StreamLogCount(S, "its copier could not be told the stream is going (0xc0000227): the transport answered busy") == 1);
+    CHECK(StreamLogCount(S, "released as after a fault\n") == 0);
+    /* the transport free: the free tells the copier, and the stream is as a free leaves it */
+    S->H.LockBusyFromRequest = 0;
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(S->H.LockAttempts, Requests + 4);
+    CHECK_EQ(S->Faults, 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 1);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 1);
+    CHECK((S->Streams.WidgetFlags[IntcDspStreamOf(&S->Streams, Capture)->Copier] & INTCDSP_WIDGET_NAMED) == 0);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Capture)->State, IntcDspStreamStateOpen);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
     CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
     CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+
+    /* still busy after the tries, at the build's undo: busy from its instance's deletion on. The allocation fails with STATUS_RETRY, nothing is faulted, and the state records what the firmware holds, the pipeline created and reset and the instance initialized; the next allocation finishes the undo and builds afresh */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    S->H.LockBusyAtRequest = 3;
+    S->H.LockBusyFromRequest = 5;
+    Status = IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2);
+    CHECK_EQ(Status, STATUS_RETRY);
+    CHECK_EQ(S->H.Ipc.Link, SofIpcLinkReady);
+    CHECK_EQ(S->Streams.Faulted, FALSE);
+    CHECK_EQ(S->Faults, 0);
+    /* the buffer went back and the tag is kept; the path is the firmware's: built, its undo owed */
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 0);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 0);
+    CHECK(S->Streams.Path[Pcm].Built == TRUE);
+    CHECK(S->Streams.Path[Pcm].Undo == TRUE);
+    CHECK_EQ(S->Streams.PipelineInstance[0], 1);
+    CHECK_EQ(S->Streams.PipelineState[0], SOFIPC4_PIPELINE_STATE_RESET);
+    for (I = Used = 0; I < FAKE_DSP_PIPELINES; I++)
+        Used += S->H.Dsp->Pipeline[I].Used ? 1 : 0;
+    CHECK_EQ(Used, 1);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStateOpen);
+    CHECK(IntcDspStreamOf(&S->Streams, Render)->Mdl == NULL);
+    /* the build's two requests and the undo's reset were sent; then busy: the build's third, the undo's instance's deletion in each of the build's three tries, and in each of the three the buffer's undo sent after */
+    CHECK_EQ(S->H.Dsp->TransportRequests, 3);
+    CHECK_EQ(S->H.LockAttempts, 10);
+    CHECK_EQ(S->H.LockWaits, 7);
+    CHECK(StreamLogCount(S, "the transport answered busy to the undo of what was built") == 1);
+    CHECK(StreamLogCount(S, "could not be deleted after the failed build (0xc0000227): the transport answered busy") == 1);
+    CHECK(StreamLogCount(S, "released as after a fault\n") == 0);
+    /* the transport free: the allocation finishes the undo first, then builds afresh, and the stream runs and frees */
+    S->H.LockBusyFromRequest = 0;
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(S->Faults, 0);
+    CHECK(S->Streams.Path[Pcm].Built == TRUE);
+    CHECK(S->Streams.Path[Pcm].Undo == FALSE);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamPause(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(S->Streams.PipelineInstance[0], 0);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+
+    /* still busy after the tries, at the free: the last holder's teardown meets busy from its instance's deletion on. The free fails with STATUS_RETRY and the stream keeps its hold and its buffer; the path is the firmware's, its undo owed; the stream does not start on it; asked again with the transport free, the free finishes the undo */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    S->H.LockBusyFromRequest = S->H.LockAttempts + 2;
+    Requests = S->H.LockAttempts;
+    Status = IntcDspStreamFree(&S->Streams, Render);
+    CHECK_EQ(Status, STATUS_RETRY);
+    CHECK_EQ(S->H.Ipc.Link, SofIpcLinkReady);
+    CHECK_EQ(S->Streams.Faulted, FALSE);
+    CHECK_EQ(S->Faults, 0);
+    /* the reset was sent, the instance's deletion was busy in each of the three tries */
+    CHECK_EQ(S->H.LockAttempts, Requests + 4);
+    CHECK_EQ(S->H.LockWaits, 3);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 0);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStatePrepared);
+    CHECK(IntcDspStreamOf(&S->Streams, Render)->Mdl != NULL);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 1);
+    CHECK(S->Streams.Path[Pcm].Built == TRUE);
+    CHECK(S->Streams.Path[Pcm].Undo == TRUE);
+    CHECK_EQ(S->Streams.PipelineInstance[0], 1);
+    CHECK_EQ(S->Streams.PipelineState[0], SOFIPC4_PIPELINE_STATE_RESET);
+    CHECK(StreamLogCount(S, "the PCM's pipelines could not be deleted (0xc0000227): the transport answered busy") == 1);
+    CHECK(StreamLogCount(S, "released as after a fault\n") == 0);
+    /* the stream does not start on the path being undone: refused, nothing sent */
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_RETRY);
+    CHECK_EQ(S->H.LockAttempts, Requests + 4);
+    /* the transport free: the free finishes the undo and the stream is as a free leaves it */
+    S->H.LockBusyFromRequest = 0;
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(S->Faults, 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 1);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 0);
+    CHECK(S->Streams.Path[Pcm].Built == FALSE);
+    CHECK(S->Streams.Path[Pcm].Undo == FALSE);
+    CHECK_EQ(S->Streams.PipelineInstance[0], 0);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStateOpen);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
     CHECK_EQ(FakeBusLockDepth, 0);
     StreamStop(S);
     free(S);
