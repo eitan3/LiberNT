@@ -368,6 +368,12 @@ IntcDspPathTearDown(
     return Status;
 }
 
+static
+NTSTATUS
+IntcDspStuck(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    NTSTATUS Status);
+
 /*
  * What the firmware is told about a PCM, once for all its streams: its
  * pipelines created (the instance ids in creation order, from 1), every
@@ -386,7 +392,7 @@ IntcDspPathBuild(
     const SOFTPLG_IPC4_WIDGET* Widget;
     SOFTPLG_IPC4_CONFIG Config;
     SOFIPC4_MSG Msg;
-    NTSTATUS Status;
+    NTSTATUS Status, Step;
     UINT8 Order[INTCDSP_PCM_PIPELINES_MAX];
     UINT32 Count, I, W, E, Instance, Tag, InputFormat, OutputFormat, Source, Sink;
 
@@ -474,8 +480,14 @@ IntcDspPathBuild(
     }
     if (IntcDspLinkLost(Streams))
         return Status;
-    /* undone while the link still carries requests: the walk deletes what the state says was built */
-    IntcDspPathTearDown(Streams, Stream, Order, Count);
+    /* undone while the link still carries requests: the walk deletes what the state says was built; what it cannot delete is not kept (R1-04) */
+    Step = IntcDspPathTearDown(Streams, Stream, Order, Count);
+    if (!NT_SUCCESS(Step))
+    {
+        IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be built (0x%08x) and what was built could not be deleted again (0x%08x); released as after a fault\n",
+                         Stream->Tag, (UINT32)Status, (UINT32)Step);
+        return IntcDspStuck(Streams, Status);
+    }
     IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be built (0x%08x); what was built is deleted again\n",
                      Stream->Tag, (UINT32)Status);
     return Status;
@@ -603,6 +615,23 @@ IntcDspFailed(
 {
     if (IntcDspLinkLost(Streams))
         IntcDspStreamsFault(Streams);
+    return Status;
+}
+
+/*
+ * The end of a transition that could not undo, or finish, what it told
+ * the firmware while the link still carries requests (R1-04): the firmware
+ * holds what the manager no longer records, so the uniform release is
+ * forced as after a lost link, every stream's buffer and tag go back and
+ * the driver powers the DSP down; the status is the step's.
+ */
+static
+NTSTATUS
+IntcDspStuck(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    NTSTATUS Status)
+{
+    IntcDspStreamsFault(Streams);
     return Status;
 }
 
@@ -909,6 +938,9 @@ IntcDspStreamBuffer(
         Stream->State = IntcDspStreamStatePrepared;
         return STATUS_SUCCESS;
     }
+    /* a fault on the way released the buffer and the tag of every stream and forgot the path (the build's own undo may have forced it, R1-04): nothing is left to undo */
+    if (Streams->Faulted)
+        return Status;
     Path->Held--;
     if (IntcDspLinkLost(Streams))
     {
@@ -921,8 +953,10 @@ IntcDspStreamBuffer(
         Step = Count != 0xFFFFFFFF ? IntcDspPathTearDown(Streams, Stream, Order, Count) : STATUS_NOT_SUPPORTED;
         if (!NT_SUCCESS(Step))
         {
-            Path->Held++;
-            return IntcDspFailed(Streams, Step);
+            /* what was built could not be deleted again: nothing of it is kept */
+            IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be deleted after the failed build (0x%08x); released as after a fault\n",
+                             Stream->Tag, (UINT32)Step);
+            return IntcDspStuck(Streams, Step);
         }
     }
     IntcDspStreamReleaseBuffer(Streams, Stream);
@@ -1179,9 +1213,10 @@ IntcDspStreamFreeLocked(
             Streams->WidgetFlags[Stream->Copier] &= (UINT8)~INTCDSP_WIDGET_NAMED;
         else
         {
-            Path->Held++;
-            IntcDspStreamLog(Streams, "stream %u: its copier could not be told the stream is going (0x%08x)\n", Stream->Tag, (UINT32)Status);
-            return IntcDspFailed(Streams, Status);
+            /* the copier still names a stream that goes back to the pool: nothing is kept */
+            IntcDspStreamLog(Streams, "stream %u: its copier could not be told the stream is going (0x%08x); released as after a fault\n",
+                             Stream->Tag, (UINT32)Status);
+            return IntcDspStuck(Streams, Status);
         }
     }
     /* the last holder: the pipeline is reset, the instances and the pipeline deleted (the plan's §5.10) */
@@ -1190,9 +1225,9 @@ IntcDspStreamFreeLocked(
         Status = Count != 0xFFFFFFFF ? IntcDspPathTearDown(Streams, Stream, Order, Count) : STATUS_NOT_SUPPORTED;
         if (!NT_SUCCESS(Status))
         {
-            Path->Held++;
-            IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be deleted (0x%08x)\n", Stream->Tag, (UINT32)Status);
-            return IntcDspFailed(Streams, Status);
+            IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be deleted (0x%08x); released as after a fault\n", Stream->Tag,
+                             (UINT32)Status);
+            return IntcDspStuck(Streams, Status);
         }
     }
     IntcDspStreamReleaseBuffer(Streams, Stream);
