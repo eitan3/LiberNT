@@ -42,9 +42,8 @@ DSPPCM_Pnp(
 {
     PIO_STACK_LOCATION IoStack = IoGetCurrentIrpStackLocation(Irp);
 
-    /* the adapter goes with the device's removal or stop, as the codec driver's (hdaudio.cpp HDAUDIO_Pnp) */
-    if (IoStack->MinorFunction == IRP_MN_REMOVE_DEVICE || IoStack->MinorFunction == IRP_MN_STOP_DEVICE ||
-        IoStack->MinorFunction == IRP_MN_SURPRISE_REMOVAL)
+    /* the adapter goes with the device's removal and surprise removal; a stop leaves it for the start that follows (ksendpoint.c DsppcmPnpReleasesAdapter, R1-06) */
+    if (DsppcmPnpReleasesAdapter(IoStack->MinorFunction))
     {
         PDSPPCM_DEVICE_EXTENSION DeviceExtension = (PDSPPCM_DEVICE_EXTENSION)DeviceObject->DeviceExtension;
 
@@ -78,6 +77,12 @@ DSPPCM_StartDevice(
     PDSPPCM_DEVICE_EXTENSION DeviceExtension = (PDSPPCM_DEVICE_EXTENSION)DeviceObject->DeviceExtension;
     NTSTATUS Status;
 
+    /* the start after a stop finds the adapter the stop left (DSPPCM_Pnp): its subdevices are registered still, and nothing is registered a second time (R1-06) */
+    if (DeviceExtension->AdapterCommon != NULL)
+    {
+        DSPPCM_LOG("the adapter of the stop before is kept; its subdevices stay registered\n");
+        return STATUS_SUCCESS;
+    }
     Status = DSPPCM_NewAdapterCommon(&DeviceExtension->AdapterCommon);
     if (!NT_SUCCESS(Status))
         return Status;

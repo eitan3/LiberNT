@@ -1138,6 +1138,21 @@ CheckEngineClock(
     CHECK(Clock <= Ideal + 12288 && Clock + 12288 >= Ideal);
 }
 
+/* A PnP request ends the adapter on the removal and the surprise removal only; a stop keeps it, with its registered subdevices, for the start that follows (R1-06) */
+static
+void
+CheckPnpRelease(
+    void)
+{
+    CHECK(DsppcmPnpReleasesAdapter(IRP_MN_REMOVE_DEVICE));
+    CHECK(DsppcmPnpReleasesAdapter(IRP_MN_SURPRISE_REMOVAL));
+    CHECK(!DsppcmPnpReleasesAdapter(IRP_MN_STOP_DEVICE));
+    CHECK(!DsppcmPnpReleasesAdapter(IRP_MN_START_DEVICE));
+    CHECK(!DsppcmPnpReleasesAdapter(IRP_MN_QUERY_REMOVE_DEVICE));
+    CHECK(!DsppcmPnpReleasesAdapter(IRP_MN_QUERY_REMOVE_DEVICE + 0x10));
+    CHECK(!DsppcmPnpReleasesAdapter(0xFF));
+}
+
 int
 main(
     void)
@@ -1148,6 +1163,7 @@ main(
     CheckForwarding();
     CheckPositionWrap();
     CheckEngineClock();
+    CheckPnpRelease();
     printf("dsppcm: %d checks, %d failures\n", Checks, Failures);
     return Failures != 0;
 }

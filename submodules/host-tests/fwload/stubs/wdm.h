@@ -44,6 +44,12 @@ typedef enum _KPROCESSOR_MODE
 typedef UCHAR KIRQL, *PKIRQL;
 #define PASSIVE_LEVEL           0
 #define DISPATCH_LEVEL          2
+/* wdm.h: the PnP minor functions dsppcm's dispatch decides by */
+#define IRP_MN_START_DEVICE         0x00
+#define IRP_MN_REMOVE_DEVICE        0x02
+#define IRP_MN_STOP_DEVICE          0x04
+#define IRP_MN_QUERY_REMOVE_DEVICE  0x01
+#define IRP_MN_SURPRISE_REMOVAL     0x17
 typedef struct _KMUTEX
 {
     UCHAR Opaque[16];

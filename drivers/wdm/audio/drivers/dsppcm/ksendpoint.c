@@ -68,6 +68,13 @@ DsppcmPinFormatFind(
     return IntelDspAudioFormatFind(Endpoint, SampleRate, Channels, ValidBits, ContainerBits, Index);
 }
 
+BOOLEAN
+DsppcmPnpReleasesAdapter(
+    _In_ UCHAR MinorFunction)
+{
+    return MinorFunction == IRP_MN_REMOVE_DEVICE || MinorFunction == IRP_MN_SURPRISE_REMOVAL;
+}
+
 NTSTATUS
 DsppcmStreamAllocate(
     _In_ const INTELDSP_AUDIO_INTERFACE* Interface,

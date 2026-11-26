@@ -47,6 +47,19 @@ DsppcmPinFormatFind(
 
 /* The wave pin's methods: each is one call into the interface and answers its status; nothing is done twice and nothing is swallowed */
 
+/*
+ * Whether a PnP request ends the adapter of the device (dsppcm.cpp
+ * DSPPCM_Pnp): the removal and the surprise removal do. A stop leaves the
+ * adapter, its subdevices and their registrations in place for the start
+ * that follows, which finds the adapter and registers nothing a second time
+ * (R1-06): PortCls passes a stop down without unregistering the
+ * subdevices (portcls/irp.cpp), so the miniports' adapter must stay alive
+ * as long as they are registered.
+ */
+BOOLEAN
+DsppcmPnpReleasesAdapter(
+    _In_ UCHAR MinorFunction);
+
 NTSTATUS
 DsppcmStreamAllocate(
     _In_ const INTELDSP_AUDIO_INTERFACE* Interface,
