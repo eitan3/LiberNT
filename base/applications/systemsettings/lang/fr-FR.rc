@@ -560,7 +560,7 @@ BEGIN
     IDS_MIC_REMOVE "Supprimer"
     IDS_MIC_APP_FILTER "Programmes (*.exe)|*.exe|"
     IDS_MIC_HELP "Fonctionnement : l'accès au microphone désactive l'enregistrement pour toutes les applications. Autoriser les applications de bureau à accéder à votre microphone le désactive pour les applications de bureau. Lorsque le mode strict est activé, l'enregistrement est refusé à toutes les applications sauf celles que vous listez. Les applications de bureau sont identifiées par le chemin complet de leur fichier programme ; une application déplacée ou copiée dans un autre dossier doit donc être ajoutée à nouveau. Une application qui enregistre continue jusqu'à ce qu'elle rouvre le microphone."
-    IDS_MIC_HELP_LIMIT "Ces paramètres arrêtent les applications qui utilisent les interfaces audio Windows (WASAPI, DirectSound et waveIn). Un programme qui parle directement au pilote audio n'est pas arrêté."
+    IDS_MIC_HELP_LIMIT "Ces paramètres arrêtent les applications qui utilisent l'API de session audio Windows (WASAPI). Un programme qui parle directement au pilote audio n'est pas arrêté."
     IDS_MIC_MACHINE_OFF "L'accès au microphone est désactivé pour cet appareil par un administrateur."
     IDS_CLEAR "Effacer"
     IDS_BUILD_LAB "Build"

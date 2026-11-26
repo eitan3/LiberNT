@@ -560,7 +560,7 @@ BEGIN
     IDS_MIC_REMOVE "删除"
     IDS_MIC_APP_FILTER "程序 (*.exe)|*.exe|"
     IDS_MIC_HELP "工作原理：“麦克风访问权限”关闭所有应用的录音；“允许桌面应用访问你的麦克风”关闭桌面应用的录音。开启严格模式后，除你列出的应用外，所有应用的录音都会被拒绝。桌面应用通过其程序文件的完整路径识别，因此移动或复制到其他文件夹的程序需要重新添加。正在录音的应用会继续录音，直到它重新打开麦克风。"
-    IDS_MIC_HELP_LIMIT "这些设置会阻止使用 Windows 音频接口（WASAPI、DirectSound 和 waveIn）的应用。直接与音频驱动程序通信的程序不会被阻止。"
+    IDS_MIC_HELP_LIMIT "这些设置会阻止使用 Windows 音频会话 API (WASAPI) 的应用。直接与音频驱动程序通信的程序不会被阻止。"
     IDS_MIC_MACHINE_OFF "管理员已为此设备关闭了麦克风访问权限。"
     IDS_CLEAR "清除"
     IDS_BUILD_LAB "内部版本"
