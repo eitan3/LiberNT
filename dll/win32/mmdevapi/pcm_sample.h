@@ -131,10 +131,13 @@ write_pcm_sample_dithered(BYTE *data, WORD bits, WORD valid_bits, INT32 value, p
 
     if (!valid_bits || valid_bits > bits)
         valid_bits = bits;
-    shift = (WORD)(32 - valid_bits);
-    /* One LSB at the target depth is 2^shift in the 32-bit mix word; two uniform
-       words of that size differ to a triangle from -1 to +1 LSB */
-    first = pcm_dither_next(dither) >> shift;
-    second = pcm_dither_next(dither) >> shift;
+    /* One LSB at the target depth is 2^(32 - valid_bits) in the 32-bit mix word,
+       so a random word below it is the word with valid_bits bits dropped; two
+       uniform words of that size differ to a triangle from -1 to +1 LSB. At 32
+       valid bits nothing is below one LSB, and a 32-bit shift is not defined:
+       the two words are drawn and amount to nothing. */
+    shift = valid_bits;
+    first = shift < 32 ? pcm_dither_next(dither) >> shift : 0;
+    second = shift < 32 ? pcm_dither_next(dither) >> shift : 0;
     write_pcm_sample(data, bits, valid_bits, saturate_sample((INT64)value + first - second));
 }

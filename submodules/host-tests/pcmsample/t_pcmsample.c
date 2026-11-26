@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT host-native tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The Core Audio engine's PCM sample conversion and dither (dll/win32/mmdevapi/pcm_sample.h), the same source the engine compiles: the seed leaves the xorshift's fixed point, a dithered write moves a sample by at most one LSB and is not constant on a constant input, and a sample at the full scale, or one LSB past it, stays at the full scale; under ASan and UBSan
+ * PURPOSE:     The Core Audio engine's PCM sample conversion and dither (dll/win32/mmdevapi/pcm_sample.h), the same source the engine compiles: the seed leaves the xorshift's fixed point, a dithered write moves a sample by at most one LSB and is not constant on a constant input, the dither's amount is one LSB at 8, 16, 20, 24 and 32 valid bits (the reference derives it on its own), and a sample at the full scale, or one LSB past it, stays at the full scale; under ASan and UBSan
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -15,6 +15,7 @@ typedef uint16_t WORD;
 typedef int32_t INT32;
 typedef int64_t INT64;
 typedef uint32_t UINT32;
+typedef uint64_t UINT64;
 
 #include "pcm_sample.h"
 
@@ -54,7 +55,32 @@ Read(
     return (int)(int16_t)((uint16_t)At[0] | ((uint16_t)At[1] << 8));
 }
 
-/* The two words write_pcm_sample_dithered will draw from this state, in LSBs of the target depth */
+/* One LSB at a depth of ValidBits, in the 32-bit mix word */
+#define LSB_OF(ValidBits)   (1ULL << (32 - (ValidBits)))
+
+/*
+ * The dither the implementation will add for its next sample, derived on
+ * its own: a word of the sequence is a fraction of 2^32, one LSB of the depth
+ * is 2^(32 - depth) in the mix word, so the word scaled into the LSB and
+ * truncated is (word x 2^(32 - depth)) >> 32, in 64-bit arithmetic. The two
+ * words come from a copy of the state. A TPDF dither is their difference.
+ */
+static
+void
+DrawDither(
+    const pcm_dither* Dither,
+    WORD ValidBits,
+    INT64* First,
+    INT64* Second)
+{
+    pcm_dither Ahead = *Dither;
+    UINT64 Lsb = LSB_OF(ValidBits);
+
+    *First = (INT64)(((UINT64)pcm_dither_next(&Ahead) * Lsb) >> 32);
+    *Second = (INT64)(((UINT64)pcm_dither_next(&Ahead) * Lsb) >> 32);
+}
+
+/* The two words write_pcm_sample_dithered will draw from this state, in LSBs of the target depth, as the 16-bit tests below compare them */
 static
 void
 StepAhead(
@@ -63,10 +89,78 @@ StepAhead(
     UINT32* First,
     UINT32* Second)
 {
-    pcm_dither Ahead = *Dither;
+    INT64 First64, Second64;
 
-    *First = pcm_dither_next(&Ahead) >> (32 - Bits);
-    *Second = pcm_dither_next(&Ahead) >> (32 - Bits);
+    DrawDither(Dither, Bits, &First64, &Second64);
+    *First = (UINT32)First64;
+    *Second = (UINT32)Second64;
+}
+
+/* A 16 or 32-bit container read back as its signed word; the unused low bits are zero, so a shift by them gives the valid-bit units */
+static
+INT64
+ReadUnits(
+    const BYTE* At,
+    WORD Container,
+    WORD ValidBits)
+{
+    UINT32 Word = (UINT32)At[0] | ((UINT32)At[1] << 8);
+
+    if (Container == 32)
+        Word |= ((UINT32)At[2] << 16) | ((UINT32)At[3] << 24);
+    else
+        return (INT64)(int16_t)(uint16_t)Word >> (Container - ValidBits);
+    return (INT64)(INT32)Word >> (Container - ValidBits);
+}
+
+/*
+ * The dither's amount at a depth, in a container: every written sample is
+ * within one LSB of the plain write, some are not the plain write (at 32
+ * valid bits none is: nothing is below one LSB), and each is what the
+ * reference says: the sample and the dither derived on its own, narrowed by
+ * floor division. The inputs are far from the full scale and from the LSB
+ * boundaries, so no saturation and no rounding coincidence helps a wrong
+ * dither pass.
+ */
+static
+void
+TestDitherAmplitude(
+    WORD Container,
+    WORD ValidBits)
+{
+    static const INT32 Inputs[] =
+    {
+        0x12345678, 0x76543210, -0x23456789, 0x0f0f0f0f, -0x0f0f0f10, 0x00010000, -0x00010000, 0x23450000
+    };
+    pcm_dither Dither = (pcm_dither)PCM_DITHER_INIT;
+    BYTE Plain[4], Dithered[4];
+    INT64 Lsb = LSB_OF(ValidBits);
+    int Moved = 0, i;
+
+    for (i = 0; i < SAMPLES; ++i)
+    {
+        INT32 Value = Inputs[i % (int)(sizeof(Inputs) / sizeof(Inputs[0]))];
+        INT64 First, Second, DitherUnits, Sum, Expected, PlainUnits, GotUnits;
+
+        DrawDither(&Dither, ValidBits, &First, &Second);
+        DitherUnits = First - Second;
+        memset(Plain, 0, sizeof(Plain));
+        memset(Dithered, 0, sizeof(Dithered));
+        write_pcm_sample(Plain, Container, ValidBits, Value);
+        write_pcm_sample_dithered(Dithered, Container, ValidBits, Value, &Dither);
+        PlainUnits = ReadUnits(Plain, Container, ValidBits);
+        GotUnits = ReadUnits(Dithered, Container, ValidBits);
+        CHECK(GotUnits - PlainUnits >= -1 && GotUnits - PlainUnits <= 1);
+        Moved += GotUnits != PlainUnits;
+
+        Sum = (INT64)Value + DitherUnits;
+        Expected = Sum >= 0 ? Sum / Lsb : -((-Sum + Lsb - 1) / Lsb);
+        CHECK_EQ(GotUnits, Expected);
+    }
+    if (ValidBits < 32)
+        CHECK(Moved > 0);
+    else
+        CHECK_EQ(Moved, 0);
 }
 
 /* The seed is not the xorshift's fixed point, and zero, the state an endpoint's calloc leaves without the seed, is */
@@ -202,6 +296,13 @@ main(void)
     TestFullScaleStaysAtFullScale(16);
     TestFullScaleStaysAtFullScale(8);
     TestOneLsbPastFullScale();
+    TestDitherAmplitude(16, 8);
+    TestDitherAmplitude(32, 8);
+    TestDitherAmplitude(16, 16);
+    TestDitherAmplitude(32, 16);
+    TestDitherAmplitude(32, 20);
+    TestDitherAmplitude(32, 24);
+    TestDitherAmplitude(32, 32);
     printf("pcmsample: %d checks, %d failures\n", Checks, Failures);
     return Failures ? 1 : 0;
 }
