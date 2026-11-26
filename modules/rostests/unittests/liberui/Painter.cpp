@@ -126,6 +126,20 @@ protected:
     }
 };
 
+static void TestInvalidStyles()
+{
+    FontSet fonts;
+    LPCWSTR face = NULL;
+    INT style = -1;
+    LONG failures = AssertionFailures();
+
+    ok(fonts.Tracking(LIBER_TYPE_COUNT) == 0.0f, "out-of-range tracking is 0\n");
+    ok(fonts.Font(LIBER_TYPE_COUNT) == fonts.Font(LIBER_TYPE_BODY), "out-of-range font falls back to body\n");
+    fonts.Face((LIBER_TYPE)-1, &face, &style);
+    ok(face != NULL && style >= 0, "out-of-range face falls back to body\n");
+    ok(AssertionFailures() > failures, "out-of-range styles assert\n");
+}
+
 static void TestSurface()
 {
     Surface surface;
@@ -192,6 +206,7 @@ START_TEST(Painter)
     TestShapes();
     TestFonts();
     TestSurface();
-    Shutdown();
     ok(AssertionFailures() == failures, "%ld assertions failed\n", AssertionFailures() - failures);
+    TestInvalidStyles();
+    Shutdown();
 }

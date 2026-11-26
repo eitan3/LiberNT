@@ -184,6 +184,9 @@ static void TestTreeRules()
     a->AddChild(b);
     ok(a->ChildCount() == 1, "adding a child twice is refused\n");
     ok(a->IsAncestorOf(b) && !b->IsAncestorOf(a) && a->IsAncestorOf(a), "IsAncestorOf\n");
+    failures = AssertionFailures();
+    a->AddChild(NULL);
+    ok(a->ChildCount() == 1 && AssertionFailures() > failures, "a NULL child is refused\n");
     delete a;
 }
 

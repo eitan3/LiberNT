@@ -83,6 +83,8 @@ FontSet::FontSet()
     : m_Fallback(FALSE)
 {
     ZeroMemory(m_Fonts, sizeof(m_Fonts));
+    ZeroMemory(m_Faces, sizeof(m_Faces));
+    ZeroMemory(m_Styles, sizeof(m_Styles));
     lstrcpynW(m_Family, LIBER_FONT_UI, LF_FACESIZE);
 }
 
@@ -102,7 +104,7 @@ void FontSet::Reset()
 
 static BOOL FamilyAvailable(LPCWSTR family)
 {
-    Gdiplus::FontFamily test(family);
+    Gdiplus::FontFamily test(family, NULL);
     return test.GetLastStatus() == Gdiplus::Ok && test.IsAvailable();
 }
 
@@ -121,9 +123,21 @@ BOOL FontSet::SetFamily(LPCWSTR family)
     return FALSE;
 }
 
+void FontSet::Face(LIBER_TYPE style, LPCWSTR *face, INT *fontStyle) const
+{
+    LUI_ASSERT(style >= 0 && style < LIBER_TYPE_COUNT);
+    if (style < 0 || style >= LIBER_TYPE_COUNT)
+        style = LIBER_TYPE_BODY;
+    LUI_ASSERT(m_Fonts[style] != NULL);
+    *face = m_Faces[style];
+    *fontStyle = m_Styles[style];
+}
+
 float FontSet::Tracking(LIBER_TYPE style) const
 {
     LUI_ASSERT(style >= 0 && style < LIBER_TYPE_COUNT);
+    if (style < 0 || style >= LIBER_TYPE_COUNT)
+        return 0.0f;
     const LIBER_TYPE_STYLE &ramp = LiberTypeRamp[style];
     return ramp.Size * ramp.TrackingPermille / 1000.0f;
 }
@@ -155,13 +169,16 @@ void *FontSet::Font(LIBER_TYPE style)
     if (!FamilyAvailable(face))
         lstrcpynW(face, L"Tahoma", LF_FACESIZE);
 
-    Gdiplus::Font *font = new Gdiplus::Font(face, (Gdiplus::REAL)ramp.Size, fontStyle, Gdiplus::UnitPixel);
+    Gdiplus::FontFamily family(face, NULL);
+    Gdiplus::Font *font = new Gdiplus::Font(&family, (Gdiplus::REAL)ramp.Size, fontStyle, Gdiplus::UnitPixel);
     if (font && font->GetLastStatus() != Gdiplus::Ok)
     {
         delete font;
         font = NULL;
     }
     m_Fonts[style] = font;
+    lstrcpynW(m_Faces[style], face, LF_FACESIZE);
+    m_Styles[style] = fontStyle;
     return font;
 }
 
@@ -233,7 +250,7 @@ void GdiplusPainter::FillRoundRect(const RectF &rc, float radius, Argb color)
 {
     if (!m_Graphics || rc.Width <= 0.0f || rc.Height <= 0.0f)
         return;
-    Gdiplus::GraphicsPath path;
+    Gdiplus::GraphicsPath path(Gdiplus::FillModeAlternate);
     Gdiplus::SolidBrush brush(ToColor(color));
     RoundPath(path, rc, radius);
     GRAPHICS->FillPath(&brush, &path);
@@ -244,7 +261,7 @@ void GdiplusPainter::StrokeRoundRect(const RectF &rc, float radius, Argb color, 
     if (!m_Graphics || rc.Width <= width || rc.Height <= width)
         return;
     RectF inset = { rc.X + width / 2.0f, rc.Y + width / 2.0f, rc.Width - width, rc.Height - width };
-    Gdiplus::GraphicsPath path;
+    Gdiplus::GraphicsPath path(Gdiplus::FillModeAlternate);
     Gdiplus::Pen pen(ToColor(color), width);
     RoundPath(path, inset, radius - width / 2.0f);
     GRAPHICS->DrawPath(&pen, &path);
@@ -314,21 +331,51 @@ SIZE GdiplusPainter::MeasureText(LPCWSTR text, LIBER_TYPE style, float maxWidth)
     if (!m_Graphics || !text || !*text || !m_Fonts)
         return size;
 
-    Gdiplus::Font *font = (Gdiplus::Font *)m_Fonts->Font(style);
-    if (!font)
+    if (!m_Fonts->Font(style))
         return size;
 
-    Gdiplus::StringFormat format;
-    Gdiplus::RectF bounds;
-    Gdiplus::RectF layout(0.0f, 0.0f, maxWidth > 0.0f ? maxWidth : 100000.0f, 100000.0f);
+    LPCWSTR face;
+    INT fontStyle;
+    m_Fonts->Face(style, &face, &fontStyle);
+
+    Gdiplus::GpFontFamily *family = NULL;
+    Gdiplus::GpFont *font = NULL;
+    Gdiplus::GpStringFormat *format = NULL;
+    Gdiplus::GpGraphics *graphics = NULL;
+    HDC dc = CreateCompatibleDC(NULL);
     INT formatFlags = Gdiplus::StringFormatFlagsMeasureTrailingSpaces;
+
     if (maxWidth <= 0.0f)
         formatFlags |= Gdiplus::StringFormatFlagsNoWrap;
-    format.SetFormatFlags(formatFlags);
-    GRAPHICS->MeasureString(text, -1, font, layout, &format, &bounds);
-    size.cx = (LONG)ceil(bounds.Width);
-    int lines = (int)floor(bounds.Height / font->GetHeight(GRAPHICS) + 0.5);
-    size.cy = LiberTypeRamp[style].LineHeight * (lines > 0 ? lines : 1);
+    if (dc && Gdiplus::DllExports::GdipCreateFromHDC(dc, &graphics) == Gdiplus::Ok &&
+        Gdiplus::DllExports::GdipCreateFontFamilyFromName(face, NULL, &family) == Gdiplus::Ok &&
+        Gdiplus::DllExports::GdipCreateFont(family, (Gdiplus::REAL)LiberTypeRamp[style].Size, fontStyle,
+                                            Gdiplus::UnitPixel, &font) == Gdiplus::Ok &&
+        Gdiplus::DllExports::GdipCreateStringFormat(formatFlags, LANG_NEUTRAL, &format) == Gdiplus::Ok)
+    {
+        Gdiplus::RectF layout(0.0f, 0.0f, maxWidth > 0.0f ? maxWidth : 100000.0f, 100000.0f);
+        Gdiplus::RectF bounds;
+        INT fitted = 0, lines = 0;
+
+        Gdiplus::DllExports::GdipSetTextRenderingHint(graphics, Gdiplus::TextRenderingHintAntiAliasGridFit);
+        if (Gdiplus::DllExports::GdipMeasureString(graphics, text, -1, font, &layout, format, &bounds, &fitted,
+                                                   &lines) == Gdiplus::Ok)
+        {
+            size.cx = (LONG)ceil(bounds.Width);
+            size.cy = LiberTypeRamp[style].LineHeight * (lines > 0 ? lines : 1);
+        }
+    }
+
+    if (format)
+        Gdiplus::DllExports::GdipDeleteStringFormat(format);
+    if (font)
+        Gdiplus::DllExports::GdipDeleteFont(font);
+    if (family)
+        Gdiplus::DllExports::GdipDeleteFontFamily(family);
+    if (graphics)
+        Gdiplus::DllExports::GdipDeleteGraphics(graphics);
+    if (dc)
+        DeleteDC(dc);
     return size;
 }
 
@@ -359,7 +406,7 @@ void GdiplusPainter::PushClip(const RectF &rc, float radius)
         return;
 
     m_Clips[m_ClipDepth++] = GRAPHICS->Save();
-    Gdiplus::GraphicsPath path;
+    Gdiplus::GraphicsPath path(Gdiplus::FillModeAlternate);
     RoundPath(path, rc, radius);
     GRAPHICS->SetClip(&path, Gdiplus::CombineModeIntersect);
 }

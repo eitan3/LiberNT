@@ -269,6 +269,7 @@ public:
     BOOL UsesFallback() const { return m_Fallback; }
     void *Font(LIBER_TYPE style);
     float Tracking(LIBER_TYPE style) const;
+    void Face(LIBER_TYPE style, LPCWSTR *face, INT *fontStyle) const;
 
 private:
     void Reset();
@@ -276,6 +277,8 @@ private:
     WCHAR m_Family[LF_FACESIZE];
     BOOL m_Fallback;
     void *m_Fonts[LIBER_TYPE_COUNT];
+    WCHAR m_Faces[LIBER_TYPE_COUNT][LF_FACESIZE];
+    INT m_Styles[LIBER_TYPE_COUNT];
 };
 
 class GdiplusPainter : public IPainter

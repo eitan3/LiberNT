@@ -45,8 +45,10 @@ Widget::~Widget()
 void Widget::AddChild(Widget *child)
 {
     LUI_ASSERT(child != NULL && child != this);
+    if (!child || child == this)
+        return;
     LUI_ASSERT(child->m_Parent == NULL && child->m_Next == NULL && child->m_Prev == NULL);
-    if (!child || child == this || child->m_Parent)
+    if (child->m_Parent)
         return;
 
     for (Widget *p = this; p; p = p->m_Parent)
