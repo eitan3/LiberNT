@@ -55,7 +55,7 @@ HKR,Drivers\wave\wdmaud.drv,Description,,%Dsppcm.DeviceDesc%
 HKR,Drivers\mixer\wdmaud.drv,Driver,,wdmaud.drv
 HKR,Drivers\mixer\wdmaud.drv,Description,,%Dsppcm.DeviceDesc%
 
-; The subdevices of the loopback topology's PCM 'Loopback' (the P3 test topology), by the names the driver registers them under: the PCM's name and Topo or Wave for render, InTopo or InWave for capture; the FriendlyName is what the audio device list shows
+; The subdevices of the loopback topology's PCM 'Loopback' (the P3 test topology), by the names the driver registers them under: the PCM's name and Topo or Wave for render, InTopo or InWave for capture; the FriendlyName is what the audio device list shows, and is kept within 31 characters because this OS passes device names through a 32-character field (a longer one is cut)
 [Dsppcm_Inst.Interfaces]
 AddInterface=%KSCATEGORY_AUDIO%,%KSNAME_LoopbackTopo%,Dsppcm.LoopbackTopo
 AddInterface=%KSCATEGORY_TOPOLOGY%,%KSNAME_LoopbackTopo%,Dsppcm.LoopbackTopo
@@ -108,8 +108,8 @@ ManufacturerName="Intel"
 DiskName="LiberNT Installation Media"
 Dsppcm.DeviceDesc="Intel Smart Sound Technology DSP Audio"
 Dsppcm.ServiceDesc="Intel Smart Sound DSP endpoint driver"
-Dsppcm.LoopbackRenderName="Speakers - Intel Smart Sound DSP Loopback"
-Dsppcm.LoopbackCaptureName="Microphone - Intel Smart Sound DSP Loopback"
+Dsppcm.LoopbackRenderName="Speakers - Intel SST Loopback"
+Dsppcm.LoopbackCaptureName="Microphone - Intel SST Loopback"
 Proxy.CLSID = "{17CCA71B-ECD7-11D0-B908-00A0C9223196}"
 KSCATEGORY_AUDIO = "{6994AD04-93EF-11D0-A3CC-00A0C9223196}"
 KSCATEGORY_RENDER = "{65E8773E-8F56-11D0-A3B9-00A0C9223196}"
