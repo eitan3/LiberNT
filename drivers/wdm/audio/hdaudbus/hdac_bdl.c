@@ -1,3 +1,10 @@
+/*
+ * PROJECT:     LiberNT HD Audio Bus Driver
+ * LICENSE:     GPL-3.0-or-later for this file (https://spdx.org/licenses/GPL-3.0-or-later); the layout it lays out and describes is hdac_stream.cpp's, and so sklhdaudbus's, CoolStar, BSD-3-Clause, whose notice is kept in this directory (LICENSE.txt; LICENSING.md §2)
+ * PURPOSE:     A stream's cyclic buffer laid out for the notifications asked for, and the descriptor list built over the frames of its pages, as hdac_bdl.h says
+ * COPYRIGHT:   Copyright 2026 LiberNT contributors
+ */
+
 #include <ntddk.h>
 #include "hdac_bdl.h"
 

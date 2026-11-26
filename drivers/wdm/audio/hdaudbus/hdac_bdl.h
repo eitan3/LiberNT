@@ -1,4 +1,11 @@
 /*
+ * PROJECT:     LiberNT HD Audio Bus Driver
+ * LICENSE:     GPL-3.0-or-later for this file (https://spdx.org/licenses/GPL-3.0-or-later); the layout it declares is hdac_stream.cpp's, and so sklhdaudbus's, CoolStar, BSD-3-Clause, whose notice is kept in this directory (LICENSE.txt; LICENSING.md §2)
+ * PURPOSE:     The layout of a stream's cyclic buffer and the descriptor list over its pages, apart from the allocation and the stream's setup, so that the host test builds the lists the driver does
+ * COPYRIGHT:   Copyright 2026 LiberNT contributors
+ */
+
+/*
  * The layout of a stream's cyclic buffer and the descriptor list over its
  * pages, apart from the allocation and the stream's setup, so that the host
  * test builds the lists the driver does: of hdac_stream.cpp's allocation,
