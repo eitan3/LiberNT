@@ -890,6 +890,36 @@ check_bdl_limits(void)
     CHECK_EQ(Iocs, 2);
 }
 
+/* A page at 0xFFFFF000 with a non-zero offset (U3): the address is summed in 64 bits before it is split, and the descriptor is the page's address with the padding's offset added; a page-aligned address and an offset below the page never carry out of the low word, so the sum of the two words is the same */
+static
+void
+check_bdl_carry(
+    void)
+{
+    HDAC_BDL_LAYOUT Layout;
+    HDAC_BDLENTRY Bdl[8];
+    /* the frames the case needs: the page below 4 GiB, then the first above it */
+    static const PFN_NUMBER Frames[] = { 0xFFFFF, 0x100000, 0x100001, 0x100002 };
+    UINT16 Entries;
+
+    HdacBdlLayout(2, 3840, 4, &Layout);
+    CHECK_EQ(Layout.OffsetBytes, 2176);
+    CHECK_EQ(Layout.BufferBytes, 3840);
+    memset(Bdl, 0xAA, sizeof(Bdl));
+    CHECK(HdacBdlBuild(Bdl, Frames, &Layout, &Entries));
+    CHECK_EQ(Entries, 2);
+    /* the first descriptor: the page's address with the padding's offset added, 0xFFFFF000 + 0x880 */
+    CHECK_EQ(Bdl[0].lowAddr, 0xFFFFF880);
+    CHECK_EQ(Bdl[0].highAddr, 0);
+    CHECK_EQ(Bdl[0].len, 1920);
+    CHECK_EQ(Bdl[0].ioc, 1);
+    /* the second: the next page, 4 GiB and over, from its first byte */
+    CHECK_EQ(Bdl[1].lowAddr, 0);
+    CHECK_EQ(Bdl[1].highAddr, 1);
+    CHECK_EQ(Bdl[1].len, 1920);
+    CHECK_EQ(Bdl[1].ioc, 1);
+}
+
 int main(void)
 {
     unsigned int Index;
@@ -932,6 +962,7 @@ int main(void)
     for (Index = 0; Index < sizeof(BdlCases) / sizeof(BdlCases[0]); Index++)
         check_bdl(&BdlCases[Index]);
     check_bdl_limits();
+    check_bdl_carry();
 
     CHECK_STR(NhltParseStatusName(NhltParseOk), "ok");
     CHECK_STR(NhltParseStatusName(NhltParseNoTable), "no table");

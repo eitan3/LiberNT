@@ -33,7 +33,7 @@ HdacBdlLayout(
     Layout->AllocBytes = Layout->BufferBytes + Layout->OffsetBytes;
 }
 
-/* One descriptor: the rest of the page the buffer has reached, or the rest of what is being described, whichever is shorter; the entry's address is the page's with the offset added, as hdac_stream.cpp wrote it */
+/* One descriptor: the rest of the page the buffer has reached, or the rest of what is being described, whichever is shorter; the entry's address is the page's with the offset added, summed in 64 bits before it is split */
 static
 UINT32
 HdacBdlAppend(
@@ -49,8 +49,8 @@ HdacBdlAppend(
     Chunk = PageOff == 0 ? PAGE_SIZE : PAGE_SIZE - PageOff;
     if (*Remaining < Chunk)
         Chunk = *Remaining;
-    Address = (ULONGLONG)PageFrame << PAGE_SHIFT;
-    Entry->lowAddr = (UINT32)Address + PageOff;
+    Address = ((ULONGLONG)PageFrame << PAGE_SHIFT) + PageOff;
+    Entry->lowAddr = (UINT32)Address;
     Entry->highAddr = (UINT32)(Address >> 32);
     Entry->len = Chunk;
     *Remaining -= Chunk;
