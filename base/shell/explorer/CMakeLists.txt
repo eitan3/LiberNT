@@ -6,6 +6,7 @@ endif()
 
 list(APPEND SOURCE
     appbar.cpp
+    audiodev.cpp
     brightness.cpp
     calstore.cpp
     desktop.cpp
