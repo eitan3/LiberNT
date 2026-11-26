@@ -2254,7 +2254,7 @@ Out:
     free(S);
 }
 
-/* (i7) The comparison: a capture that is the render matches at offset 0, one that is the render a number of frames behind matches at that number, a capture stream that stopped part-way into its buffer is read from there around the cyclic buffer, and a differing sample is named wherever it lies */
+/* (i7) The comparison: a capture that is the render matches at offset 0, one that is the render a number of frames behind matches at that number, a capture stream that stopped part-way into its buffer is read from there around the cyclic buffer, a differing sample is named wherever it lies, and the rms is the exact one of the sine (the mean square divided once: O1) */
 static
 void
 CheckStreamCompare(
@@ -2314,13 +2314,37 @@ CheckStreamCompare(
     CHECK_EQ(Compare.RenderSample, 0);
     CHECK_EQ(Compare.CaptureSample, (INT32)0xCDCDCDCDu);
     CHECK_EQ(Compare.MaxError, 1379021362);
-    /* a 16-bit container: the same, with 16-bit samples */
+    /* a 16-bit container: the same, with 16-bit samples; the rms is the sine's exact one over the 4096 frames, 5794.253 in thousandths (the truncating sum printed 5793.911, 0.006 % low: O1) */
     IntcDspSelfTestFill(Render, 4096 * 4, 2, 16, 16);
     memcpy(Capture, Render, 4096 * 4);
     IntcDspStreamCompare(Render, Capture, 4096 * 4, 2, 16, 0, &Compare);
     CHECK(Compare.Matched);
     CHECK_EQ(Compare.Offset, 0);
-    CHECK_EQ(Compare.RenderRms, 5793911ULL);
+    CHECK_EQ(Compare.RenderRms, 5794253ULL);
+    CHECK_EQ(Compare.CaptureRms, 5794253ULL);
+    /* a constant buffer's rms is its value exactly, where a square divided before the sum lost a thousandth (O1): 16 bits, 24 valid bits in the 32-bit word, 32 bits */
+    for (I = 0; I < 4096 * 2; I++)
+        ((INT16*)Render)[I] = 8191;
+    memcpy(Capture, Render, 4096 * 4);
+    IntcDspStreamCompare(Render, Capture, 4096 * 4, 2, 16, 0, &Compare);
+    CHECK(Compare.Matched);
+    CHECK_EQ(Compare.RenderRms, 8191000ULL);
+    CHECK_EQ(Compare.CaptureRms, 8191000ULL);
+    for (I = 0; I < 4096 * 2; I++)
+        ((INT32*)Render)[I] = 536870911;
+    memcpy(Capture, Render, 4096 * 8);
+    IntcDspStreamCompare(Render, Capture, 4096 * 8, 2, 32, 0, &Compare);
+    CHECK(Compare.Matched);
+    CHECK_EQ(Compare.RenderRms, 536870911000ULL);
+    CHECK_EQ(Compare.CaptureRms, 536870911000ULL);
+    /* the largest sample: its square is 62 bits, eight thousand of them do not fit 64, and the mean is still exact */
+    for (I = 0; I < 4096 * 2; I++)
+        ((INT32*)Render)[I] = (INT32)2147483647u;
+    memcpy(Capture, Render, 4096 * 8);
+    IntcDspStreamCompare(Render, Capture, 4096 * 8, 2, 32, 0, &Compare);
+    CHECK(Compare.Matched);
+    CHECK_EQ(Compare.RenderRms, 2147483647000ULL);
+    CHECK_EQ(Compare.CaptureRms, 2147483647000ULL);
     /* the sine: a period of 48 frames from zero through the positive peak and back */
     for (I = 0; I < 3; I++)
         CHECK_EQ(Sine[I * 12], Peaks[I]);
@@ -2352,7 +2376,7 @@ CheckStreamSelfTest(
     CHECK(StreamLogCount(S, "loopback self-test: endpoint 'Loopback', 48000 Hz 2 ch 16-bit, render stream 1, capture stream 1, 4096 frames\n") == 1);
     CHECK(StreamLogCount(S, "loopback self-test: endpoint 'Loopback', 48000 Hz 2 ch 24-bit, render stream 1, capture stream 1, 4096 frames\n") == 1);
     CHECK(StreamLogCount(S, "loopback self-test: endpoint 'Loopback', 48000 Hz 2 ch 32-bit, render stream 1, capture stream 1, 4096 frames\n") == 1);
-    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames captured after 85 ms, offset 0 frames, max abs error 0, render rms 5793.911, capture rms 5793.911, ok\n") == 1);
+    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames captured after 85 ms, offset 0 frames, max abs error 0, render rms 5794.253, capture rms 5794.253, ok\n") == 1);
     CHECK(StreamLogCount(S, "loopback self-test: 4096 frames captured after 85 ms, offset 0 frames, max abs error 0, render rms 379742706.482, capture rms 379742706.482, ok\n") == 2);
     CHECK(StreamLogCount(S, "stopped at render position 0 (LPIB 0, buffer 0), capture position 0 (LPIB 0, buffer 0), 2 capture periods, released: 1 pipelines and 3 instances deleted, 2 streams freed, ok\n") == 3);
     CHECK(StreamLogCount(S, "loopback self-test: 3 runs, 3 matched, 0 failed, 45 requests, 0 notifications, 0 timeouts, 0 DSP interrupts, ok\n") == 1);
@@ -2374,7 +2398,7 @@ CheckStreamSelfTest(
     if (Status != STATUS_SUCCESS)
         fprintf(stderr, "%s", S->Log);
     CHECK_EQ(Status, STATUS_SUCCESS);
-    CHECK(StreamLogCount(S, "offset 2 frames, max abs error 0, render rms 5793.911, capture rms 5793.911, ok\n") == 1);
+    CHECK(StreamLogCount(S, "offset 2 frames, max abs error 0, render rms 5794.253, capture rms 5794.253, ok\n") == 1);
     /* the stop position is in bytes: eight frames of 16 bits are 32, of 24 and 32 bits 64 */
     CHECK(StreamLogCount(S, "stopped at render position 0 (LPIB 0, buffer 0), capture position 32 (LPIB 32, buffer 32), 2 capture periods, released: 1 pipelines and 3 instances deleted, 2 streams freed, ok\n") == 1);
     CHECK(StreamLogCount(S, "stopped at render position 0 (LPIB 0, buffer 0), capture position 64 (LPIB 64, buffer 64), 2 capture periods, released: 1 pipelines and 3 instances deleted, 2 streams freed, ok\n") == 2);
@@ -2400,9 +2424,9 @@ CheckStreamSelfTest(
     S->Wire = FALSE;
     Status = IntcDspLoopbackSelfTest(&S->Streams, &S->SelfTestOps, STREAM_FRAMES);
     CHECK_EQ(Status, STATUS_DEVICE_PROTOCOL_ERROR);
-    if (StreamLogCount(S, "offset 0 frames, max abs error 21042, render rms 5793.911, capture rms 12850.779, mismatch at frame 0 channel 0 (render frame 0): render 0, capture -12851, failed\n") == 0)
+    if (StreamLogCount(S, "offset 0 frames, max abs error 21042, render rms 5794.253, capture rms 12851.000, mismatch at frame 0 channel 0 (render frame 0): render 0, capture -12851, failed\n") == 0)
         fprintf(stderr, "%s", S->Log);
-    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames captured after 85 ms, offset 0 frames, max abs error 21042, render rms 5793.911, capture rms 12850.779, mismatch at frame 0 channel 0 (render frame 0): render 0, capture -12851, failed\n") == 1);
+    CHECK(StreamLogCount(S, "loopback self-test: 4096 frames captured after 85 ms, offset 0 frames, max abs error 21042, render rms 5794.253, capture rms 12851.000, mismatch at frame 0 channel 0 (render frame 0): render 0, capture -12851, failed\n") == 1);
     CHECK(StreamLogCount(S, "loopback self-test: 1 runs, 0 matched, 1 failed, 15 requests, 0 notifications, 0 timeouts, 0 DSP interrupts, failed\n") == 1);
     StreamQuiescent(S, Pcm);
     /* one damaged sample in the first run: the run stops the test at that sample */
@@ -2411,7 +2435,7 @@ CheckStreamSelfTest(
     S->DamageFrame = 100;
     Status = IntcDspLoopbackSelfTest(&S->Streams, &S->SelfTestOps, STREAM_FRAMES);
     CHECK_EQ(Status, STATUS_DEVICE_PROTOCOL_ERROR);
-    CHECK(StreamLogCount(S, "offset 0 frames, max abs error 5, render rms 5793.911, capture rms 5793.911, mismatch at frame 100 channel 1 (render frame 100): render 4095, capture 4100, failed\n") == 1);
+    CHECK(StreamLogCount(S, "offset 0 frames, max abs error 5, render rms 5794.253, capture rms 5794.253, mismatch at frame 100 channel 1 (render frame 100): render 4095, capture 4100, failed\n") == 1);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 18);
     StreamQuiescent(S, Pcm);
     /* a fault during the self-test: the fault's release, the fault's status, one run */

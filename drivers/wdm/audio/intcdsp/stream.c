@@ -1286,10 +1286,30 @@ IntcDspSqrt(
 }
 
 /*
- * The RMS of Count samples whose squared values sum to Sum, in thousandths
- * of a sample unit and exact: the mean of the squares is summed one sample
- * at a time (a 32-bit sample's square is 62 bits, their sum over a buffer
- * would not fit), and the millionth of its square root is taken from a
+ * One sample's square, added to the mean square of Count samples: the
+ * running total is kept as its quotient by Count and the remainder below
+ * Count, which is the sum of the squares divided once, exactly, although
+ * that sum would not fit a 64-bit integer (a 32-bit sample's square is 62
+ * bits). A square plus a remainder below Count, at most 2^32, stays below
+ * 2^63.
+ */
+static
+VOID
+IntcDspMeanAdd(
+    UINT64 Square,
+    UINT64 Count,
+    _Inout_ PUINT64 Mean,
+    _Inout_ PUINT64 Rest)
+{
+    UINT64 Total = *Rest + Square;
+
+    *Mean += Total / Count;
+    *Rest = Total % Count;
+}
+
+/*
+ * The RMS of Count samples whose mean square is Mean, in thousandths of a
+ * sample unit and exact: the thousandth of its square root is taken from a
  * 64-bit split, as (sqrt(q) 10^6 + d)^2 stays below (q 10^6 + r) 10^6 while
  * 2 sqrt(q) 10^6 d + d^2 stays below R.
  */
@@ -1327,7 +1347,9 @@ IntcDspStreamCompare(
     SIZE_T Frames = FrameBytes != 0 ? Bytes / FrameBytes : 0, Shift = 0, I;
     ULONG Channel;
     UINT32 Offset, BestOffset = 0;
-    UINT64 Differing, BestDiffering = 0, MaxError, BestMaxError = 0, RenderSum = 0, CaptureSum, BestCaptureSum = 0;
+    UINT64 Differing, BestDiffering = 0, MaxError, BestMaxError = 0;
+    /* the mean squares: each as its whole part and the remainder of the running total */
+    UINT64 Samples, RenderMean = 0, RenderRest = 0, CaptureMean, CaptureRest, BestCaptureMean = 0;
     UINT64 BestFrame = 0;
     ULONG BestChannel = 0;
     INT32 RenderSample, CaptureSample, BestRender = 0, BestCapture = 0;
@@ -1336,6 +1358,7 @@ IntcDspStreamCompare(
     RtlZeroMemory(Compare, sizeof(*Compare));
     if (Frames == 0 || Channels == 0 || (Width != 2 && Width != 4))
         return;
+    Samples = (UINT64)Frames * Channels;
     /* the capture stream stood Shift frames into its buffer when it stopped: the compare starts there and goes around the cyclic buffer */
     Shift = (StopBytes % (UINT32)Bytes) / FrameBytes;
     Shift %= Frames;
@@ -1345,7 +1368,7 @@ IntcDspStreamCompare(
         for (Channel = 0; Channel < Channels; Channel++)
         {
             RenderSample = IntcDspSample(Render, Frames, FrameBytes, Width, I, Channel);
-            RenderSum += ((UINT64)((INT64)RenderSample * RenderSample)) / (UINT64)(Frames * Channels);
+            IntcDspMeanAdd((UINT64)((INT64)RenderSample * RenderSample), Samples, &RenderMean, &RenderRest);
         }
     }
     /*
@@ -1360,14 +1383,15 @@ IntcDspStreamCompare(
     {
         Differing = 0;
         MaxError = 0;
-        CaptureSum = 0;
+        CaptureMean = 0;
+        CaptureRest = 0;
         for (I = 0; I < Frames; I++)
         {
             for (Channel = 0; Channel < Channels; Channel++)
             {
                 RenderSample = IntcDspSample(Render, Frames, FrameBytes, Width, I, Channel);
                 CaptureSample = IntcDspSample(Capture, Frames, FrameBytes, Width, Shift + Offset + I, Channel);
-                CaptureSum += ((UINT64)((INT64)CaptureSample * CaptureSample)) / (UINT64)(Frames * Channels);
+                IntcDspMeanAdd((UINT64)((INT64)CaptureSample * CaptureSample), Samples, &CaptureMean, &CaptureRest);
                 if (RenderSample == CaptureSample)
                     continue;
                 Error = (INT64)CaptureSample - RenderSample;
@@ -1390,7 +1414,7 @@ IntcDspStreamCompare(
         BestDiffering = Differing;
         BestMaxError = MaxError;
         BestOffset = Offset;
-        BestCaptureSum = CaptureSum;
+        BestCaptureMean = CaptureMean;
         Compare->DifferingFrame = (UINT32)BestFrame;
         Compare->DifferingChannel = BestChannel;
         Compare->RenderSample = BestRender;
@@ -1402,8 +1426,8 @@ IntcDspStreamCompare(
     Compare->Samples = (UINT64)Frames * Channels;
     Compare->Differing = BestDiffering;
     Compare->MaxError = BestMaxError;
-    Compare->RenderRms = IntcDspRms(RenderSum, (UINT64)Frames * Channels);
-    Compare->CaptureRms = IntcDspRms(BestCaptureSum, Compare->Samples);
+    Compare->RenderRms = IntcDspRms(RenderMean, Compare->Samples);
+    Compare->CaptureRms = IntcDspRms(BestCaptureMean, Compare->Samples);
     Compare->Matched = BestDiffering == 0;
 }
 
