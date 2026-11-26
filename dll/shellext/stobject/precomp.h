@@ -39,6 +39,8 @@ extern HINSTANCE g_hInstance;
 #define ID_ICON_MOUSE   (WM_APP + 0x4CE)
 #define ID_ICON_BLUETOOTH (WM_APP + 0x4CF)
 #define ID_ICON_MICROPHONE (WM_APP + 0x4D0)
+/* Posted to the tray window when the microphone's endpoint notifications ask for the poll to be re-decided */
+#define WM_SYSTRAY_AUDIOCHANGED (WM_APP + 0x4D1)
 
 #define POWER_SERVICE_FLAG    0x00000001
 #define HOTPLUG_SERVICE_FLAG  0x00000002
@@ -80,6 +82,7 @@ extern HRESULT STDMETHODCALLTYPE Microphone_Init(_In_ CSysTray * pSysTray);
 extern HRESULT STDMETHODCALLTYPE Microphone_Shutdown(_In_ CSysTray * pSysTray);
 extern HRESULT STDMETHODCALLTYPE Microphone_Update(_In_ CSysTray * pSysTray);
 extern HRESULT STDMETHODCALLTYPE Microphone_Message(_In_ CSysTray * pSysTray, UINT uMsg, WPARAM wParam, LPARAM lParam, LRESULT &lResult);
+extern BOOL Microphone_NeedsPoll(VOID);
 
 extern HRESULT STDMETHODCALLTYPE Hotplug_Init(_In_ CSysTray * pSysTray);
 extern HRESULT STDMETHODCALLTYPE Hotplug_Shutdown(_In_ CSysTray * pSysTray);

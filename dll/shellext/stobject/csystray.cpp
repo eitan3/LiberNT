@@ -109,8 +109,13 @@ void CSysTray::ConfigurePollTimer()
     // FIXME: VOLUME_SERVICE_FLAG should use mixerOpen(CALLBACK_WINDOW)
     // FIXME: POWER_SERVICE_FLAG should use WM_DEVICECHANGE, WM_POWERBROADCAST
 
-    /* The microphone icon has no notification of capture streams to wait on and is always on */
-    SetTimer(POLL_TIMER_ID, 2000, NULL);
+    /* The poll runs while a service that polls is enabled, or the microphone has something to watch: no
+       enumerator or no notification client yet, or a capture endpoint; its client asks again when they change */
+    DWORD fNeedsTimer = VOLUME_SERVICE_FLAG | POWER_SERVICE_FLAG;
+    if ((this->dwServicesEnabled & fNeedsTimer) || Microphone_NeedsPoll())
+        SetTimer(POLL_TIMER_ID, 2000, NULL);
+    else
+        KillTimer(POLL_TIMER_ID);
 }
 
 HRESULT CSysTray::InitNetShell()
@@ -387,6 +392,10 @@ BOOL CSysTray::ProcessWindowMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
         }
         else
             ProcessIconMessage(uMsg, wParam, lParam, lResult);
+        return TRUE;
+
+    case WM_SYSTRAY_AUDIOCHANGED:
+        ConfigurePollTimer();
         return TRUE;
 
     case WM_SETTINGCHANGE:

@@ -341,7 +341,7 @@ FormFactorString(UINT FormFactor)
 static VOID
 SetTextOrUnknown(HWND hwndDlg, INT Id, LPCWSTR Text)
 {
-    WCHAR Unknown[64];
+    WCHAR Unknown[64] = L"";
 
     if (Text && Text[0])
     {
@@ -356,7 +356,7 @@ static INT_PTR CALLBACK
 EndpointGeneralDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     PENDPOINT_PROPS Props = (PENDPOINT_PROPS)GetWindowLongPtrW(hwndDlg, DWLP_USER);
-    WCHAR Text[128];
+    WCHAR Text[128] = L"";
 
     switch (uMsg)
     {

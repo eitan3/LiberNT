@@ -24,6 +24,8 @@ static const PROPERTYKEY InterfaceNameKey =
 #define METER_TIMER_ID 1
 #define METER_INTERVAL 100
 #define MAX_DEVICES    128
+/* Posted by the endpoint notification client, which mmdevapi calls on another thread */
+#define WM_DEVICELIST_CHANGED (WM_APP + 1)
 
 typedef struct _DEVICE_ROW
 {
@@ -42,8 +44,125 @@ typedef struct _DEVICE_PAGE
     HIMAGELIST Images;
     UINT Count;
     WCHAR EmptyText[128];
+    IMMDeviceEnumerator *Enumerator;
+    IMMNotificationClient *Notification;
     DEVICE_ROW Rows[MAX_DEVICES];
 } DEVICE_PAGE, *PDEVICE_PAGE;
+
+typedef struct _DEVICE_NOTIFICATION
+{
+    IMMNotificationClient INotify;
+    LONG References;
+    HWND Window;
+} DEVICE_NOTIFICATION, *PDEVICE_NOTIFICATION;
+
+static VOID
+DeviceListChanged(IMMNotificationClient *iface)
+{
+    PostMessageW(((PDEVICE_NOTIFICATION)iface)->Window, WM_DEVICELIST_CHANGED, 0, 0);
+}
+
+static HRESULT WINAPI
+DeviceNotification_QueryInterface(IMMNotificationClient *iface, REFIID riid, void **ppv)
+{
+    PDEVICE_NOTIFICATION Notify = (PDEVICE_NOTIFICATION)iface;
+
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IMMNotificationClient))
+    {
+        *ppv = &Notify->INotify;
+        InterlockedIncrement(&Notify->References);
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG WINAPI
+DeviceNotification_AddRef(IMMNotificationClient *iface)
+{
+    return InterlockedIncrement(&((PDEVICE_NOTIFICATION)iface)->References);
+}
+
+static ULONG WINAPI
+DeviceNotification_Release(IMMNotificationClient *iface)
+{
+    PDEVICE_NOTIFICATION Notify = (PDEVICE_NOTIFICATION)iface;
+    ULONG References = InterlockedDecrement(&Notify->References);
+
+    if (!References)
+        HeapFree(GetProcessHeap(), 0, Notify);
+    return References;
+}
+
+static HRESULT WINAPI
+DeviceNotification_OnDeviceStateChanged(IMMNotificationClient *iface, LPCWSTR DeviceId, DWORD NewState)
+{
+    UNREFERENCED_PARAMETER(DeviceId);
+    UNREFERENCED_PARAMETER(NewState);
+    DeviceListChanged(iface);
+    return S_OK;
+}
+
+static HRESULT WINAPI
+DeviceNotification_OnDeviceAdded(IMMNotificationClient *iface, LPCWSTR DeviceId)
+{
+    UNREFERENCED_PARAMETER(DeviceId);
+    DeviceListChanged(iface);
+    return S_OK;
+}
+
+static HRESULT WINAPI
+DeviceNotification_OnDeviceRemoved(IMMNotificationClient *iface, LPCWSTR DeviceId)
+{
+    UNREFERENCED_PARAMETER(DeviceId);
+    DeviceListChanged(iface);
+    return S_OK;
+}
+
+static HRESULT WINAPI
+DeviceNotification_OnDefaultDeviceChanged(IMMNotificationClient *iface, EDataFlow Flow, ERole Role,
+                                                     LPCWSTR DefaultDeviceId)
+{
+    UNREFERENCED_PARAMETER(Flow);
+    UNREFERENCED_PARAMETER(Role);
+    UNREFERENCED_PARAMETER(DefaultDeviceId);
+    DeviceListChanged(iface);
+    return S_OK;
+}
+
+static HRESULT WINAPI
+DeviceNotification_OnPropertyValueChanged(IMMNotificationClient *iface, LPCWSTR DeviceId,
+                                                PROPERTYKEY Key)
+{
+    UNREFERENCED_PARAMETER(iface);
+    UNREFERENCED_PARAMETER(DeviceId);
+    UNREFERENCED_PARAMETER(Key);
+    return S_OK;
+}
+
+static IMMNotificationClientVtbl g_DeviceNotificationVtbl = {
+    DeviceNotification_QueryInterface,
+    DeviceNotification_AddRef,
+    DeviceNotification_Release,
+    DeviceNotification_OnDeviceStateChanged,
+    DeviceNotification_OnDeviceAdded,
+    DeviceNotification_OnDeviceRemoved,
+    DeviceNotification_OnDefaultDeviceChanged,
+    DeviceNotification_OnPropertyValueChanged
+};
+
+static IMMNotificationClient *
+CreateDeviceNotification(HWND Window)
+{
+    PDEVICE_NOTIFICATION Notify = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*Notify));
+
+    if (!Notify)
+        return NULL;
+    Notify->INotify.lpVtbl = &g_DeviceNotificationVtbl;
+    Notify->References = 1;
+    Notify->Window = Window;
+    return &Notify->INotify;
+}
 
 static VOID
 ReadString(IPropertyStore *pProps, const PROPERTYKEY *Key, LPWSTR Buffer, SIZE_T Chars)
@@ -76,7 +195,7 @@ static VOID
 ShowEmptyNotice(HWND hwndDlg, PDEVICE_PAGE Page)
 {
     HWND Notice = GetDlgItem(hwndDlg, IDC_DEVLIST_EMPTY);
-    WCHAR Text[256];
+    WCHAR Text[256] = L"";
     RECT Rect = { 0, 0, 0, 9 };
 
     if (Page->Count)
@@ -105,30 +224,28 @@ ShowEmptyNotice(HWND hwndDlg, PDEVICE_PAGE Page)
 static VOID
 LoadDevices(HWND hwndDlg, PDEVICE_PAGE Page)
 {
-    IMMDeviceEnumerator *pEnum = NULL;
     IMMDeviceCollection *pCollection = NULL;
     IMMDevice *pDefault = NULL, *pDefaultComm = NULL;
     LPWSTR DefaultId = NULL, DefaultCommId = NULL;
-    WCHAR Line[256], Status[64];
+    WCHAR Line[256], Status[64] = L"";
     UINT Count = 0, Index;
     INT Selected = -1;
 
     FreeRows(Page);
-    if (FAILED(CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_INPROC_SERVER, &IID_IMMDeviceEnumerator,
-                                (void **)&pEnum)))
+    if (!Page->Enumerator)
         return;
-    if (SUCCEEDED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(pEnum, Page->Flow, eConsole, &pDefault)))
+    if (SUCCEEDED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(Page->Enumerator, Page->Flow, eConsole, &pDefault)))
     {
         IMMDevice_GetId(pDefault, &DefaultId);
         IMMDevice_Release(pDefault);
     }
-    if (SUCCEEDED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(pEnum, Page->Flow, eCommunications, &pDefaultComm)))
+    if (SUCCEEDED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(Page->Enumerator, Page->Flow, eCommunications, &pDefaultComm)))
     {
         IMMDevice_GetId(pDefaultComm, &DefaultCommId);
         IMMDevice_Release(pDefaultComm);
     }
 
-    if (SUCCEEDED(IMMDeviceEnumerator_EnumAudioEndpoints(pEnum, Page->Flow, DEVICE_STATE_ACTIVE, &pCollection)))
+    if (SUCCEEDED(IMMDeviceEnumerator_EnumAudioEndpoints(Page->Enumerator, Page->Flow, DEVICE_STATE_ACTIVE, &pCollection)))
         IMMDeviceCollection_GetCount(pCollection, &Count);
 
     for (Index = 0; Index < Count && Page->Count < MAX_DEVICES; Index++)
@@ -183,7 +300,6 @@ LoadDevices(HWND hwndDlg, PDEVICE_PAGE Page)
         CoTaskMemFree(DefaultId);
     if (DefaultCommId)
         CoTaskMemFree(DefaultCommId);
-    IMMDeviceEnumerator_Release(pEnum);
 
     ShowEmptyNotice(hwndDlg, Page);
     if (Page->Count)
@@ -217,6 +333,22 @@ UpdateButtons(HWND hwndDlg, PDEVICE_PAGE Page)
     EnableWindow(GetDlgItem(hwndDlg, IDC_DEVLIST_PROPERTIES), Row >= 0);
 }
 
+/* Windows applies Set Default at once, not on OK; the user is told when the write fails */
+static VOID
+SetDefault(HWND hwndDlg, PDEVICE_PAGE Page, ERole Role, INT Row)
+{
+    if (MMDevSetDefaultEndpoint(Page->Flow, Role, Page->Rows[Row].Id) != ERROR_SUCCESS)
+    {
+        WCHAR Text[256] = L"", Caption[128] = L"";
+
+        LoadStringW(hApplet, IDS_SET_DEFAULT_FAILED, Text, _countof(Text));
+        GetWindowTextW(GetParent(hwndDlg), Caption, _countof(Caption));
+        MessageBoxW(hwndDlg, Text, Caption, MB_OK | MB_ICONERROR);
+    }
+    LoadDevices(hwndDlg, Page);
+    UpdateButtons(hwndDlg, Page);
+}
+
 /* The level bar of the selected device, as the green meter Windows draws next to each device */
 static VOID
 UpdateMeter(HWND hwndDlg, PDEVICE_PAGE Page)
@@ -235,7 +367,7 @@ InitColumns(PDEVICE_PAGE Page)
     static const UINT Titles[] = { IDS_DEVICE_COLUMN_NAME, IDS_DEVICE_COLUMN_ADAPTER, IDS_DEVICE_COLUMN_STATUS };
     static const INT Widths[] = { 34, 44, 22 };
     LVCOLUMNW Column;
-    WCHAR Title[64];
+    WCHAR Title[64] = L"";
     RECT Rect;
     UINT Index;
 
@@ -271,6 +403,10 @@ DeviceListDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, EDataFl
             Page->ComInit = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
             Page->Flow = Flow;
             Page->List = GetDlgItem(hwndDlg, IDC_DEVLIST_LIST);
+            if (SUCCEEDED(CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_INPROC_SERVER, &IID_IMMDeviceEnumerator,
+                                           (void **)&Page->Enumerator)) &&
+                (Page->Notification = CreateDeviceNotification(hwndDlg)))
+                IMMDeviceEnumerator_RegisterEndpointNotificationCallback(Page->Enumerator, Page->Notification);
             Page->Images = ImageList_Create(Size, Size, ILC_COLOR32 | ILC_MASK, 2, 0);
             ImageList_AddIcon(Page->Images, LoadIconW(hApplet, MAKEINTRESOURCEW(IDI_CPLICON)));
             ImageList_AddIcon(Page->Images, LoadIconW(hApplet, MAKEINTRESOURCEW(IDI_MICROPHONE_ICON)));
@@ -295,18 +431,9 @@ DeviceListDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, EDataFl
                 break;
             Row = SelectedRow(Page);
             if (LOWORD(wParam) == IDC_DEVLIST_DEFAULT && Row >= 0)
-            {
-                /* Windows applies Set Default at once, not on OK */
-                MMDevSetDefaultEndpoint(Page->Flow, eConsole, Page->Rows[Row].Id);
-                LoadDevices(hwndDlg, Page);
-                UpdateButtons(hwndDlg, Page);
-            }
+                SetDefault(hwndDlg, Page, eConsole, Row);
             else if (LOWORD(wParam) == IDC_DEVLIST_DEFAULT_COMM && Row >= 0)
-            {
-                MMDevSetDefaultEndpoint(Page->Flow, eCommunications, Page->Rows[Row].Id);
-                LoadDevices(hwndDlg, Page);
-                UpdateButtons(hwndDlg, Page);
-            }
+                SetDefault(hwndDlg, Page, eCommunications, Row);
             else if (LOWORD(wParam) == IDC_DEVLIST_PROPERTIES && Row >= 0)
             {
                 ShowEndpointProperties(hwndDlg, Page->Rows[Row].Id);
@@ -332,6 +459,14 @@ DeviceListDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, EDataFl
             break;
         }
 
+        case WM_DEVICELIST_CHANGED:
+            if (Page)
+            {
+                LoadDevices(hwndDlg, Page);
+                UpdateButtons(hwndDlg, Page);
+            }
+            return TRUE;
+
         case WM_DESTROY:
             if (!Page)
                 break;
@@ -339,6 +474,14 @@ DeviceListDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam, EDataFl
             FreeRows(Page);
             if (Page->Images)
                 ImageList_Destroy(Page->Images);
+            if (Page->Notification)
+            {
+                if (Page->Enumerator)
+                    IMMDeviceEnumerator_UnregisterEndpointNotificationCallback(Page->Enumerator, Page->Notification);
+                IMMNotificationClient_Release(Page->Notification);
+            }
+            if (Page->Enumerator)
+                IMMDeviceEnumerator_Release(Page->Enumerator);
             if (SUCCEEDED(Page->ComInit))
                 CoUninitialize();
             HeapFree(GetProcessHeap(), 0, Page);

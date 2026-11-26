@@ -16,6 +16,130 @@ static BOOL g_bMicrophoneShown = FALSE;
 static WCHAR g_szMicrophoneTip[128];
 /* One enumerator for the lifetime of the tray, so the poll creates no COM object per tick */
 static CComPtr<IMMDeviceEnumerator> g_pMicrophoneEnum;
+static HWND g_hMicrophoneTrayWnd = NULL;
+static IMMNotificationClient *g_pMicrophoneNotification = NULL;
+
+/* The poll's work is re-decided on the tray window's thread; mmdevapi calls the client on its own */
+static
+VOID
+MicrophoneDevicesChanged(VOID)
+{
+    if (g_hMicrophoneTrayWnd)
+        PostMessageW(g_hMicrophoneTrayWnd, WM_SYSTRAY_AUDIOCHANGED, 0, 0);
+}
+
+class CMicrophoneNotification final : public IMMNotificationClient
+{
+    LONG m_RefCount;
+
+    ~CMicrophoneNotification() {}
+
+public:
+    CMicrophoneNotification() : m_RefCount(1) {}
+
+    STDMETHODIMP QueryInterface(REFIID riid, PVOID *ppv)
+    {
+        if (riid == IID_IUnknown || riid == IID_IMMNotificationClient)
+        {
+            *ppv = static_cast<IMMNotificationClient *>(this);
+            InterlockedIncrement(&m_RefCount);
+            return S_OK;
+        }
+        *ppv = NULL;
+        return E_NOINTERFACE;
+    }
+
+    STDMETHODIMP_(ULONG) AddRef()
+    {
+        return InterlockedIncrement(&m_RefCount);
+    }
+
+    STDMETHODIMP_(ULONG) Release()
+    {
+        ULONG Count = InterlockedDecrement(&m_RefCount);
+
+        if (!Count)
+            delete this;
+        return Count;
+    }
+
+    STDMETHODIMP OnDeviceStateChanged(LPCWSTR pwstrDeviceId, DWORD dwNewState)
+    {
+        UNREFERENCED_PARAMETER(pwstrDeviceId);
+        UNREFERENCED_PARAMETER(dwNewState);
+        MicrophoneDevicesChanged();
+        return S_OK;
+    }
+
+    STDMETHODIMP OnDeviceAdded(LPCWSTR pwstrDeviceId)
+    {
+        UNREFERENCED_PARAMETER(pwstrDeviceId);
+        MicrophoneDevicesChanged();
+        return S_OK;
+    }
+
+    STDMETHODIMP OnDeviceRemoved(LPCWSTR pwstrDeviceId)
+    {
+        UNREFERENCED_PARAMETER(pwstrDeviceId);
+        MicrophoneDevicesChanged();
+        return S_OK;
+    }
+
+    STDMETHODIMP OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR pwstrDefaultDeviceId)
+    {
+        UNREFERENCED_PARAMETER(flow);
+        UNREFERENCED_PARAMETER(role);
+        UNREFERENCED_PARAMETER(pwstrDefaultDeviceId);
+        return S_OK;
+    }
+
+    STDMETHODIMP OnPropertyValueChanged(LPCWSTR pwstrDeviceId, PROPERTYKEY key)
+    {
+        UNREFERENCED_PARAMETER(pwstrDeviceId);
+        UNREFERENCED_PARAMETER(key);
+        return S_OK;
+    }
+};
+
+/* The enumerator the poll needs, made when it is not there yet: at init and again at a poll when the first made none */
+static
+BOOL
+MicrophoneCreateEnumerator(VOID)
+{
+    CComPtr<IMMDeviceEnumerator> pEnum;
+    CMicrophoneNotification *pNotification;
+
+    if (g_pMicrophoneEnum)
+        return TRUE;
+    if (FAILED(CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_INPROC_SERVER, IID_IMMDeviceEnumerator, (void **)&pEnum)))
+        return FALSE;
+
+    /* Without the client nothing tells of a capture endpoint that arrives, so the poll then never stops */
+    pNotification = new CMicrophoneNotification();
+    if (pNotification && SUCCEEDED(pEnum->RegisterEndpointNotificationCallback(pNotification)))
+        g_pMicrophoneNotification = pNotification;
+    else if (pNotification)
+        pNotification->Release();
+    g_pMicrophoneEnum = pEnum;
+    return TRUE;
+}
+
+/* Whether the poll has something to do for the microphone: no enumerator or no client yet (the poll
+   makes the enumerator, and without the client a new capture endpoint is learned only by polling),
+   or a capture endpoint to watch; a machine without one is not polled for the microphone */
+BOOL
+Microphone_NeedsPoll(VOID)
+{
+    CComPtr<IMMDeviceCollection> pCollection;
+    UINT cDevices = 0;
+
+    if (!g_pMicrophoneEnum || !g_pMicrophoneNotification)
+        return TRUE;
+    if (FAILED(g_pMicrophoneEnum->EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE, &pCollection)) ||
+        FAILED(pCollection->GetCount(&cDevices)))
+        return TRUE;
+    return cDevices != 0;
+}
 
 /* Name of the first app with an active capture session, or an empty string when nobody records */
 static BOOL
@@ -82,7 +206,8 @@ HRESULT STDMETHODCALLTYPE Microphone_Init(_In_ CSysTray * pSysTray)
 {
     TRACE("Microphone_Init\n");
 
-    CoCreateInstance(CLSID_MMDeviceEnumerator, NULL, CLSCTX_INPROC_SERVER, IID_IMMDeviceEnumerator, (void **)&g_pMicrophoneEnum);
+    g_hMicrophoneTrayWnd = pSysTray->GetHWnd();
+    MicrophoneCreateEnumerator();
     g_hIconMicrophone = StoLoadTrayIcon(g_hInstance, IDI_MICROPHONE);
     LoadStringW(g_hInstance, IDS_MIC_IN_USE, g_szMicrophoneTip, _countof(g_szMicrophoneTip));
     g_bMicrophoneShown = FALSE;
@@ -92,7 +217,10 @@ HRESULT STDMETHODCALLTYPE Microphone_Init(_In_ CSysTray * pSysTray)
 HRESULT STDMETHODCALLTYPE Microphone_Update(_In_ CSysTray * pSysTray)
 {
     WCHAR szApp[MAX_PATH], szFormat[128];
-    BOOL bRecording = MicrophoneFindRecordingApp(szApp, _countof(szApp));
+    BOOL bRecording;
+
+    MicrophoneCreateEnumerator();
+    bRecording = MicrophoneFindRecordingApp(szApp, _countof(szApp));
 
     if (bRecording)
     {
@@ -113,6 +241,14 @@ HRESULT STDMETHODCALLTYPE Microphone_Shutdown(_In_ CSysTray * pSysTray)
 {
     TRACE("Microphone_Shutdown\n");
 
+    g_hMicrophoneTrayWnd = NULL;
+    if (g_pMicrophoneEnum && g_pMicrophoneNotification)
+        g_pMicrophoneEnum->UnregisterEndpointNotificationCallback(g_pMicrophoneNotification);
+    if (g_pMicrophoneNotification)
+    {
+        g_pMicrophoneNotification->Release();
+        g_pMicrophoneNotification = NULL;
+    }
     g_pMicrophoneEnum.Release();
     DestroyIcon(g_hIconMicrophone);
     g_hIconMicrophone = NULL;
