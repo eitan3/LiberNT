@@ -126,6 +126,48 @@ protected:
     }
 };
 
+static HICON MakeIcon(DWORD pixel)
+{
+    DWORD bits[16 * 16];
+    BYTE mask[16 * 2] = { 0 };
+    ICONINFO info;
+    HICON icon;
+
+    for (int i = 0; i < 16 * 16; i++)
+        bits[i] = pixel;
+    ZeroMemory(&info, sizeof(info));
+    info.fIcon = TRUE;
+    info.hbmColor = CreateBitmap(16, 16, 1, 32, bits);
+    info.hbmMask = CreateBitmap(16, 16, 1, 1, mask);
+    icon = CreateIconIndirect(&info);
+    DeleteObject(info.hbmColor);
+    DeleteObject(info.hbmMask);
+    return icon;
+}
+
+static void TestImage()
+{
+    const int size = 32;
+    DWORD *bits = (DWORD *)calloc(size * size, sizeof(DWORD));
+    FontSet fonts;
+    HICON alpha = MakeIcon(0x80FF0000);
+    HICON opaque = MakeIcon(0x000000FF);
+
+    ok(alpha && opaque, "icons created\n");
+    {
+        GdiplusPainter painter(bits, size, size, size * 4, 96, &fonts);
+        painter.Image(alpha, R(0, 0, 16, 16));
+        painter.Image(opaque, R(16, 16, 16, 16));
+        painter.Image(NULL, R(0, 16, 16, 16));
+    }
+    ok(Near(bits[8 * size + 8], 0x80800000, 2), "alpha icon is drawn premultiplied: %08lX\n", bits[8 * size + 8]);
+    ok(bits[24 * size + 24] == 0xFF0000FF, "an icon without alpha is opaque: %08lX\n", bits[24 * size + 24]);
+    ok(bits[24 * size + 8] == 0, "a NULL icon draws nothing\n");
+    DestroyIcon(alpha);
+    DestroyIcon(opaque);
+    free(bits);
+}
+
 static void TestInvalidStyles()
 {
     FontSet fonts;
@@ -205,6 +247,7 @@ START_TEST(Painter)
     }
     TestShapes();
     TestFonts();
+    TestImage();
     TestSurface();
     ok(AssertionFailures() == failures, "%ld assertions failed\n", AssertionFailures() - failures);
     TestInvalidStyles();

@@ -254,6 +254,7 @@ public:
     virtual void Text(LPCWSTR text, const RectF &rc, LIBER_TYPE style, Argb color, UINT flags) = 0;
     virtual SIZE MeasureText(LPCWSTR text, LIBER_TYPE style, float maxWidth) = 0;
     virtual void Icon(LPCWSTR name, const RectF &rc, Argb color) = 0;
+    virtual void Image(HICON icon, const RectF &rc) = 0;
     virtual void PushClip(const RectF &rc, float radius) = 0;
     virtual void PopClip() = 0;
 };
@@ -298,6 +299,7 @@ public:
     void Text(LPCWSTR text, const RectF &rc, LIBER_TYPE style, Argb color, UINT flags);
     SIZE MeasureText(LPCWSTR text, LIBER_TYPE style, float maxWidth);
     void Icon(LPCWSTR name, const RectF &rc, Argb color);
+    void Image(HICON icon, const RectF &rc);
     void PushClip(const RectF &rc, float radius);
     void PopClip();
 
