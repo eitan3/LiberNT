@@ -43,6 +43,8 @@ extern "C" {
 
 /* The stream objects of a device: one per open stream, taken and returned by index */
 #define INTCDSP_STREAMS_MAX            16
+/* The module ids the manager keeps an instance count for: the ids of a firmware image's module table are its indices, fewer than this (intcdsp.h INTCDSP_MODULE_MAX); a model naming one at or beyond it is refused (IntcDspStreamsModuleRange) */
+#define INTCDSP_STREAM_MODULES_MAX    256
 /* The low bits of a stream handle name its object, the index and one, and the bits above them carry the generation the stream was opened in (INTCDSP_STREAMS.Generation) */
 #define INTCDSP_STREAM_INDEX_BITS      8
 #define INTCDSP_STREAM_INDEX_MASK      0xFFu
@@ -213,6 +215,17 @@ typedef struct _INTCDSP_STREAMS
 /* The bytes of the state the manager keeps for a model, to be given to IntcDspStreamsInit as its buffer */
 SIZE_T
 IntcDspStreamsBytes(
+    _In_ const SOFTPLG_IPC4_MODEL* Model);
+
+/*
+ * The first module widget of a model whose module id the manager cannot
+ * count (INTCDSP_STREAM_MODULES_MAX), SOFTPLG_NO_WIDGET when every one's
+ * is within; a widget without a module names any id. The topology's load
+ * refuses such a model after its validation (R1-05), and the manager does
+ * not start on one.
+ */
+UINT32
+IntcDspStreamsModuleRange(
     _In_ const SOFTPLG_IPC4_MODEL* Model);
 
 /*

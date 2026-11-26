@@ -409,6 +409,14 @@ IntcDspTopologyLoad(
         IntcDspTopologyRefused(Dev->TopologyName, Result, Model, Problem.Widget);
         goto Fail;
     }
+    /* the stream manager counts a module's instances by its id, below INTCDSP_STREAM_MODULES_MAX (stream.h): a widget naming one at or beyond it is refused here, before any stream counts with it (R1-05) */
+    Index = IntcDspStreamsModuleRange(Model);
+    if (Index != SOFTPLG_NO_WIDGET)
+    {
+        IntcDspLog("topology '%s': widget %u names module %u, at or beyond the %u module ids the stream manager keeps; the DSP is powered down, no audio endpoint\n",
+            Dev->TopologyName, (ULONG)Index, Model->Widgets[Index].ModuleId, (ULONG)INTCDSP_STREAM_MODULES_MAX);
+        goto Fail;
+    }
     /* the model stands alone: the file's bytes are not needed again */
     ExFreePoolWithTag(Data, INTCDSP_POOL_TAG);
     IntcDspTopologyLog(Dev);

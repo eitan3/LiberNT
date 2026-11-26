@@ -3030,6 +3030,96 @@ CheckStreamStuckUndo(
     free(S);
 }
 
+/* Whether a widget is one the manager initializes, as stream.c IntcDspIsModule decides it: a module widget, neither nothing nor the scheduler */
+static
+BOOLEAN
+StreamWidgetIsModule(
+    const SOFTPLG_IPC4_WIDGET* Widget)
+{
+    return Widget->Kind != SoftplgKindNone && Widget->Kind != SoftplgKindScheduler;
+}
+
+/* (i14) A model whose module widget names a module id the manager cannot count (R1-05): the manager does not start on it, no stream opens and nothing is sent, and the line says why; the model within the range starts again */
+static
+void
+CheckStreamModuleStart(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    HANDLE Render = NULL;
+    UINT32 Pcm, Saved;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    /* the first widget, the playback copier: a module widget, naming a module no table of the manager's size holds */
+    CHECK(StreamWidgetIsModule(&S->Model->Widgets[0]));
+    Saved = S->Model->Widgets[0].ModuleId;
+    S->Model->Widgets[0].ModuleId = 0xFFFFFFFF;
+    IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
+    CHECK(!S->Streams.Ready);
+    CHECK(StreamLogCount(S, "streams: not started (a widget names a module the manager cannot keep)\n") == 1);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_DEVICE_NOT_READY);
+    CHECK(Render == NULL);
+    CHECK_EQ(S->H.Dsp->TransportRequests, 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_OPEN), 0);
+    /* the model as the topology gave it starts */
+    S->Model->Widgets[0].ModuleId = Saved;
+    IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
+    CHECK(S->Streams.Ready);
+    CHECK(StreamLogCount(S, "streams: not started (a widget names a module the manager cannot keep)\n") == 1);
+    StreamStop(S);
+    free(S);
+}
+
+/* (i15) The range the manager keeps (R1-05): every module widget of the loopback model within it, a module widget at INTCDSP_STREAM_MODULES_MAX named and the id below accepted; a widget without a module names any id */
+static
+void
+CheckStreamModuleRange(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    const SOFTPLG_IPC4_WIDGET* Bare = NULL;
+    UINT32 W, Saved;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    CHECK_EQ(IntcDspStreamsModuleRange(S->Model), SOFTPLG_NO_WIDGET);
+    for (W = 0; W < S->Model->WidgetCount; W++)
+        if (!StreamWidgetIsModule(&S->Model->Widgets[W]))
+            Bare = &S->Model->Widgets[W];
+    Saved = S->Model->Widgets[0].ModuleId;
+    S->Model->Widgets[0].ModuleId = INTCDSP_STREAM_MODULES_MAX;
+    CHECK_EQ(IntcDspStreamsModuleRange(S->Model), 0);
+    S->Model->Widgets[0].ModuleId = INTCDSP_STREAM_MODULES_MAX - 1;
+    CHECK_EQ(IntcDspStreamsModuleRange(S->Model), SOFTPLG_NO_WIDGET);
+    S->Model->Widgets[0].ModuleId = Saved;
+    /* the last module widget is seen too */
+    for (W = 0; W < S->Model->WidgetCount && StreamWidgetIsModule(&S->Model->Widgets[W]); W++)
+        ;
+    W--;
+    CHECK(StreamWidgetIsModule(&S->Model->Widgets[W]));
+    Saved = S->Model->Widgets[W].ModuleId;
+    S->Model->Widgets[W].ModuleId = 0xFFFFFFFF;
+    CHECK_EQ(IntcDspStreamsModuleRange(S->Model), W);
+    S->Model->Widgets[W].ModuleId = Saved;
+    /* the loopback's scheduler carries no module: its id is not the manager's to count */
+    CHECK(Bare != NULL);
+    if (Bare != NULL)
+    {
+        Saved = Bare->ModuleId;
+        S->Model->Widgets[Bare - S->Model->Widgets].ModuleId = 0xFFFFFFFF;
+        CHECK_EQ(IntcDspStreamsModuleRange(S->Model), SOFTPLG_NO_WIDGET);
+        S->Model->Widgets[Bare - S->Model->Widgets].ModuleId = Saved;
+    }
+    StreamStop(S);
+    free(S);
+}
+
 int
 main(
     void)
@@ -3071,6 +3161,8 @@ main(
     CheckStreamPowerDown();
     CheckStreamLock();
     CheckStreamStuckUndo();
+    CheckStreamModuleStart();
+    CheckStreamModuleRange();
 
     printf("sofipc: %d checks, %d failures\n", Checks, Failures);
     free(H->Dsp);

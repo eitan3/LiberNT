@@ -9,9 +9,6 @@
 
 #include "stream.h"
 
-/* The module ids of a firmware image are the indices of its module table, fewer than 256 (intcdsp.h INTCDSP_MODULE_MAX) */
-#define INTCDSP_STREAM_MODULES_MAX     256
-
 static
 VOID
 IntcDspStreamLog(
@@ -643,6 +640,19 @@ IntcDspStreamsBytes(
         (SIZE_T)Model->WidgetCount * 2 + INTCDSP_STREAM_MODULES_MAX;
 }
 
+/* The module ids the manager keeps an instance count for are stream.h's (INTCDSP_STREAM_MODULES_MAX): a module widget's index by its id */
+UINT32
+IntcDspStreamsModuleRange(
+    _In_ const SOFTPLG_IPC4_MODEL* Model)
+{
+    UINT32 W;
+
+    for (W = 0; W < Model->WidgetCount; W++)
+        if (IntcDspIsModule(&Model->Widgets[W]) && Model->Widgets[W].ModuleId >= INTCDSP_STREAM_MODULES_MAX)
+            return W;
+    return SOFTPLG_NO_WIDGET;
+}
+
 VOID
 IntcDspStreamsInit(
     _Out_ PINTCDSP_STREAMS Streams,
@@ -687,11 +697,14 @@ IntcDspStreamsInit(
     Streams->WidgetFlags = Buffer + Offset;
     Offset += Model->WidgetCount;
     Streams->ModuleInstances = Buffer + Offset;
-    /* the bus must carry the stream members, and the transport must be ready */
-    Streams->Ready = Ipc != NULL && Ipc->Fw != NULL && Ipc->Link == SofIpcLinkReady && Bus != NULL && IntcDspBusStreams(Bus);
+    /* the bus must carry the stream members, the transport must be ready, and every widget must name a module the manager can count */
+    Streams->Ready = Ipc != NULL && Ipc->Fw != NULL && Ipc->Link == SofIpcLinkReady && Bus != NULL && IntcDspBusStreams(Bus) &&
+        IntcDspStreamsModuleRange(Model) == SOFTPLG_NO_WIDGET;
     if (!Streams->Ready)
         IntcDspStreamLog(Streams, "streams: not started (%s)\n",
-                         Bus != NULL && !IntcDspBusStreams(Bus) ? "the bus carries no stream members" : "the IPC link is not ready");
+                         Bus != NULL && !IntcDspBusStreams(Bus) ? "the bus carries no stream members" :
+                         Ipc == NULL || Ipc->Fw == NULL || Ipc->Link != SofIpcLinkReady ? "the IPC link is not ready" :
+                         "a widget names a module the manager cannot keep");
     IntcDspStreamsUnlock(Streams);
 }
 
