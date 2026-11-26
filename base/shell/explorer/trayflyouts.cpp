@@ -11461,6 +11461,8 @@ public:
     RECT m_rcPaneTitle, m_rcPaneSection, m_rcPaneChange, m_rcPaneBox, m_rcPaneValue, m_rcPaneMute, m_rcPaneSlider;
     RECT m_rcPaneLinks[TFY_PANE_LINKS];
     RECT m_rcPaneTiles[TFY_PANE_TILES];
+    /* declared last, as the constructor initialises it last (the compiler's reorder warning) */
+    TFYMENU_GUARD *m_pMenuGuard;
 
     CTrayQuickSettingsWnd() : m_hwndOwner(NULL), m_hFont(NULL), m_hFontTitle(NULL), m_hFontSmall(NULL),
                               m_cTiles(0), m_bHasWlan(FALSE), m_bWifiOn(FALSE), m_bNetConnected(FALSE),
@@ -11469,9 +11471,12 @@ public:
                               m_nBrightness(-1), m_bDragBrightness(FALSE), m_bBattery(FALSE),
                               m_iHot(TFY_QSHIT_NONE), m_iPressed(TFY_QSHIT_NONE), m_bTracking(FALSE),
                               m_bPane(FALSE), m_iPaneSlider(-1), m_hFontPaneTitle(NULL), m_hFontPane(NULL),
-                              m_hFontPaneSmall(NULL)
+                              m_hFontPaneSmall(NULL), m_pMenuGuard(NULL)
     {
         ZeroMemory(&m_Pal, sizeof(m_Pal));
+        m_pMenuGuard = new TFYMENU_GUARD();
+        m_pMenuGuard->References = 1;
+        m_pMenuGuard->Alive = TRUE;
         m_szLang[0] = UNICODE_NULL;
         SetRectEmpty(&m_rcPaneTitle);
         SetRectEmpty(&m_rcPaneSection);
@@ -12059,22 +12064,38 @@ public:
         canvas.Line(0, 0, 0, rc.bottom, m_Pal.Border);
     }
 
-    UINT PaneTrackMenu(HMENU hMenu, int iTile)
+    /* A pane menu's modal loop can return after the flyout was destroyed under it: the guard's reference is held across TrackPopupMenuEx, and *pbAlive says whether the flyout lives once the menu is gone (R3-05's guard, N5-03) */
+    UINT PaneTrackMenu(HMENU hMenu, int iTile, BOOL *pbAlive)
     {
         POINT pt = { m_rcPaneTiles[iTile].right, m_rcPaneTiles[iTile].top };
+        TFYMENU_GUARD *pGuard = m_pMenuGuard;
+        UINT uCmd;
 
+        *pbAlive = FALSE;
+        if (!pGuard)
+            return 0;
+        InterlockedIncrement(&pGuard->References);
         ClientToScreen(&pt);
-        return (UINT)TrackPopupMenuEx(hMenu, TPM_RIGHTALIGN | TPM_BOTTOMALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
+        uCmd = (UINT)TrackPopupMenuEx(hMenu, TPM_RIGHTALIGN | TPM_BOTTOMALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
                                       pt.x, pt.y, m_hWnd, NULL);
+        *pbAlive = pGuard->Alive;
+        if (!InterlockedDecrement(&pGuard->References))
+        {
+            delete pGuard;
+            *pbAlive = FALSE;
+        }
+        return uCmd;
     }
 
-    VOID PaneNotificationsMenu()
+    /* The pane menus return FALSE when the flyout was destroyed under their menu: the caller then touches nothing of the flyout. The command the user chose is done anyway (R3-05's guard, N5-03) */
+    BOOL PaneNotificationsMenu()
     {
         HMENU hMenu = CreatePopupMenu();
         UINT uCmd;
+        BOOL bAlive;
 
         if (!hMenu)
-            return;
+            return TRUE;
         if (TrayNotifications_IsHidden())
         {
             AppendMenuW(hMenu, MF_STRING, 1, L"Show notifications");
@@ -12085,46 +12106,52 @@ public:
             AppendMenuW(hMenu, MF_STRING, 180, L"Hide for 3 hours");
             AppendMenuW(hMenu, MF_STRING, 480, L"Hide for 8 hours");
         }
-        uCmd = PaneTrackMenu(hMenu, TFY_PANE_NOTIFICATIONS);
+        uCmd = PaneTrackMenu(hMenu, TFY_PANE_NOTIFICATIONS, &bAlive);
         DestroyMenu(hMenu);
         if (uCmd == 1)
             g_TfyNotifHideUntil = 0;
         else if (uCmd)
             g_TfyNotifHideUntil = GetTickCount64() + (ULONGLONG)uCmd * 60000;
+        return bAlive;
     }
 
-    VOID PanePowerMenu()
+    BOOL PanePowerMenu()
     {
         HWND hwndOwner = m_hwndOwner;
         HMENU hMenu = CreatePopupMenu();
         UINT uCmd;
+        BOOL bAlive;
 
         if (!hMenu)
-            return;
+            return TRUE;
         if (StartMenu2_IsPowerCommandAllowed(SM2F_SLEEP))
             AppendMenuW(hMenu, MF_STRING, SM2F_SLEEP, L"Sleep");
         if (StartMenu2_IsPowerCommandAllowed(SM2F_HIBERNATE))
             AppendMenuW(hMenu, MF_STRING, SM2F_HIBERNATE, L"Hibernate");
         AppendMenuW(hMenu, MF_STRING, SM2F_SHUTDOWN, L"Shut down");
         AppendMenuW(hMenu, MF_STRING, SM2F_RESTART, L"Restart");
-        uCmd = PaneTrackMenu(hMenu, TFY_PANE_POWER);
+        uCmd = PaneTrackMenu(hMenu, TFY_PANE_POWER, &bAlive);
         DestroyMenu(hMenu);
         if (!uCmd)
-            return;
-        FadeOut();
+            return bAlive;
+        /* the flyout fades only while it lives: the command was chosen, and is done whatever became of it */
+        if (bAlive)
+            FadeOut();
         StartMenu2_DoPowerCommand(hwndOwner, (INT)uCmd);
+        return bAlive;
     }
 
-    VOID PaneKeyboardMenu()
+    BOOL PaneKeyboardMenu()
     {
         HKL ahkl[32];
         HKL hklCur = GetKeyboardLayout(0);
         int n = GetKeyboardLayoutList(_countof(ahkl), ahkl);
         HMENU hMenu;
         UINT uCmd;
+        BOOL bAlive;
 
         if (n <= 0 || !(hMenu = CreatePopupMenu()))
-            return;
+            return TRUE;
         for (int i = 0; i < n; i++)
         {
             LCID lcid = MAKELCID(LOWORD((ULONG_PTR)ahkl[i]), SORT_DEFAULT);
@@ -12141,14 +12168,16 @@ public:
             StringCchPrintfW(szItem, _countof(szItem), L"%s\t%s", szName, szAbbrev);
             AppendMenuW(hMenu, MF_STRING | (ahkl[i] == hklCur ? MF_CHECKED : 0), (UINT_PTR)(i + 1), szItem);
         }
-        uCmd = PaneTrackMenu(hMenu, TFY_PANE_KEYBOARD);
+        uCmd = PaneTrackMenu(hMenu, TFY_PANE_KEYBOARD, &bAlive);
         DestroyMenu(hMenu);
         if (!uCmd || uCmd > (UINT)n)
-            return;
+            return bAlive;
         SystemParametersInfoW(SPI_SETDEFAULTINPUTLANG, 0, &ahkl[uCmd - 1], SPIF_SENDCHANGE);
         ActivateKeyboardLayout(ahkl[uCmd - 1], 0);
         ::PostMessageW(HWND_BROADCAST, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)ahkl[uCmd - 1]);
-        PaneLanguage(ahkl[uCmd - 1]);
+        if (bAlive)
+            PaneLanguage(ahkl[uCmd - 1]);
+        return bAlive;
     }
 
     VOID OpenPaneLink(int i)
@@ -12214,13 +12243,15 @@ public:
                 m_iPaneSlider = (m_iPaneSlider == TFY_PANE_BRIGHTNESS) ? -1 : TFY_PANE_BRIGHTNESS;
                 break;
             case TFY_PANE_NOTIFICATIONS:
-                PaneNotificationsMenu();
+                if (!PaneNotificationsMenu())
+                    return;
                 break;
             case TFY_PANE_POWER:
                 PanePowerMenu();
                 return;
             default:
-                PaneKeyboardMenu();
+                if (!PaneKeyboardMenu())
+                    return;
                 break;
         }
         Layout();
@@ -12751,6 +12782,14 @@ public:
         {
             ShellFrame::Shutdown();
             m_bFrameStarted = FALSE;
+        }
+        /* the pane menus' guard dies with the window: a menu still open under it reads so and touches nothing of the flyout (R3-05's guard, N5-03) */
+        if (m_pMenuGuard)
+        {
+            m_pMenuGuard->Alive = FALSE;
+            if (!InterlockedDecrement(&m_pMenuGuard->References))
+                delete m_pMenuGuard;
+            m_pMenuGuard = NULL;
         }
         m_Fallback.Close();
         if (::IsWindow(m_hwndOwner))
