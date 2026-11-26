@@ -47,3 +47,6 @@ BOOL LiberStart_Matches(LPCWSTR pszName, LPCWSTR pszQuery);
 VOID LiberStart_Toggle(IN const RECT *prcAnchor);
 BOOL LiberStart_IsOpen(VOID);
 VOID LiberStart_Destroy(VOID);
+
+HRESULT LiberWidgets_Start(HWND hwndOwner);
+VOID LiberWidgets_Stop(VOID);

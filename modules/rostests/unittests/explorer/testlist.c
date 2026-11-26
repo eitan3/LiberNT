@@ -6,6 +6,7 @@ extern void func_Calendar(void);
 extern void func_Dock(void);
 extern void func_Power(void);
 extern void func_StartModel(void);
+extern void func_Widgets(void);
 
 const struct test winetest_testlist[] =
 {
@@ -14,5 +15,6 @@ const struct test winetest_testlist[] =
     { "Dock", func_Dock },
     { "Power", func_Power },
     { "StartModel", func_StartModel },
+    { "Widgets", func_Widgets },
     { 0, 0 }
 };
