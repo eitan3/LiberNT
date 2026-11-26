@@ -429,6 +429,7 @@ SofIpcPollNotifications(
     SOFIPC_CONTEXT* Ipc)
 {
     SOFIPC_STATUS Result;
+    BOOLEAN Held = FALSE;
 
     if (Ipc->Fw == NULL)
         return FALSE;
@@ -437,10 +438,23 @@ SofIpcPollNotifications(
         Ipc->Link = SofIpcLinkOffline;
         return FALSE;
     }
+    /* the request lock when there is one, taken without a wait: a request holds it from before it sends anything until after its reply, and the link says busy only in between, so the lock and not the link is what a poll must stand behind */
+    if (Ipc->Ops != NULL && Ipc->Ops->RequestLock != NULL)
+    {
+        if (!Ipc->Ops->RequestLock(Ipc->OpsContext, 0))
+            return FALSE;
+        Held = TRUE;
+    }
     /* nothing is touched behind a request in progress or on a dead link */
     if (Ipc->Link != SofIpcLinkReady)
+    {
+        if (Held && Ipc->Ops->RequestUnlock != NULL)
+            Ipc->Ops->RequestUnlock(Ipc->OpsContext);
         return FALSE;
+    }
     Result = SofIpcDrain(Ipc);
+    if (Held && Ipc->Ops->RequestUnlock != NULL)
+        Ipc->Ops->RequestUnlock(Ipc->OpsContext);
     if (Result == SofIpcOk)
         return TRUE;
     Ipc->Link = SofIpcLinkFaulted;

@@ -204,7 +204,7 @@ SofIpcLargeConfigGet(
     SIZE_T Capacity,
     _Out_ SIZE_T* Bytes);
 
-/* Consumes what the firmware posted while no request was outstanding: notifications are kept and acknowledged, a reply nobody asked for is acknowledged, and a crash notification or a tripped guard faults the link; FALSE once the link is not usable */
+/* Consumes what the firmware posted while no request was outstanding: notifications are kept and acknowledged, a reply nobody asked for is acknowledged, and a crash notification or a tripped guard faults the link; FALSE once the link is not usable, and FALSE with nothing touched when the request lock exists and a request holds it (the lock is tried, not waited for) */
 BOOLEAN
 SofIpcPollNotifications(
     _Inout_ SOFIPC_CONTEXT* Ipc);

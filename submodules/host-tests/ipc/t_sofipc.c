@@ -826,6 +826,100 @@ CheckNotifications(
     CHECK_EQ(FakeDspIpcErrors(H->Dsp), 0);
 }
 
+/* (e2) The poll takes the request lock when there is one, and does not wait for it: a request that holds the lock, before it has made the link busy, leaves the registers untouched (R2-08) */
+static
+void
+CheckPollTakesLock(
+    HARNESS* H,
+    const SOF_RI_IMAGE* Image)
+{
+    SOFIPC_NOTIFICATION Notification;
+    SOFIPC_REQUEST Request;
+
+    /* the lock free: taken, the notification kept and acknowledged, released */
+    HarnessStart(H, Image, NULL);
+    HarnessAttach(H, NULL, FALSE);
+    H->Dsp->IpcTarget = FWLOAD_IPC_BUSY | (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
+        (SOFIPC4_NOTIFY_LOG_BUFFER_STATUS << SOFIPC4_NOTIFICATION_TYPE_SHIFT);
+    H->Dsp->IpcTargetAck |= FWLOAD_IPC_BUSY;
+    H->Dsp->NotificationPending = TRUE;
+    CHECK(SofIpcPollNotifications(&H->Ipc));
+    CHECK_EQ(H->LockAttempts, 1);
+    CHECK_EQ(H->LockAcquires, 1);
+    CHECK_EQ(H->LockUnlocks, 1);
+    CHECK(!H->LockHeld);
+    CHECK_EQ(H->Ipc.Notifications, 1);
+    CHECK_EQ(H->Ipc.RingCount, 1);
+    CHECK_EQ(FakeDspIpcErrors(H->Dsp), 0);
+
+    /* the lock held by a request in progress, the link still ready: the poll tries once, does not wait, and touches nothing */
+    H->Dsp->IpcTarget = FWLOAD_IPC_BUSY | (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
+        (SOFIPC4_NOTIFY_LOG_BUFFER_STATUS << SOFIPC4_NOTIFICATION_TYPE_SHIFT);
+    H->Dsp->IpcTargetAck |= FWLOAD_IPC_BUSY;
+    H->Dsp->NotificationPending = TRUE;
+    H->LockHeld = TRUE;
+    CHECK(!SofIpcPollNotifications(&H->Ipc));
+    CHECK_EQ(H->LockAttempts, 2);
+    CHECK_EQ(H->LockAcquires, 1);
+    CHECK_EQ(H->LockUnlocks, 1);
+    CHECK_EQ(H->LastLockTimeout, 0);
+    CHECK_EQ(H->Ipc.Notifications, 1);
+    CHECK_EQ(H->Ipc.RingCount, 1);
+    CHECK_EQ(H->Ipc.Link, SofIpcLinkReady);
+    CHECK_EQ(H->Ipc.Faults, 0);
+    CHECK(H->Dsp->NotificationPending);
+    CHECK(H->Dsp->IpcTarget & FWLOAD_IPC_BUSY);
+    CHECK(H->Dsp->IpcTargetAck & FWLOAD_IPC_BUSY);
+    /* the model's own verdict: the notification still waits for its acknowledgement */
+    CHECK_EQ(FakeDspIpcErrors(H->Dsp), FAKE_DSP_IPC_NOTIFY_LEFT_BUSY);
+    /* the request ends: the next poll takes the lock and the notification */
+    H->LockHeld = FALSE;
+    CHECK(SofIpcPollNotifications(&H->Ipc));
+    CHECK_EQ(H->LockAttempts, 3);
+    CHECK_EQ(H->LockAcquires, 2);
+    CHECK_EQ(H->LockUnlocks, 2);
+    CHECK_EQ(H->Ipc.Notifications, 2);
+    CHECK(SofIpcTakeNotification(&H->Ipc, &Notification));
+    CHECK(SofIpcTakeNotification(&H->Ipc, &Notification));
+    CHECK_EQ(FakeDspIpcErrors(H->Dsp), 0);
+
+    /* a fault found by the poll is recorded with the lock released */
+    H->Dsp->IpcTarget = FWLOAD_IPC_BUSY | (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
+        (SOFIPC4_NOTIFY_EXCEPTION_CAUGHT << SOFIPC4_NOTIFICATION_TYPE_SHIFT);
+    H->Dsp->IpcTargetAck |= FWLOAD_IPC_BUSY;
+    H->Dsp->NotificationPending = TRUE;
+    CHECK(!SofIpcPollNotifications(&H->Ipc));
+    CHECK_EQ(H->LockAcquires, 3);
+    CHECK_EQ(H->LockUnlocks, 3);
+    CHECK(!H->LockHeld);
+    CHECK_EQ(H->Ipc.Link, SofIpcLinkFaulted);
+    CHECK_EQ(H->Ipc.Failure, SofIpcCrash);
+    CHECK_EQ(FakeDspIpcErrors(H->Dsp), 0);
+
+    /* without a request lock the poll is what it was: the caller serializes */
+    HarnessStart(H, Image, NULL);
+    CHECK_EQ(SofIpcInit(&H->Ipc, &HarnessIpcOpsUnlocked, H, H->Ctx, NULL, FALSE), SofIpcOk);
+    H->Dsp->IpcTarget = FWLOAD_IPC_BUSY | (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
+        (SOFIPC4_NOTIFY_LOG_BUFFER_STATUS << SOFIPC4_NOTIFICATION_TYPE_SHIFT);
+    H->Dsp->IpcTargetAck |= FWLOAD_IPC_BUSY;
+    H->Dsp->NotificationPending = TRUE;
+    CHECK(SofIpcPollNotifications(&H->Ipc));
+    CHECK_EQ(H->LockAttempts, 0);
+    CHECK_EQ(H->Ipc.Notifications, 1);
+    CHECK_EQ(H->Ipc.RingCount, 1);
+    CHECK_EQ(FakeDspIpcErrors(H->Dsp), 0);
+
+    /* the requests themselves are as before: one lock taken and released for each */
+    HarnessStart(H, Image, NULL);
+    HarnessAttach(H, NULL, FALSE);
+    HarnessRequest(&Request, SofIpcClassPipeline, Ipc4TransportSelfTest[0].Primary, 0);
+    CHECK_EQ(SofIpcRequest(&H->Ipc, &Request), SofIpcOk);
+    CHECK_EQ(H->LockAttempts, 1);
+    CHECK_EQ(H->LockAcquires, 1);
+    CHECK_EQ(H->LockUnlocks, 1);
+    CHECK_EQ(H->LockWaits, 0);
+}
+
 /* (f) Interrupt mode: the enables are set, the service routine masks on every interrupt and the passive path sets them again after each exchange; the loader's storm guard trips and the next request is refused */
 static
 void
@@ -3142,6 +3236,7 @@ main(
     CheckStatus(H, &Parsed);
     CheckCrash(H, &Parsed);
     CheckNotifications(H, &Parsed);
+    CheckPollTakesLock(H, &Parsed);
     CheckInterruptMode(H, &Parsed);
     CheckTwoCallers(H, &Parsed);
     CheckLargeConfig(H, &Parsed);
