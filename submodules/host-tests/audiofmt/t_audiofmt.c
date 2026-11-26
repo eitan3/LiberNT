@@ -133,6 +133,15 @@ static void TestPreferredFormat(void)
     /* A rate range with no rate */
     FillRange(&Range, 2, 16, 16, 0, 0);
     CHECK(!RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    /* More valid bits than a WAVEFORMATEX sample holds: no format, not a 32-bit container with 64 valid bits */
+    FillRange(&Range, 2, 32, 64, 44100, 48000);
+    CHECK(!RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    FillRange(&Range, 2, 32, 33, 44100, 48000);
+    CHECK(!RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    FillRange(&Range, 2, 32, 32, 44100, 48000);
+    CHECK(RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    CHECK_EQ(Format.Format.wBitsPerSample, 32);
+    CHECK_EQ(Format.Samples.wValidBitsPerSample, 32);
 }
 
 /* The container a range states in DataRange.SampleSize (the frame's block align) is kept: per channel it

@@ -226,7 +226,8 @@ RosSoundAudioRangeToPreferredFormat(
     ULONG SampleSize = DataRangeAudio->DataRange.SampleSize;
     ULONG ContainerBits, StatedBits, BlockAlign, SampleRate;
 
-    if (!Channels || Channels > USHRT_MAX || !ValidBits || ValidBits > USHRT_MAX)
+    /* a sample of more than 32 valid bits has no WAVEFORMATEX fields */
+    if (!Channels || Channels > USHRT_MAX || !ValidBits || ValidBits > 32)
         return FALSE;
 
     ContainerBits = RosSoundPcmContainerBits((WORD)ValidBits);
