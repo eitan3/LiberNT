@@ -6,6 +6,7 @@
 
 #include <apitest.h>
 #include <apitest_expected.h>
+#include <apitest_dspidentity.h>
 #include <wingdi.h>
 #include <winuser.h>
 #include <winreg.h>
@@ -94,8 +95,45 @@ static INT QueryWaveFormat(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index, c
     return Info.Flags ? 1 : 0;
 }
 
-/* The format queries on one wave device: TRUE when its data range was read, FALSE when the IOCTL that reads it failed, which is a failure: the device exists and answers badly */
-static BOOL TestDevice(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index)
+/* The depths the drivers took, over all the wave devices and over those of the DSP's PCM */
+static ULONG Dsp24, Dsp32, Depth24, Depth32;
+
+/* Whether the wave device is one of the DSP's PCM: the KS interface path of its connector names the PCM (apitest_dspidentity.h) */
+static BOOL
+DeviceOfDspPcm(
+    HANDLE Wdmaud,
+    SOUND_DEVICE_TYPE Type,
+    ULONG Index)
+{
+    WDMAUD_DEVICE_INFO Info;
+    WCHAR *Path = NULL;
+    ULONG Size;
+    BOOL Found = FALSE;
+
+    ZeroMemory(&Info, sizeof(Info));
+    Info.DeviceType = Type;
+    Info.DeviceIndex = Index;
+    if (!Ioctl(Wdmaud, IOCTL_GETWAVECONNECTOR, &Info))
+        return FALSE;
+    Size = Info.u.Connector.DeviceInterfaceStringSize;
+    if (Size < sizeof(WCHAR))
+        return FALSE;
+    Path = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, Size);
+    if (!Path)
+        return FALSE;
+    ZeroMemory(&Info, sizeof(Info));
+    Info.DeviceType = Type;
+    Info.DeviceIndex = Index;
+    Info.u.Connector.DeviceInterfaceString = Path;
+    Info.u.Connector.DeviceInterfaceStringSize = Size;
+    if (Ioctl(Wdmaud, IOCTL_GETWAVECONNECTOR, &Info))
+        Found = DspPcmIdentity(Path);
+    HeapFree(GetProcessHeap(), 0, Path);
+    return Found;
+}
+
+/* The format queries on one wave device: TRUE when its data range was read, FALSE when the IOCTL that reads it failed, which is a failure: the device exists and answers badly. *Dsp takes whether the device is one of the DSP's PCM */
+static BOOL TestDevice(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index, BOOL *Dsp)
 {
     WAVEFORMATEXTENSIBLE Format, Preferred;
     KSDATARANGE_AUDIO Range;
@@ -125,6 +163,12 @@ static BOOL TestDevice(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index)
        "rates %lu..%lu\n", Range.MinimumSampleFrequency, Range.MaximumSampleFrequency);
     trace("Type %u index %lu: %lu channels, bits %lu..%lu, rates %lu..%lu\n", Type, Index, Range.MaximumChannels,
           Range.MinimumBitsPerSample, Range.MaximumBitsPerSample, Range.MinimumSampleFrequency, Range.MaximumSampleFrequency);
+
+    /* The DSP's endpoint carries 24 and 32 valid bits in a 32-bit word (the plan's depth path): its range must reach 24, or the expectation below would be read from a narrowed range and pass */
+    *Dsp = DeviceOfDspPcm(Wdmaud, Type, Index);
+    trace("Type %u index %lu: %s of the DSP's PCM\n", Type, Index, *Dsp ? "is" : "is not");
+    if (*Dsp)
+        ok(Range.MaximumBitsPerSample >= 24, "Type %u index %lu: the DSP endpoint's range stops at %lu bits\n", Type, Index, Range.MaximumBitsPerSample);
 
     ZeroMemory(&Info, sizeof(Info));
     Info.DeviceType = Type;
@@ -172,6 +216,8 @@ static BOOL TestDevice(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index)
     else
         ok(Answer == 0, "Type %u index %lu: 24-in-32 accepted although the range is %lu..%lu bits, answer %d\n", Type, Index,
            Range.MinimumBitsPerSample, Range.MaximumBitsPerSample, Answer);
+    Depth24 += Answer == 1;
+    Dsp24 += *Dsp && Answer == 1;
 
     /* 32 valid bits: accepted exactly when the range covers 32 bits */
     SetPcmFormat(&Format, Rate, 32, 32, Channels);
@@ -181,6 +227,8 @@ static BOOL TestDevice(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index)
         ok(Answer == 1, "Type %u index %lu: 32-bit refused although the range covers 32 bits, answer %d error %lu\n", Type, Index, Answer, GetLastError());
     else
         ok(Answer == 0, "Type %u index %lu: 32-bit accepted although the range stops at %lu bits, answer %d\n", Type, Index, Range.MaximumBitsPerSample, Answer);
+    Depth32 += Answer == 1;
+    Dsp32 += *Dsp && Answer == 1;
 
     /* A packed 24-bit container never reaches the hardware: the controller has no 3-byte word */
     SetPcmFormat(&Format, Rate, 24, 24, Channels);
@@ -222,7 +270,7 @@ START_TEST(waveformat)
 {
     SOUND_DEVICE_TYPE Type;
     WDMAUD_DEVICE_INFO Info;
-    ULONG Asked = 0, Planned = 0;
+    ULONG Asked = 0, Planned = 0, DspDevices = 0;
     HANDLE Wdmaud;
 
     Wdmaud = OpenWdmaud();
@@ -248,8 +296,18 @@ START_TEST(waveformat)
             apitest_missing("Type %u: no device\n", Type);
         Planned += Count;
         for (Index = 0; Index < Count; Index++)
-            Asked += TestDevice(Wdmaud, Type, Index) != FALSE;
+        {
+            BOOL Dsp = FALSE;
+
+            Asked += TestDevice(Wdmaud, Type, Index, &Dsp) != FALSE;
+            DspDevices += Dsp != FALSE;
+        }
     }
     CloseHandle(Wdmaud);
+    /* the depths exercised: under the expected switch the DSP's endpoint is among the devices and was asked */
+    if (ApitestRequired())
+        ok(DspDevices > 0, "no wave device of the DSP's PCM (" DSPPCM_ID_TEXT ") among those asked\n");
+    winetest_printf("waveformat: %lu devices take 24 valid bits in 32, %lu take 32 bits; of the DSP's PCM %lu devices, %lu and %lu\n",
+                    Depth24, Depth32, DspDevices, Dsp24, Dsp32);
     ApitestSummary("waveformat", Asked, Planned, "wave devices asked for their formats");
 }
