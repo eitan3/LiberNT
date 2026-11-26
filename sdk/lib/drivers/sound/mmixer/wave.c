@@ -151,11 +151,15 @@ MMixerGetAudioPinDataRanges(
     }
 
     Status = MixerContext->Control(hDevice, IOCTL_KS_PROPERTY, (PVOID)&PinProperty, sizeof(KSP_PIN), (PVOID)MultipleItem, BytesReturned, &BytesReturned);
-    if (Status != MM_STATUS_SUCCESS)
+    /* the answer is the driver's: it must hold the list's header, and the list must not be longer than the bytes the driver wrote into the buffer the first query sized */
+    if (Status != MM_STATUS_SUCCESS ||
+        BytesReturned < sizeof(KSMULTIPLE_ITEM) ||
+        MultipleItem->Size < sizeof(KSMULTIPLE_ITEM) ||
+        MultipleItem->Size > BytesReturned)
     {
         /* failed */
         MixerContext->Free(MultipleItem);
-        return Status;
+        return Status == MM_STATUS_SUCCESS ? MM_STATUS_UNSUCCESSFUL : Status;
     }
 
     /* save result */
