@@ -22,6 +22,7 @@
 #include <browseui_undoc.h>
 #include "experience.h"
 #include "liberdock.h"
+#include "libershell.h"
 
 HINSTANCE hExplorerInstance;
 HANDLE hProcessHeap;
@@ -313,7 +314,10 @@ StartWithDesktop(IN HINSTANCE hInstance)
     if (Tray != NULL)
         hShellDesktop = DesktopCreateWindow(Tray);
     if (Tray != NULL && LiberExperience_IsLiber())
+    {
         LiberDock_Start(Tray);
+        LiberWidgets_Start(GetShellWindow());
+    }
 
     /* WinXP: Notify msgina to hide the welcome screen */
     if (!SetShellReadyEvent(L"msgina: ShellReadyEvent"))
@@ -330,6 +334,7 @@ StartWithDesktop(IN HINSTANCE hInstance)
     if (Tray != NULL)
     {
         TrayMessageLoop(Tray);
+        LiberWidgets_Stop();
         LiberDock_Stop();
 #if !WIN7_DEBUG_MODE
         HideMinimizedWindows(FALSE);

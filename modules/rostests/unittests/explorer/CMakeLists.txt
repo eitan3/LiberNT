@@ -9,6 +9,7 @@ list(APPEND SOURCE
     Dock.cpp
     Power.cpp
     StartModel.cpp
+    Widgets.cpp
     ${REACTOS_SOURCE_DIR}/base/shell/explorer/audiodev.cpp
     ${REACTOS_SOURCE_DIR}/base/shell/explorer/calstore.cpp
     ${REACTOS_SOURCE_DIR}/base/shell/explorer/dockmodel.cpp
@@ -16,6 +17,7 @@ list(APPEND SOURCE
     ${REACTOS_SOURCE_DIR}/base/shell/explorer/libershell.cpp
     ${REACTOS_SOURCE_DIR}/base/shell/explorer/powermode.cpp
     ${REACTOS_SOURCE_DIR}/base/shell/explorer/startmodel.cpp
+    ${REACTOS_SOURCE_DIR}/base/shell/explorer/widgetmodel.cpp
     testlist.c)
 
 add_executable(explorer_unittest ${SOURCE})

@@ -17,6 +17,7 @@ list(APPEND SOURCE
     liberdock.cpp
     libershell.cpp
     liberstart.cpp
+    liberwidgets.cpp
     notifyiconscust.cpp
     powermode.cpp
     rshell.cpp
@@ -42,6 +43,7 @@ list(APPEND SOURCE
     trayprop.cpp
     traywnd.cpp
     util.cpp
+    widgetmodel.cpp
     precomp.h)
 
 file(GLOB explorer_rc_deps res/*.*)
