@@ -1669,7 +1669,6 @@ check_model_loopback(void)
     PSOFTPLG_IPC4_PCM Pcm;
     UINT8* Data;
     SIZE_T Size, Bytes, K;
-    UINT32 Index;
     const char* Named;
     int N;
 
@@ -1902,8 +1901,46 @@ check_model_loopback(void)
     CHECK_EQ(ModelProblem.Widget, SOFTPLG_NO_WIDGET);
     CHECK_EQ(Bytes, 0);
 
-    for (Index = 0; Index < (UINT32)SoftplgModelNotFound + 1; Index++)
-        CHECK_STR(SoftplgModelStatusName((SOFTPLG_MODEL_STATUS)Index), SoftplgModelStatusName((SOFTPLG_MODEL_STATUS)Index));
+    /* FB-03: every status's name against a table of this test's own, the newest status included; the table is of as many rows as there are statuses, so a status added without its row is seen */
+    {
+        static const struct
+        {
+            SOFTPLG_MODEL_STATUS Status;
+            const char* Name;
+        } StatusNames[] = {
+            { SoftplgModelOk, "ok" },
+            { SoftplgModelNoData, "no data" },
+            { SoftplgModelBadFile, "not an ALSA topology" },
+            { SoftplgModelNoManifest, "no manifest" },
+            { SoftplgModelAbiMismatch, "topology ABI mismatch" },
+            { SoftplgModelManifestTruncated, "manifest truncated" },
+            { SoftplgModelTooLarge, "too large" },
+            { SoftplgModelBufferTooSmall, "model buffer too small" },
+            { SoftplgModelUnknownWidget, "unknown widget type" },
+            { SoftplgModelTupleType, "token of the wrong tuple type" },
+            { SoftplgModelNoUuid, "module widget without a UUID" },
+            { SoftplgModelModuleMissing, "module not in the firmware image" },
+            { SoftplgModelNoFormats, "module widget without an audio format" },
+            { SoftplgModelFormatCount, "format tokens do not match the format count" },
+            { SoftplgModelFormatIncomplete, "format without its words" },
+            { SoftplgModelFormatMismatch, "format tokens disagree" },
+            { SoftplgModelBadEdge, "graph element names no widget" },
+            { SoftplgModelNoScheduler, "widget without a pipeline scheduler" },
+            { SoftplgModelDuplicateScheduler, "two schedulers for one pipeline" },
+            { SoftplgModelTooManyPipelines, "more pipelines than the firmware allows" },
+            { SoftplgModelGatewayData, "copier needs gateway data" },
+            { SoftplgModelNodeType, "host copier of another gateway type" },
+            { SoftplgModelFormatInexpressible, "no format the controller can carry" },
+            { SoftplgModelConfigTooLarge, "configuration larger than the mailbox" },
+            { SoftplgModelNotFound, "not in the model" },
+            { SoftplgModelGatewayBuffer, "gateway buffer does not fit its word" }
+        };
+        UINT32 N;
+
+        CHECK_EQ((UINT32)(sizeof(StatusNames) / sizeof(StatusNames[0])), (UINT32)SoftplgModelGatewayBuffer + 1);
+        for (N = 0; N < sizeof(StatusNames) / sizeof(StatusNames[0]); N++)
+            CHECK_STR(SoftplgModelStatusName(StatusNames[N].Status), StatusNames[N].Name);
+    }
     CHECK_STR(SoftplgModelStatusName(SoftplgModelOk), "ok");
     CHECK_STR(SoftplgModelStatusName(SoftplgModelGatewayData), "copier needs gateway data");
     CHECK_STR(SoftplgModelStatusName((SOFTPLG_MODEL_STATUS)200), "unknown");
@@ -2615,6 +2652,8 @@ typedef struct _GEN_SHAPE
     UINT32 FirstBufferBytes;
     /* the copier's deep-buffer token, 0 for none */
     UINT32 DeepBufferMs;
+    /* the copier is a host capture copier (aif_out): its Formats are output formats and its stream the PCM's capture one; else a host playback copier (aif_in) */
+    BOOLEAN Capture;
     BOOLEAN Graph;
     /* with Graph: a chain, the copier into the last pipeline's scheduler and every scheduler into the one of the pipeline before, the order that made a pass per widget */
     BOOLEAN Chain;
@@ -2721,7 +2760,7 @@ GenScheduler(
     return GEN_WIDGET_BYTES;
 }
 
-/* The host playback copier: one input format of 48 kHz, 32 valid bits in 32, two channels, interleaved, per format asked */
+/* The host copier: one format of 48 kHz, 32 valid bits in 32, two channels, interleaved, per format asked; input formats of a playback copier (aif_in), output formats of a capture one (aif_out, Shape->Capture) */
 static
 SIZE_T
 GenCopier(
@@ -2729,13 +2768,14 @@ GenCopier(
     const GEN_SHAPE* Shape)
 {
     SIZE_T Words = 12 + 8 * GenCopierWords(Shape);
+    UINT32 Base = Shape->Capture ? SOFTPLG_TOKEN_FORMAT_OUT_BASE : SOFTPLG_TOKEN_FORMAT_IN_BASE;
     UINT8* Tuple;
     UINT32 F;
 
     memset(At, 0, GEN_WIDGET_BYTES + 32 + Words);
     Put32(At, GEN_WIDGET_BYTES);
-    Put32(At + 4, SOFTPLG_WIDGET_AIF_IN);
-    GenText(At + 8, "host-copier.0.playback");
+    Put32(At + 4, Shape->Capture ? SOFTPLG_WIDGET_AIF_OUT : SOFTPLG_WIDGET_AIF_IN);
+    GenText(At + 8, Shape->Capture ? "host-copier.0.capture" : "host-copier.0.playback");
     GenText(At + 52, "copier-stream");
     Put32(At + 128, (UINT32)(32 + Words));
     /* the UUID array, then the word array */
@@ -2749,44 +2789,50 @@ GenCopier(
     Put32(Tuple + 4, SOFTPLG_TUPLE_WORD);
     Put32(Tuple + 8, GenCopierWords(Shape));
     Tuple += 12;
-    Tuple += GenWord(Tuple, SOFTPLG_TOKEN_COMP_NUM_INPUT_AUDIO_FORMATS, Shape->Formats);
-    Tuple += GenWord(Tuple, SOFTPLG_TOKEN_COMP_NUM_OUTPUT_AUDIO_FORMATS, 0);
-    Tuple += GenWord(Tuple, SOFTPLG_TOKEN_COPIER_NODE_TYPE, SOFTPLG_NODE_HOST_OUTPUT);
+    Tuple += GenWord(Tuple, SOFTPLG_TOKEN_COMP_NUM_INPUT_AUDIO_FORMATS, Shape->Capture ? 0 : Shape->Formats);
+    Tuple += GenWord(Tuple, SOFTPLG_TOKEN_COMP_NUM_OUTPUT_AUDIO_FORMATS, Shape->Capture ? Shape->Formats : 0);
+    Tuple += GenWord(Tuple, SOFTPLG_TOKEN_COPIER_NODE_TYPE, Shape->Capture ? SOFTPLG_NODE_HOST_INPUT : SOFTPLG_NODE_HOST_OUTPUT);
     if (Shape->DeepBufferMs != 0)
         Tuple += GenWord(Tuple, SOFTPLG_TOKEN_COPIER_DEEP_BUFFER_DMA_MS, Shape->DeepBufferMs);
     for (F = 0; F < Shape->Formats; F++)
     {
-        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_RATE, 48000);
-        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_DEPTH, 32);
-        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_VALID, 32);
-        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_CHANNELS, 2);
-        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_CH_MAP, 0xFFFFFF10u);
-        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_CH_CFG, 1);
-        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_INTERLEAVING, 0);
-        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_CFG, 2 | (32 << 8));
-        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_SAMPLE_TYPE, 0);
-        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_IBS, F != 0 ? Shape->BufferBytes :
+        Tuple += GenWord(Tuple, Base + SOFTPLG_FORMAT_RATE, 48000);
+        Tuple += GenWord(Tuple, Base + SOFTPLG_FORMAT_DEPTH, 32);
+        Tuple += GenWord(Tuple, Base + SOFTPLG_FORMAT_VALID, 32);
+        Tuple += GenWord(Tuple, Base + SOFTPLG_FORMAT_CHANNELS, 2);
+        Tuple += GenWord(Tuple, Base + SOFTPLG_FORMAT_CH_MAP, 0xFFFFFF10u);
+        Tuple += GenWord(Tuple, Base + SOFTPLG_FORMAT_CH_CFG, 1);
+        Tuple += GenWord(Tuple, Base + SOFTPLG_FORMAT_INTERLEAVING, 0);
+        Tuple += GenWord(Tuple, Base + SOFTPLG_FORMAT_CFG, 2 | (32 << 8));
+        Tuple += GenWord(Tuple, Base + SOFTPLG_FORMAT_SAMPLE_TYPE, 0);
+        /* the stream's buffer size: the input buffer size of a playback copier's format, the output one of a capture copier's */
+        Tuple += GenWord(Tuple, Shape->Capture ? SOFTPLG_TOKEN_FORMAT_OUT_OBS : SOFTPLG_TOKEN_FORMAT_IN_IBS, F != 0 ? Shape->BufferBytes :
             Shape->FirstBufferBytes != 0 ? Shape->FirstBufferBytes : GEN_FIRST_BUFFER_BYTES);
     }
     return GEN_WIDGET_BYTES + 32 + Words;
 }
 
-/* The PCM whose playback stream is the copier's; no capture stream */
+/* The PCM whose stream is the copier's, the capture one for a capture copier; no other stream: the playback field at 100 and the capture field at 104 (softplg.c PCM_PLAYBACK_OFFSET, PCM_CAPTURE_OFFSET), then the stream count and the caps, a record of 104 bytes (CAPS_BYTES) a stream, the stream's name 4 bytes into it */
+#define GEN_PCM_PLAYBACK_OFFSET  100
+#define GEN_PCM_CAPTURE_OFFSET   104
+#define GEN_CAPS_BYTES           104
+
 static
 SIZE_T
 GenPcm(
-    UINT8* At)
+    UINT8* At,
+    const GEN_SHAPE* Shape)
 {
     memset(At, 0, GEN_PCM_BYTES);
     Put32(At, GEN_PCM_BYTES);
     GenText(At + 4, "PCM0");
     GenText(At + 48, "NoCodec-0");
-    Put32(At + 100, 1);
-    GenText(At + GEN_PCM_CAPS_OFFSET + 4, "copier-stream");
+    Put32(At + (Shape->Capture ? GEN_PCM_CAPTURE_OFFSET : GEN_PCM_PLAYBACK_OFFSET), 1);
+    GenText(At + GEN_PCM_CAPS_OFFSET + (Shape->Capture ? GEN_CAPS_BYTES : 0) + 4, "copier-stream");
     return GEN_PCM_BYTES;
 }
 
-/* The graph: one edge from the copier into the scheduler of its pipeline, or the chain of every scheduler */
+/* The graph: one edge between the copier and the scheduler of its pipeline, the copier into the scheduler for a playback copier and the scheduler into the copier for a capture one (a link names its sink, then its source), or the chain of every scheduler */
 static
 SIZE_T
 GenGraph(
@@ -2798,8 +2844,16 @@ GenGraph(
 
     memset(At, 0, GEN_GRAPH_BYTES * (Shape->Chain ? Shape->Pipelines : 1));
     snprintf(Name, sizeof(Name), "sched.%u", Shape->Pipelines - 1);
-    GenText(At, Name);
-    GenText(At + 2 * SOFTPLG_NAME_BYTES, "host-copier.0.playback");
+    if (Shape->Capture)
+    {
+        GenText(At, "host-copier.0.capture");
+        GenText(At + 2 * SOFTPLG_NAME_BYTES, Name);
+    }
+    else
+    {
+        GenText(At, Name);
+        GenText(At + 2 * SOFTPLG_NAME_BYTES, "host-copier.0.playback");
+    }
     At += GEN_GRAPH_BYTES;
     /* then every scheduler into the one of the pipeline before, from the far end */
     for (P = 1; P < Shape->Pipelines && Shape->Chain; P++)
@@ -2852,7 +2906,7 @@ GenBuild(
         }
     }
     At += GenHeader(At, SoftplgTypePcm, 0, 1, GEN_PCM_BYTES);
-    At += GenPcm(At);
+    At += GenPcm(At, Shape);
     if (Shape->Graph)
     {
         At += GenHeader(At, SoftplgTypeGraph, 0, Shape->Chain ? Shape->Pipelines : 1, GEN_GRAPH_BYTES * (Shape->Chain ? Shape->Pipelines : 1));
@@ -2923,6 +2977,86 @@ check_model_pipeline_bound(void)
     free(Model);
     GenFree(&Topology);
     CHECK_STR(SoftplgModelStatusName(SoftplgModelTooManyPipelines), "more pipelines than the firmware allows");
+}
+
+/* FB-02: the capture side of R2-10's rule. A host capture copier (aif_out) takes output formats, and its gateway buffer is two milliseconds of the stream's: a buffer that does not fit the word is refused by the validation with the copier named, the configuration call says so instead of a wrapped size, and the first output format's own buffer is refused at the build */
+static
+void
+check_model_gateway_buffer_capture(void)
+{
+    GEN_TOPOLOGY Topology;
+    GEN_SHAPE Shape;
+    PSOFTPLG_IPC4_MODEL Model;
+    SOFTPLG_IPC4_CONFIG Config;
+    SIZE_T Bytes;
+    const char* Named;
+
+    ModelLoadFirmware();
+    memset(&Shape, 0, sizeof(Shape));
+    Shape.Pipelines = 1;
+    Shape.Copier = TRUE;
+    Shape.Capture = TRUE;
+    Shape.Graph = TRUE;
+    Shape.Formats = 2;
+    /* the first output format's buffer is whole, the second one's is not: the model builds, the validation refuses */
+    Shape.BufferBytes = 0x80000000u;
+    CHECK(GenBuild(&Topology, &Shape));
+    if (Topology.Data == NULL)
+        return;
+    Model = ModelBuild(Topology.Data, Topology.Bytes, &Bytes);
+    CHECK(Model != NULL);
+    if (Model != NULL)
+    {
+        CHECK_EQ(ModelStatus, SoftplgModelOk);
+        /* the capture copier of PCM0: output formats only, the PCM's capture stream */
+        CHECK(Model->Widgets[Topology.Copier].Kind == SoftplgKindHostCopierCapture);
+        CHECK_EQ(Model->Widgets[Topology.Copier].InputFormats, 0);
+        CHECK_EQ(Model->Widgets[Topology.Copier].OutputFormats, 2);
+        CHECK_EQ(Model->Pcms[0].CaptureCopier, Topology.Copier);
+        CHECK_EQ(Model->Pcms[0].PlaybackCopier, SOFTPLG_NO_WIDGET);
+        CHECK_EQ(SoftplgModelConfig(Model, Topology.Copier, 0, 0, 1, &Config), SoftplgModelOk);
+        CHECK_EQ(Config.Count, SOFTPLG_IPC4_COPIER_CONFIG_WORDS);
+        CHECK_EQ(Config.Words[SOFTPLG_COPIER_DMA_BUFFER_WORD], SOFTPLG_DMA_BUFFER_MS_MIN * GEN_FIRST_BUFFER_BYTES);
+        /* the second output format's buffer, two milliseconds of it, does not fit the word */
+        CHECK_EQ(ModelValidate(Model, 16, 4096, &Named), SoftplgModelGatewayBuffer);
+        if (Named != NULL)
+            CHECK_STR(Named, "host-copier.0.capture");
+        CHECK_EQ(SoftplgModelConfig(Model, Topology.Copier, 0, 1, 1, &Config), SoftplgModelGatewayBuffer);
+        CHECK_EQ(Config.Count, 0);
+        free(Model);
+    }
+    GenFree(&Topology);
+
+    /* the first output format's own buffer overflows: the model's configuration of it is made at the build, which refuses it */
+    Shape.Formats = 1;
+    Shape.BufferBytes = 0;
+    Shape.FirstBufferBytes = 0x80000000u;
+    CHECK(GenBuild(&Topology, &Shape));
+    if (Topology.Data == NULL)
+        return;
+    Model = ModelBuild(Topology.Data, Topology.Bytes, &Bytes);
+    CHECK(Model == NULL);
+    CHECK_EQ(ModelStatus, SoftplgModelGatewayBuffer);
+    CHECK_EQ(ModelProblem.Status, SoftplgModelGatewayBuffer);
+    CHECK_EQ(ModelProblem.Widget, Topology.Copier);
+    free(Model);
+    GenFree(&Topology);
+
+    /* the boundary: a buffer of 0x7FFFFFFF bytes, two milliseconds of it 0xFFFFFFFE, is the largest that fits */
+    Shape.FirstBufferBytes = 0x7FFFFFFFu;
+    CHECK(GenBuild(&Topology, &Shape));
+    if (Topology.Data == NULL)
+        return;
+    Model = ModelBuild(Topology.Data, Topology.Bytes, &Bytes);
+    CHECK(Model != NULL);
+    if (Model != NULL)
+    {
+        CHECK_EQ(ModelValidate(Model, 16, 4096, &Named), SoftplgModelOk);
+        CHECK_EQ(SoftplgModelConfig(Model, Topology.Copier, 0, 0, 1, &Config), SoftplgModelOk);
+        CHECK_EQ(Config.Words[SOFTPLG_COPIER_DMA_BUFFER_WORD], 0xFFFFFFFEu);
+        free(Model);
+    }
+    GenFree(&Topology);
 }
 
 /* R2-10: a copier whose gateway buffer size, two milliseconds of its stream or the deep buffer it names, does not fit the word it is sent in is refused by the validation with the copier named, and the configuration call says so instead of a wrapped size */
@@ -3188,6 +3322,7 @@ int main(void)
     check_model_malformed();
     check_model_pipeline_bound();
     check_model_gateway_buffer();
+    check_model_gateway_buffer_capture();
     check_model_block_walk();
     check_names();
 
