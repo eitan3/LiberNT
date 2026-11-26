@@ -204,6 +204,7 @@ BOOL CLiberControlCenter::Open(const RECT *prcAnchor)
     }
 
     LiberShell_BuildTokens(&m_Tokens);
+    LiberShell_ApplyFont(&m_Surface);
     m_Surface.SetTokens(&m_Tokens);
     Sync();
 

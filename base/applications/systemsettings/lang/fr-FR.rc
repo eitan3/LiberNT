@@ -781,3 +781,22 @@ BEGIN
     IDS_TARGET "Cible"
     IDS_TARGET_FORMAT "Windows 11 %s %s"
 END
+
+STRINGTABLE
+BEGIN
+    IDS_LIBER_GROUP "Expérience du bureau"
+    IDS_LIBER_EXPERIENCE "Style du bureau"
+    IDS_LIBER_EXPERIENCE_DESC "Liber ajoute le dock flottant, le centre de contrôle, le nouveau menu Démarrer et les widgets. Déconnectez-vous pour appliquer."
+    IDS_LIBER_CLASSIC "Classique"
+    IDS_LIBER_LIBER "Liber"
+    IDS_LIBER_TINT "Teinte des surfaces"
+    IDS_LIBER_TINT_DESC "Part de la couleur d’accentuation dans les surfaces Liber"
+    IDS_LIBER_TINT_OFF "Désactivée"
+    IDS_LIBER_TINT_SOFT "Douce"
+    IDS_LIBER_TINT_VIVID "Vive"
+    IDS_LIBER_FONT "Police du bureau"
+    IDS_LIBER_FONT_DESC "Police du dock Liber, des volets, du menu Démarrer et des widgets"
+    IDS_LIBER_FONT_DEFAULT "Selawik (par défaut)"
+    IDS_LIBER_WIDGETS "Widgets du bureau"
+    IDS_LIBER_WIDGETS_DESC "Date, météo et moniteur système sur le bureau"
+END

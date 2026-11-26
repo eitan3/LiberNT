@@ -781,3 +781,22 @@ BEGIN
     IDS_TARGET "Target"
     IDS_TARGET_FORMAT "Windows 11 %s %s"
 END
+
+STRINGTABLE
+BEGIN
+    IDS_LIBER_GROUP "Desktop experience"
+    IDS_LIBER_EXPERIENCE "Desktop style"
+    IDS_LIBER_EXPERIENCE_DESC "Liber adds the floating dock, the control center, the new Start menu and widgets. Sign out to apply."
+    IDS_LIBER_CLASSIC "Classic"
+    IDS_LIBER_LIBER "Liber"
+    IDS_LIBER_TINT "Surface tint"
+    IDS_LIBER_TINT_DESC "How much of the accent color the Liber surfaces carry"
+    IDS_LIBER_TINT_OFF "Off"
+    IDS_LIBER_TINT_SOFT "Soft"
+    IDS_LIBER_TINT_VIVID "Vivid"
+    IDS_LIBER_FONT "Desktop font"
+    IDS_LIBER_FONT_DESC "Font of the Liber dock, flyouts, Start menu and widgets"
+    IDS_LIBER_FONT_DEFAULT "Selawik (default)"
+    IDS_LIBER_WIDGETS "Desktop widgets"
+    IDS_LIBER_WIDGETS_DESC "Date, weather and system monitor on the desktop"
+END

@@ -35,6 +35,7 @@ private:
 };
 
 VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens);
+VOID LiberShell_ApplyFont(LiberUI::Surface *pSurface);
 VOID LiberShell_SetDarkMode(BOOL bDark);
 VOID LiberShell_PlaceAbove(const RECT *prcAnchor, int widthPx, int heightPx, POINT *pptTopLeft);
 

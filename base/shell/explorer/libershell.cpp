@@ -16,8 +16,18 @@
 VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens)
 {
     LiberUI::ThemeParams params = { LiberExperience_IsDark() ? LiberUI::ThemeMode::Dark : LiberUI::ThemeMode::Light,
-                                    LiberUI::AccentPreset(LIBER_ACCENT_AZURE), LiberUI::SurfaceTint::Soft };
+                                    LiberUI::AccentPreset(LIBER_ACCENT_AZURE),
+                                    (LiberUI::SurfaceTint)LiberExperience_SurfaceTint() };
     pTokens->Build(params);
+}
+
+VOID LiberShell_ApplyFont(LiberUI::Surface *pSurface)
+{
+    WCHAR family[LF_FACESIZE];
+
+    if (!LiberExperience_UiFont(family, _countof(family)))
+        family[0] = 0;
+    pSurface->Fonts().SetFamily(family[0] ? family : LIBER_FONT_UI);
 }
 
 VOID LiberShell_SetDarkMode(BOOL bDark)

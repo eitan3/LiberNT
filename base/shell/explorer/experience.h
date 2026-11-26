@@ -15,3 +15,5 @@
 DWORD LiberExperience_Get(VOID);
 BOOL LiberExperience_IsLiber(VOID);
 BOOL LiberExperience_IsDark(VOID);
+DWORD LiberExperience_SurfaceTint(VOID);
+BOOL LiberExperience_UiFont(LPWSTR pszFamily, DWORD cchFamily);
