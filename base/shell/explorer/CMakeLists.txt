@@ -6,6 +6,7 @@ endif()
 
 list(APPEND SOURCE
     appbar.cpp
+    calstore.cpp
     desktop.cpp
     explorer.cpp
     notifyiconscust.cpp

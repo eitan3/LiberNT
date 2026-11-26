@@ -1,4 +1,5 @@
 
+add_subdirectory(calstore)
 add_subdirectory(dwmmaterial)
 add_subdirectory(dxdiag)
 add_subdirectory(interop)
