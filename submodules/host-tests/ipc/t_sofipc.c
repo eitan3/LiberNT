@@ -1576,8 +1576,8 @@ StreamStart(
     Input.Lookup = StreamLookup;
     Input.LookupContext = S;
     CHECK_EQ(SoftplgModelMeasure(&Input, &Bytes, &Problem), SoftplgModelOk);
-    /* T1: the file's size and the model's are two numbers (the topology line prints the file's, 4286, beside the model's, 2288) */
-    CHECK_EQ(Bytes, 2288);
+    /* T1: the file's size and the model's are two numbers (the topology line prints the file's, 4286, beside the model's: 2288 before the graph's adjacency and the walk's queue joined the model (R2-04), 2384 since) */
+    CHECK_EQ(Bytes, 2384);
     CHECK_EQ(S->FileBytes, 4286);
     S->ModelBuffer = (UINT8*)calloc(1, Bytes);
     CHECK(S->ModelBuffer != NULL);

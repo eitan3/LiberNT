@@ -224,6 +224,15 @@ SoftplgReadU64(
     return (UINT64)SoftplgReadU32(Data) | ((UINT64)SoftplgReadU32(Data + 4) << 32);
 }
 
+/* The read the header's SOFTPLG_HEADER_WORD names in the build (softplg.h) */
+UINT32
+SoftplgHeaderWord(
+    const UINT8* Data,
+    SIZE_T Offset)
+{
+    return SoftplgReadU32(Data + Offset);
+}
+
 static
 void
 SoftplgReadText(
@@ -421,20 +430,20 @@ SoftplgWalk(
     {
         if (!SoftplgInRange(Size, Offset, SOFTPLG_HEADER_BYTES))
             return SoftplgTruncated;
-        if (SoftplgReadU32(Data + Offset) != SOFTPLG_MAGIC)
+        if (SOFTPLG_HEADER_WORD(Data, Offset) != SOFTPLG_MAGIC)
             return Offset == 0 ? SoftplgBadSignature : SoftplgBadHeader;
-        if (SoftplgReadU32(Data + Offset + HDR_SIZE_OFFSET) != SOFTPLG_HEADER_BYTES)
+        if (SOFTPLG_HEADER_WORD(Data, Offset + HDR_SIZE_OFFSET) != SOFTPLG_HEADER_BYTES)
             return SoftplgBadHeader;
-        if (Offset == 0 && SoftplgReadU32(Data + HDR_ABI_OFFSET) != SOFTPLG_ABI_VERSION)
+        if (Offset == 0 && SOFTPLG_HEADER_WORD(Data, HDR_ABI_OFFSET) != SOFTPLG_ABI_VERSION)
             return SoftplgUnsupported;
 
-        Block.Abi = SoftplgReadU32(Data + Offset + HDR_ABI_OFFSET);
-        Block.Version = SoftplgReadU32(Data + Offset + HDR_VERSION_OFFSET);
-        Block.Type = SoftplgReadU32(Data + Offset + HDR_TYPE_OFFSET);
-        Block.VendorType = SoftplgReadU32(Data + Offset + HDR_VENDOR_TYPE_OFFSET);
-        Block.PayloadSize = SoftplgReadU32(Data + Offset + HDR_PAYLOAD_SIZE_OFFSET);
-        Block.Index = SoftplgReadU32(Data + Offset + HDR_INDEX_OFFSET);
-        Block.Count = SoftplgReadU32(Data + Offset + HDR_COUNT_OFFSET);
+        Block.Abi = SOFTPLG_HEADER_WORD(Data, Offset + HDR_ABI_OFFSET);
+        Block.Version = SOFTPLG_HEADER_WORD(Data, Offset + HDR_VERSION_OFFSET);
+        Block.Type = SOFTPLG_HEADER_WORD(Data, Offset + HDR_TYPE_OFFSET);
+        Block.VendorType = SOFTPLG_HEADER_WORD(Data, Offset + HDR_VENDOR_TYPE_OFFSET);
+        Block.PayloadSize = SOFTPLG_HEADER_WORD(Data, Offset + HDR_PAYLOAD_SIZE_OFFSET);
+        Block.Index = SOFTPLG_HEADER_WORD(Data, Offset + HDR_INDEX_OFFSET);
+        Block.Count = SOFTPLG_HEADER_WORD(Data, Offset + HDR_COUNT_OFFSET);
         Block.Offset = Offset;
         Block.PayloadOffset = Offset + SOFTPLG_HEADER_BYTES;
         Block.NextOffset = Block.PayloadOffset + Block.PayloadSize;
@@ -479,15 +488,15 @@ SoftplgReadBlock(
     {
         if (!SoftplgInRange(Size, Offset, SOFTPLG_HEADER_BYTES))
             return SoftplgTruncated;
-        if (SoftplgReadU32(Data + Offset) != SOFTPLG_MAGIC)
+        if (SOFTPLG_HEADER_WORD(Data, Offset) != SOFTPLG_MAGIC)
             return Offset == 0 ? SoftplgBadSignature : SoftplgBadHeader;
-        Current.Abi = SoftplgReadU32(Data + Offset + HDR_ABI_OFFSET);
-        Current.Version = SoftplgReadU32(Data + Offset + HDR_VERSION_OFFSET);
-        Current.Type = SoftplgReadU32(Data + Offset + HDR_TYPE_OFFSET);
-        Current.VendorType = SoftplgReadU32(Data + Offset + HDR_VENDOR_TYPE_OFFSET);
-        Current.PayloadSize = SoftplgReadU32(Data + Offset + HDR_PAYLOAD_SIZE_OFFSET);
-        Current.Index = SoftplgReadU32(Data + Offset + HDR_INDEX_OFFSET);
-        Current.Count = SoftplgReadU32(Data + Offset + HDR_COUNT_OFFSET);
+        Current.Abi = SOFTPLG_HEADER_WORD(Data, Offset + HDR_ABI_OFFSET);
+        Current.Version = SOFTPLG_HEADER_WORD(Data, Offset + HDR_VERSION_OFFSET);
+        Current.Type = SOFTPLG_HEADER_WORD(Data, Offset + HDR_TYPE_OFFSET);
+        Current.VendorType = SOFTPLG_HEADER_WORD(Data, Offset + HDR_VENDOR_TYPE_OFFSET);
+        Current.PayloadSize = SOFTPLG_HEADER_WORD(Data, Offset + HDR_PAYLOAD_SIZE_OFFSET);
+        Current.Index = SOFTPLG_HEADER_WORD(Data, Offset + HDR_INDEX_OFFSET);
+        Current.Count = SOFTPLG_HEADER_WORD(Data, Offset + HDR_COUNT_OFFSET);
         Current.Offset = Offset;
         Current.PayloadOffset = Offset + SOFTPLG_HEADER_BYTES;
         Current.NextOffset = Current.PayloadOffset + Current.PayloadSize;

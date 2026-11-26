@@ -33,4 +33,6 @@ dspparsers_test(softplg t_softplg.c ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/
 target_include_directories(softplg PRIVATE ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/fwload)
 target_compile_definitions(softplg PRIVATE
     SOFTPLG_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
-    SOFTPLG_FW_FIXTURE_DIR="${REACTOS_HOST_SOURCE_ROOT}/submodules/host-tests/fwload/fixtures")
+    SOFTPLG_FW_FIXTURE_DIR="${REACTOS_HOST_SOURCE_ROOT}/submodules/host-tests/fwload/fixtures"
+    # R2-04: the harness counts the block headers the library's walks read (SOFTPLG_HEADER_WORD, softplg.h)
+    SOFTPLG_HEADER_WORD=SoftplgHostHeaderWord)

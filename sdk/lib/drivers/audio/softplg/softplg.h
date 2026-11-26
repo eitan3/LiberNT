@@ -91,6 +91,20 @@ typedef BOOLEAN (*SOFTPLG_BLOCK_CALLBACK)(
     _In_ const SOFTPLG_BLOCK* Block,
     _In_opt_ PVOID Context);
 
+/*
+ * The read of one word of a block header, the one place every walk of the
+ * file touches a header. The build has the plain read; the host harness
+ * defines its own to count the headers read.
+ */
+#ifndef SOFTPLG_HEADER_WORD
+#define SOFTPLG_HEADER_WORD   SoftplgHeaderWord
+#endif
+
+UINT32
+SOFTPLG_HEADER_WORD(
+    _In_reads_bytes_(Offset + sizeof(UINT32)) const UINT8* Data,
+    SIZE_T Offset);
+
 /* Fixed part of an element and the private data that follows it */
 typedef struct _SOFTPLG_PRIVATE
 {

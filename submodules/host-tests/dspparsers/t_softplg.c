@@ -23,6 +23,19 @@
 static int Checks;
 static int Failures;
 
+/* The count of block header words the library's walks read, through the read the harness takes over from softplg.h (R2-04) */
+static SIZE_T HostHeaderReads;
+
+UINT32
+SoftplgHostHeaderWord(
+    const UINT8* Data,
+    SIZE_T Offset)
+{
+    HostHeaderReads++;
+    return (UINT32)Data[Offset] | ((UINT32)Data[Offset + 1] << 8) | ((UINT32)Data[Offset + 2] << 16) |
+        (UINT32)Data[Offset + 3] << 24;
+}
+
 #define CHECK(cond) \
     do { \
         ++Checks; \
@@ -2603,6 +2616,8 @@ typedef struct _GEN_SHAPE
     /* the copier's deep-buffer token, 0 for none */
     UINT32 DeepBufferMs;
     BOOLEAN Graph;
+    /* with Graph: a chain, the copier into the last pipeline's scheduler and every scheduler into the one of the pipeline before, the order that made a pass per widget */
+    BOOLEAN Chain;
     UINT32 EmptyBlocks;
 } GEN_SHAPE;
 
@@ -2771,20 +2786,31 @@ GenPcm(
     return GEN_PCM_BYTES;
 }
 
-/* One edge: the copier's stream flows into the scheduler of its pipeline */
+/* The graph: one edge from the copier into the scheduler of its pipeline, or the chain of every scheduler */
 static
 SIZE_T
 GenGraph(
     UINT8* At,
-    UINT32 Pipeline)
+    const GEN_SHAPE* Shape)
 {
     char Name[SOFTPLG_NAME_BYTES];
+    UINT32 P;
 
-    memset(At, 0, GEN_GRAPH_BYTES);
-    snprintf(Name, sizeof(Name), "sched.%u", Pipeline);
+    memset(At, 0, GEN_GRAPH_BYTES * (Shape->Chain ? Shape->Pipelines : 1));
+    snprintf(Name, sizeof(Name), "sched.%u", Shape->Pipelines - 1);
     GenText(At, Name);
     GenText(At + 2 * SOFTPLG_NAME_BYTES, "host-copier.0.playback");
-    return GEN_GRAPH_BYTES;
+    At += GEN_GRAPH_BYTES;
+    /* then every scheduler into the one of the pipeline before, from the far end */
+    for (P = 1; P < Shape->Pipelines && Shape->Chain; P++)
+    {
+        snprintf(Name, sizeof(Name), "sched.%u", Shape->Pipelines - 1 - P);
+        GenText(At, Name);
+        snprintf(Name, sizeof(Name), "sched.%u", Shape->Pipelines - P);
+        GenText(At + 2 * SOFTPLG_NAME_BYTES, Name);
+        At += GEN_GRAPH_BYTES;
+    }
+    return GEN_GRAPH_BYTES * (Shape->Chain ? Shape->Pipelines : 1);
 }
 
 static
@@ -2802,7 +2828,7 @@ GenBuild(
         Bytes += SOFTPLG_HEADER_BYTES + GEN_WIDGET_BYTES + (P == Shape->Pipelines - 1 ? CopierBytes : 0);
     Bytes += SOFTPLG_HEADER_BYTES + GEN_PCM_BYTES;
     if (Shape->Graph)
-        Bytes += SOFTPLG_HEADER_BYTES + GEN_GRAPH_BYTES;
+        Bytes += SOFTPLG_HEADER_BYTES + GEN_GRAPH_BYTES * (Shape->Chain ? Shape->Pipelines : 1);
     Bytes += (SIZE_T)Shape->EmptyBlocks * SOFTPLG_HEADER_BYTES;
     memset(Topology, 0, sizeof(*Topology));
     Topology->Copier = SOFTPLG_NO_WIDGET;
@@ -2829,8 +2855,8 @@ GenBuild(
     At += GenPcm(At);
     if (Shape->Graph)
     {
-        At += GenHeader(At, SoftplgTypeGraph, 0, 1, GEN_GRAPH_BYTES);
-        At += GenGraph(At, Shape->Pipelines - 1);
+        At += GenHeader(At, SoftplgTypeGraph, 0, Shape->Chain ? Shape->Pipelines : 1, GEN_GRAPH_BYTES * (Shape->Chain ? Shape->Pipelines : 1));
+        At += GenGraph(At, Shape);
     }
     for (P = 0; P < Shape->EmptyBlocks; P++)
         At += GenHeader(At, SoftplgTypePdata, 0, 0, 0);
@@ -2999,6 +3025,111 @@ check_model_gateway_buffer(void)
     CHECK_STR(SoftplgModelStatusName(SoftplgModelGatewayBuffer), "gateway buffer does not fit its word");
 }
 
+/* R2-04: the blocks are read once per pass, not once per lookup; a stream's reach is one walk over the graph, not a pass over the edges per widget */
+static
+void
+check_model_block_walk(void)
+{
+    static const UINT32 ChainPipelines = 64;
+    static const UINT32 EmptyBlocks = 20000;
+    GEN_TOPOLOGY Plain, Padded;
+    GEN_SHAPE Shape;
+    PSOFTPLG_IPC4_MODEL A, B;
+    SIZE_T Bytes, Reads;
+    UINT32 W, E, Blocks;
+    const char* Named;
+
+    ModelLoadFirmware();
+    memset(&Shape, 0, sizeof(Shape));
+    Shape.Pipelines = ChainPipelines;
+    Shape.Copier = TRUE;
+    Shape.Formats = 1;
+    Shape.Graph = TRUE;
+    Shape.Chain = TRUE;
+    CHECK(GenBuild(&Plain, &Shape));
+    if (Plain.Data == NULL)
+        return;
+    A = ModelBuild(Plain.Data, Plain.Bytes, &Bytes);
+    CHECK(A != NULL);
+    if (A != NULL)
+    {
+        /* the chain, given from its far end: the copier's stream reaches every scheduler and the copier itself */
+        CHECK_EQ(A->EdgeCount, ChainPipelines);
+        CHECK_EQ(A->Pcms[0].Reached, ChainPipelines + 1);
+        for (W = 0; W < SOFTPLG_PIPELINE_MASK_WORDS; W++)
+            CHECK_EQ(A->Pcms[0].PipelineMask[W], W < ChainPipelines / 32 ? 0xFFFFFFFFu : 0);
+        for (W = 0; W <= ChainPipelines; W++)
+            CHECK(SoftplgModelReachable(A, 0, W));
+        CHECK_EQ(ModelValidate(A, ChainPipelines + 1, 4096, &Named), SoftplgModelOk);
+    }
+
+    /* the same file with twenty thousand empty blocks after it: the same model, for a bounded number of header words */
+    Shape.EmptyBlocks = EmptyBlocks;
+    CHECK(GenBuild(&Padded, &Shape));
+    if (Padded.Data == NULL)
+    {
+        free(A);
+        GenFree(&Plain);
+        return;
+    }
+    HostHeaderReads = 0;
+    B = ModelBuild(Padded.Data, Padded.Bytes, &Bytes);
+    Reads = HostHeaderReads;
+    CHECK(B != NULL);
+    if (A != NULL && B != NULL)
+    {
+        CHECK_EQ(B->WidgetCount, A->WidgetCount);
+        CHECK_EQ(B->EdgeCount, A->EdgeCount);
+        CHECK_EQ(B->PcmCount, A->PcmCount);
+        CHECK_EQ(B->PipelineCount, A->PipelineCount);
+        CHECK_EQ(B->FormatCount, A->FormatCount);
+        CHECK_EQ(B->ControlCount, A->ControlCount);
+        for (W = 0; W < A->WidgetCount; W++)
+        {
+            CHECK(memcmp(&A->Widgets[W], &B->Widgets[W], sizeof(A->Widgets[W])) == 0);
+            CHECK_STR(B->Widgets[W].Name, A->Widgets[W].Name);
+        }
+        for (E = 0; E < A->EdgeCount; E++)
+        {
+            CHECK_EQ(B->Edges[E].Source, A->Edges[E].Source);
+            CHECK_EQ(B->Edges[E].Sink, A->Edges[E].Sink);
+        }
+        for (W = 0; W < A->PipelineCount; W++)
+        {
+            CHECK_EQ(B->Pipelines[W].Id, A->Pipelines[W].Id);
+            CHECK_EQ(B->Pipelines[W].Scheduler, A->Pipelines[W].Scheduler);
+        }
+        /* the PCM records, Reachable aside: it is an address into each model's own buffer */
+        for (W = 0; W < A->PcmCount; W++)
+        {
+            CHECK(memcmp(A->Pcms[W].Name, B->Pcms[W].Name, sizeof(A->Pcms[W].Name)) == 0);
+            CHECK(memcmp(A->Pcms[W].DaiName, B->Pcms[W].DaiName, sizeof(A->Pcms[W].DaiName)) == 0);
+            CHECK_EQ(A->Pcms[W].PcmId, B->Pcms[W].PcmId);
+            CHECK_EQ(A->Pcms[W].DaiId, B->Pcms[W].DaiId);
+            CHECK_EQ(A->Pcms[W].Playback, B->Pcms[W].Playback);
+            CHECK_EQ(A->Pcms[W].Capture, B->Pcms[W].Capture);
+            CHECK(memcmp(A->Pcms[W].PlaybackStream, B->Pcms[W].PlaybackStream, sizeof(A->Pcms[W].PlaybackStream)) == 0);
+            CHECK(memcmp(A->Pcms[W].CaptureStream, B->Pcms[W].CaptureStream, sizeof(A->Pcms[W].CaptureStream)) == 0);
+            CHECK_EQ(A->Pcms[W].PlaybackCopier, B->Pcms[W].PlaybackCopier);
+            CHECK_EQ(A->Pcms[W].CaptureCopier, B->Pcms[W].CaptureCopier);
+            CHECK_EQ(A->Pcms[W].Reached, B->Pcms[W].Reached);
+            CHECK(memcmp(A->Pcms[W].PipelineMask, B->Pcms[W].PipelineMask, sizeof(A->Pcms[W].PipelineMask)) == 0);
+            CHECK(B->Pcms[W].Reachable == B->Reachable + (SIZE_T)W * B->ReachWords);
+        }
+        CHECK(memcmp(A->Reachable, B->Reachable, A->ReachWords * sizeof(UINT32) * A->PcmCount) == 0);
+        CHECK(memcmp(A->Formats, B->Formats, sizeof(A->Formats[0]) * A->FormatCount) == 0);
+        CHECK_EQ(ModelValidate(B, ChainPipelines + 1, 4096, &Named), SoftplgModelOk);
+    }
+    /* five passes over the file (the measure's two, the build's two counts, the graph), eight header words a block each and one more for the first: under sixty-four a block. The lookups by index read every header before the one asked for, once per block, on every pass */
+    Blocks = 1 + ChainPipelines + 1 + ChainPipelines + EmptyBlocks;
+    CHECK(Reads != 0);
+    CHECK(Reads <= (SIZE_T)64 * Blocks);
+    free(A);
+    free(B);
+    GenFree(&Plain);
+    GenFree(&Padded);
+}
+
 static
 void
 check_names(void)
@@ -3036,6 +3167,7 @@ int main(void)
     check_model_malformed();
     check_model_pipeline_bound();
     check_model_gateway_buffer();
+    check_model_block_walk();
     check_names();
 
     printf("softplg: %d checks, %d failures\n", Checks, Failures);

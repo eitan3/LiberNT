@@ -313,6 +313,10 @@ typedef struct _SOFTPLG_IPC4_MODEL
     PSOFTPLG_IPC4_FORMAT Formats;
     /* PcmCount bitmaps of ReachWords words each */
     PUINT32 Reachable;
+    /* the graph as adjacency, for the reach of a stream: the edge indices grouped by the widget they leave, then by the widget they reach; where each widget's group starts in that order, both ways; and the scratch of the walk */
+    PUINT32 EdgeOrder;
+    PUINT32 EdgeFirst;
+    PUINT32 Queue;
 } SOFTPLG_IPC4_MODEL, *PSOFTPLG_IPC4_MODEL;
 
 typedef struct _SOFTPLG_IPC4_LIMITS

@@ -669,7 +669,159 @@ ModelReadWidget(
     return ModelPlaceFormats(Data, Size, &Raw, Widget, Formats, &Tuples);
 }
 
-/* The blocks of the file: the widgets and PCMs as they come (into the model, when there is one), and the counts the model is sized with */
+/*
+ * One pass over the blocks of the file, each block visited once: the
+ * widgets and PCMs as they come (into the model, when there is one), and
+ * the counts the model is sized with. Result ends the pass when a block is
+ * refused.
+ */
+typedef struct _MODEL_PASS
+{
+    const SOFTPLG_MODEL_INPUT* Input;
+    SOFTPLG_IPC4_MODEL* Model;
+    MODEL_COUNTS* Counts;
+    SOFTPLG_IPC4_PROBLEM* Problem;
+    UINT32 Widgets;
+    UINT32 Formats;
+    UINT32 Pcms;
+    SOFTPLG_MODEL_STATUS Result;
+} MODEL_PASS;
+
+/* One block of a pass; FALSE ends the pass with Result set */
+static
+BOOLEAN
+ModelCollectBlock(
+    const SOFTPLG_BLOCK* Block,
+    PVOID Context)
+{
+    MODEL_PASS* Pass = (MODEL_PASS*)Context;
+    const SOFTPLG_MODEL_INPUT* Input = Pass->Input;
+    SOFTPLG_IPC4_MODEL* Model = Pass->Model;
+    SOFTPLG_IPC4_MANIFEST Manifest;
+    SOFTPLG_PCM Pcm;
+    SOFTPLG_STREAM_CAPS Caps;
+    SOFTPLG_IPC4_WIDGET Widget;
+    PSOFTPLG_IPC4_WIDGET Placed;
+    PSOFTPLG_IPC4_PCM ModelPcm;
+    UINT32 N, K;
+    SOFTPLG_MODEL_STATUS Result;
+    SOFTPLG_STATUS Status;
+
+    switch (Block->Type)
+    {
+        case SoftplgTypeManifest:
+            Result = SoftplgIpc4ReadManifest(Input->Data, Input->Size, Block, &Manifest);
+            if (Result != SoftplgModelOk)
+            {
+                Pass->Result = Result;
+                return FALSE;
+            }
+            Pass->Counts->Manifest = TRUE;
+            if (Model != NULL)
+            {
+                Model->AbiMajor = Manifest.Major;
+                Model->AbiMinor = Manifest.Minor;
+                Model->AbiPatch = Manifest.Patch;
+                Model->ManifestItems = Manifest.ItemCount;
+            }
+            break;
+        case SoftplgTypeWidget:
+            for (N = 0; N < Block->Count; N++)
+            {
+                if (Pass->Widgets >= SOFTPLG_MODEL_WIDGETS_MAX)
+                {
+                    Pass->Result = SoftplgModelTooLarge;
+                    return FALSE;
+                }
+                /* the measure pass reads every widget into one scratch; the build pass into the model */
+                Placed = Model != NULL ? &Model->Widgets[Pass->Widgets] : &Widget;
+                Result = ModelReadWidget(Input, Input->Data, Input->Size, Block, N, Pass->Formats, Placed,
+                    Model != NULL ? Model->Formats + Pass->Formats : NULL);
+                if (Result != SoftplgModelOk)
+                {
+                    Pass->Problem->Widget = Pass->Widgets;
+                    Pass->Result = Result;
+                    return FALSE;
+                }
+                Pass->Widgets++;
+                Pass->Formats += Placed->InputFormats + Placed->OutputFormats;
+                if (Pass->Formats > SOFTPLG_MODEL_FORMATS_MAX)
+                {
+                    Pass->Result = SoftplgModelTooLarge;
+                    return FALSE;
+                }
+                if (Placed->Kind == SoftplgKindScheduler)
+                    Pass->Counts->Pipelines++;
+                Pass->Counts->Controls += Placed->ControlCount;
+            }
+            break;
+        case SoftplgTypeGraph:
+            if (Block->Count > SOFTPLG_MODEL_EDGES_MAX - Pass->Counts->Edges)
+            {
+                Pass->Result = SoftplgModelTooLarge;
+                return FALSE;
+            }
+            Pass->Counts->Edges += Block->Count;
+            break;
+        case SoftplgTypePcm:
+            if (Block->Count > SOFTPLG_MODEL_PCMS_MAX - Pass->Counts->Pcms)
+            {
+                Pass->Result = SoftplgModelTooLarge;
+                return FALSE;
+            }
+            Pass->Counts->Pcms += Block->Count;
+            for (N = 0; N < Block->Count; N++)
+            {
+                Status = SoftplgReadPcm(Input->Data, Input->Size, Block, N, &Pcm);
+                if (Status != SoftplgOk)
+                {
+                    Pass->Result = SoftplgModelBadFile;
+                    return FALSE;
+                }
+                if (Model != NULL)
+                {
+                    ModelPcm = &Model->Pcms[Pass->Pcms];
+                    ModelCopyText(ModelPcm->Name, sizeof(ModelPcm->Name), Pcm.PcmName);
+                    ModelCopyText(ModelPcm->DaiName, sizeof(ModelPcm->DaiName), Pcm.DaiName);
+                    ModelPcm->PcmId = Pcm.PcmId;
+                    ModelPcm->DaiId = Pcm.DaiId;
+                    ModelPcm->Playback = Pcm.Playback;
+                    ModelPcm->Capture = Pcm.Capture;
+                    ModelPcm->PlaybackStream[0] = 0;
+                    ModelPcm->CaptureStream[0] = 0;
+                    if (SoftplgReadPcmCaps(Input->Data, Input->Size, Block, N, 0, &Caps) == SoftplgOk)
+                        ModelCopyText(ModelPcm->PlaybackStream, sizeof(ModelPcm->PlaybackStream), Caps.Name);
+                    if (SoftplgReadPcmCaps(Input->Data, Input->Size, Block, N, 1, &Caps) == SoftplgOk)
+                        ModelCopyText(ModelPcm->CaptureStream, sizeof(ModelPcm->CaptureStream), Caps.Name);
+                    ModelPcm->PlaybackCopier = SOFTPLG_NO_WIDGET;
+                    ModelPcm->CaptureCopier = SOFTPLG_NO_WIDGET;
+                    ModelPcm->Reachable = NULL;
+                    ModelPcm->Reached = 0;
+                    for (K = 0; K < SOFTPLG_PIPELINE_MASK_WORDS; K++)
+                        ModelPcm->PipelineMask[K] = 0;
+                }
+                Pass->Pcms++;
+            }
+            break;
+        case SoftplgTypeMixer:
+        case SoftplgTypeBytes:
+        case SoftplgTypeEnum:
+            Pass->Counts->Controls += Block->Count;
+            break;
+        default:
+            break;
+    }
+    return TRUE;
+}
+
+/*
+ * The blocks of the file, each read once: the whole file's headers are
+ * checked first, so that a bad header anywhere is a bad file before any
+ * block's own problem, then the pass visits every block in the walk's
+ * order. The block is never looked up by its index from the first byte
+ * again: the n-th lookup cost n header reads, and a file of empty blocks
+ * made that quadratic (R2-04).
+ */
 static
 SOFTPLG_MODEL_STATUS
 ModelCollect(
@@ -680,15 +832,7 @@ ModelCollect(
 {
     static const MODEL_COUNTS Zero;
     SOFTPLG_SUMMARY Summary;
-    SOFTPLG_IPC4_MANIFEST Manifest;
-    SOFTPLG_BLOCK Block;
-    SOFTPLG_PCM Pcm;
-    SOFTPLG_STREAM_CAPS Caps;
-    SOFTPLG_IPC4_WIDGET Widget;
-    PSOFTPLG_IPC4_WIDGET Placed;
-    PSOFTPLG_IPC4_PCM ModelPcm;
-    UINT32 B, N, K, Widgets = 0, Formats = 0, Pcms = 0;
-    SOFTPLG_MODEL_STATUS Result;
+    MODEL_PASS Pass;
     SOFTPLG_STATUS Status;
 
     *Counts = Zero;
@@ -700,108 +844,28 @@ ModelCollect(
         return SoftplgModelNoData;
     if (Status != SoftplgOk)
         return SoftplgModelBadFile;
-
-    for (B = 0; ; B++)
-    {
-        Status = SoftplgReadBlock(Input->Data, Input->Size, B, &Block);
-        if (Status == SoftplgNotFound)
-            break;
-        if (Status != SoftplgOk)
-            return SoftplgModelBadFile;
-        switch (Block.Type)
-        {
-            case SoftplgTypeManifest:
-                Result = SoftplgIpc4ReadManifest(Input->Data, Input->Size, &Block, &Manifest);
-                if (Result != SoftplgModelOk)
-                    return Result;
-                Counts->Manifest = TRUE;
-                if (Model != NULL)
-                {
-                    Model->AbiMajor = Manifest.Major;
-                    Model->AbiMinor = Manifest.Minor;
-                    Model->AbiPatch = Manifest.Patch;
-                    Model->ManifestItems = Manifest.ItemCount;
-                }
-                break;
-            case SoftplgTypeWidget:
-                for (N = 0; N < Block.Count; N++)
-                {
-                    if (Widgets >= SOFTPLG_MODEL_WIDGETS_MAX)
-                        return SoftplgModelTooLarge;
-                    /* the measure pass reads every widget into one scratch; the build pass into the model */
-                    Placed = Model != NULL ? &Model->Widgets[Widgets] : &Widget;
-                    Result = ModelReadWidget(Input, Input->Data, Input->Size, &Block, N, Formats, Placed,
-                        Model != NULL ? Model->Formats + Formats : NULL);
-                    if (Result != SoftplgModelOk)
-                    {
-                        Problem->Widget = Widgets;
-                        return Result;
-                    }
-                    Widgets++;
-                    Formats += Placed->InputFormats + Placed->OutputFormats;
-                    if (Formats > SOFTPLG_MODEL_FORMATS_MAX)
-                        return SoftplgModelTooLarge;
-                    if (Placed->Kind == SoftplgKindScheduler)
-                        Counts->Pipelines++;
-                    Counts->Controls += Placed->ControlCount;
-                }
-                break;
-            case SoftplgTypeGraph:
-                if (Block.Count > SOFTPLG_MODEL_EDGES_MAX - Counts->Edges)
-                    return SoftplgModelTooLarge;
-                Counts->Edges += Block.Count;
-                break;
-            case SoftplgTypePcm:
-                if (Block.Count > SOFTPLG_MODEL_PCMS_MAX - Counts->Pcms)
-                    return SoftplgModelTooLarge;
-                for (N = 0; N < Block.Count; N++)
-                {
-                    Status = SoftplgReadPcm(Input->Data, Input->Size, &Block, N, &Pcm);
-                    if (Status != SoftplgOk)
-                        return SoftplgModelBadFile;
-                    if (Model != NULL)
-                    {
-                        ModelPcm = &Model->Pcms[Pcms];
-                        ModelCopyText(ModelPcm->Name, sizeof(ModelPcm->Name), Pcm.PcmName);
-                        ModelCopyText(ModelPcm->DaiName, sizeof(ModelPcm->DaiName), Pcm.DaiName);
-                        ModelPcm->PcmId = Pcm.PcmId;
-                        ModelPcm->DaiId = Pcm.DaiId;
-                        ModelPcm->Playback = Pcm.Playback;
-                        ModelPcm->Capture = Pcm.Capture;
-                        ModelPcm->PlaybackStream[0] = 0;
-                        ModelPcm->CaptureStream[0] = 0;
-                        if (SoftplgReadPcmCaps(Input->Data, Input->Size, &Block, N, 0, &Caps) == SoftplgOk)
-                            ModelCopyText(ModelPcm->PlaybackStream, sizeof(ModelPcm->PlaybackStream), Caps.Name);
-                        if (SoftplgReadPcmCaps(Input->Data, Input->Size, &Block, N, 1, &Caps) == SoftplgOk)
-                            ModelCopyText(ModelPcm->CaptureStream, sizeof(ModelPcm->CaptureStream), Caps.Name);
-                        ModelPcm->PlaybackCopier = SOFTPLG_NO_WIDGET;
-                        ModelPcm->CaptureCopier = SOFTPLG_NO_WIDGET;
-                        ModelPcm->Reachable = NULL;
-                        ModelPcm->Reached = 0;
-                        for (K = 0; K < SOFTPLG_PIPELINE_MASK_WORDS; K++)
-                            ModelPcm->PipelineMask[K] = 0;
-                    }
-                    Pcms++;
-                }
-                break;
-            case SoftplgTypeMixer:
-            case SoftplgTypeBytes:
-            case SoftplgTypeEnum:
-                Counts->Controls += Block.Count;
-                break;
-            default:
-                break;
-        }
-    }
+    Pass.Input = Input;
+    Pass.Model = Model;
+    Pass.Counts = Counts;
+    Pass.Problem = Problem;
+    Pass.Widgets = 0;
+    Pass.Formats = 0;
+    Pass.Pcms = 0;
+    Pass.Result = SoftplgModelOk;
+    Status = SoftplgWalk(Input->Data, Input->Size, ModelCollectBlock, &Pass, &Summary);
+    if (Pass.Result != SoftplgModelOk)
+        return Pass.Result;
+    if (Status != SoftplgOk)
+        return SoftplgModelBadFile;
     if (!Counts->Manifest)
         return SoftplgModelNoManifest;
-    Counts->Widgets = Widgets;
-    Counts->Formats = Formats;
-    Counts->Pcms = Pcms;
+    Counts->Widgets = Pass.Widgets;
+    Counts->Formats = Pass.Formats;
+    Counts->Pcms = Pass.Pcms;
     return SoftplgModelOk;
 }
 
-/* The bytes of a model with these counts: every array starts at a multiple of eight */
+/* The bytes of a model with these counts: every array starts at a multiple of eight; the graph's adjacency and the walk's queue are part of the model, sized the same way by both passes */
 static
 SIZE_T
 ModelBytes(
@@ -818,6 +882,9 @@ ModelBytes(
     Bytes += ((SIZE_T)Counts->Pipelines * sizeof(SOFTPLG_IPC4_PIPELINE) + 7) & ~(SIZE_T)7;
     Bytes += ((SIZE_T)Counts->Formats * sizeof(SOFTPLG_IPC4_FORMAT) + 7) & ~(SIZE_T)7;
     Bytes += ((SIZE_T)Counts->Pcms * *ReachWords * sizeof(UINT32) + 7) & ~(SIZE_T)7;
+    Bytes += ((SIZE_T)Counts->Edges * 2 * sizeof(UINT32) + 7) & ~(SIZE_T)7;
+    Bytes += (((SIZE_T)Counts->Widgets + 1) * 2 * sizeof(UINT32) + 7) & ~(SIZE_T)7;
+    Bytes += ((SIZE_T)Counts->Widgets * sizeof(UINT32) + 7) & ~(SIZE_T)7;
     return Bytes;
 }
 
@@ -843,6 +910,12 @@ ModelLayout(
     Model->Formats = (PSOFTPLG_IPC4_FORMAT)(Buffer + Offset);
     Offset += ((SIZE_T)Counts->Formats * sizeof(SOFTPLG_IPC4_FORMAT) + 7) & ~(SIZE_T)7;
     Model->Reachable = (PUINT32)(Buffer + Offset);
+    Offset += ((SIZE_T)Counts->Pcms * ReachWords * sizeof(UINT32) + 7) & ~(SIZE_T)7;
+    Model->EdgeOrder = (PUINT32)(Buffer + Offset);
+    Offset += ((SIZE_T)Counts->Edges * 2 * sizeof(UINT32) + 7) & ~(SIZE_T)7;
+    Model->EdgeFirst = (PUINT32)(Buffer + Offset);
+    Offset += ((SIZE_T)Counts->Widgets + 1) * 2 * sizeof(UINT32);
+    Model->Queue = (PUINT32)(Buffer + Offset);
     Model->WidgetCount = Counts->Widgets;
     Model->EdgeCount = Counts->Edges;
     Model->PcmCount = Counts->Pcms;
@@ -875,6 +948,44 @@ ModelReached(
     return (Reachable[Widget / 32] & (1u << (Widget % 32))) != 0;
 }
 
+/*
+ * The graph as adjacency, made once: EdgeOrder lists the edge indices
+ * grouped by the widget they leave, then by the widget they reach, and
+ * EdgeFirst gives where each widget's group starts in its order (one entry
+ * more than there are widgets, so a group is First[w] .. First[w + 1]).
+ * Queue is the scratch of the count sort and of the walk below.
+ */
+static
+VOID
+ModelAdjacency(
+    SOFTPLG_IPC4_MODEL* Model)
+{
+    UINT32* First[] = { Model->EdgeFirst, Model->EdgeFirst + Model->WidgetCount + 1 };
+    UINT32* Order[] = { Model->EdgeOrder, Model->EdgeOrder + Model->EdgeCount };
+    UINT32 W, E, Side;
+
+    for (Side = 0; Side < 2; Side++)
+    {
+        for (W = 0; W <= Model->WidgetCount; W++)
+            First[Side][W] = 0;
+        for (E = 0; E < Model->EdgeCount; E++)
+            First[Side][(Side == 0 ? Model->Edges[E].Source : Model->Edges[E].Sink) + 1]++;
+        for (W = 1; W <= Model->WidgetCount; W++)
+            First[Side][W] += First[Side][W - 1];
+        for (W = 0; W < Model->WidgetCount; W++)
+            Model->Queue[W] = First[Side][W];
+        for (E = 0; E < Model->EdgeCount; E++)
+            Order[Side][Model->Queue[Side == 0 ? Model->Edges[E].Source : Model->Edges[E].Sink]++] = E;
+    }
+}
+
+/*
+ * The widgets a stream reaches from the widgets already in the closure:
+ * onwards over the edges' sources for playback, backwards over their sinks
+ * for capture. One walk: every reached widget leaves the queue once and
+ * each of its edges is looked at once, so the work is the graph's own size
+ * and not that times the number of widgets (R2-04).
+ */
 static
 VOID
 ModelReach(
@@ -882,25 +993,25 @@ ModelReach(
     UINT32* Closure,
     BOOLEAN Forward)
 {
-    UINT32 Pass, E, From, To;
-    BOOLEAN Progress;
+    const UINT32* First = Model->EdgeFirst + (Forward ? 0 : Model->WidgetCount + 1);
+    const UINT32* Order = Model->EdgeOrder + (Forward ? 0 : Model->EdgeCount);
+    UINT32* Queue = Model->Queue;
+    UINT32 Head = 0, Tail = 0, I, W, From, To;
 
-    /* as long as an edge carries the stream from a reached widget to one it did not reach, the stream goes on through it */
-    for (Pass = 0; Pass <= Model->WidgetCount; Pass++)
+    for (W = 0; W < Model->WidgetCount; W++)
+        if (ModelReached(Closure, W))
+            Queue[Tail++] = W;
+    while (Head < Tail)
     {
-        Progress = FALSE;
-        for (E = 0; E < Model->EdgeCount; E++)
+        From = Queue[Head++];
+        for (I = First[From]; I < First[From + 1]; I++)
         {
-            From = Forward ? Model->Edges[E].Source : Model->Edges[E].Sink;
-            To = Forward ? Model->Edges[E].Sink : Model->Edges[E].Source;
-            if (ModelReached(Closure, From) && !ModelReached(Closure, To))
-            {
-                Closure[To / 32] |= 1u << (To % 32);
-                Progress = TRUE;
-            }
+            To = Forward ? Model->Edges[Order[I]].Sink : Model->Edges[Order[I]].Source;
+            if (ModelReached(Closure, To))
+                continue;
+            Closure[To / 32] |= 1u << (To % 32);
+            Queue[Tail++] = To;
         }
-        if (!Progress)
-            break;
     }
 }
 
@@ -926,6 +1037,50 @@ ModelStream(
         Reachable[Word] |= Closure[Word];
 }
 
+/* One pass over the blocks for the graph: the graph elements as they come, as widget indices; FALSE ends the pass with Result set */
+typedef struct _MODEL_GRAPH
+{
+    const SOFTPLG_MODEL_INPUT* Input;
+    SOFTPLG_IPC4_MODEL* Model;
+    SOFTPLG_IPC4_PROBLEM* Problem;
+    UINT32 Count;
+    SOFTPLG_MODEL_STATUS Result;
+} MODEL_GRAPH;
+
+static
+BOOLEAN
+ModelGraphBlock(
+    const SOFTPLG_BLOCK* Block,
+    PVOID Context)
+{
+    MODEL_GRAPH* Graph = (MODEL_GRAPH*)Context;
+    SOFTPLG_GRAPH_EDGE Edge;
+    PSOFTPLG_IPC4_EDGE To;
+    UINT32 I;
+
+    if (Block->Type != SoftplgTypeGraph)
+        return TRUE;
+    for (I = 0; I < Block->Count; I++)
+    {
+        if (SoftplgReadGraphEdge(Graph->Input->Data, Graph->Input->Size, Block, I, &Edge) != SoftplgOk)
+        {
+            Graph->Result = SoftplgModelBadFile;
+            return FALSE;
+        }
+        To = &Graph->Model->Edges[Graph->Count];
+        To->Source = ModelFindWidget(Graph->Model, Edge.Source);
+        To->Sink = ModelFindWidget(Graph->Model, Edge.Sink);
+        if (To->Source == SOFTPLG_NO_WIDGET || To->Sink == SOFTPLG_NO_WIDGET)
+        {
+            Graph->Problem->Widget = To->Source;
+            Graph->Result = SoftplgModelBadEdge;
+            return FALSE;
+        }
+        Graph->Count++;
+    }
+    return TRUE;
+}
+
 /*
  * What the walk over the blocks leaves: the pipelines (one scheduler each),
  * the graph elements as widget indices, the copier of every PCM by its
@@ -938,13 +1093,12 @@ ModelFinish(
     SOFTPLG_IPC4_MODEL* Model,
     SOFTPLG_IPC4_PROBLEM* Problem)
 {
-    SOFTPLG_BLOCK Block;
-    SOFTPLG_GRAPH_EDGE Edge;
+    SOFTPLG_SUMMARY Summary;
+    MODEL_GRAPH Graph;
     PSOFTPLG_IPC4_WIDGET W;
     PSOFTPLG_IPC4_PCM Pcm;
-    UINT32 B, N, P, I, Count, Word;
+    UINT32 N, P, Count, Word;
     SOFTPLG_MODEL_STATUS Result;
-    SOFTPLG_STATUS Status;
 
     /* the pipelines, in the order their schedulers come */
     Count = 0;
@@ -986,33 +1140,18 @@ ModelFinish(
         W->Pipeline = P;
     }
 
-    /* the graph, once every widget has its index */
-    N = 0;
-    for (B = 0; ; B++)
-    {
-        Status = SoftplgReadBlock(Input->Data, Input->Size, B, &Block);
-        if (Status == SoftplgNotFound)
-            break;
-        if (Status != SoftplgOk)
-            return SoftplgModelBadFile;
-        if (Block.Type != SoftplgTypeGraph)
-            continue;
-        for (I = 0; I < Block.Count; I++)
-        {
-            if (SoftplgReadGraphEdge(Input->Data, Input->Size, &Block, I, &Edge) != SoftplgOk)
-                return SoftplgModelBadFile;
-            Model->Edges[N].Source = ModelFindWidget(Model, Edge.Source);
-            Model->Edges[N].Sink = ModelFindWidget(Model, Edge.Sink);
-            if (Model->Edges[N].Source == SOFTPLG_NO_WIDGET || Model->Edges[N].Sink == SOFTPLG_NO_WIDGET)
-            {
-                Problem->Widget = Model->Edges[N].Source;
-                return SoftplgModelBadEdge;
-            }
-            N++;
-        }
-    }
-    if (N != Model->EdgeCount)
+    /* the graph, once every widget has its index: one pass over the blocks, the graph elements as they come, then the adjacency the reach of a stream walks */
+    Graph.Input = Input;
+    Graph.Model = Model;
+    Graph.Problem = Problem;
+    Graph.Count = 0;
+    Graph.Result = SoftplgModelOk;
+    SoftplgWalk(Input->Data, Input->Size, ModelGraphBlock, &Graph, &Summary);
+    if (Graph.Result != SoftplgModelOk)
+        return Graph.Result;
+    if (Graph.Count != Model->EdgeCount)
         return SoftplgModelBadFile;
+    ModelAdjacency(Model);
 
     /* every PCM's copiers by its stream names, then the widgets its stream reaches */
     for (P = 0; P < Model->PcmCount; P++)
