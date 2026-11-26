@@ -6,10 +6,12 @@ endif()
 
 list(APPEND SOURCE
     appbar.cpp
+    brightness.cpp
     calstore.cpp
     desktop.cpp
     explorer.cpp
     notifyiconscust.cpp
+    powermode.cpp
     rshell.cpp
     settings.cpp
     shellservice.cpp

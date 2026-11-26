@@ -4,7 +4,9 @@
 #include <windowsx.h>
 #include <libernt/dwmframe.h>
 #include <shellframe.h>
+#include "brightness.h"
 #include "calstore.h"
+#include "powermode.h"
 #include <winioctl.h>
 #include <ntddvdeo.h>
 #include <libernt/rddm/rxgkmonitor.h>
@@ -4778,66 +4780,10 @@ VOID TrayScreenshot_Capture(VOID)
 #define TFY_WM_BRIGHTNESSKEY (WM_APP + 46)
 
 static volatile LONG g_TfyBrightness = -1;
-static volatile LONG g_TfyBrightnessSelfTick;
 static HWND g_hwndTfyBrightnessSink;
 static HANDLE g_hTfyBrightnessEvents[2];
 static DWORD g_cTfyBrightnessEvents;
 
-static HANDLE
-TfyOpenLcd(VOID)
-{
-    return CreateFileW(L"\\\\.\\LCD", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
-                       OPEN_EXISTING, 0, NULL);
-}
-
-static BOOL
-TfyBrightnessQuery(int *pnPercent)
-{
-    DISPLAY_BRIGHTNESS Display;
-    HANDLE hLcd = TfyOpenLcd();
-    DWORD cb = 0;
-    BOOL bRet;
-
-    if (hLcd == INVALID_HANDLE_VALUE)
-        return FALSE;
-    bRet = DeviceIoControl(hLcd, IOCTL_VIDEO_QUERY_DISPLAY_BRIGHTNESS, NULL, 0, &Display, sizeof(Display), &cb, NULL) &&
-           cb >= sizeof(Display);
-    CloseHandle(hLcd);
-    if (bRet)
-        *pnPercent = (Display.ucDisplayPolicy & DISPLAYPOLICY_DC) ? Display.ucDCBrightness : Display.ucACBrightness;
-    return bRet;
-}
-
-static BOOL
-TfyBrightnessSet(int nPercent)
-{
-    DISPLAY_BRIGHTNESS Display;
-    HANDLE hLcd = TfyOpenLcd();
-    DWORD cb = 0;
-    BOOL bRet = FALSE;
-
-    if (hLcd == INVALID_HANDLE_VALUE)
-        return FALSE;
-    if (DeviceIoControl(hLcd, IOCTL_VIDEO_QUERY_DISPLAY_BRIGHTNESS, NULL, 0, &Display, sizeof(Display), &cb, NULL) &&
-        cb >= sizeof(Display))
-    {
-        nPercent = max(0, min(nPercent, 100));
-        if (Display.ucDisplayPolicy & DISPLAYPOLICY_DC)
-        {
-            Display.ucDisplayPolicy = DISPLAYPOLICY_DC;
-            Display.ucDCBrightness = (UCHAR)nPercent;
-        }
-        else
-        {
-            Display.ucDisplayPolicy = DISPLAYPOLICY_AC;
-            Display.ucACBrightness = (UCHAR)nPercent;
-        }
-        InterlockedExchange(&g_TfyBrightnessSelfTick, (LONG)GetTickCount());
-        bRet = DeviceIoControl(hLcd, IOCTL_VIDEO_SET_DISPLAY_BRIGHTNESS, &Display, sizeof(Display), NULL, 0, &cb, NULL);
-    }
-    CloseHandle(hLcd);
-    return bRet;
-}
 
 static LRESULT CALLBACK
 TfyBrightnessSinkProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -9413,53 +9359,6 @@ TfyNetworkToggle(HWND hwndOwner, const RECT *prcAnchor, BOOL bWiredSettings)
 VOID TrayNetwork_Toggle(IN HWND hwndOwner, IN const RECT *prcAnchor)
 {
     TfyNetworkToggle(hwndOwner, prcAnchor, TRUE);
-}
-
-typedef DWORD (WINAPI *PFN_POWERGETACTIVESCHEME)(HKEY, GUID **);
-typedef DWORD (WINAPI *PFN_POWERSETACTIVESCHEME)(HKEY, const GUID *);
-
-static HMODULE g_hPowrProf = NULL;
-static PFN_POWERGETACTIVESCHEME g_pfnPowerGetActiveScheme = NULL;
-static PFN_POWERSETACTIVESCHEME g_pfnPowerSetActiveScheme = NULL;
-
-static const struct
-{
-    GUID Scheme;
-    LPCWSTR pszName;
-} g_TfyPowerModes[] =
-{
-    { { 0xA1841308, 0x3541, 0x4FAB, { 0xBC, 0x81, 0xF7, 0x15, 0x56, 0xF2, 0x0B, 0x4A } }, L"Best power efficiency" },
-    { { 0x381B4222, 0xF694, 0x41F0, { 0x96, 0x85, 0xFF, 0x5B, 0xB2, 0x60, 0xDF, 0x2E } }, L"Balanced" },
-    { { 0x8C5E7FDA, 0xE8BF, 0x4A96, { 0x9A, 0x85, 0xA6, 0xE2, 0x3A, 0x8C, 0x63, 0x5C } }, L"Best performance" }
-};
-
-static BOOL TfyLoadPowrProf()
-{
-    if (g_hPowrProf)
-        return g_pfnPowerGetActiveScheme && g_pfnPowerSetActiveScheme;
-    g_hPowrProf = LoadLibraryW(L"powrprof.dll");
-    if (!g_hPowrProf)
-        return FALSE;
-    g_pfnPowerGetActiveScheme = (PFN_POWERGETACTIVESCHEME)GetProcAddress(g_hPowrProf, "PowerGetActiveScheme");
-    g_pfnPowerSetActiveScheme = (PFN_POWERSETACTIVESCHEME)GetProcAddress(g_hPowrProf, "PowerSetActiveScheme");
-    return g_pfnPowerGetActiveScheme && g_pfnPowerSetActiveScheme;
-}
-
-static int
-TfyActivePowerMode(VOID)
-{
-    GUID *pScheme = NULL;
-    int iMode = -1;
-
-    if (!TfyLoadPowrProf() || g_pfnPowerGetActiveScheme(NULL, &pScheme) != ERROR_SUCCESS || !pScheme)
-        return -1;
-    for (int i = 0; i < (int)_countof(g_TfyPowerModes); i++)
-    {
-        if (IsEqualGUID(*pScheme, g_TfyPowerModes[i].Scheme))
-            iMode = i;
-    }
-    LocalFree(pScheme);
-    return iMode;
 }
 
 #define TFY_PWRHIT_NONE  -1

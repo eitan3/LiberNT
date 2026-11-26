@@ -75,7 +75,7 @@ static void TestSort()
     ok(dates[0] == 20261126 && dates[1] == 20261127 && dates[2] == 20261201 && dates[3] == 20270101, "sorted\n");
 }
 
-START_TEST(Store)
+START_TEST(Calendar)
 {
     TestNames();
     TestStored();
