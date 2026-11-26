@@ -3,6 +3,7 @@
 
 extern void func_Anim(void);
 extern void func_Color(void);
+extern void func_Controls(void);
 extern void func_Input(void);
 extern void func_Layout(void);
 extern void func_Painter(void);
@@ -13,6 +14,7 @@ const struct test winetest_testlist[] =
 {
     { "Anim", func_Anim },
     { "Color", func_Color },
+    { "Controls", func_Controls },
     { "Input", func_Input },
     { "Layout", func_Layout },
     { "Painter", func_Painter },

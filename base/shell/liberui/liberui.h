@@ -513,6 +513,119 @@ private:
     int m_RowGap;
 };
 
+enum ControlEvent
+{
+    ControlClicked = 1,
+    ControlValueChanged,
+    ControlToggled
+};
+
+class IControlListener
+{
+public:
+    virtual void OnControlEvent(Widget *source, ControlEvent event) = 0;
+
+protected:
+    ~IControlListener() {}
+};
+
+class Control : public Widget
+{
+public:
+    Control();
+
+    void SetListener(IControlListener *listener) { m_Listener = listener; }
+    void SetId(UINT id) { m_Id = id; }
+    UINT Id() const { return m_Id; }
+
+protected:
+    void Raise(ControlEvent event);
+
+    IControlListener *m_Listener;
+    UINT m_Id;
+};
+
+class Label : public Widget
+{
+public:
+    Label(LPCWSTR text, LIBER_TYPE style, LIBER_COLOR color, UINT flags);
+
+    void SetText(LPCWSTR text);
+    LPCWSTR Text() const { return m_Text; }
+    LIBER_TYPE Style() const { return m_Style; }
+
+protected:
+    SIZE MeasureOverride(SIZE available);
+    void PaintOverride(PaintContext &context);
+
+private:
+    WCHAR m_Text[128];
+    LIBER_TYPE m_Style;
+    LIBER_COLOR m_Color;
+    UINT m_Flags;
+};
+
+class IconButton : public Control
+{
+public:
+    IconButton(LPCWSTR icon, int size);
+
+    void SetIcon(LPCWSTR icon);
+    LPCWSTR IconName() const { return m_Icon; }
+    void OnClick();
+
+protected:
+    void PaintOverride(PaintContext &context);
+
+private:
+    WCHAR m_Icon[64];
+};
+
+class ToggleTile : public Control
+{
+public:
+    ToggleTile(LPCWSTR icon, LPCWSTR label, BOOL toggles);
+
+    BOOL IsOn() const { return HasState(StateChecked); }
+    void SetOn(BOOL on) { SetState(StateChecked, on); }
+    void SetLabel(LPCWSTR label);
+    LPCWSTR LabelText() const { return m_Label; }
+    void OnClick();
+
+protected:
+    void PaintOverride(PaintContext &context);
+
+private:
+    WCHAR m_Icon[64];
+    WCHAR m_Label[64];
+    BOOL m_Toggles;
+};
+
+class Slider : public Control
+{
+public:
+    Slider(LPCWSTR icon, int maximum);
+
+    int Value() const { return m_Value; }
+    int Maximum() const { return m_Maximum; }
+    void SetValue(int value);
+    int ValueAt(LONG x) const;
+    void SetIcon(LPCWSTR icon);
+    void OnPointerDown(POINT pt);
+    void OnPointerMove(POINT pt);
+    BOOL OnKeyDown(UINT vk);
+
+protected:
+    void PaintOverride(PaintContext &context);
+
+private:
+    void Change(int value);
+
+    WCHAR m_Icon[64];
+    int m_Value;
+    int m_Maximum;
+};
+
 class InputRouter
 {
 public:

@@ -13,6 +13,7 @@ list(APPEND SOURCE
     ${REACTOS_SOURCE_DIR}/base/shell/explorer/calstore.cpp
     ${REACTOS_SOURCE_DIR}/base/shell/explorer/dockmodel.cpp
     ${REACTOS_SOURCE_DIR}/base/shell/explorer/experience.cpp
+    ${REACTOS_SOURCE_DIR}/base/shell/explorer/libershell.cpp
     ${REACTOS_SOURCE_DIR}/base/shell/explorer/powermode.cpp
     ${REACTOS_SOURCE_DIR}/base/shell/explorer/startmodel.cpp
     testlist.c)

@@ -12,6 +12,7 @@
 
 #include "experience.h"
 #include "liberdock.h"
+#include "libershell.h"
 
 static void CheckRect(const RECT &rc, LONG l, LONG t, LONG r, LONG b, const char *what)
 {
@@ -101,9 +102,35 @@ static void TestExperience()
     RegCloseKey(key);
 }
 
+static void TestPlaceAbove()
+{
+    HDC screen = GetDC(NULL);
+    UINT dpi = screen ? (UINT)GetDeviceCaps(screen, LOGPIXELSX) : 96;
+    MONITORINFO mi = { sizeof(mi) };
+    POINT pt;
+
+    if (screen)
+        ReleaseDC(NULL, screen);
+    GetMonitorInfoW(MonitorFromPoint(POINT(), MONITOR_DEFAULTTOPRIMARY), &mi);
+
+    RECT anchor = { mi.rcMonitor.right - 200, mi.rcMonitor.bottom - 60, mi.rcMonitor.right - 8, mi.rcMonitor.bottom - 12 };
+    LiberShell_PlaceAbove(&anchor, 372, 300, &pt);
+    ok(pt.x == anchor.right - 372, "right aligned to the anchor: %ld\n", pt.x);
+    ok(pt.y == anchor.top - LiberUI::ScaleToDpi(LIBER_FLYOUT_GAP, dpi) - 300, "above the anchor with the gap: %ld\n", pt.y);
+
+    RECT left = { mi.rcMonitor.left, mi.rcMonitor.bottom - 60, mi.rcMonitor.left + 50, mi.rcMonitor.bottom - 12 };
+    LiberShell_PlaceAbove(&left, 372, 300, &pt);
+    ok(pt.x == mi.rcMonitor.left, "kept on screen on the left: %ld\n", pt.x);
+
+    RECT high = { mi.rcMonitor.right - 200, mi.rcMonitor.top + 10, mi.rcMonitor.right - 8, mi.rcMonitor.top + 50 };
+    LiberShell_PlaceAbove(&high, 372, 300, &pt);
+    ok(pt.y == mi.rcMonitor.top, "kept on screen at the top: %ld\n", pt.y);
+}
+
 START_TEST(Dock)
 {
     TestLayout();
+    TestPlaceAbove();
     TestTaskWindows();
     TestExperience();
 }

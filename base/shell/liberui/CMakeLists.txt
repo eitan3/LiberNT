@@ -2,6 +2,7 @@
 list(APPEND SOURCE
     anim.cpp
     color.cpp
+    controls.cpp
     input.cpp
     layout.cpp
     painter.cpp

@@ -11,10 +11,13 @@
 
 #include "experience.h"
 #include "liberdock.h"
+#include "libershell.h"
 
 using namespace LiberUI;
 
-#define LIBER_TRAY_WIDTH     112
+#define LIBER_CLOCK_WIDTH    112
+#define LIBER_PILL_WIDTH     72
+#define LIBER_TRAY_WIDTH     (LIBER_PILL_WIDTH + LIBER_CLOCK_WIDTH)
 #define LIBER_TIMER_CLOCK    1
 #define LIBER_TIMER_REFRESH  2
 #define LIBER_REFRESH_DELAY  60
@@ -106,23 +109,37 @@ private:
     BOOL m_Active;
 };
 
-class CIsland : public StackPanel
+class CSystemPill : public Widget
 {
 public:
-    CIsland(float radius) : StackPanel(Orientation::Horizontal, 0), m_Radius(radius) {}
+    CSystemPill(CLiberDock *dock) : m_Dock(dock)
+    {
+        SetSize(LIBER_PILL_WIDTH, LIBER_TRAY_HEIGHT);
+        SetHitTestable(TRUE);
+        SetFocusable(TRUE);
+    }
+
+    void OnClick();
 
 protected:
     void PaintOverride(PaintContext &context)
     {
         RectF rc = ToRectF(Bounds());
-        GlassTint tint = context.Tokens.Material(LIBER_MATERIAL_REGULAR, 0.5);
+        const ThemeTokens &tokens = context.Tokens;
 
-        context.Painter.FillRoundRect(rc, m_Radius, OklchToArgb(tint.Color, 1.0));
-        context.Painter.StrokeRoundRect(rc, m_Radius, context.Tokens.Color(LIBER_COLOR_STROKE_CARD), 1.0f);
+        if (HasState(StateHover) || HasState(StatePressed))
+        {
+            RectF plate = { rc.X + 4.0f, rc.Y + 6.0f, rc.Width - 8.0f, rc.Height - 12.0f };
+            context.Painter.FillRoundRect(plate, plate.Height / 2, tokens.Color(LIBER_COLOR_FILL_SUBTLE_HOVER));
+        }
+        RectF wifi = { rc.X + 14.0f, rc.Y + (rc.Height - 20.0f) / 2, 20.0f, 20.0f };
+        RectF sound = { rc.X + 38.0f, rc.Y + (rc.Height - 20.0f) / 2, 20.0f, 20.0f };
+        context.Painter.Icon(L"wifi_1_20_regular", wifi, tokens.Color(LIBER_COLOR_TEXT1));
+        context.Painter.Icon(L"speaker_2_20_regular", sound, tokens.Color(LIBER_COLOR_TEXT1));
     }
 
 private:
-    float m_Radius;
+    CLiberDock *m_Dock;
 };
 
 class CTrayClock : public Widget
@@ -131,7 +148,7 @@ public:
     CTrayClock(CLiberDock *dock) : m_Dock(dock)
     {
         m_szTime[0] = m_szDate[0] = 0;
-        SetSize(LIBER_TRAY_WIDTH, LIBER_TRAY_HEIGHT);
+        SetSize(LIBER_CLOCK_WIDTH, LIBER_TRAY_HEIGHT);
         SetHitTestable(TRUE);
         SetFocusable(TRUE);
     }
@@ -193,6 +210,7 @@ public:
     void Stop();
     void OnCellClick(int index, const RECT &bounds);
     void OnClockClick(const RECT &bounds);
+    void OnPillClick();
 
 private:
     static LRESULT CALLBACK SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -214,8 +232,8 @@ private:
     Surface m_TraySurface;
     LIBER_DOCK_ENTRY m_Entries[LIBER_DOCK_MAX_ITEMS];
     UINT m_Count;
-    CIsland *m_DockRoot;
-    CIsland *m_TrayRoot;
+    CLiberPanel *m_DockRoot;
+    CLiberPanel *m_TrayRoot;
     CDockCell *m_Cells[LIBER_DOCK_MAX_ITEMS + 1];
     CTrayClock *m_Clock;
     UINT m_Dpi;
@@ -234,11 +252,14 @@ void CTrayClock::OnClick()
     m_Dock->OnClockClick(Bounds());
 }
 
+void CSystemPill::OnClick()
+{
+    m_Dock->OnPillClick();
+}
+
 void CLiberDock::BuildTheme()
 {
-    ThemeParams params = { LiberExperience_IsDark() ? ThemeMode::Dark : ThemeMode::Light,
-                           AccentPreset(LIBER_ACCENT_AZURE), SurfaceTint::Soft };
-    m_Tokens.Build(params);
+    LiberShell_BuildTokens(&m_Tokens);
 }
 
 BOOL CALLBACK CLiberDock::PinProc(PCWSTR pszShortcut, PCWSTR pszTarget, PCWSTR pszAppId, const FILETIME *pCreationTime,
@@ -408,6 +429,14 @@ void CLiberDock::OnCellClick(int index, const RECT &bounds)
         TaskbarPin_Launch(entry.szTarget, NULL);
 }
 
+void CLiberDock::OnPillClick()
+{
+    RECT rc;
+
+    GetWindowRect(m_TraySurface.Window(), &rc);
+    LiberControlCenter_Toggle(&rc);
+}
+
 void CLiberDock::OnClockClick(const RECT &bounds)
 {
     RECT rc = ScreenRect(m_TraySurface, bounds);
@@ -486,11 +515,12 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
     if (!m_DockSurface.Create(NULL, L"Liber Dock", exStyle) || !m_TraySurface.Create(NULL, L"Liber Tray", exStyle))
         return E_FAIL;
 
-    m_DockRoot = new CIsland((float)LIBER_DOCK_HEIGHT / 2.0f);
+    m_DockRoot = new CLiberPanel(Orientation::Horizontal, 0, (float)LIBER_DOCK_HEIGHT / 2.0f, LIBER_MATERIAL_REGULAR);
     Thickness pad = { LIBER_DOCK_PAD, LIBER_DOCK_PAD, LIBER_DOCK_PAD, LIBER_DOCK_PAD };
     m_DockRoot->SetPadding(pad);
-    m_TrayRoot = new CIsland((float)LIBER_TRAY_HEIGHT / 2.0f);
+    m_TrayRoot = new CLiberPanel(Orientation::Horizontal, 0, (float)LIBER_TRAY_HEIGHT / 2.0f, LIBER_MATERIAL_REGULAR);
     m_Clock = new CTrayClock(this);
+    m_TrayRoot->AddChild(new CSystemPill(this));
     m_TrayRoot->AddChild(m_Clock);
     m_Clock->Update();
 
@@ -517,6 +547,7 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
 
 void CLiberDock::Stop()
 {
+    LiberControlCenter_Close();
     if (m_hwndSink)
     {
         DeregisterShellHookWindow(m_hwndSink);
