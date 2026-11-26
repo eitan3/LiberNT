@@ -385,7 +385,10 @@ reactos_shared_capture_live_format(DWORD endpoint_index, WAVEFORMATEXTENSIBLE *f
             break;
     }
     if (endpoint)
+    {
         region = endpoint->region;
+        ++endpoint->reference_count;
+    }
     LeaveCriticalSection(&endpoint_list_lock);
 
     if (region)
@@ -436,6 +439,8 @@ reactos_shared_capture_live_format(DWORD endpoint_index, WAVEFORMATEXTENSIBLE *f
         else
             ReleaseMutex(mutex);
     }
+    if (endpoint)
+        release_endpoint(endpoint);
     if (region && !endpoint)
         UnmapViewOfFile(region);
     if (mapping)
