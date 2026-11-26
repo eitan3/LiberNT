@@ -770,6 +770,18 @@ HRESULT load_devices_from_reg(void)
 }
 
 #ifdef __REACTOS__
+static BOOL is_pcm_blob(const PROPVARIANT *pv)
+{
+    const WAVEFORMATEXTENSIBLE *ext = (const WAVEFORMATEXTENSIBLE *)pv->blob.pBlobData;
+
+    if (pv->vt != VT_BLOB || pv->blob.cbSize < sizeof(WAVEFORMATEX))
+        return FALSE;
+    if (ext->Format.wFormatTag == WAVE_FORMAT_PCM)
+        return TRUE;
+    return ext->Format.wFormatTag == WAVE_FORMAT_EXTENSIBLE && pv->blob.cbSize >= sizeof(*ext) &&
+           IsEqualGUID(&ext->SubFormat, &KSDATAFORMAT_SUBTYPE_PCM);
+}
+
 /*
  * The format the user chose for an endpoint: the per-user value a standard
  * user can write (MMDevGetDeviceFormat) comes before the device property
@@ -788,7 +800,7 @@ BOOL reactos_user_device_format(EDataFlow flow, const char *device, WAVEFORMATEX
     if (MMDevGetDeviceFormat(endpoint_id, fmt) == ERROR_SUCCESS)
         return TRUE;
     if (SUCCEEDED(MMDevice_GetPropValue(&guid, flow, &PKEY_AudioEngine_DeviceFormat, &pv)) &&
-        pv.vt == VT_BLOB && pv.blob.cbSize >= sizeof(WAVEFORMATEX))
+        is_pcm_blob(&pv))
     {
         ZeroMemory(fmt, sizeof(*fmt));
         memcpy(fmt, pv.blob.pBlobData, min(pv.blob.cbSize, sizeof(*fmt)));
@@ -796,18 +808,6 @@ BOOL reactos_user_device_format(EDataFlow flow, const char *device, WAVEFORMATEX
     }
     PropVariantClear(&pv);
     return ret;
-}
-
-static BOOL is_pcm_blob(const PROPVARIANT *pv)
-{
-    const WAVEFORMATEXTENSIBLE *ext = (const WAVEFORMATEXTENSIBLE *)pv->blob.pBlobData;
-
-    if (pv->vt != VT_BLOB || pv->blob.cbSize < sizeof(WAVEFORMATEX))
-        return FALSE;
-    if (ext->Format.wFormatTag == WAVE_FORMAT_PCM)
-        return TRUE;
-    return ext->Format.wFormatTag == WAVE_FORMAT_EXTENSIBLE && pv->blob.cbSize >= sizeof(*ext) &&
-           IsEqualGUID(&ext->SubFormat, &KSDATAFORMAT_SUBTYPE_PCM);
 }
 
 /*
