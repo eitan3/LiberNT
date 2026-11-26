@@ -14,7 +14,9 @@ target_include_directories(dsppcm PRIVATE
     ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/intcdsp
     # the endpoint driver's own directory before the codec driver's: both have a tables.h
     ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/drivers/dsppcm
-    ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/drivers/hdaudio)
+    ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/drivers/hdaudio
+    # the engine's cyclic scheduling rule the position arithmetic is run over
+    ${REACTOS_HOST_SOURCE_ROOT}/dll/win32/mmdevapi)
 
 target_compile_features(dsppcm PRIVATE c_std_99)
 target_compile_options(dsppcm PRIVATE -Wall -Werror -Wno-unused-function -g

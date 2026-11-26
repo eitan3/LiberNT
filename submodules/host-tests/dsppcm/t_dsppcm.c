@@ -14,6 +14,8 @@
 
 #include <ksendpoint.h>
 #include "tables.h"
+/* the engine's period-crossing rule over the cursors the position arithmetic reports: the header the render engine and its apitest compile (dll/win32/mmdevapi/reactos_wdmaud.c) */
+#include "reactos_wavert.h"
 
 static int Checks;
 static int Failures;
@@ -985,6 +987,157 @@ CheckForwarding(
     }
 }
 
+/* (d) The position arithmetic alone across the wraps, and the engine's clock over it */
+
+static
+VOID
+CheckPositionWrap(
+    void)
+{
+    /* 48 kHz stereo in the 32-bit word, two periods of 4800 frames: the buffer the engine's cyclic scheduling uses */
+    const ULONG Buffer = 76800, Fifo = 64;
+    KSAUDIO_POSITION Position;
+    NTSTATUS Status;
+
+    /* the register counts past the buffer: the reading is the remainder, and the cursors keep their FIFO distance around the buffer's end */
+    Status = DsppcmPositionFromValue(Buffer - 1, Buffer, Fifo, FALSE, &Position);
+    CHECK(Status == STATUS_SUCCESS);
+    CHECK_EQ(Position.PlayOffset, Buffer - 1);
+    CHECK_EQ(Position.WriteOffset, Fifo - 1);
+    Status = DsppcmPositionFromValue(Buffer, Buffer, Fifo, FALSE, &Position);
+    CHECK_EQ(Position.PlayOffset, 0);
+    CHECK_EQ(Position.WriteOffset, Fifo);
+    /* capture trails the link by a FIFO: the link a FIFO short of the end reads a FIFO short of the end less the FIFO */
+    Status = DsppcmPositionFromValue(Buffer - Fifo, Buffer, Fifo, TRUE, &Position);
+    CHECK_EQ(Position.PlayOffset, Buffer - 2 * Fifo);
+    CHECK_EQ(Position.WriteOffset, Buffer - 2 * Fifo);
+    Status = DsppcmPositionFromValue(Buffer - 1, Buffer, Fifo, TRUE, &Position);
+    CHECK_EQ(Position.PlayOffset, Buffer - 1 - Fifo);
+    /* the register's own wrap at 2^32: 2^32 is not a multiple of the buffer, so the last count and the first of the next turn read as remainders that far apart */
+    Status = DsppcmPositionFromValue(0x7FFFFFFFu, Buffer, Fifo, FALSE, &Position);
+    CHECK_EQ(Position.PlayOffset, 0x7FFFFFFFu % Buffer);
+    Status = DsppcmPositionFromValue(0xFFFFFFFFu, Buffer, Fifo, FALSE, &Position);
+    CHECK_EQ(Position.PlayOffset, 0xFFFFFFFFu % Buffer);
+    CHECK_EQ(Position.WriteOffset, (0xFFFFFFFFu % Buffer + Fifo) % Buffer);
+    Status = DsppcmPositionFromValue(0xFFFFFFFFu + 1u, Buffer, Fifo, FALSE, &Position);
+    CHECK_EQ(Position.PlayOffset, 0);
+    CHECK_EQ(Position.WriteOffset, Fifo);
+    /* a FIFO as large as the buffer, and more, is taken modulo the buffer as the codec driver does; no buffer is refused */
+    Status = DsppcmPositionFromValue(1000, Buffer, Buffer, FALSE, &Position);
+    CHECK_EQ(Position.WriteOffset, 1000);
+    Status = DsppcmPositionFromValue(1000, Buffer, Buffer + 16, TRUE, &Position);
+    CHECK_EQ(Position.PlayOffset, (1000 + Buffer - 16) % Buffer);
+    CHECK_EQ(Position.WriteOffset, (1000 + Buffer - 16) % Buffer);
+    CHECK(DsppcmPositionFromValue(1, 0, Fifo, FALSE, &Position) == STATUS_INVALID_PARAMETER);
+    /* the stream method reads the register once and answers the same arithmetic */
+    {
+        FAKE F;
+        INTELDSP_AUDIO_INTERFACE* I;
+        KSAUDIO_POSITION Direct;
+
+        FakeInit(&F);
+        I = &F.Iface;
+        F.RegisterValue = 0xFFFFFFFFu;
+        Status = DsppcmStreamPosition(I, (HANDLE)1, Buffer, Fifo, FALSE, &Position);
+        CHECK(Status == STATUS_SUCCESS);
+        CHECK_EQ(F.Calls[KGetPositionRegister], 1);
+        CHECK_EQ(FakeTotalCalls(), 1);
+        DsppcmPositionFromValue(0xFFFFFFFFu, Buffer, Fifo, FALSE, &Direct);
+        CHECK(Position.PlayOffset == Direct.PlayOffset && Position.WriteOffset == Direct.WriteOffset);
+    }
+}
+
+/*
+ * The engine's clock over the arithmetic: the register moves StepBytes a
+ * sample for Samples samples from Start, and the engine adds a period to a
+ * 64-bit frame clock whenever the cursors say the playing half changed
+ * (dll/win32/mmdevapi/reactos_wdmaud.c refill_cyclic_period, over the rule
+ * of reactos_wavert.h); as the engine starts, the first sample's half is
+ * taken without counting. The clock is answered in frames; Refused counts
+ * the samples the rule refused and Fell the samples at which the clock went
+ * backwards.
+ */
+static
+unsigned long long
+RunEngineClock(
+    ULONG BufferBytes,
+    ULONG FrameBytes,
+    ULONG Fifo,
+    ULONG Start,
+    ULONG StepBytes,
+    unsigned long Samples,
+    BOOLEAN Capture,
+    _Out_ PULONG Refused,
+    _Out_ PULONG Fell)
+{
+    struct reactos_wavert_position Progress;
+    KSAUDIO_POSITION Position;
+    unsigned long long Clock = 0, Last = 0;
+    ULONG PeriodFrames = BufferBytes / REACTOS_RT_NOTIFICATION_COUNT / FrameBytes;
+    ULONG Value = Start, Previous = 0, S;
+
+    *Refused = 0;
+    *Fell = 0;
+    for (S = 0; S < Samples; S++)
+    {
+        CHECK(DsppcmPositionFromValue(Value, BufferBytes, Fifo, Capture, &Position) == STATUS_SUCCESS);
+        if (!reactos_wavert_cyclic_position(PeriodFrames, FrameBytes, Previous, Position.PlayOffset, Position.WriteOffset, &Progress))
+        {
+            (*Refused)++;
+            Value += StepBytes;
+            continue;
+        }
+        if (S == 0)
+            Previous = Progress.playing;
+        else if (Progress.advanced)
+        {
+            Clock += PeriodFrames;
+            if (Clock < Last)
+                (*Fell)++;
+        }
+        Last = Clock;
+        Previous = Progress.playing;
+        Value += StepBytes;
+    }
+    return Clock;
+}
+
+static
+VOID
+CheckEngineClock(
+    void)
+{
+    /* two periods of 4800 frames of 8 bytes: one sample a sixteenth of a period, so every boundary is crossed between two samples */
+    const ULONG Buffer = 76800, Period = 38400, Step = Period / 16;
+    unsigned long long Clock, Ideal;
+    unsigned long Samples = 16 * 400;
+    ULONG Refused, Fell;
+
+    /* render: four hundred buffers, a period a half, each counted once */
+    Clock = RunEngineClock(Buffer, 8, 64, 12345, Step, Samples, FALSE, &Refused, &Fell);
+    CHECK_EQ(Refused, 0);
+    CHECK_EQ(Fell, 0);
+    Ideal = (unsigned long long)Samples * Step / Buffer * REACTOS_RT_NOTIFICATION_COUNT * (Period / 8);
+    CHECK_EQ(Clock, Ideal);
+    /* capture, the cursors a FIFO behind */
+    Clock = RunEngineClock(Buffer, 8, 64, 12345, Step, Samples, TRUE, &Refused, &Fell);
+    CHECK_EQ(Refused, 0);
+    CHECK_EQ(Fell, 0);
+    CHECK_EQ(Clock, Ideal);
+    /* the register's wrap at 2^32, inside the run: the clock never falls and stays within one period of the bytes moved */
+    Clock = RunEngineClock(Buffer, 8, 64, 0xFFFFFFFFu - 8 * Buffer - 5, Step, Samples, FALSE, &Refused, &Fell);
+    CHECK_EQ(Refused, 0);
+    CHECK_EQ(Fell, 0);
+    Ideal = (unsigned long long)Samples * Step / Buffer * REACTOS_RT_NOTIFICATION_COUNT * (Period / 8);
+    CHECK(Clock <= Ideal + Period / 8 && Clock + Period / 8 >= Ideal);
+    /* a 16-bit word in two periods of 12288 frames, where 2^32 leaves the cursors in the other half: the same bound */
+    Clock = RunEngineClock(98304, 4, 32, 0xFFFFFFFFu - 8 * 98304 - 5, 49152 / 8, Samples, FALSE, &Refused, &Fell);
+    CHECK_EQ(Refused, 0);
+    CHECK_EQ(Fell, 0);
+    Ideal = (unsigned long long)Samples * (49152 / 8) / 98304 * REACTOS_RT_NOTIFICATION_COUNT * 12288;
+    CHECK(Clock <= Ideal + 12288 && Clock + 12288 >= Ideal);
+}
+
 int
 main(
     void)
@@ -993,6 +1146,8 @@ main(
     CheckPinFormatFind();
     CheckTables();
     CheckForwarding();
+    CheckPositionWrap();
+    CheckEngineClock();
     printf("dsppcm: %d checks, %d failures\n", Checks, Failures);
     return Failures != 0;
 }
