@@ -188,7 +188,8 @@ CFunctionGroupNode::AddNode(ULONG NodeId)
     if (HasConnectionList)
     {
         // DPRINT1("HDAUDIO: NodeId %x has ConnectionList %x\n", NodeId, ConnectionList);
-        m_Adapter->TransferVerb(VerbTemplate | AC_PAR_CONNLIST_LEN, &ConnectionCount);
+        Status = m_Adapter->TransferVerb(VerbTemplate | AC_PAR_CONNLIST_LEN, &ConnectionCount);
+        // U11: the connection list length's own status decides, not the one of the call before it
         if (NT_SUCCESS(Status))
         {
             LongFormat = (ConnectionCount & 0x80);

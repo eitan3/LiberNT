@@ -462,6 +462,10 @@ HDA_UnregisterEventCallback(
 		return STATUS_NO_SUCH_DEVICE;
 
 	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+	// U8: the tag indexes the table of callbacks, and is the caller's
+	if (Tag >= MAX_UNSOLICIT_CALLBACKS) {
+		return STATUS_INVALID_PARAMETER;
+	}
 	if (!devData->unsolitCallbacks[Tag].inUse) {
 		return STATUS_NOT_FOUND;
 	}
@@ -712,8 +716,9 @@ HDA_UnregisterNotificationCallback(
 	BOOL registered = FALSE;
 
 	for (int i = 0; i < MAX_NOTIF_EVENTS; i++) {
-		if (stream->registeredCallbacks[i].InUse &&
-			stream->registeredCallbacks[i].NotificationCallback != NotificationCallback &&
+		// U5: the entry to unregister is one in use whose callback and whose context both match; a free entry is never one
+		if (!stream->registeredCallbacks[i].InUse ||
+			stream->registeredCallbacks[i].NotificationCallback != NotificationCallback ||
 			stream->registeredCallbacks[i].CallbackContext != CallbackContext)
 			continue;
 

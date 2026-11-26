@@ -167,6 +167,11 @@ NTSTATUS NHLTCheckSupported(_In_ WDFDEVICE FxDevice) {
 	{
 	PACPI_METHOD_ARGUMENT argument = outputBuffer->Argument;
 
+	// U9: the reply must be an integer argument of a whole ULONG before its first byte is read
+	if (argument->Type != ACPI_METHOD_ARGUMENT_INTEGER || argument->DataLength < sizeof(ULONG)) {
+		status = STATUS_INVALID_DEVICE_OBJECT_PARAMETER;
+		goto end;
+	}
 	UCHAR supportedQueries = argument->Data[0];
 
 	if ((supportedQueries & 0x3) == 0) {

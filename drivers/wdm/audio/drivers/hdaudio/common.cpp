@@ -324,7 +324,6 @@ CAdapterCommon::TransferInitVerbs(IN PDEVICE_OBJECT DeviceObject)
                 Verb |= PartialInformation->Data[1] << 8;
                 Verb |= PartialInformation->Data[2] << 16;
                 Verb |= PartialInformation->Data[3] << 24;
-                ExFreePool(PartialInformation);
                 DPRINT("KeyName %wZ Value %x\n", &KeyName, Verb);
                 HDAUDIO_CODEC_TRANSFER Transfer;
                 Transfer.Output.Command = Verb | m_CodecAddress << 28;
@@ -334,6 +333,8 @@ CAdapterCommon::TransferInitVerbs(IN PDEVICE_OBJECT DeviceObject)
                     DPRINT1("HDAUDIO TransferInitVerbs Verb %u failed with %x\n", Index, Status);
                 }
             }
+            // U10: the value goes back to the pool whatever its size, not only when it is a verb
+            ExFreePool(PartialInformation);
         }
     }
     Key->Release();

@@ -1308,6 +1308,11 @@ Fdo_EvtDeviceReleaseHardware(
     fdoCtx->InterruptConnected = FALSE;
     fdoCtx->InterruptResourcePresent = FALSE;
     fdoCtx->ControllerEnabled = FALSE;
+    /* U6: the PCI bus interface was referenced by the query of every preparation (Fdo_EvtDevicePrepareHardware); the reference goes back with the hardware */
+    if (fdoCtx->BusInterface.InterfaceDereference) {
+        fdoCtx->BusInterface.InterfaceDereference(fdoCtx->BusInterface.Context);
+    }
+    RtlZeroMemory(&fdoCtx->BusInterface, sizeof(fdoCtx->BusInterface));
 
     return STATUS_SUCCESS;
 }
@@ -1660,6 +1665,8 @@ Fdo_EvtDeviceSelfManagedIoInit(
     fdoCtx->dspInterruptCallback = NULL;
     if (Fdo_WantsAdspChild(fdoCtx)) { //Populate ADSP if present
         PDO_IDENTIFICATION_DESCRIPTION description;
+        // U7: the description is zeroed before its fields are set, as the codec's is; the bytes not set are compared by the child list
+        RtlZeroMemory(&description, sizeof(description));
         //
         // Initialize the description with the information about the detected codec.
         //
