@@ -149,8 +149,8 @@ typedef struct _SOFIPC_CONTEXT
     UINT32 SlowPolls;
 } SOFIPC_CONTEXT, *PSOFIPC_CONTEXT;
 
-/* The budget of every class in microseconds: Milliseconds, with a class the table leaves at zero given the plan's default */
-VOID
+/* The budget of every class in microseconds: Milliseconds, with a class the table leaves at zero given the plan's default. The conversion is made in 64 bits: Milliseconds above 4,294,967 is SofIpcBadLength and leaves the table as it was */
+SOFIPC_STATUS
 SofIpcDefaultTimeouts(
     _Out_writes_(SofIpcClassCount) UINT32* TimeoutUs,
     UINT32 Milliseconds);

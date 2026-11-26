@@ -597,6 +597,21 @@ CheckTimeouts(
     SofIpcDefaultTimeouts(Timeouts, 250);
     for (Class = 0; Class < SofIpcClassCount; Class++)
         CHECK_EQ(Timeouts[Class], 250000);
+    /* the conversion is made in 64 bits: the largest budget the table holds is 4,294,967 ms, one millisecond more does not wrap into a short budget but is refused, and the table is left as it was (R2-09) */
+    Timeouts[0] = 500000;
+    Timeouts[1] = 500001;
+    Timeouts[2] = 500002;
+    CHECK_EQ(SofIpcDefaultTimeouts(Timeouts, 4294968), SofIpcBadLength);
+    CHECK_EQ(Timeouts[0], 500000);
+    CHECK_EQ(Timeouts[1], 500001);
+    CHECK_EQ(Timeouts[2], 500002);
+    CHECK_EQ(SofIpcDefaultTimeouts(Timeouts, 0xFFFFFFFF), SofIpcBadLength);
+    CHECK_EQ(Timeouts[0], 500000);
+    CHECK_EQ(Timeouts[1], 500001);
+    CHECK_EQ(Timeouts[2], 500002);
+    CHECK_EQ(SofIpcDefaultTimeouts(Timeouts, 4294967), SofIpcOk);
+    for (Class = 0; Class < SofIpcClassCount; Class++)
+        CHECK_EQ(Timeouts[Class], 4294967000);
     /* a zero in the caller's table leaves the plan's default for that class */
     HarnessStart(H, Image, NULL);
     SofIpcDefaultTimeouts(Timeouts, 0);

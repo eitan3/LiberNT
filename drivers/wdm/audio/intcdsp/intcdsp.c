@@ -157,7 +157,9 @@ IntcDspIpcAttach(
     SOFIPC_STATUS Result;
 
     IntcDspRequestLockInit(&Dev->RequestLock);
-    SofIpcDefaultTimeouts(Timeouts, Dev->IpcTimeoutMs);
+    /* the setting is bounded far below the conversion's limit; a budget the transport's table cannot hold would be the plan's default */
+    if (SofIpcDefaultTimeouts(Timeouts, Dev->IpcTimeoutMs) != SofIpcOk)
+        SofIpcDefaultTimeouts(Timeouts, INTCDSP_IPC_TIMEOUT_MS_DEFAULT);
     Dev->IpcArmed = FALSE;
     Result = SofIpcInit(&Dev->Ipc, IntcDspIpcOpsTable(), Dev, &Dev->Fw, Timeouts, Dev->UseInterrupts != 0);
     Dev->IpcArmed = Dev->UseInterrupts != 0 && Result == SofIpcOk;

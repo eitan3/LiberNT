@@ -210,15 +210,20 @@ SofIpcExchange(
     return SofIpcOk;
 }
 
-VOID
+SOFIPC_STATUS
 SofIpcDefaultTimeouts(
     UINT32* TimeoutUs,
     UINT32 Milliseconds)
 {
+    UINT64 Microseconds = (UINT64)Milliseconds * 1000;
     SOFIPC_CLASS Class;
 
+    /* a budget the table cannot hold is refused, and the table is left as it was */
+    if (Microseconds > 0xFFFFFFFFULL)
+        return SofIpcBadLength;
     for (Class = 0; Class < SofIpcClassCount; Class++)
-        TimeoutUs[Class] = Milliseconds * 1000;
+        TimeoutUs[Class] = (UINT32)Microseconds;
+    return SofIpcOk;
 }
 
 SOFIPC_STATUS
