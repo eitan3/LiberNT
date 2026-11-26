@@ -1201,7 +1201,17 @@ ModelFinish(
         }
     }
 
-    /* every module's configuration of its first input and output formats, the gateway index left as the placeholder */
+    /*
+     * Every module's configuration of its first input and output formats,
+     * the gateway index left as the placeholder. One rule, the gateway
+     * buffer's size in one word, and two places that refuse it (FB-05, as
+     * R2-10 left it): a copier whose first format's buffer does not fit is
+     * refused here, at the build, because its configuration of that format
+     * is made now and SoftplgModelConfig answers SoftplgModelGatewayBuffer;
+     * a copier whose other formats overflow is the validation's to refuse,
+     * over every format (SoftplgModelValidate, ModelGatewayBufferFits).
+     * Both name the copier in the driver's log.
+     */
     for (N = 0; N < Model->WidgetCount; N++)
     {
         if (!ModelIsModule(Model->Widgets[N].Kind))
