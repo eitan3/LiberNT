@@ -63,6 +63,7 @@ DEFINE_GUID(GUID_ADSP_BUS_INTERFACE,
 #include "adspbus.h"
 #include "ipclock.h"
 #include "stream.h"
+#include "audioif.h"
 
 /* The loopback self-test after a boot with a topology (SelfTest = 2): a render and a capture stream of 4096 frames each, the plan's VM-acceptance row */
 #define INTCDSP_SELFTEST_LOOPBACK      2
@@ -130,6 +131,10 @@ typedef struct _INTCDSP_DEVICE
     SIZE_T StreamsStateBytes;
     INTCDSP_STREAMS_OPS StreamOps;
     INTCDSP_SELFTEST_OPS SelfTestOps;
+    /* the audio children: the topology the child list last reported, by the generation of the model (topology.c counts one up whenever the model is built or dropped) and by whether the streams were open for them */
+    ULONG TopologyGeneration;
+    ULONG AudioReportedGeneration;
+    BOOLEAN AudioReportedReady;
     struct
     {
         PMDL Mdl;
@@ -210,6 +215,15 @@ IntcDspBoot(
 /* The stream manager of a booted device with a topology, and the loopback self-test (SelfTest = 2) over it */
 NTSTATUS
 IntcDspStreamsStart(
+    _Inout_ PINTCDSP_DEVICE Dev);
+
+/* The audio children of the device (audioif.c): the child list at its creation, and the report of one child per PCM of the topology after the streams start, none without one */
+VOID
+IntcDspAudioInitDevice(
+    _In_ PWDFDEVICE_INIT DeviceInit);
+
+VOID
+IntcDspAudioUpdate(
     _Inout_ PINTCDSP_DEVICE Dev);
 
 VOID

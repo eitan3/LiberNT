@@ -335,6 +335,7 @@ IntcDspTopologyLoad(
         return TRUE;
     }
     /* any other outcome replaces the model of the boot before */
+    Dev->TopologyGeneration++;
     if (Dev->Topology != NULL)
     {
         ExFreePoolWithTag(Dev->Topology, INTCDSP_POOL_TAG);

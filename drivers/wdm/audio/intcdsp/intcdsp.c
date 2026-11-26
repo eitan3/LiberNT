@@ -660,6 +660,10 @@ IntcDspEvtDeviceReleaseHardware(
         ExFreePoolWithTag(Dev->StreamsState, INTCDSP_POOL_TAG);
     Dev->StreamsState = NULL;
     Dev->StreamsStateBytes = 0;
+    /* the topology is gone with the hardware: the next start reports the children the new one names, or none */
+    Dev->TopologyGeneration = 1;
+    Dev->AudioReportedGeneration = 0;
+    Dev->AudioReportedReady = FALSE;
     if (Dev->BusValid && Dev->Bus.InterfaceDereference)
         Dev->Bus.InterfaceDereference(Dev->Bus.Context);
     Dev->BusValid = FALSE;
@@ -694,6 +698,8 @@ IntcDspEvtDeviceD0Entry(
         if (Dev->Booted)
             IntcDspStreamsStart(Dev);
     }
+    /* the audio children follow the topology the device holds: one per PCM when its streams are open for them, none otherwise */
+    IntcDspAudioUpdate(Dev);
     return STATUS_SUCCESS;
 }
 
@@ -738,6 +744,8 @@ IntcDspEvtDeviceAdd(
     PnpPower.EvtDeviceD0Entry = IntcDspEvtDeviceD0Entry;
     PnpPower.EvtDeviceD0Exit = IntcDspEvtDeviceD0Exit;
     WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &PnpPower);
+    /* the audio children of a topology: the child list the device reports them through */
+    IntcDspAudioInitDevice(DeviceInit);
 
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&Attributes, INTCDSP_DEVICE);
     Attributes.EvtCleanupCallback = IntcDspEvtDeviceContextCleanup;

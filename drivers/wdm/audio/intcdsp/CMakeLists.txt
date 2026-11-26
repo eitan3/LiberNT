@@ -13,12 +13,16 @@ list(APPEND SOURCE
     fwfile.c
     topology.c
     stream.c
+    # the audio children and the interface dsppcm.sys, their function driver, asks for
+    audioif.c
     # the topology file selection decides through the bus's policy, so the decision compiles into this driver too
     ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus/policy.c)
 
 add_library(intcdsp MODULE ${SOURCE} intcdsp.rc)
 set_module_type(intcdsp kmdfdriver)
-target_include_directories(intcdsp PRIVATE ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus)
+target_include_directories(intcdsp PRIVATE ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/hdaudbus
+    # the codec driver's sample-container rule (hdaudio_format.h), which the audio interface's format check shares
+    ${REACTOS_SOURCE_DIR}/drivers/wdm/audio/drivers/hdaudio)
 target_link_libraries(intcdsp libcntpr ${PSEH_LIB} fwload sofipc nhlt softplg)
 add_importlibs(intcdsp wdfldr ntoskrnl hal)
 add_cd_file(TARGET intcdsp DESTINATION reactos/system32/drivers FOR all)
