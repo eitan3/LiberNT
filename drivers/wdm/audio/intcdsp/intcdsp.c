@@ -420,11 +420,37 @@ IntcDspBootStop(
     IntcDspLog("boot stopped at %s: 0x%08lx; the DSP is not started\n", Step, Status);
     IntcDspReleaseStream(Dev);
     Dev->LastStatus = FwloadHardwareFault;
-    if (Dev->DmaBuffer)
-        MmFreeContiguousMemorySpecifyCache(Dev->DmaBuffer, (ULONG)Dev->DmaBytes, MmNonCached);
-    Dev->DmaBuffer = NULL;
-    Dev->DmaBytes = 0;
-    RtlZeroMemory(&Dev->Segment, sizeof(Dev->Segment));
+}
+
+/*
+ * The code-loader buffer of the firmware image: the payload's pages as one
+ * contiguous range below the controller's DMA bound, made at start once the
+ * image is resident and kept for the hardware like it (R6, R1-03), so that
+ * no boot, and no resume, allocates contiguous memory. Its physical range
+ * is the segment the loader's descriptors name.
+ */
+static
+NTSTATUS
+IntcDspDmaBufferAllocate(
+    _Inout_ PINTCDSP_DEVICE Dev)
+{
+    PHYSICAL_ADDRESS Low, High, Boundary;
+
+    if (Dev->DmaBuffer != NULL)
+        return STATUS_SUCCESS;
+    Dev->DmaBytes = (SIZE_T)ROUND_TO_PAGES((ULONG)Dev->Image.Ri.PayloadBytes);
+    Low.QuadPart = 0;
+    High.QuadPart = (LONGLONG)IntcDspDmaHighBound(&Dev->Bus);
+    Boundary.QuadPart = 0;
+    Dev->DmaBuffer = MmAllocateContiguousMemorySpecifyCache((ULONG)Dev->DmaBytes, Low, High, Boundary, MmNonCached);
+    if (Dev->DmaBuffer == NULL)
+    {
+        Dev->DmaBytes = 0;
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    Dev->Segment.Address = MmGetPhysicalAddress(Dev->DmaBuffer).QuadPart;
+    Dev->Segment.Bytes = Dev->DmaBytes;
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS
@@ -436,7 +462,6 @@ IntcDspBoot(
     FWLOAD_CL_DMA Dma;
     FWLOAD_BOOT_DECISION Decision;
     HDAUDIO_STREAM_FORMAT Format;
-    PHYSICAL_ADDRESS Low, High, Boundary;
     const SOFIPC4_FW_REGS* Registers;
     PVOID Bdl = NULL;
     SIZE_T Entries;
@@ -461,18 +486,10 @@ IntcDspBoot(
         return STATUS_SUCCESS;
     }
 
-    Dev->DmaBytes = (SIZE_T)ROUND_TO_PAGES((ULONG)Dev->Image.Ri.PayloadBytes);
-    Low.QuadPart = 0;
-    High.QuadPart = (LONGLONG)IntcDspDmaHighBound(&Dev->Bus);
-    Boundary.QuadPart = 0;
-    Dev->DmaBuffer = MmAllocateContiguousMemorySpecifyCache((ULONG)Dev->DmaBytes, Low, High, Boundary, MmNonCached);
-    if (!Dev->DmaBuffer)
-    {
-        NtStatus = STATUS_INSUFFICIENT_RESOURCES;
+    /* the buffer is the device's, made at start with the image (R1-03); an image this boot read for the first time makes it now, and it stays for the hardware */
+    NtStatus = IntcDspDmaBufferAllocate(Dev);
+    if (!NT_SUCCESS(NtStatus))
         goto Fail;
-    }
-    Dev->Segment.Address = MmGetPhysicalAddress(Dev->DmaBuffer).QuadPart;
-    Dev->Segment.Bytes = Dev->DmaBytes;
     Entries = FwloadClDmaEntryCount(&Dev->Segment, 1, Dev->Image.Ri.PayloadBytes, FWLOAD_CL_DMA_BOUNDARY_BYTES);
     if (Entries == 0 || Entries > INTCDSP_BDL_ENTRIES)
     {
@@ -589,10 +606,6 @@ IntcDspBoot(
     }
 
     IntcDspReleaseStream(Dev);
-    MmFreeContiguousMemorySpecifyCache(Dev->DmaBuffer, (ULONG)Dev->DmaBytes, MmNonCached);
-    Dev->DmaBuffer = NULL;
-    Dev->DmaBytes = 0;
-    RtlZeroMemory(&Dev->Segment, sizeof(Dev->Segment));
     return STATUS_SUCCESS;
 
 Fail:
@@ -652,6 +665,9 @@ IntcDspEvtDevicePrepareHardware(
     }
     IntcDspProbe(Dev);
     IntcDspLoadFirmware(Dev);
+    /* the code-loader buffer of the image, kept for the hardware like it (R1-03): no boot, and no resume, allocates contiguous memory; without it the boot says so and leaves the DSP alone */
+    if (IntcDspFirmwareResident(Dev) && !NT_SUCCESS(IntcDspDmaBufferAllocate(Dev)))
+        IntcDspLog("the code-loader buffer of the firmware image is not made at start; a boot makes it if it can\n");
 
     Status = IntcDspReadSetting(INTCDSP_SETTINGS_VALUE, &Dev->BootDsp);
     if (!NT_SUCCESS(Status))
@@ -693,6 +709,7 @@ IntcDspEvtDeviceReleaseHardware(
         MmFreeContiguousMemorySpecifyCache(Dev->DmaBuffer, (ULONG)Dev->DmaBytes, MmNonCached);
     Dev->DmaBuffer = NULL;
     Dev->DmaBytes = 0;
+    RtlZeroMemory(&Dev->Segment, sizeof(Dev->Segment));
     IntcDspFreeFirmware(Dev);
     if (Dev->Topology)
         ExFreePoolWithTag(Dev->Topology, INTCDSP_POOL_TAG);

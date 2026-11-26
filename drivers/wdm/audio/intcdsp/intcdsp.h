@@ -100,6 +100,7 @@ typedef struct _INTCDSP_DEVICE
     FWLOAD_IMAGE Image;
     FWLOAD_STATUS FirmwareStatus;
     NTSTATUS FirmwareReadStatus;
+    /* the code-loader buffer of the image's payload: contiguous below the controller's DMA bound, made at start with the image and kept for the hardware (R1-03); the segment is its physical range */
     PUCHAR DmaBuffer;
     SIZE_T DmaBytes;
     FWLOAD_DMA_SEGMENT Segment;
