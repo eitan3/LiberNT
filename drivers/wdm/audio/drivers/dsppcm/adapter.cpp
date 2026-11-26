@@ -35,12 +35,13 @@ operator delete(PVOID ptr, UINT_PTR Unused)
         ExFreePool(ptr);
 }
 
+/* The direction as the driver's narrow log prints it (the format is narrow; a wide literal through %s would end at its first byte) */
 static
-PCWSTR
+const char*
 DsppcmDirectionName(
     BOOLEAN Capture)
 {
-    return Capture ? L"capture" : L"render";
+    return Capture ? "capture" : "render";
 }
 
 /* The endpoint's PCM name, widened: the topology's names are ASCII (intcdsp.sys refuses a file name that is not) */

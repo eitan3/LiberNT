@@ -752,6 +752,8 @@ IntcDspEvtDeviceAdd(
     Status = WdfDeviceCreate(&DeviceInit, &Attributes, &Device);
     if (!NT_SUCCESS(Status))
         return Status;
+    /* the device's own handle, which the audio children's report takes (audioif.c) */
+    IntcDspGetData(Device)->Device = Device;
     IntcDspLog("loaded for the Intel audio DSP child\n");
     return STATUS_SUCCESS;
 }
