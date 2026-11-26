@@ -1223,6 +1223,23 @@ CheckFirmwareFaults(
     CheckFailedBootIsOff(H, FwloadTruncated, FwloadStateConfiguring);
     CHECK(!H->Ctx->FwConfig.HasDownlinkMailbox && !H->Ctx->FwConfig.HasUplinkMailbox);
     CHECK_EQ(H->Ctx->FwConfig.TupleCount, 6);
+    /* a mailbox larger than the one the host maps (FWLOAD_MAILBOX_BYTES) would let the transport's blocks run past the window: refused, either one */
+    Faults.TupleFault = FAKE_DSP_TUPLES_OVERSIZED_DOWNLINK;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadIpcBadReply);
+    CheckFailedBootIsOff(H, FwloadIpcBadReply, FwloadStateConfiguring);
+    CHECK(!H->Ctx->FwConfig.BadTuple);
+    CHECK(H->Ctx->FwConfig.HasDownlinkMailbox && H->Ctx->FwConfig.DownlinkMailboxBytes == FWLOAD_MAILBOX_BYTES + 4);
+    CHECK(H->Ctx->FwConfig.HasUplinkMailbox && H->Ctx->FwConfig.UplinkMailboxBytes == FWLOAD_MAILBOX_BYTES);
+    CHECK_EQ(H->Ctx->FwConfig.TupleCount, 8);
+    Faults.TupleFault = FAKE_DSP_TUPLES_OVERSIZED_UPLINK;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadIpcBadReply);
+    CheckFailedBootIsOff(H, FwloadIpcBadReply, FwloadStateConfiguring);
+    CHECK(!H->Ctx->FwConfig.BadTuple);
+    CHECK(H->Ctx->FwConfig.HasDownlinkMailbox && H->Ctx->FwConfig.DownlinkMailboxBytes == FWLOAD_MAILBOX_BYTES);
+    CHECK(H->Ctx->FwConfig.HasUplinkMailbox && H->Ctx->FwConfig.UplinkMailboxBytes == 2 * FWLOAD_MAILBOX_BYTES);
+    CHECK_EQ(H->Ctx->FwConfig.TupleCount, 8);
     /* the model's own reply, with the tuple the loader does not read, is still accepted */
     Faults.TupleFault = FAKE_DSP_TUPLES_GOOD;
     HarnessBoot(H, Image, &Faults);

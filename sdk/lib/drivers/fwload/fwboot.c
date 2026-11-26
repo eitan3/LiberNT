@@ -760,10 +760,11 @@ FwloadQueryFwConfig(
         Context->FwConfig.Hotfix != Context->Image->Hotfix ||
         Context->FwConfig.Build != Context->Image->Build)
         return FwloadVersionMismatch;
-    /* the host sends into the downlink mailbox and reads the uplink one from here on: a reply that ends before both sizes is cut short, one that reports a size of zero is not a configuration the host can use */
+    /* the host sends into the downlink mailbox and reads the uplink one from here on: a reply that ends before both sizes is cut short, one that reports a size of zero is not a configuration the host can use, and one that reports a size above the mailbox the host maps (FWLOAD_MAILBOX_BYTES) is refused too: the transport bounds its blocks and its replies by these sizes, while the memory operations are bounded by the BAR length alone */
     if (!Context->FwConfig.HasDownlinkMailbox || !Context->FwConfig.HasUplinkMailbox)
         return FwloadTruncated;
-    if (Context->FwConfig.DownlinkMailboxBytes == 0 || Context->FwConfig.UplinkMailboxBytes == 0)
+    if (Context->FwConfig.DownlinkMailboxBytes == 0 || Context->FwConfig.UplinkMailboxBytes == 0 ||
+        Context->FwConfig.DownlinkMailboxBytes > FWLOAD_MAILBOX_BYTES || Context->FwConfig.UplinkMailboxBytes > FWLOAD_MAILBOX_BYTES)
         return FwloadIpcBadReply;
     return FwloadOk;
 }

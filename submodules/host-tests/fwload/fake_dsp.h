@@ -43,6 +43,8 @@
 #define FAKE_DSP_TUPLES_VERSION_ONLY    7
 #define FAKE_DSP_TUPLES_ZERO_MAILBOXES  8
 #define FAKE_DSP_TUPLES_NO_MAILBOXES    9
+#define FAKE_DSP_TUPLES_OVERSIZED_DOWNLINK 10
+#define FAKE_DSP_TUPLES_OVERSIZED_UPLINK   11
 
 /* Notification storms: the firmware posts log-buffer notifications, a new one the moment the host acknowledges one; the model stops after FAKE_DSP_STORM_MAX so that a loader without a bound still ends somewhere */
 #define FAKE_DSP_STORM_NONE              0

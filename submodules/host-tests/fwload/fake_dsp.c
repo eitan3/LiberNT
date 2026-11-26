@@ -430,8 +430,16 @@ FakeDspWriteFwConfig(
             Fault == FAKE_DSP_TUPLES_LENGTH_THREE ? 3 : Fault == FAKE_DSP_TUPLES_LENGTH_ZERO ? 0 : 4);
         if (Fault != FAKE_DSP_TUPLES_NO_MAILBOXES)
         {
-            FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_DL_MAILBOX, Fault == FAKE_DSP_TUPLES_ZERO_MAILBOXES ? 0 : FWLOAD_MAILBOX_BYTES, 4);
-            FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_UL_MAILBOX, Fault == FAKE_DSP_TUPLES_ZERO_MAILBOXES ? 0 : FWLOAD_MAILBOX_BYTES, 4);
+            /* a firmware that names a mailbox larger than the window the host maps (R2-06) */
+            UINT32 Downlink = Fault == FAKE_DSP_TUPLES_ZERO_MAILBOXES ? 0 : FWLOAD_MAILBOX_BYTES;
+            UINT32 Uplink = Downlink;
+
+            if (Fault == FAKE_DSP_TUPLES_OVERSIZED_DOWNLINK)
+                Downlink = FWLOAD_MAILBOX_BYTES + 4;
+            if (Fault == FAKE_DSP_TUPLES_OVERSIZED_UPLINK)
+                Uplink = 2 * FWLOAD_MAILBOX_BYTES;
+            FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_DL_MAILBOX, Downlink, 4);
+            FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_UL_MAILBOX, Uplink, 4);
         }
         FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_TRACE_LOG, 0x2000, 4);
         FakeDspPutTuple(Dsp, &At, FAKE_TUPLE_MAX_PPL, 32, 4);
