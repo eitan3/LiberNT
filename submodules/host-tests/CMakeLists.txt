@@ -44,6 +44,7 @@ option(HOST_TEST_IPC "Build native Intel SST IPC4 transport tests" ON)
 option(HOST_TEST_DSPPCM "Build native Intel SST DSP endpoint driver tests" ON)
 option(HOST_TEST_HDAUDIO "Build native HDAudio codec driver capture amplifier selection tests" ON)
 option(HOST_TEST_DSPLOOP "Build native Intel SST DSP endpoint loop comparison tests" ON)
+option(HOST_TEST_DSPIDENTITY "Build native Intel SST DSP PCM device identity tests" ON)
 
 if(BUILD_TESTING AND HOST_TEST_DHCPCSVC)
     add_subdirectory(dhcpcsvc)
@@ -120,6 +121,10 @@ endif()
 
 if(BUILD_TESTING AND HOST_TEST_DSPLOOP)
     add_subdirectory(dsploop)
+endif()
+
+if(BUILD_TESTING AND HOST_TEST_DSPIDENTITY)
+    add_subdirectory(dspidentity)
 endif()
 
 if(BUILD_TESTING AND HOST_TEST_NDIS)

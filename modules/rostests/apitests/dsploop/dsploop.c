@@ -1,24 +1,25 @@
 /*
  * PROJECT:     LiberNT API tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The loop through the DSP's endpoint in user mode: a 1 kHz tone rendered into the 'Loopback' render endpoint and captured from the 'Loopback' capture endpoint in parallel through the audio stack, 48000 frames at 48 kHz stereo in 16 valid bits, then in 24 and 32 when the shared-mode engine takes them, compared from the first matching frame (plan §8 C4)
+ * PURPOSE:     The loop through the DSP's endpoint in user mode: a 1 kHz tone rendered into the render endpoint of the DSP's PCM and captured from its capture endpoint in parallel through the audio stack, 48000 frames at 48 kHz stereo in 16 valid bits, then in 24 and 32 when the shared-mode engine takes them, compared from the first matching frame (plan §8 C4)
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
 #include <apitest.h>
 #include <apitest_expected.h>
+#include <apitest_dspidentity.h>
 
 #define COBJMACROS
 #include <windows.h>
 #include <objbase.h>
-/* before the headers that name the GUIDs and the property keys: they define them here, once */
+/* before the headers that name the GUIDs: they define them here, once */
 #include <initguid.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <mmreg.h>
 #include <ks.h>
 #include <ksmedia.h>
-#include <devpkey.h>
+#include <devicetopology.h>
 #include <stdlib.h>
 #include "compare.h"
 
@@ -33,46 +34,49 @@
 #define DSPLOOP_RENDER_BUFFER    1000000
 /* the wall-clock budget of a run, in milliseconds: the two seconds of audio with room for a slow guest */
 #define DSPLOOP_RUN_MS           15000
-/* the PCM's name, as the endpoint driver's INF puts it into both friendly names of the topology's PCM */
-#define DSPLOOP_NAME             L"Loopback"
 
 /* A run's outcome */
 #define DSPLOOP_OK               0
 #define DSPLOOP_FAILED           1
 #define DSPLOOP_SKIPPED          2
 
-/* Whether an endpoint's friendly names carry the text: the interface's, then the device's */
+/*
+ * Whether the endpoint is one of the DSP's PCM: the filter its first
+ * connector leads to (the topology's, the PCM's subdevice) is named by the
+ * PCM's identity in the device tree, not by a display name. The filter's id
+ * is mmdevapi's: "{2}." and the KS interface path.
+ */
 static
 BOOL
-EndpointNamed(
-    IMMDevice *Device,
-    const WCHAR *Text)
+EndpointOfDspPcm(
+    IMMDevice *Device)
 {
-    IPropertyStore *Store = NULL;
-    PROPVARIANT Value;
+    IDeviceTopology *Topology = NULL;
+    IConnector *Connector = NULL;
+    LPWSTR FilterId = NULL;
     BOOL Found = FALSE;
     HRESULT hr;
 
-    PropVariantInit(&Value);
-    hr = IMMDevice_OpenPropertyStore(Device, STGM_READ, &Store);
+    hr = IMMDevice_Activate(Device, &IID_IDeviceTopology, CLSCTX_INPROC_SERVER, NULL, (void **)&Topology);
     if (FAILED(hr))
         return FALSE;
-    hr = IPropertyStore_GetValue(Store, (const PROPERTYKEY *)&DEVPKEY_DeviceInterface_FriendlyName, &Value);
-    if (SUCCEEDED(hr) && Value.vt == VT_LPWSTR && Value.pwszVal && wcsstr(Value.pwszVal, Text))
-        Found = TRUE;
-    PropVariantClear(&Value);
-    if (!Found)
+    hr = IDeviceTopology_GetConnector(Topology, 0, &Connector);
+    if (SUCCEEDED(hr))
     {
-        hr = IPropertyStore_GetValue(Store, (const PROPERTYKEY *)&DEVPKEY_Device_FriendlyName, &Value);
-        if (SUCCEEDED(hr) && Value.vt == VT_LPWSTR && Value.pwszVal && wcsstr(Value.pwszVal, Text))
-            Found = TRUE;
-        PropVariantClear(&Value);
+        hr = IConnector_GetDeviceIdConnectedTo(Connector, &FilterId);
+        IConnector_Release(Connector);
     }
-    IPropertyStore_Release(Store);
+    IDeviceTopology_Release(Topology);
+    if (SUCCEEDED(hr) && FilterId)
+    {
+        Found = DspPcmIdentity(FilterId);
+        trace("dsploop: endpoint %ls the DSP's PCM: filter %ls\n", Found ? L"is of" : L"is not of", FilterId);
+        CoTaskMemFree(FilterId);
+    }
     return Found;
 }
 
-/* The active endpoint of a flow whose names carry the PCM's name */
+/* The active endpoint of a flow that is one of the DSP's PCM */
 static
 HRESULT
 FindEndpoint(
@@ -95,7 +99,7 @@ FindEndpoint(
         {
             if (SUCCEEDED(IMMDeviceCollection_Item(Collection, I, &Candidate)))
             {
-                if (EndpointNamed(Candidate, DSPLOOP_NAME))
+                if (EndpointOfDspPcm(Candidate))
                     *Device = Candidate;
                 else
                     IMMDevice_Release(Candidate);
@@ -467,13 +471,13 @@ START_TEST(dsploop)
     hr = FindEndpoint(Enumerator, eRender, &Render);
     if (FAILED(hr))
     {
-        apitest_missing("dsploop: no active render endpoint named '%ls'; the DSP's audio child is not present (0x%08lx)\n", DSPLOOP_NAME, hr);
+        apitest_missing("dsploop: no active render endpoint of the DSP's PCM (" DSPPCM_ID_TEXT "; 0x%08lx)\n", hr);
         goto Done;
     }
     hr = FindEndpoint(Enumerator, eCapture, &Capture);
     if (FAILED(hr))
     {
-        apitest_missing("dsploop: no active capture endpoint named '%ls'; the DSP's audio child is not present (0x%08lx)\n", DSPLOOP_NAME, hr);
+        apitest_missing("dsploop: no active capture endpoint of the DSP's PCM (" DSPPCM_ID_TEXT "; 0x%08lx)\n", hr);
         goto Done;
     }
     for (I = 0; I < ARRAY_SIZE(Runs); I++)
