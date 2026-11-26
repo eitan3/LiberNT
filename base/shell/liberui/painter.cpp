@@ -399,6 +399,64 @@ void GdiplusPainter::Icon(LPCWSTR name, const RectF &rc, Argb color)
     GRAPHICS->Restore(state);
 }
 
+void GdiplusPainter::Image(HICON icon, const RectF &rc)
+{
+    ICONINFO info;
+    BITMAP bm;
+
+    if (!m_Graphics || !icon || rc.Width <= 0.0f || rc.Height <= 0.0f || !GetIconInfo(icon, &info))
+        return;
+
+    if (info.hbmColor && GetObjectW(info.hbmColor, sizeof(bm), &bm) == sizeof(bm) && bm.bmWidth > 0 &&
+        bm.bmHeight > 0 && bm.bmWidth <= 256 && bm.bmHeight <= 256)
+    {
+        int width = bm.bmWidth, height = bm.bmHeight;
+        DWORD *bits = (DWORD *)LocalAlloc(LPTR, (SIZE_T)width * height * sizeof(DWORD));
+        BITMAPINFO bmi;
+        HDC dc = CreateCompatibleDC(NULL);
+
+        ZeroMemory(&bmi, sizeof(bmi));
+        bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
+        bmi.bmiHeader.biWidth = width;
+        bmi.bmiHeader.biHeight = -height;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        if (bits && dc && GetDIBits(dc, info.hbmColor, 0, height, bits, &bmi, DIB_RGB_COLORS) == height)
+        {
+            BOOL hasAlpha = FALSE;
+            for (int i = 0; i < width * height && !hasAlpha; i++)
+                hasAlpha = (bits[i] & 0xFF000000) != 0;
+            if (!hasAlpha)
+            {
+                DWORD *mask = (DWORD *)LocalAlloc(LPTR, (SIZE_T)width * height * sizeof(DWORD));
+                BOOL masked = mask && info.hbmMask &&
+                              GetDIBits(dc, info.hbmMask, 0, height, mask, &bmi, DIB_RGB_COLORS) == height;
+                for (int i = 0; i < width * height; i++)
+                    bits[i] |= (masked && (mask[i] & 0x00FFFFFF)) ? 0 : 0xFF000000;
+                if (mask)
+                    LocalFree(mask);
+            }
+
+            Gdiplus::Bitmap bitmap(width, height, width * 4, PixelFormat32bppARGB, (BYTE *)bits);
+            if (bitmap.GetLastStatus() == Gdiplus::Ok)
+            {
+                GRAPHICS->SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+                GRAPHICS->DrawImage(&bitmap, ToGdiplus(rc));
+            }
+        }
+        if (dc)
+            DeleteDC(dc);
+        if (bits)
+            LocalFree(bits);
+    }
+
+    if (info.hbmColor)
+        DeleteObject(info.hbmColor);
+    if (info.hbmMask)
+        DeleteObject(info.hbmMask);
+}
+
 void GdiplusPainter::PushClip(const RectF &rc, float radius)
 {
     LUI_ASSERT(m_ClipDepth < MaxClips);
