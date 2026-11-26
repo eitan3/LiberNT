@@ -20,6 +20,8 @@ VOID
 Fdo_ReportNhlt(
     _In_ PFDO_CONTEXT fdoCtx)
 {
+    /* the summary is the checked build's report alone: nothing of it is read in a free build */
+#if DBG
     const NHLT_SUMMARY* Summary = &fdoCtx->nhltSummary;
     UINT8 Index;
 
@@ -65,6 +67,7 @@ Fdo_ReportNhlt(
         Summary->OtherLinkCount,
         Summary->OedConfigSize,
         Summary->TrailingBytes);
+#endif
 }
 
 static
@@ -218,7 +221,6 @@ Fdo_ReportAudioPath(
     DSP_AUDIO_PATH path;
     DSP_DMI_STRINGS dmi;
     DSP_DMI_STATUS dmiStatus;
-    const DSP_DMI_QUIRK* quirk;
     UINT16 codecMask = fdoCtx->codecMask;
 
     if (fdoCtx->UseSGPCCodec && fdoCtx->GraphicsCodecAddress < HDA_MAX_CODECS) {
@@ -240,19 +242,25 @@ Fdo_ReportAudioPath(
     path = DspAudioPathDecide(&evidence);
     fdoCtx->AudioPath = path;
 
-    quirk = DspAudioPathDmiMatch(evidence.Dmi);
-    SklHdAudBusReport(
-        "DMI %s: SMBIOS %u.%u DMI %u, vendor \"%s\" product \"%s\" version \"%s\" board \"%s\" \"%s\", quirk %s\n",
-        DmiStatusName(dmiStatus),
-        dmi.SmbiosMajorVersion,
-        dmi.SmbiosMinorVersion,
-        dmi.DmiRevision,
-        dmi.Strings[DSP_DMI_SYS_VENDOR],
-        dmi.Strings[DSP_DMI_SYS_PRODUCT],
-        dmi.Strings[DSP_DMI_SYS_VERSION],
-        dmi.Strings[DSP_DMI_BOARD_VENDOR],
-        dmi.Strings[DSP_DMI_BOARD_NAME],
-        quirk != NULL ? DspAudioPathName(quirk->Path) : "none");
+    /* the quirk is looked up for the report alone */
+#if DBG
+    {
+        const DSP_DMI_QUIRK* quirk = DspAudioPathDmiMatch(evidence.Dmi);
+
+        SklHdAudBusReport(
+            "DMI %s: SMBIOS %u.%u DMI %u, vendor \"%s\" product \"%s\" version \"%s\" board \"%s\" \"%s\", quirk %s\n",
+            DmiStatusName(dmiStatus),
+            dmi.SmbiosMajorVersion,
+            dmi.SmbiosMinorVersion,
+            dmi.DmiRevision,
+            dmi.Strings[DSP_DMI_SYS_VENDOR],
+            dmi.Strings[DSP_DMI_SYS_PRODUCT],
+            dmi.Strings[DSP_DMI_SYS_VERSION],
+            dmi.Strings[DSP_DMI_BOARD_VENDOR],
+            dmi.Strings[DSP_DMI_BOARD_NAME],
+            quirk != NULL ? DspAudioPathName(quirk->Path) : "none");
+    }
+#endif
 
     SklHdAudBusReport(
         "audio path %s on PCI %04x:%04x: codec mask 0x%04x, DSP %s, NHLT %s, %u endpoints not on the HDA link%s\n",

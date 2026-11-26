@@ -209,10 +209,15 @@ NTSTATUS NHLTQueryTableAddress(_In_ WDFDEVICE FxDevice, UINT64 *nhltAddr, UINT64
 	*nhltAddr = 0;
 	*nhltSz = 0;
 	if (argument->Type == ACPI_METHOD_ARGUMENT_BUFFER) {
+#if DBG
+		/* the status is the checked build's line alone */
 		NHLT_PARSE_STATUS parseStatus = NhltFindMemoryAddress64(argument->Data, argument->DataLength, nhltAddr, nhltSz);
 
 		SklHdAudBusPrint(DEBUG_LEVEL_INFO, DBG_INIT,
 			"NHLT address resource: %s\n", NhltParseStatusName(parseStatus));
+#else
+		NhltFindMemoryAddress64(argument->Data, argument->DataLength, nhltAddr, nhltSz);
+#endif
 	}
 	}
 
