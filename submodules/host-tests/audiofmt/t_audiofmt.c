@@ -135,6 +135,102 @@ static void TestPreferredFormat(void)
     CHECK(!RosSoundAudioRangeToPreferredFormat(&Range, &Format));
 }
 
+/* The container a range states in DataRange.SampleSize (the frame's block align) is kept: per channel it
+   must be a PCM container of 8, 16, 24 or 32 bits at least as wide as the valid bits; anything else, and
+   zero, derives the container from the valid bits */
+static void TestPreferredFormatContainer(void)
+{
+    WAVEFORMATEXTENSIBLE Format;
+    KSDATARANGE_AUDIO Range;
+
+    /* 24 valid bits in 3-byte subslots (a USB audio class range): 24 in 24, block align 6 */
+    FillRange(&Range, 2, 24, 24, 44100, 96000);
+    Range.DataRange.SampleSize = 6;
+    CHECK(RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    CHECK_EQ(Format.Format.wBitsPerSample, 24);
+    CHECK_EQ(Format.Samples.wValidBitsPerSample, 24);
+    CHECK_EQ(Format.Format.nBlockAlign, 6);
+    CHECK_EQ(Format.Format.nAvgBytesPerSec, 48000 * 6);
+
+    /* 16 valid bits in a 4-byte container: 32 in 16, block align 8 */
+    FillRange(&Range, 2, 16, 16, 44100, 96000);
+    Range.DataRange.SampleSize = 8;
+    CHECK(RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    CHECK_EQ(Format.Format.wBitsPerSample, 32);
+    CHECK_EQ(Format.Samples.wValidBitsPerSample, 16);
+    CHECK_EQ(Format.Format.nBlockAlign, 8);
+    CHECK_EQ(Format.Format.nAvgBytesPerSec, 48000 * 8);
+
+    /* 20 valid bits in a 4-byte container, 8 channels */
+    FillRange(&Range, 8, 20, 20, 8000, 48000);
+    Range.DataRange.SampleSize = 32;
+    CHECK(RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    CHECK_EQ(Format.Format.wBitsPerSample, 32);
+    CHECK_EQ(Format.Samples.wValidBitsPerSample, 20);
+    CHECK_EQ(Format.Format.nBlockAlign, 32);
+
+    /* 8 valid bits in 1-byte samples, stated */
+    FillRange(&Range, 2, 8, 8, 8000, 48000);
+    Range.DataRange.SampleSize = 2;
+    CHECK(RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    CHECK_EQ(Format.Format.wBitsPerSample, 8);
+    CHECK_EQ(Format.Samples.wValidBitsPerSample, 8);
+    CHECK_EQ(Format.Format.nBlockAlign, 2);
+
+    /* 24 valid bits in a 4-byte container (the HD Audio shape, stated) */
+    FillRange(&Range, 2, 16, 24, 44100, 192000);
+    Range.DataRange.SampleSize = 8;
+    CHECK(RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    CHECK_EQ(Format.Format.wBitsPerSample, 32);
+    CHECK_EQ(Format.Samples.wValidBitsPerSample, 24);
+    CHECK_EQ(Format.Format.nBlockAlign, 8);
+
+    /* No SampleSize: the valid bits alone, as before */
+    FillRange(&Range, 2, 16, 24, 44100, 192000);
+    Range.DataRange.SampleSize = 0;
+    CHECK(RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    CHECK_EQ(Format.Format.wBitsPerSample, 32);
+    CHECK_EQ(Format.Samples.wValidBitsPerSample, 24);
+    CHECK_EQ(Format.Format.nBlockAlign, 8);
+
+    /* An inconsistent SampleSize: not a whole number of bytes per channel */
+    FillRange(&Range, 2, 16, 24, 44100, 192000);
+    Range.DataRange.SampleSize = 5;
+    CHECK(RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    CHECK_EQ(Format.Format.wBitsPerSample, 32);
+    CHECK_EQ(Format.Samples.wValidBitsPerSample, 24);
+    CHECK_EQ(Format.Format.nBlockAlign, 8);
+
+    /* ... a container that is not 8, 16, 24 or 32 bits (6 bytes a channel) */
+    FillRange(&Range, 2, 16, 24, 44100, 192000);
+    Range.DataRange.SampleSize = 12;
+    CHECK(RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    CHECK_EQ(Format.Format.wBitsPerSample, 32);
+    CHECK_EQ(Format.Samples.wValidBitsPerSample, 24);
+    CHECK_EQ(Format.Format.nBlockAlign, 8);
+
+    /* ... narrower than the valid bits (2 bytes a channel for 24 valid bits) */
+    FillRange(&Range, 2, 16, 24, 44100, 192000);
+    Range.DataRange.SampleSize = 4;
+    CHECK(RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    CHECK_EQ(Format.Format.wBitsPerSample, 32);
+    CHECK_EQ(Format.Samples.wValidBitsPerSample, 24);
+    CHECK_EQ(Format.Format.nBlockAlign, 8);
+
+    /* ... fewer bytes than channels */
+    FillRange(&Range, 2, 16, 16, 44100, 48000);
+    Range.DataRange.SampleSize = 1;
+    CHECK(RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    CHECK_EQ(Format.Format.wBitsPerSample, 16);
+    CHECK_EQ(Format.Samples.wValidBitsPerSample, 16);
+    CHECK_EQ(Format.Format.nBlockAlign, 4);
+
+    /* A stated container whose frame does not fit nBlockAlign */
+    FillRange(&Range, 65535, 16, 16, 44100, 48000);
+    Range.DataRange.SampleSize = 65535 * 2;
+    CHECK(!RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+}
+
 /* The legacy table has no 20/24/32-bit or 88.2/176.4/192 kHz entry: that is the gate P0 works around */
 static void TestLegacyTable(void)
 {
@@ -297,6 +393,7 @@ int main(void)
     TestContainerBits();
     TestContainerBits();
     TestPreferredFormat();
+    TestPreferredFormatContainer();
     TestLegacyTable();
     TestPcmSamples();
     TestDither();

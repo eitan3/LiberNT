@@ -208,8 +208,13 @@ RosSoundChannelMaskFromCount(
 /*
  * The PCM format a pin's data range describes at its widest: the most
  * channels, the most valid bits in their container, at 48 kHz when the range
- * covers it, else at the range's top rate. Returns FALSE when the range
- * yields no format the WAVEFORMATEX fields can hold.
+ * covers it, else at the range's top rate. The container is the one the range
+ * states in DataRange.SampleSize, the frame's block align, when it is per
+ * channel a PCM container of 8, 16, 24 or 32 bits at least as wide as the
+ * valid bits (a USB audio class range with 3-byte subslots states 24); zero,
+ * as the HD Audio form of a range has it, or any other value derives the
+ * container from the valid bits. Returns FALSE when the range yields no format
+ * the WAVEFORMATEX fields can hold.
  */
 static inline BOOL
 RosSoundAudioRangeToPreferredFormat(
@@ -218,12 +223,16 @@ RosSoundAudioRangeToPreferredFormat(
 {
     ULONG Channels = DataRangeAudio->MaximumChannels;
     ULONG ValidBits = DataRangeAudio->MaximumBitsPerSample;
-    ULONG ContainerBits, BlockAlign, SampleRate;
+    ULONG SampleSize = DataRangeAudio->DataRange.SampleSize;
+    ULONG ContainerBits, StatedBits, BlockAlign, SampleRate;
 
     if (!Channels || Channels > USHRT_MAX || !ValidBits || ValidBits > USHRT_MAX)
         return FALSE;
 
     ContainerBits = RosSoundPcmContainerBits((WORD)ValidBits);
+    StatedBits = SampleSize != 0 && SampleSize % Channels == 0 ? (SampleSize / Channels) * 8 : 0;
+    if ((StatedBits == 8 || StatedBits == 16 || StatedBits == 24 || StatedBits == 32) && StatedBits >= ValidBits)
+        ContainerBits = StatedBits;
     BlockAlign = Channels * (ContainerBits / 8);
     if (!BlockAlign || BlockAlign > USHRT_MAX)
         return FALSE;
