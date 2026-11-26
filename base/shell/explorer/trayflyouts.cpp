@@ -6423,15 +6423,20 @@ public:
     RECT m_rcDeviceGroup, m_rcAppsGroup, m_rcDevLabel;
     SIZE m_size;
     int m_nTick;
+    /* declared last, as the constructor initialises it last (the compiler's reorder warning) */
+    TFYMENU_GUARD *m_pMenuGuard;
 
     CVolumeMixerWnd() : m_bAudioLoaded(FALSE), m_hFont(NULL), m_hFontSmall(NULL),
                         m_nMaster(0), m_bMasterMute(FALSE), m_bMasterActive(TRUE),
                         m_fMasterPeak(0.0f), m_bDevHot(FALSE), m_bMenu(FALSE), m_bTracking(FALSE),
-                        m_iDragCol(-2), m_nTick(0)
+                        m_iDragCol(-2), m_nTick(0), m_pMenuGuard(NULL)
     {
         ZeroMemory(&m_Pal, sizeof(m_Pal));
         ZeroMemory(&m_size, sizeof(m_size));
         ZeroMemory(&m_rcDevLabel, sizeof(m_rcDevLabel));
+        m_pMenuGuard = new TFYMENU_GUARD();
+        m_pMenuGuard->References = 1;
+        m_pMenuGuard->Alive = TRUE;
         ZeroMemory(&m_rcMasterMeter, sizeof(m_rcMasterMeter));
         m_nMaster = (int)InterlockedCompareExchange(&g_TfyAudioPercent, 0, 0);
         m_bMasterMute = InterlockedCompareExchange(&g_TfyAudioMute, 0, 0) != 0;
@@ -6945,12 +6950,19 @@ public:
 
     VOID ShowDeviceMenu()
     {
+        TFYMENU_GUARD *pGuard = m_pMenuGuard;
+
         EnsureAudioLoaded();
-        if (m_Devices.GetCount() == 0 || m_bMenu)
+        if (m_Devices.GetCount() == 0 || m_bMenu || !pGuard)
             return;
+        InterlockedIncrement(&pGuard->References);
         HMENU hMenu = CreatePopupMenu();
         if (!hMenu)
+        {
+            if (!InterlockedDecrement(&pGuard->References))
+                delete pGuard;
             return;
+        }
         for (SIZE_T i = 0; i < m_Devices.GetCount(); i++)
             AppendMenuW(hMenu, MF_STRING | (m_Devices[i].bDefault ? MF_CHECKED : 0),
                         (UINT_PTR)(i + 1), m_Devices[i].szName);
@@ -6960,8 +6972,17 @@ public:
         InvalidateRect(NULL, FALSE);
         int cmd = TrackPopupMenuEx(hMenu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
                                    pt.x, pt.y, m_hWnd, NULL);
-        m_bMenu = FALSE;
         DestroyMenu(hMenu);
+        /* The flyout may have been destroyed under the menu: nothing of it is touched unless the guard says it lives (R3-05's guard, FC-02) */
+        BOOL bAlive = pGuard->Alive;
+        if (!InterlockedDecrement(&pGuard->References))
+        {
+            delete pGuard;
+            bAlive = FALSE;
+        }
+        if (!bAlive)
+            return;
+        m_bMenu = FALSE;
         if (cmd > 0 && (SIZE_T)cmd <= m_Devices.GetCount() && !m_Devices[cmd - 1].bDefault)
         {
             TfySetDefaultRenderDevice(m_Devices[cmd - 1].szId);
@@ -7272,6 +7293,14 @@ public:
         KillTimer(TFY_TIMER_MIXSTATE);
         KillTimer(TFY_TIMER_MIXMETER);
         FreeCols();
+        /* the device menu's guard dies with the window: a menu still open under it reads so and touches nothing of the flyout (R3-05's guard, FC-02) */
+        if (m_pMenuGuard)
+        {
+            m_pMenuGuard->Alive = FALSE;
+            if (!InterlockedDecrement(&m_pMenuGuard->References))
+                delete m_pMenuGuard;
+            m_pMenuGuard = NULL;
+        }
         m_pSessionMgr.Release();
         m_pMasterMeter.Release();
         m_pEndpointVolume.Release();
