@@ -16,6 +16,7 @@ list(APPEND SOURCE
     libercontrol.cpp
     liberdock.cpp
     libershell.cpp
+    liberstart.cpp
     notifyiconscust.cpp
     powermode.cpp
     rshell.cpp

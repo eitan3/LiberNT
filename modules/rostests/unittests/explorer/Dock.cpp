@@ -127,8 +127,19 @@ static void TestPlaceAbove()
     ok(pt.y == mi.rcMonitor.top, "kept on screen at the top: %ld\n", pt.y);
 }
 
+static void TestStartSearch()
+{
+    ok(LiberStart_Matches(L"Notepad", L""), "an empty query matches everything\n");
+    ok(LiberStart_Matches(L"Notepad", NULL), "a NULL query matches everything\n");
+    ok(LiberStart_Matches(L"Notepad", L"pad"), "substring\n");
+    ok(LiberStart_Matches(L"Command Prompt", L"PROMPT"), "case-insensitive\n");
+    ok(!LiberStart_Matches(L"Notepad", L"paint"), "no match\n");
+    ok(!LiberStart_Matches(L"", L"a") && !LiberStart_Matches(NULL, L"a"), "empty names never match a query\n");
+}
+
 START_TEST(Dock)
 {
+    TestStartSearch();
     TestLayout();
     TestPlaceAbove();
     TestTaskWindows();

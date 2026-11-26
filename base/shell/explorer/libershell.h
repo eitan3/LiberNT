@@ -41,3 +41,8 @@ VOID LiberShell_PlaceAbove(const RECT *prcAnchor, int widthPx, int heightPx, POI
 VOID LiberControlCenter_Toggle(IN const RECT *prcAnchor);
 BOOL LiberControlCenter_IsOpen(VOID);
 VOID LiberControlCenter_Close(VOID);
+
+BOOL LiberStart_Matches(LPCWSTR pszName, LPCWSTR pszQuery);
+VOID LiberStart_Toggle(IN const RECT *prcAnchor);
+BOOL LiberStart_IsOpen(VOID);
+VOID LiberStart_Destroy(VOID);
