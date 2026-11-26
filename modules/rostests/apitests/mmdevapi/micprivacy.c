@@ -5,6 +5,7 @@
  */
 
 #include <apitest.h>
+#include <apitest_expected.h>
 
 #define COBJMACROS
 #include <windows.h>
@@ -165,7 +166,8 @@ TestStore(LPCWSTR Image)
     ok(!MicConsentCheck(Image), "strict mode allows an app set to Deny\n");
 }
 
-static VOID
+/* The consent enforcement on the default recording device: TRUE when it ran, FALSE when there is no device to record from */
+static BOOL
 TestEnforcement(LPCWSTR Image)
 {
     IMMDeviceEnumerator *Enumerator = NULL;
@@ -175,7 +177,7 @@ TestEnforcement(LPCWSTR Image)
                           (void **)&Enumerator);
     ok(hr == S_OK, "CoCreateInstance returned 0x%08lx\n", hr);
     if (FAILED(hr))
-        return;
+        return FALSE;
 
     ok(SetConsent(MIC_CONSENT_KEY, NULL), "clearing the microphone Value failed\n");
     ok(SetConsent(MIC_CONSENT_APPS_KEY, NULL), "clearing the desktop apps Value failed\n");
@@ -184,9 +186,9 @@ TestEnforcement(LPCWSTR Image)
     hr = OpenCapture(Enumerator);
     if (hr == E_NOTFOUND || hr == AUDCLNT_E_DEVICE_INVALIDATED)
     {
-        skip("No recording device (0x%08lx)\n", hr);
+        apitest_missing("No recording device (0x%08lx)\n", hr);
         IMMDeviceEnumerator_Release(Enumerator);
-        return;
+        return FALSE;
     }
     ok(hr == S_OK, "allowed capture returned 0x%08lx\n", hr);
 
@@ -204,12 +206,14 @@ TestEnforcement(LPCWSTR Image)
     ok(hr == E_ACCESSDENIED, "global switch off: 0x%08lx\n", hr);
 
     IMMDeviceEnumerator_Release(Enumerator);
+    return TRUE;
 }
 
 START_TEST(micprivacy)
 {
     WCHAR Image[MAX_PATH];
     SIZE_T Length;
+    BOOL Exercised;
     DWORD Length_ = GetModuleFileNameW(NULL, Image, ARRAYSIZE(Image));
 
     if (!Length_ || Length_ >= ARRAYSIZE(Image))
@@ -224,7 +228,8 @@ START_TEST(micprivacy)
     SaveValues();
     TestStore(Image);
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
-    TestEnforcement(Image);
+    Exercised = TestEnforcement(Image);
     CoUninitialize();
     RestoreValues();
+    ApitestSummary("micprivacy", Exercised != FALSE, 1, "recording device's consent enforcement exercised");
 }

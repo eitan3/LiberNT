@@ -6,6 +6,7 @@
  */
 #define COBJMACROS
 #include <apitest.h>
+#include <apitest_expected.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <math.h>
@@ -66,7 +67,7 @@ static IAudioClient *initialize_aligned(IMMDevice *device, const WAVEFORMATEX *f
         ok(hr == S_OK || hr == AUDCLNT_E_DEVICE_IN_USE, "period %I64d: Initialize %#lx\n", period, hr);
     }
     if (hr == AUDCLNT_E_DEVICE_IN_USE)
-        skip("period %I64d: device in use, no exclusive event access\n", period);
+        apitest_missing("period %I64d: device in use, no exclusive event access\n", period);
     if (FAILED(hr))
     {
         IAudioClient_Release(client);
@@ -512,9 +513,10 @@ static BOOL write_tone_at_depth(IAudioRenderClient *render, UINT32 frames, const
 /*
  * Exclusive mode passes the application's format to the device: a depth the
  * legacy flags cannot describe is taken when the driver takes it, and is
- * refused with AUDCLNT_E_UNSUPPORTED_FORMAT when the driver refuses it.
+ * refused with AUDCLNT_E_UNSUPPORTED_FORMAT when the driver refuses it. Returns
+ * how many of the three depths the driver took.
  */
-static void test_depth_streams(IMMDevice *device, REFERENCE_TIME period)
+static unsigned test_depth_streams(IMMDevice *device, REFERENCE_TIME period)
 {
     static const WORD depths[][2] = { {32, 24}, {32, 32}, {24, 24} };
     WAVEFORMATEXTENSIBLE format, refused;
@@ -524,15 +526,15 @@ static void test_depth_streams(IMMDevice *device, REFERENCE_TIME period)
     HANDLE event;
     UINT32 frames;
     HRESULT hr;
-    unsigned d, events;
+    unsigned d, events, taken = 0;
     DWORD start;
 
     if (FAILED(IMMDevice_Activate(device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&probe)) ||
         FAILED(IAudioClient_GetMixFormat(probe, &mix)))
     {
-        skip("Cannot probe the mix format\n");
+        apitest_missing("Cannot probe the mix format\n");
         if (probe) IAudioClient_Release(probe);
-        return;
+        return 0;
     }
     for (d = 0; d < ARRAY_SIZE(depths); ++d)
     {
@@ -542,11 +544,12 @@ static void test_depth_streams(IMMDevice *device, REFERENCE_TIME period)
         if (hr != S_OK)
         {
             if (depths[d][0] != depths[d][1])
-                skip("the driver takes neither %u-in-%u\n", depths[d][1], depths[d][0]);
+                apitest_missing("the driver takes neither %u-in-%u\n", depths[d][1], depths[d][0]);
             else
                 ok(hr == AUDCLNT_E_UNSUPPORTED_FORMAT, "a packed 24-bit exclusive format: %#lx\n", hr);
             continue;
         }
+        taken++;
 
         client = NULL;
         hr = IMMDevice_Activate(device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&client);
@@ -600,6 +603,7 @@ static void test_depth_streams(IMMDevice *device, REFERENCE_TIME period)
     ok(hr == AUDCLNT_E_UNSUPPORTED_FORMAT, "20 valid bits in a 24-bit container: %#lx\n", hr);
     CoTaskMemFree(mix);
     IAudioClient_Release(probe);
+    return taken;
 }
 
 START_TEST(exclusivestream)
@@ -610,7 +614,7 @@ START_TEST(exclusivestream)
     REFERENCE_TIME default_period = 0, minimum_period = 0;
     WAVEFORMATEX format;
     HRESULT hr;
-    unsigned i;
+    unsigned i, Taken = 0;
     char **argv;
     int argc;
 
@@ -627,7 +631,7 @@ START_TEST(exclusivestream)
     hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(enumerator, eRender, eConsole, &device);
     if (hr == E_NOTFOUND)
     {
-        skip("No render endpoint\n");
+        apitest_missing("No render endpoint\n");
         goto done;
     }
     ok(hr == S_OK, "GetDefaultAudioEndpoint %#lx\n", hr);
@@ -650,7 +654,7 @@ START_TEST(exclusivestream)
     if (!default_period || !minimum_period) goto done;
     if (hr != S_OK)
     {
-        skip("No 16-bit stereo exclusive format\n");
+        apitest_missing("No 16-bit stereo exclusive format\n");
         goto done;
     }
 
@@ -659,10 +663,11 @@ START_TEST(exclusivestream)
     test_stream(device, &format, minimum_period);
     test_held_endpoint(device, &format, default_period);
     test_exclusive_beside_shared(device, &format, default_period);
-    test_depth_streams(device, default_period);
+    Taken = test_depth_streams(device, default_period);
 
 done:
     if (device) IMMDevice_Release(device);
     if (enumerator) IMMDeviceEnumerator_Release(enumerator);
     CoUninitialize();
+    ApitestSummary("exclusivestream", Taken, 2, "depths (24-in-32, 32-bit) taken by the driver");
 }

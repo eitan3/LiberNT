@@ -5,6 +5,7 @@
  */
 
 #include <apitest.h>
+#include <apitest_expected.h>
 
 #define COBJMACROS
 #include <windows.h>
@@ -76,6 +77,7 @@ START_TEST(endpointvolume)
     IMMDeviceEnumerator *Enumerator = NULL;
     IMMDevice *Device;
     EDataFlow Flow;
+    UINT Exercised = 0;
     HRESULT hr;
 
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -86,13 +88,15 @@ START_TEST(endpointvolume)
     {
         if (FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(Enumerator, Flow, eConsole, &Device)))
         {
-            skip("No default endpoint for flow %u\n", Flow);
+            apitest_missing("No default endpoint for flow %u\n", Flow);
             continue;
         }
         TestEndpointVolume(Device, Flow);
+        Exercised++;
         IMMDevice_Release(Device);
     }
     if (Enumerator)
         IMMDeviceEnumerator_Release(Enumerator);
     CoUninitialize();
+    ApitestSummary("endpointvolume", Exercised, 2, "flows' endpoint volume exercised");
 }

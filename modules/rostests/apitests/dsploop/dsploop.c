@@ -6,6 +6,7 @@
  */
 
 #include <apitest.h>
+#include <apitest_expected.h>
 
 #define COBJMACROS
 #include <windows.h>
@@ -465,13 +466,13 @@ START_TEST(dsploop)
     hr = FindEndpoint(Enumerator, eRender, &Render);
     if (FAILED(hr))
     {
-        skip("dsploop: no active render endpoint named '%ls'; the DSP's audio child is not present (0x%08lx)\n", DSPLOOP_NAME, hr);
+        apitest_missing("dsploop: no active render endpoint named '%ls'; the DSP's audio child is not present (0x%08lx)\n", DSPLOOP_NAME, hr);
         goto Done;
     }
     hr = FindEndpoint(Enumerator, eCapture, &Capture);
     if (FAILED(hr))
     {
-        skip("dsploop: no active capture endpoint named '%ls'; the DSP's audio child is not present (0x%08lx)\n", DSPLOOP_NAME, hr);
+        apitest_missing("dsploop: no active capture endpoint named '%ls'; the DSP's audio child is not present (0x%08lx)\n", DSPLOOP_NAME, hr);
         goto Done;
     }
     for (I = 0; I < ARRAY_SIZE(Runs); I++)

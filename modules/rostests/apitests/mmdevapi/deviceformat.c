@@ -5,6 +5,7 @@
  */
 
 #include <apitest.h>
+#include <apitest_expected.h>
 
 #define COBJMACROS
 #include <windows.h>
@@ -153,7 +154,7 @@ TestDepth(IMMDevice *Device, IPropertyStore *Store, EDataFlow Flow, DWORD Rate, 
         }
     }
     if (!accepted)
-        skip("Flow %u: the driver accepts neither 24-in-32 nor 32-bit; the depth path is not exercised\n", Flow);
+        apitest_missing("Flow %u: the driver accepts neither 24-in-32 nor 32-bit; the depth path is not exercised\n", Flow);
 
     /* A depth the driver refuses leaves the driver's choice in force */
     SetPcmFormatValid(&Refused, Rate, 32, 20, Channels);
@@ -172,7 +173,8 @@ TestDepth(IMMDevice *Device, IPropertyStore *Store, EDataFlow Flow, DWORD Rate, 
         CoTaskMemFree(Mix);
 }
 
-static VOID
+/* The device-format path of one endpoint: TRUE when the format change was applied, FALSE when a precondition of it is not met */
+static BOOL
 TestEndpoint(IMMDevice *Device, EDataFlow Flow)
 {
     IPropertyStore *Store = NULL;
@@ -180,25 +182,26 @@ TestEndpoint(IMMDevice *Device, EDataFlow Flow)
     PROPVARIANT Saved, Value;
     WAVEFORMATEXTENSIBLE Other, Bogus;
     WAVEFORMATEX *Mix = NULL, *NewMix = NULL;
+    BOOL Exercised = FALSE;
     HRESULT hr;
 
     hr = GetMix(Device, &Mix);
     ok(hr == S_OK, "GetMixFormat returned 0x%08lx\n", hr);
     if (FAILED(hr))
-        return;
+        return FALSE;
     if (!FindOtherFormat(Device, Mix, &Other))
     {
-        skip("Flow %u endpoint offers no second format\n", Flow);
+        apitest_missing("Flow %u endpoint offers no second format\n", Flow);
         CoTaskMemFree(Mix);
-        return;
+        return FALSE;
     }
 
     hr = IMMDevice_OpenPropertyStore(Device, STGM_READWRITE, &Store);
     if (FAILED(hr))
     {
-        skip("Cannot write the endpoint properties (0x%08lx); the test needs administrator rights\n", hr);
+        apitest_missing("Cannot write the endpoint properties (0x%08lx); the test needs administrator rights\n", hr);
         CoTaskMemFree(Mix);
-        return;
+        return FALSE;
     }
     PropVariantInit(&Saved);
     hr = IPropertyStore_GetValue(Store, &DeviceFormatKey, &Saved);
@@ -212,9 +215,10 @@ TestEndpoint(IMMDevice *Device, EDataFlow Flow)
     hr = IPropertyStore_SetValue(Store, &DeviceFormatKey, &Value);
     if (FAILED(hr))
     {
-        skip("SetValue(PKEY_AudioEngine_DeviceFormat) returned 0x%08lx; the test needs administrator rights\n", hr);
+        apitest_missing("SetValue(PKEY_AudioEngine_DeviceFormat) returned 0x%08lx; the test needs administrator rights\n", hr);
         goto done;
     }
+    Exercised = TRUE;
 
     hr = GetMix(Device, &NewMix);
     ok(hr == S_OK, "GetMixFormat returned 0x%08lx\n", hr);
@@ -294,6 +298,7 @@ done:
     PropVariantClear(&Saved);
     IPropertyStore_Release(Store);
     CoTaskMemFree(Mix);
+    return Exercised;
 }
 
 START_TEST(deviceformat)
@@ -301,6 +306,7 @@ START_TEST(deviceformat)
     IMMDeviceEnumerator *Enumerator = NULL;
     IMMDevice *Device;
     EDataFlow Flow;
+    UINT Exercised = 0;
     HRESULT hr;
 
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -311,13 +317,14 @@ START_TEST(deviceformat)
     {
         if (FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(Enumerator, Flow, eConsole, &Device)))
         {
-            skip("No default endpoint for flow %u\n", Flow);
+            apitest_missing("No default endpoint for flow %u\n", Flow);
             continue;
         }
-        TestEndpoint(Device, Flow);
+        Exercised += TestEndpoint(Device, Flow) != FALSE;
         IMMDevice_Release(Device);
     }
     if (Enumerator)
         IMMDeviceEnumerator_Release(Enumerator);
     CoUninitialize();
+    ApitestSummary("deviceformat", Exercised, 2, "default endpoints' format path exercised");
 }

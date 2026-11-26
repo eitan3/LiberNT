@@ -5,6 +5,7 @@
  */
 
 #include <apitest.h>
+#include <apitest_expected.h>
 
 #define COBJMACROS
 #include <windows.h>
@@ -83,7 +84,7 @@ START_TEST(endpointdriver)
     IMMDeviceEnumerator *Enumerator = NULL;
     IMMDeviceCollection *Collection = NULL;
     IMMDevice *Device;
-    UINT Count = 0, Index;
+    UINT Count = 0, Index, Checked = 0;
     HRESULT hr;
 
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -95,12 +96,13 @@ START_TEST(endpointdriver)
     {
         IMMDeviceCollection_GetCount(Collection, &Count);
         if (!Count)
-            skip("No active audio endpoint\n");
+            apitest_missing("No active audio endpoint\n");
         for (Index = 0; Index < Count; Index++)
         {
             if (SUCCEEDED(IMMDeviceCollection_Item(Collection, Index, &Device)))
             {
                 TestEndpoint(Enumerator, Device);
+                Checked++;
                 IMMDevice_Release(Device);
             }
         }
@@ -109,4 +111,5 @@ START_TEST(endpointdriver)
     if (Enumerator)
         IMMDeviceEnumerator_Release(Enumerator);
     CoUninitialize();
+    ApitestSummary("endpointdriver", Checked, Count, "endpoints followed to their filter's devnode");
 }

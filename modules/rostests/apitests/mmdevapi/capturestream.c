@@ -7,6 +7,7 @@
 
 #define COBJMACROS
 #include <apitest.h>
+#include <apitest_expected.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <ks.h>
@@ -590,8 +591,9 @@ static void test_shared_blocks_exclusive(const WAVEFORMATEX *mix)
  * Capture at the depths the legacy flags cannot describe: a shared 24-in-32
  * or 32-bit client is served from whatever the device runs at, and an
  * exclusive stream takes the client's format when the driver takes it.
+ * Returns TRUE when the driver took a depth, FALSE when it took neither.
  */
-static void test_depth_formats(const WAVEFORMATEX *mix)
+static BOOL test_depth_formats(const WAVEFORMATEX *mix)
 {
     static const WORD depths[][2] = { {32, 24}, {32, 32} };
     WAVEFORMATEXTENSIBLE format;
@@ -610,7 +612,7 @@ static void test_depth_formats(const WAVEFORMATEX *mix)
     hr = IMMDevice_Activate(capture_device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&client);
     ok(hr == S_OK, "Activate: %#lx\n", hr);
     if (FAILED(hr))
-        return;
+        return FALSE;
     for (d = 0; d < ARRAY_SIZE(depths); ++d)
     {
         ZeroMemory(&format, sizeof(format));
@@ -685,10 +687,11 @@ static void test_depth_formats(const WAVEFORMATEX *mix)
             break;
     }
     if (!accepted)
-        skip("the capture driver takes neither 24-in-32 nor 32-bit; the depth path is not exercised\n");
+        apitest_missing("the capture driver takes neither 24-in-32 nor 32-bit; the depth path is not exercised\n");
     if (capture) IAudioCaptureClient_Release(capture);
     if (event) CloseHandle(event);
     if (client) IAudioClient_Release(client);
+    return accepted != 0;
 }
 
 static void test_loopback(void)
@@ -714,7 +717,7 @@ static void test_loopback(void)
     IMMDeviceEnumerator_Release(enumerator);
     if (FAILED(hr))
     {
-        skip("no render device\n");
+        apitest_missing("no render device\n");
         return;
     }
     hr = IMMDevice_Activate(device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&loopback);
@@ -818,6 +821,7 @@ START_TEST(capturestream)
 {
     IAudioClient *client;
     WAVEFORMATEX *format;
+    BOOL DepthTaken;
     char **argv;
     int argc;
     HRESULT hr;
@@ -826,8 +830,9 @@ START_TEST(capturestream)
     CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (!open_capture_device())
     {
-        skip("no capture device\n");
+        apitest_missing("no capture device\n");
         CoUninitialize();
+        ApitestSummary("capturestream", 0, 1, "capture depth path exercised");
         return;
     }
     hr = IMMDevice_Activate(capture_device, &IID_IAudioClient, CLSCTX_ALL, NULL, (void **)&client);
@@ -850,9 +855,10 @@ START_TEST(capturestream)
     test_loopback();
     test_shared_blocks_exclusive(format);
     test_exclusive_event(format);
-    test_depth_formats(format);
+    DepthTaken = test_depth_formats(format);
 
     CoTaskMemFree(format);
     IMMDevice_Release(capture_device);
     CoUninitialize();
+    ApitestSummary("capturestream", DepthTaken != FALSE, 1, "capture depth path exercised");
 }

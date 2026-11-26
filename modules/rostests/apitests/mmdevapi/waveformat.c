@@ -5,6 +5,7 @@
  */
 
 #include <apitest.h>
+#include <apitest_expected.h>
 #include <wingdi.h>
 #include <winuser.h>
 #include <winreg.h>
@@ -93,7 +94,8 @@ static INT QueryWaveFormat(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index, c
     return Info.Flags ? 1 : 0;
 }
 
-static void TestDevice(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index)
+/* The format queries on one wave device: TRUE when its data range was read, FALSE when it was not */
+static BOOL TestDevice(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index)
 {
     WAVEFORMATEXTENSIBLE Format, Preferred;
     KSDATARANGE_AUDIO Range;
@@ -108,7 +110,7 @@ static void TestDevice(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index)
     if (!Ioctl(Wdmaud, IOCTL_GETWAVE_DATARANGE, &Info))
     {
         skip("Type %u index %lu: IOCTL_GETWAVE_DATARANGE failed with %lu\n", Type, Index, GetLastError());
-        return;
+        return FALSE;
     }
     Range = Info.u.WaveDataRange;
     ok(Range.DataRange.FormatSize == sizeof(KSDATARANGE_AUDIO), "FormatSize %lu\n", Range.DataRange.FormatSize);
@@ -213,18 +215,20 @@ static void TestDevice(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index)
     Info.DeviceIndex = Index;
     ok(!Ioctl(Wdmaud, IOCTL_QUERY_WAVE_FORMAT, &Info), "a MIDI device answered a wave format query\n");
     ok(!Ioctl(Wdmaud, IOCTL_GETWAVE_DATARANGE, &Info), "a MIDI device answered a wave data range query\n");
+    return TRUE;
 }
 
 START_TEST(waveformat)
 {
     SOUND_DEVICE_TYPE Type;
     WDMAUD_DEVICE_INFO Info;
+    ULONG Asked = 0, Planned = 0;
     HANDLE Wdmaud;
 
     Wdmaud = OpenWdmaud();
     if (Wdmaud == INVALID_HANDLE_VALUE)
     {
-        skip("No WDMAUD interface\n");
+        apitest_missing("No WDMAUD interface\n");
         return;
     }
 
@@ -241,9 +245,11 @@ START_TEST(waveformat)
         }
         Count = min(Info.DeviceCount, 4);
         if (!Count)
-            skip("Type %u: no device\n", Type);
+            apitest_missing("Type %u: no device\n", Type);
+        Planned += Count;
         for (Index = 0; Index < Count; Index++)
-            TestDevice(Wdmaud, Type, Index);
+            Asked += TestDevice(Wdmaud, Type, Index) != FALSE;
     }
     CloseHandle(Wdmaud);
+    ApitestSummary("waveformat", Asked, Planned, "wave devices asked for their formats");
 }

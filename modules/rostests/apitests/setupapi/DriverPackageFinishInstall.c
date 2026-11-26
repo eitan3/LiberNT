@@ -5,6 +5,7 @@
  */
 
 #include <apitest.h>
+#include <apitest_expected.h>
 #include <windows.h>
 #include <setupapi.h>
 #include <regstr.h>
@@ -88,7 +89,7 @@ START_TEST(DriverPackageFinishInstall)
 
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\DriverDatabase\\DriverPackages", 0, KEY_READ, &Packages) != ERROR_SUCCESS)
     {
-        skip("No driver database\n");
+        apitest_missing("No driver database\n");
         return;
     }
 
@@ -101,6 +102,7 @@ START_TEST(DriverPackageFinishInstall)
     }
 
     RegCloseKey(Packages);
+    ApitestSummary("DriverPackageFinishInstall", Checked, 0, "Net and Media configurations checked");
     ok(Checked > 0, "no Net or Media driver configuration\n");
     trace("%lu Net and Media configurations checked\n", Checked);
 }

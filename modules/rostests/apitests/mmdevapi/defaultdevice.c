@@ -5,6 +5,7 @@
  */
 
 #include <apitest.h>
+#include <apitest_expected.h>
 
 #define COBJMACROS
 #include <windows.h>
@@ -105,7 +106,8 @@ RestoreValue(LPCWSTR Name, LPCWSTR Value, BOOL Present)
     RegCloseKey(Key);
 }
 
-static VOID
+/* The default-endpoint switch of a flow: TRUE when it ran, FALSE when the flow's preconditions are not met */
+static BOOL
 TestSwitch(IMMDeviceEnumerator *Enumerator, EDataFlow Flow)
 {
     IMMDeviceCollection *Collection = NULL;
@@ -121,14 +123,14 @@ TestSwitch(IMMDeviceEnumerator *Enumerator, EDataFlow Flow)
     hr = IMMDeviceEnumerator_EnumAudioEndpoints(Enumerator, Flow, DEVICE_STATE_ACTIVE, &Collection);
     ok(hr == S_OK, "EnumAudioEndpoints returned 0x%08lx\n", hr);
     if (FAILED(hr))
-        return;
+        return FALSE;
     IMMDeviceCollection_GetCount(Collection, &Count);
     if (Count < 2 ||
         FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(Enumerator, Flow, eConsole, &Default)))
     {
-        skip("Flow %u has %u active endpoints, two are needed\n", Flow, Count);
+        apitest_missing("Flow %u has %u active endpoints, two are needed\n", Flow, Count);
         IMMDeviceCollection_Release(Collection);
-        return;
+        return FALSE;
     }
     IMMDevice_GetId(Default, &DefaultId);
     IMMDevice_Release(Default);
@@ -150,7 +152,7 @@ TestSwitch(IMMDeviceEnumerator *Enumerator, EDataFlow Flow)
     if (!OtherId)
     {
         CoTaskMemFree(DefaultId);
-        return;
+        return FALSE;
     }
 
     SaveValue(ValueName, Saved, ARRAYSIZE(Saved), &Present);
@@ -184,11 +186,13 @@ TestSwitch(IMMDeviceEnumerator *Enumerator, EDataFlow Flow)
     CloseHandle(Watch.Event);
     CoTaskMemFree(OtherId);
     CoTaskMemFree(DefaultId);
+    return TRUE;
 }
 
 START_TEST(defaultdevice)
 {
     IMMDeviceEnumerator *Enumerator = NULL;
+    UINT Switched = 0;
     HRESULT hr;
 
     TestValueNames();
@@ -199,9 +203,10 @@ START_TEST(defaultdevice)
     ok(hr == S_OK, "CoCreateInstance returned 0x%08lx\n", hr);
     if (SUCCEEDED(hr))
     {
-        TestSwitch(Enumerator, eRender);
-        TestSwitch(Enumerator, eCapture);
+        Switched += TestSwitch(Enumerator, eRender) != FALSE;
+        Switched += TestSwitch(Enumerator, eCapture) != FALSE;
         IMMDeviceEnumerator_Release(Enumerator);
     }
     CoUninitialize();
+    ApitestSummary("defaultdevice", Switched, 2, "flows switched");
 }
