@@ -2575,6 +2575,328 @@ Out:
     free(Loop);
 }
 
+/*
+ * Topologies built for the model's bounds, in the container's own layouts
+ * (softplg.c): the manifest; one widget block per pipeline, the block index
+ * its pipeline id, each holding its scheduler and the last one a host
+ * playback copier; one PCM the copier's stream serves; a graph of one edge;
+ * then as many empty blocks of a type the model does not read as asked.
+ */
+#define GEN_WIDGET_BYTES        132
+#define GEN_MANIFEST_BYTES      112
+#define GEN_PCM_BYTES           912
+#define GEN_PCM_CAPS_OFFSET     692
+#define GEN_GRAPH_BYTES         132
+#define GEN_FIRST_BUFFER_BYTES  384
+
+/* the copier module of sof-arl-s.ri (AceModules) */
+static const UINT8 GenCopierUuid[SOFTPLG_UUID_BYTES] = { 0x83, 0x0C, 0xA0, 0x9B, 0x12, 0xCA, 0x83, 0x4A, 0x94, 0x3C, 0x1F, 0xA2, 0xE8, 0x2F, 0x9D, 0xDA };
+
+typedef struct _GEN_SHAPE
+{
+    UINT32 Pipelines;
+    BOOLEAN Copier;
+    /* the copier's input formats: the first takes a 384-byte buffer, every later one BufferBytes */
+    UINT32 Formats;
+    UINT32 BufferBytes;
+    /* the copier's deep-buffer token, 0 for none */
+    UINT32 DeepBufferMs;
+    BOOLEAN Graph;
+    UINT32 EmptyBlocks;
+} GEN_SHAPE;
+
+typedef struct _GEN_TOPOLOGY
+{
+    UINT8* Data;
+    SIZE_T Bytes;
+    /* the widget index of the copier, SOFTPLG_NO_WIDGET when there is none */
+    UINT32 Copier;
+} GEN_TOPOLOGY;
+
+static
+void
+GenFree(
+    GEN_TOPOLOGY* Topology)
+{
+    free(Topology->Data);
+    Topology->Data = NULL;
+}
+
+static
+SIZE_T
+GenText(
+    UINT8* At,
+    const char* Text)
+{
+    memset(At, 0, SOFTPLG_NAME_BYTES);
+    memcpy(At, Text, strlen(Text));
+    return SOFTPLG_NAME_BYTES;
+}
+
+static
+SIZE_T
+GenHeader(
+    UINT8* At,
+    UINT32 Type,
+    UINT32 Index,
+    UINT32 Count,
+    UINT32 PayloadBytes)
+{
+    memset(At, 0, SOFTPLG_HEADER_BYTES);
+    Put32(At, SOFTPLG_MAGIC);
+    Put32(At + 4, SOFTPLG_ABI_VERSION);
+    Put32(At + 12, Type);
+    Put32(At + 16, SOFTPLG_HEADER_BYTES);
+    Put32(At + 24, PayloadBytes);
+    Put32(At + 28, Index);
+    Put32(At + 32, Count);
+    return SOFTPLG_HEADER_BYTES;
+}
+
+/* One word tuple */
+static
+SIZE_T
+GenWord(
+    UINT8* At,
+    UINT32 Token,
+    UINT32 Value)
+{
+    Put32(At, Token);
+    Put32(At + 4, Value);
+    return 8;
+}
+
+/* The words of the copier's private data: the UUID array, then the word array (the formats' tokens, the gateway type, the deep buffer) */
+static
+SIZE_T
+GenCopierWords(
+    const GEN_SHAPE* Shape)
+{
+    return 1 + 2 + (Shape->DeepBufferMs != 0 ? 1 : 0) + Shape->Formats * 10;
+}
+
+/* The manifest with the ABI header alone */
+static
+SIZE_T
+GenManifest(
+    UINT8* At)
+{
+    memset(At, 0, GEN_MANIFEST_BYTES + SOFTPLG_IPC4_MANIFEST_ABI_BYTES);
+    Put32(At, GEN_MANIFEST_BYTES);
+    Put32(At + 108, SOFTPLG_IPC4_MANIFEST_ABI_BYTES);
+    Put16(At + GEN_MANIFEST_BYTES, SOFTPLG_IPC4_ABI_MAJOR);
+    Put16(At + GEN_MANIFEST_BYTES + 2, SOFTPLG_IPC4_ABI_MINOR);
+    return GEN_MANIFEST_BYTES + SOFTPLG_IPC4_MANIFEST_ABI_BYTES;
+}
+
+static
+SIZE_T
+GenScheduler(
+    UINT8* At,
+    UINT32 Pipeline)
+{
+    char Name[SOFTPLG_NAME_BYTES];
+
+    memset(At, 0, GEN_WIDGET_BYTES);
+    Put32(At, GEN_WIDGET_BYTES);
+    Put32(At + 4, SOFTPLG_WIDGET_SCHEDULER);
+    snprintf(Name, sizeof(Name), "sched.%u", Pipeline);
+    GenText(At + 8, Name);
+    return GEN_WIDGET_BYTES;
+}
+
+/* The host playback copier: one input format of 48 kHz, 32 valid bits in 32, two channels, interleaved, per format asked */
+static
+SIZE_T
+GenCopier(
+    UINT8* At,
+    const GEN_SHAPE* Shape)
+{
+    SIZE_T Words = 12 + 8 * GenCopierWords(Shape);
+    UINT8* Tuple;
+    UINT32 F;
+
+    memset(At, 0, GEN_WIDGET_BYTES + 32 + Words);
+    Put32(At, GEN_WIDGET_BYTES);
+    Put32(At + 4, SOFTPLG_WIDGET_AIF_IN);
+    GenText(At + 8, "host-copier.0.playback");
+    GenText(At + 52, "copier-stream");
+    Put32(At + 128, (UINT32)(32 + Words));
+    /* the UUID array, then the word array */
+    Put32(At + GEN_WIDGET_BYTES, 32);
+    Put32(At + GEN_WIDGET_BYTES + 4, SOFTPLG_TUPLE_UUID);
+    Put32(At + GEN_WIDGET_BYTES + 8, 1);
+    Put32(At + GEN_WIDGET_BYTES + 12, SOFTPLG_TOKEN_COMP_UUID);
+    memcpy(At + GEN_WIDGET_BYTES + 16, GenCopierUuid, SOFTPLG_UUID_BYTES);
+    Tuple = At + GEN_WIDGET_BYTES + 32;
+    Put32(Tuple, (UINT32)Words);
+    Put32(Tuple + 4, SOFTPLG_TUPLE_WORD);
+    Put32(Tuple + 8, GenCopierWords(Shape));
+    Tuple += 12;
+    Tuple += GenWord(Tuple, SOFTPLG_TOKEN_COMP_NUM_INPUT_AUDIO_FORMATS, Shape->Formats);
+    Tuple += GenWord(Tuple, SOFTPLG_TOKEN_COMP_NUM_OUTPUT_AUDIO_FORMATS, 0);
+    Tuple += GenWord(Tuple, SOFTPLG_TOKEN_COPIER_NODE_TYPE, SOFTPLG_NODE_HOST_OUTPUT);
+    if (Shape->DeepBufferMs != 0)
+        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_COPIER_DEEP_BUFFER_DMA_MS, Shape->DeepBufferMs);
+    for (F = 0; F < Shape->Formats; F++)
+    {
+        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_RATE, 48000);
+        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_DEPTH, 32);
+        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_VALID, 32);
+        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_CHANNELS, 2);
+        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_CH_MAP, 0xFFFFFF10u);
+        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_CH_CFG, 1);
+        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_INTERLEAVING, 0);
+        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_CFG, 2 | (32 << 8));
+        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_SAMPLE_TYPE, 0);
+        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_IBS, F == 0 ? GEN_FIRST_BUFFER_BYTES : Shape->BufferBytes);
+    }
+    return GEN_WIDGET_BYTES + 32 + Words;
+}
+
+/* The PCM whose playback stream is the copier's; no capture stream */
+static
+SIZE_T
+GenPcm(
+    UINT8* At)
+{
+    memset(At, 0, GEN_PCM_BYTES);
+    Put32(At, GEN_PCM_BYTES);
+    GenText(At + 4, "PCM0");
+    GenText(At + 48, "NoCodec-0");
+    Put32(At + 100, 1);
+    GenText(At + GEN_PCM_CAPS_OFFSET + 4, "copier-stream");
+    return GEN_PCM_BYTES;
+}
+
+/* One edge: the copier's stream flows into the scheduler of its pipeline */
+static
+SIZE_T
+GenGraph(
+    UINT8* At,
+    UINT32 Pipeline)
+{
+    char Name[SOFTPLG_NAME_BYTES];
+
+    memset(At, 0, GEN_GRAPH_BYTES);
+    snprintf(Name, sizeof(Name), "sched.%u", Pipeline);
+    GenText(At, Name);
+    GenText(At + 2 * SOFTPLG_NAME_BYTES, "host-copier.0.playback");
+    return GEN_GRAPH_BYTES;
+}
+
+static
+BOOLEAN
+GenBuild(
+    GEN_TOPOLOGY* Topology,
+    const GEN_SHAPE* Shape)
+{
+    SIZE_T CopierBytes = Shape->Copier ? GEN_WIDGET_BYTES + 32 + 12 + 8 * GenCopierWords(Shape) : 0;
+    SIZE_T Bytes = SOFTPLG_HEADER_BYTES + GEN_MANIFEST_BYTES + SOFTPLG_IPC4_MANIFEST_ABI_BYTES;
+    UINT8* At;
+    UINT32 P;
+
+    for (P = 0; P < Shape->Pipelines; P++)
+        Bytes += SOFTPLG_HEADER_BYTES + GEN_WIDGET_BYTES + (P == Shape->Pipelines - 1 ? CopierBytes : 0);
+    Bytes += SOFTPLG_HEADER_BYTES + GEN_PCM_BYTES;
+    if (Shape->Graph)
+        Bytes += SOFTPLG_HEADER_BYTES + GEN_GRAPH_BYTES;
+    Bytes += (SIZE_T)Shape->EmptyBlocks * SOFTPLG_HEADER_BYTES;
+    memset(Topology, 0, sizeof(*Topology));
+    Topology->Copier = SOFTPLG_NO_WIDGET;
+    Topology->Data = (UINT8*)malloc(Bytes);
+    CHECK(Topology->Data != NULL);
+    if (Topology->Data == NULL)
+        return FALSE;
+    Topology->Bytes = Bytes;
+    At = Topology->Data;
+    At += GenHeader(At, SoftplgTypeManifest, 0, 1, GEN_MANIFEST_BYTES + SOFTPLG_IPC4_MANIFEST_ABI_BYTES);
+    At += GenManifest(At);
+    for (P = 0; P < Shape->Pipelines; P++)
+    {
+        At += GenHeader(At, SoftplgTypeWidget, P, P == Shape->Pipelines - 1 && Shape->Copier ? 2 : 1,
+            GEN_WIDGET_BYTES + (P == Shape->Pipelines - 1 ? CopierBytes : 0));
+        At += GenScheduler(At, P);
+        if (P == Shape->Pipelines - 1 && Shape->Copier)
+        {
+            Topology->Copier = Shape->Pipelines;
+            At += GenCopier(At, Shape);
+        }
+    }
+    At += GenHeader(At, SoftplgTypePcm, 0, 1, GEN_PCM_BYTES);
+    At += GenPcm(At);
+    if (Shape->Graph)
+    {
+        At += GenHeader(At, SoftplgTypeGraph, 0, 1, GEN_GRAPH_BYTES);
+        At += GenGraph(At, Shape->Pipelines - 1);
+    }
+    for (P = 0; P < Shape->EmptyBlocks; P++)
+        At += GenHeader(At, SoftplgTypePdata, 0, 0, 0);
+    CHECK_EQ((SIZE_T)(At - Topology->Data), Bytes);
+    return TRUE;
+}
+
+/* R2-01: a topology whose pipeline ordinals reach the 256 bits of a PCM's mask is refused before the mask is written, the scheduler that would be the 257th named; the measure pass still sizes it */
+static
+void
+check_model_pipeline_bound(void)
+{
+    GEN_TOPOLOGY Topology;
+    GEN_SHAPE Shape;
+    PSOFTPLG_IPC4_MODEL Model;
+    SOFTPLG_MODEL_INPUT Input;
+    SIZE_T Bytes;
+    const char* Named;
+
+    ModelLoadFirmware();
+    memset(&Shape, 0, sizeof(Shape));
+    Shape.Pipelines = SOFTPLG_PIPELINE_MASK_WORDS * 32;
+    Shape.Copier = TRUE;
+    Shape.Formats = 1;
+    CHECK(GenBuild(&Topology, &Shape));
+    if (Topology.Data == NULL)
+        return;
+    Model = ModelBuild(Topology.Data, Topology.Bytes, &Bytes);
+    CHECK(Model != NULL);
+    if (Model != NULL)
+    {
+        CHECK_EQ(ModelStatus, SoftplgModelOk);
+        CHECK_EQ(Model->WidgetCount, 257);
+        CHECK_EQ(Model->PipelineCount, 256);
+        CHECK_EQ(Model->Pcms[0].PlaybackCopier, Topology.Copier);
+        /* the copier sits in the last pipeline: the last bit of the mask's last word */
+        CHECK_EQ(Model->Pcms[0].PipelineMask[SOFTPLG_PIPELINE_MASK_WORDS - 1], 0x80000000u);
+        CHECK_EQ(Model->Pipelines[255].Id, 255);
+        CHECK_EQ(Model->Widgets[Topology.Copier].Pipeline, 255);
+        CHECK_EQ(ModelValidate(Model, 257, 4096, &Named), SoftplgModelOk);
+        /* the firmware's own count, below the mask's, is still the validator's to say */
+        CHECK_EQ(ModelValidate(Model, 256, 4096, &Named), SoftplgModelTooManyPipelines);
+        free(Model);
+    }
+    GenFree(&Topology);
+
+    /* one pipeline more: measured, then refused at the scheduler that would take the ordinal 256 */
+    Shape.Pipelines = SOFTPLG_PIPELINE_MASK_WORDS * 32 + 1;
+    CHECK(GenBuild(&Topology, &Shape));
+    if (Topology.Data == NULL)
+        return;
+    memset(&Input, 0, sizeof(Input));
+    Input.Data = Topology.Data;
+    Input.Size = Topology.Bytes;
+    Input.Lookup = ModelLookup;
+    ModelProblem.Widget = SOFTPLG_NO_WIDGET;
+    CHECK_EQ(SoftplgModelMeasure(&Input, &Bytes, &ModelProblem), SoftplgModelOk);
+    CHECK(Bytes != 0);
+    Model = ModelBuild(Topology.Data, Topology.Bytes, &Bytes);
+    CHECK(Model == NULL);
+    CHECK_EQ(ModelStatus, SoftplgModelTooManyPipelines);
+    CHECK_EQ(ModelProblem.Status, SoftplgModelTooManyPipelines);
+    CHECK_EQ(ModelProblem.Widget, 256);
+    free(Model);
+    GenFree(&Topology);
+    CHECK_STR(SoftplgModelStatusName(SoftplgModelTooManyPipelines), "more pipelines than the firmware allows");
+}
+
 static
 void
 check_names(void)
@@ -2610,6 +2932,7 @@ int main(void)
     check_model_dmic();
     check_model_rt711();
     check_model_malformed();
+    check_model_pipeline_bound();
     check_names();
 
     printf("softplg: %d checks, %d failures\n", Checks, Failures);

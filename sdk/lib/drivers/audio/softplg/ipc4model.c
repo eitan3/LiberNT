@@ -960,6 +960,12 @@ ModelFinish(
             Problem->Widget = N;
             return SoftplgModelDuplicateScheduler;
         }
+        /* a PCM's mask holds a bit per pipeline ordinal and has no ninth word: refused here, before any mask is written */
+        if (Count >= SOFTPLG_PIPELINE_MASK_WORDS * 32)
+        {
+            Problem->Widget = N;
+            return SoftplgModelTooManyPipelines;
+        }
         Model->Pipelines[Count].Id = W->PipelineId;
         Model->Pipelines[Count].Scheduler = N;
         W->Pipeline = Count;
