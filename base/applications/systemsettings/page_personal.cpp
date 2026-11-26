@@ -50,6 +50,85 @@ SetEffect(DWORD effect, bool on)
     NotifyCompositor();
 }
 
+#define LIBER_DESIGN_KEY L"Software\\LiberNT\\Shell\\Design"
+
+static int CALLBACK
+LiberFontProc(const LOGFONTW *font, const TEXTMETRICW *metrics, DWORD type, LPARAM parameter)
+{
+    std::vector<std::wstring> *families = (std::vector<std::wstring> *)parameter;
+
+    UNREFERENCED_PARAMETER(metrics);
+    if (font->lfFaceName[0] == L'@' || !(type & TRUETYPE_FONTTYPE))
+        return 1;
+    for (size_t i = 0; i < families->size(); i++)
+    {
+        if (!lstrcmpiW((*families)[i].c_str(), font->lfFaceName))
+            return 1;
+    }
+    families->push_back(font->lfFaceName);
+    return 1;
+}
+
+static void
+BuildLiberExperience(PageBuilder &page)
+{
+    std::vector<std::wstring> styles, tints, fonts, names;
+    DWORD experience = ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Experience", 0);
+    DWORD tint = ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"SurfaceTint", 1);
+    std::wstring font = ReadString(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"UiFont");
+    int selected = 0;
+
+    styles.push_back(Str(IDS_LIBER_CLASSIC));
+    styles.push_back(Str(IDS_LIBER_LIBER));
+    tints.push_back(Str(IDS_LIBER_TINT_OFF));
+    tints.push_back(Str(IDS_LIBER_TINT_SOFT));
+    tints.push_back(Str(IDS_LIBER_TINT_VIVID));
+
+    page.Group(Str(IDS_LIBER_GROUP));
+    page.Choice(Str(IDS_LIBER_EXPERIENCE), Str(IDS_LIBER_EXPERIENCE_DESC), L"panel_bottom_20_regular", styles,
+                experience == 1 ? 1 : 0,
+                [](int index) { WriteDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Experience", index == 1 ? 1 : 0); });
+    page.Choice(Str(IDS_LIBER_TINT), Str(IDS_LIBER_TINT_DESC), L"color_20_regular", tints, tint <= 2 ? (int)tint : 1,
+                [](int index)
+                {
+                    WriteDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"SurfaceTint", (DWORD)index);
+                    BroadcastSetting(L"ImmersiveColorSet");
+                });
+
+    fonts.push_back(Str(IDS_LIBER_FONT_DEFAULT));
+    names.push_back(std::wstring());
+    if (!page.Indexing)
+    {
+        std::vector<std::wstring> families;
+        LOGFONTW query = { };
+        HDC dc = GetDC(NULL);
+
+        query.lfCharSet = DEFAULT_CHARSET;
+        EnumFontFamiliesExW(dc, &query, LiberFontProc, (LPARAM)&families, 0);
+        ReleaseDC(NULL, dc);
+        std::sort(families.begin(), families.end(),
+                  [](const std::wstring &a, const std::wstring &b) { return lstrcmpiW(a.c_str(), b.c_str()) < 0; });
+        for (size_t i = 0; i < families.size(); i++)
+        {
+            if (!lstrcmpiW(families[i].c_str(), L"Selawik"))
+                continue;
+            if (!font.empty() && !lstrcmpiW(families[i].c_str(), font.c_str()))
+                selected = (int)fonts.size();
+            fonts.push_back(families[i]);
+            names.push_back(families[i]);
+        }
+    }
+    page.Choice(Str(IDS_LIBER_FONT), Str(IDS_LIBER_FONT_DESC), L"text_font_20_regular", fonts, selected,
+                [names](int index)
+                {
+                    if (index >= 0 && (size_t)index < names.size())
+                    {
+                        WriteString(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"UiFont", names[index]);
+                        BroadcastSetting(L"ImmersiveColorSet");
+                    }
+                });
+}
+
 void
 BuildPersonalization(PageBuilder &page)
 {
@@ -66,6 +145,8 @@ BuildPersonalization(PageBuilder &page)
                 [](int index) { SetDarkMode(index == 1); }).Keywords = Str(IDS_MODE_KEYWORDS);
     page.Toggle(Str(IDS_TRANSPARENCY), Str(IDS_TRANSPARENCY_DESC), L"window_apps_20_regular",
                 (effects & DWM_EFFECT_ACRYLIC) != 0, [](int on) { SetEffect(DWM_EFFECT_ACRYLIC, on != 0); });
+
+    BuildLiberExperience(page);
 
     page.Group(Str(IDS_VISUAL_EFFECTS));
     page.Toggle(Str(IDS_ANIMATIONS), Str(IDS_ANIMATIONS_DESC), L"slide_text_20_regular",

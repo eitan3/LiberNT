@@ -471,6 +471,8 @@ LRESULT CALLBACK CLiberDock::SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     if (self && (msg == WM_SETTINGCHANGE || msg == WM_DISPLAYCHANGE))
     {
         self->BuildTheme();
+        LiberShell_ApplyFont(&self->m_DockSurface);
+        LiberShell_ApplyFont(&self->m_TraySurface);
         self->m_DockSurface.SetTokens(&self->m_Tokens);
         self->m_TraySurface.SetTokens(&self->m_Tokens);
         SetTimer(hwnd, LIBER_TIMER_REFRESH, LIBER_REFRESH_DELAY, NULL);
@@ -519,6 +521,8 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
     m_TrayRoot->AddChild(m_Clock);
     m_Clock->Update();
 
+    LiberShell_ApplyFont(&m_DockSurface);
+    LiberShell_ApplyFont(&m_TraySurface);
     m_DockSurface.SetDpi(m_Dpi);
     m_TraySurface.SetDpi(m_Dpi);
     m_DockSurface.SetTokens(&m_Tokens);

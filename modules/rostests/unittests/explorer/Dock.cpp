@@ -127,6 +127,48 @@ static void TestPlaceAbove()
     ok(pt.y == mi.rcMonitor.top, "kept on screen at the top: %ld\n", pt.y);
 }
 
+static void TestDesignValues()
+{
+    HKEY key;
+    DWORD savedTint = 0, tintSize = sizeof(savedTint), value;
+    WCHAR savedFont[LF_FACESIZE], font[LF_FACESIZE];
+    DWORD fontSize = sizeof(savedFont);
+    BOOL hadTint, hadFont;
+
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, 0, NULL, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, NULL, &key,
+                        NULL) != ERROR_SUCCESS)
+    {
+        skip("cannot open the design key\n");
+        return;
+    }
+    hadTint = RegQueryValueExW(key, L"SurfaceTint", NULL, NULL, (BYTE *)&savedTint, &tintSize) == ERROR_SUCCESS;
+    hadFont = RegQueryValueExW(key, L"UiFont", NULL, NULL, (BYTE *)savedFont, &fontSize) == ERROR_SUCCESS;
+
+    RegDeleteValueW(key, L"SurfaceTint");
+    ok(LiberExperience_SurfaceTint() == 1, "Soft tint by default\n");
+    value = 2;
+    RegSetValueExW(key, L"SurfaceTint", 0, REG_DWORD, (BYTE *)&value, sizeof(value));
+    ok(LiberExperience_SurfaceTint() == 2, "Vivid tint\n");
+    value = 9;
+    RegSetValueExW(key, L"SurfaceTint", 0, REG_DWORD, (BYTE *)&value, sizeof(value));
+    ok(LiberExperience_SurfaceTint() == 1, "unknown tint means Soft\n");
+
+    RegDeleteValueW(key, L"UiFont");
+    ok(!LiberExperience_UiFont(font, _countof(font)) && font[0] == 0, "no desktop font by default\n");
+    RegSetValueExW(key, L"UiFont", 0, REG_SZ, (BYTE *)L"Verdana", sizeof(L"Verdana"));
+    ok(LiberExperience_UiFont(font, _countof(font)) && !wcscmp(font, L"Verdana"), "desktop font %ls\n", font);
+    ok(!LiberExperience_UiFont(font, 3) && font[0] == 0, "a short buffer is refused\n");
+    ok(!LiberExperience_UiFont(NULL, 10), "NULL buffer\n");
+
+    RegDeleteValueW(key, L"SurfaceTint");
+    RegDeleteValueW(key, L"UiFont");
+    if (hadTint)
+        RegSetValueExW(key, L"SurfaceTint", 0, REG_DWORD, (BYTE *)&savedTint, tintSize);
+    if (hadFont)
+        RegSetValueExW(key, L"UiFont", 0, REG_SZ, (BYTE *)savedFont, fontSize);
+    RegCloseKey(key);
+}
+
 static void TestStartSearch()
 {
     ok(LiberStart_Matches(L"Notepad", L""), "an empty query matches everything\n");
@@ -140,6 +182,7 @@ static void TestStartSearch()
 START_TEST(Dock)
 {
     TestStartSearch();
+    TestDesignValues();
     TestLayout();
     TestPlaceAbove();
     TestTaskWindows();

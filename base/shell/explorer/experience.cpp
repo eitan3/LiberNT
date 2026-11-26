@@ -29,6 +29,28 @@ BOOL LiberExperience_IsLiber(VOID)
     return LiberExperience_Get() == LIBER_EXPERIENCE_LIBER;
 }
 
+DWORD LiberExperience_SurfaceTint(VOID)
+{
+    DWORD tint = ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"SurfaceTint", 1);
+    return tint <= 2 ? tint : 1;
+}
+
+BOOL LiberExperience_UiFont(LPWSTR pszFamily, DWORD cchFamily)
+{
+    DWORD size = cchFamily * sizeof(WCHAR);
+
+    if (!pszFamily || cchFamily == 0)
+        return FALSE;
+    pszFamily[0] = 0;
+    if (RegGetValueW(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"UiFont", RRF_RT_REG_SZ, NULL, pszFamily, &size) !=
+        ERROR_SUCCESS)
+    {
+        pszFamily[0] = 0;
+        return FALSE;
+    }
+    return pszFamily[0] != 0;
+}
+
 BOOL LiberExperience_IsDark(VOID)
 {
     return ReadDword(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",

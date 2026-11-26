@@ -781,3 +781,22 @@ BEGIN
     IDS_TARGET "ターゲット"
     IDS_TARGET_FORMAT "Windows 11 %s %s"
 END
+
+STRINGTABLE
+BEGIN
+    IDS_LIBER_GROUP "デスクトップ エクスペリエンス"
+    IDS_LIBER_EXPERIENCE "デスクトップのスタイル"
+    IDS_LIBER_EXPERIENCE_DESC "Liber はフローティング ドック、コントロール センター、新しいスタート メニュー、ウィジェットを追加します。適用するにはサインアウトしてください。"
+    IDS_LIBER_CLASSIC "クラシック"
+    IDS_LIBER_LIBER "Liber"
+    IDS_LIBER_TINT "サーフェスの色合い"
+    IDS_LIBER_TINT_DESC "Liber のサーフェスに含めるアクセント カラーの量"
+    IDS_LIBER_TINT_OFF "オフ"
+    IDS_LIBER_TINT_SOFT "ソフト"
+    IDS_LIBER_TINT_VIVID "ビビッド"
+    IDS_LIBER_FONT "デスクトップのフォント"
+    IDS_LIBER_FONT_DESC "Liber のドック、フライアウト、スタート メニュー、ウィジェットのフォント"
+    IDS_LIBER_FONT_DEFAULT "Selawik (既定)"
+    IDS_LIBER_WIDGETS "デスクトップ ウィジェット"
+    IDS_LIBER_WIDGETS_DESC "デスクトップに日付、天気、システム モニターを表示"
+END

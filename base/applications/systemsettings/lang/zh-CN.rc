@@ -781,3 +781,22 @@ BEGIN
     IDS_TARGET "目标"
     IDS_TARGET_FORMAT "Windows 11 %s %s"
 END
+
+STRINGTABLE
+BEGIN
+    IDS_LIBER_GROUP "桌面体验"
+    IDS_LIBER_EXPERIENCE "桌面样式"
+    IDS_LIBER_EXPERIENCE_DESC "Liber 会添加浮动程序坞、控制中心、新的开始菜单和小组件。注销后生效。"
+    IDS_LIBER_CLASSIC "经典"
+    IDS_LIBER_LIBER "Liber"
+    IDS_LIBER_TINT "表面着色"
+    IDS_LIBER_TINT_DESC "Liber 表面带有多少强调色"
+    IDS_LIBER_TINT_OFF "关"
+    IDS_LIBER_TINT_SOFT "柔和"
+    IDS_LIBER_TINT_VIVID "鲜明"
+    IDS_LIBER_FONT "桌面字体"
+    IDS_LIBER_FONT_DESC "Liber 程序坞、浮出面板、开始菜单和小组件使用的字体"
+    IDS_LIBER_FONT_DEFAULT "Selawik（默认）"
+    IDS_LIBER_WIDGETS "桌面小组件"
+    IDS_LIBER_WIDGETS_DESC "在桌面上显示日期、天气和系统监视器"
+END
