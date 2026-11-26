@@ -7,6 +7,11 @@
 
 #pragma once
 
+#include <windows.h>
+#include <winreg.h>
+#include <string.h>
+#include <strsafe.h>
+
 /*
  * Windows 11 keeps the microphone choices in the CapabilityAccessManager
  * consent store: "Value" ("Allow" or "Deny") of the microphone key turns
