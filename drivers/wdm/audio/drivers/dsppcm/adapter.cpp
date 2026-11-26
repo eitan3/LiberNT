@@ -21,18 +21,19 @@ operator new(size_t Size, POOL_TYPE PoolType, ULONG Tag) noexcept
     return P;
 }
 
+/* what the pool gave with TAG_DSPPCM goes back with it */
 void __cdecl
 operator delete(PVOID ptr)
 {
     if (ptr)
-        ExFreePool(ptr);
+        ExFreePoolWithTag(ptr, TAG_DSPPCM);
 }
 
 void __cdecl
 operator delete(PVOID ptr, UINT_PTR Unused)
 {
     if (ptr)
-        ExFreePool(ptr);
+        ExFreePoolWithTag(ptr, TAG_DSPPCM);
 }
 
 /* The direction as the driver's narrow log prints it (the format is narrow; a wide literal through %s would end at its first byte) */

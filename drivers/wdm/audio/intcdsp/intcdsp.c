@@ -65,7 +65,7 @@ IntcDspReadSetting(
     return STATUS_SUCCESS;
 }
 
-/* The transport's three settings: absent, unreadable or out of range leaves the plan's default */
+/* The transport's settings: an absent, unreadable or out-of-range value leaves the plan's default */
 static
 VOID
 IntcDspReadIpcSettings(
@@ -76,10 +76,21 @@ IntcDspReadIpcSettings(
     Dev->SelfTest = 0;
     Dev->UseInterrupts = 0;
     Dev->IpcTimeoutMs = INTCDSP_IPC_TIMEOUT_MS_DEFAULT;
+    /* the two are choices: SelfTest one of the plan's (off, the IPC self-test, the loopback self-test), UseInterrupts off or on; any other value is the default, said once (R1-09) */
     if (NT_SUCCESS(IntcDspReadSetting(INTCDSP_SETTINGS_SELFTEST, &Value)))
-        Dev->SelfTest = Value;
+    {
+        if (Value <= INTCDSP_SELFTEST_LOOPBACK)
+            Dev->SelfTest = Value;
+        else
+            IntcDspLog("SelfTest = %lu is not 0, %u or %u: 0\n", Value, (ULONG)INTCDSP_SELFTEST_IPC, (ULONG)INTCDSP_SELFTEST_LOOPBACK);
+    }
     if (NT_SUCCESS(IntcDspReadSetting(INTCDSP_SETTINGS_USEINTERRUPTS, &Value)))
-        Dev->UseInterrupts = Value;
+    {
+        if (Value <= 1)
+            Dev->UseInterrupts = Value;
+        else
+            IntcDspLog("UseInterrupts = %lu is not 0 or 1: 0\n", Value);
+    }
     if (NT_SUCCESS(IntcDspReadSetting(INTCDSP_SETTINGS_IPCTIMEOUTMS, &Value)) && Value != 0 && Value <= INTCDSP_IPC_TIMEOUT_MS_MAX)
         Dev->IpcTimeoutMs = Value;
     IntcDspLog("SelfTest = %lu, UseInterrupts = %lu, IpcTimeoutMs = %lu ms\n", Dev->SelfTest, Dev->UseInterrupts, Dev->IpcTimeoutMs);
