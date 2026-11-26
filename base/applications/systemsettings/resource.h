@@ -802,3 +802,4 @@
 #define IDS_AUDIO_FORMAT                860
 #define IDS_AUDIO_FORMAT_DESC           861
 #define IDS_FORMAT_IN_CONTAINER         862
+#define IDS_FORMAT_PLAIN                863

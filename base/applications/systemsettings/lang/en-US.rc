@@ -53,6 +53,7 @@ BEGIN
     IDS_AUDIO_FORMAT "Format"
     IDS_AUDIO_FORMAT_DESC "The quality the device plays or records at"
     IDS_FORMAT_IN_CONTAINER "%u bit (in %u-bit container), %u Hz"
+    IDS_FORMAT_PLAIN "%u bit, %u Hz"
     IDS_PAGE_DISPLAY "Display"
     IDS_PAGE_SOUND "Sound"
     IDS_PAGE_POWER "Power"

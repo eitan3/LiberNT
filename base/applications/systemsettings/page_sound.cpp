@@ -51,7 +51,7 @@ FormatName(const WAVEFORMATEXTENSIBLE &Format)
         return Printf(Str(IDS_FORMAT_IN_CONTAINER).c_str(), Format.Samples.wValidBitsPerSample,
                       Format.Format.wBitsPerSample, Format.Format.nSamplesPerSec);
     }
-    return Printf(L"%u bit, %u Hz", Format.Samples.wValidBitsPerSample, Format.Format.nSamplesPerSec);
+    return Printf(Str(IDS_FORMAT_PLAIN).c_str(), Format.Samples.wValidBitsPerSample, Format.Format.nSamplesPerSec);
 }
 
 /*
