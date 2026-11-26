@@ -1038,7 +1038,7 @@ CheckPositionWrap(
         FakeInit(&F);
         I = &F.Iface;
         F.RegisterValue = 0xFFFFFFFFu;
-        Status = DsppcmStreamPosition(I, (HANDLE)1, Buffer, Fifo, FALSE, &Position);
+        Status = DsppcmStreamPosition(I, (HANDLE)0x11u, Buffer, Fifo, FALSE, &Position);
         CHECK(Status == STATUS_SUCCESS);
         CHECK_EQ(F.Calls[KGetPositionRegister], 1);
         CHECK_EQ(FakeTotalCalls(), 1);
