@@ -216,9 +216,10 @@ START_TEST(micprivacy)
     BOOL Exercised;
     DWORD Length_ = GetModuleFileNameW(NULL, Image, ARRAYSIZE(Image));
 
+    /* the image's own path is not a precondition of the image: its failure is the test's */
     if (!Length_ || Length_ >= ARRAYSIZE(Image))
     {
-        skip("GetModuleFileNameW failed or truncated (%lu)\n", Length_);
+        ok(0, "GetModuleFileNameW failed or truncated (%lu)\n", Length_);
         return;
     }
     StringCchCopyW(AppKey, ARRAYSIZE(AppKey), MIC_CONSENT_APPS_KEY L"\\");

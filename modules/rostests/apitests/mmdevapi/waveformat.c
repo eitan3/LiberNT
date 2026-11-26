@@ -94,7 +94,7 @@ static INT QueryWaveFormat(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index, c
     return Info.Flags ? 1 : 0;
 }
 
-/* The format queries on one wave device: TRUE when its data range was read, FALSE when it was not */
+/* The format queries on one wave device: TRUE when its data range was read, FALSE when the IOCTL that reads it failed, which is a failure: the device exists and answers badly */
 static BOOL TestDevice(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index)
 {
     WAVEFORMATEXTENSIBLE Format, Preferred;
@@ -109,7 +109,7 @@ static BOOL TestDevice(HANDLE Wdmaud, SOUND_DEVICE_TYPE Type, ULONG Index)
     Info.DeviceIndex = Index;
     if (!Ioctl(Wdmaud, IOCTL_GETWAVE_DATARANGE, &Info))
     {
-        skip("Type %u index %lu: IOCTL_GETWAVE_DATARANGE failed with %lu\n", Type, Index, GetLastError());
+        ok(0, "Type %u index %lu: IOCTL_GETWAVE_DATARANGE failed with %lu\n", Type, Index, GetLastError());
         return FALSE;
     }
     Range = Info.u.WaveDataRange;
@@ -240,7 +240,7 @@ START_TEST(waveformat)
         Info.DeviceType = Type;
         if (!Ioctl(Wdmaud, IOCTL_GETNUMDEVS_TYPE, &Info))
         {
-            skip("Type %u: IOCTL_GETNUMDEVS_TYPE failed with %lu\n", Type, GetLastError());
+            ok(0, "Type %u: IOCTL_GETNUMDEVS_TYPE failed with %lu\n", Type, GetLastError());
             continue;
         }
         Count = min(Info.DeviceCount, 4);
