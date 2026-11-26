@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT host-native tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The dsploop apitest's comparison (modules/rostests/apitests/dsploop/compare.c), the same source the apitest compiles: the offset from the first matching frame, the whole tone compared after it, the first differing sample recorded and the stop rule's shape, in the three formats; under ASan and UBSan
+ * PURPOSE:     The dsploop apitest's comparison (modules/rostests/apitests/dsploop/compare.c), the same source the apitest compiles: the offset from the first matching frame, the whole tone compared after it, the first differing sample recorded and the stop rule's shape, in the three formats; the tolerance of one LSB at 16 valid bits, where the render engine's dither moves the frames, and none at 24 and 32; under ASan and UBSan
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -172,7 +172,7 @@ CheckExact(
             if (!Data)
                 continue;
             memset(&Match, 0xCC, sizeof(Match));
-            CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, Formats[F].ContainerBits, Formats[F].ValidBits, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 1);
+            CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, Formats[F].ContainerBits, Formats[F].ValidBits, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 1);
             CHECK_EQ(Match.Matched, 1);
             CHECK_EQ(Match.Offset, Leads[L]);
             CHECK_EQ(Match.Compared, DSPLOOP_FRAMES);
@@ -181,6 +181,78 @@ CheckExact(
             CHECK_EQ(Match.Channel, 0);
             free(Data);
         }
+    }
+}
+
+/*
+ * The tolerance at 16 valid bits: the render engine dithers its 16-bit
+ * narrowing, so about half the frames come one LSB below or above the tone's
+ * sample. An exact comparison finds no window and stops at the first frame;
+ * with one LSB every frame compares and none is a difference, the largest
+ * error being one LSB; a frame two LSBs away is still the first beyond it.
+ * At 24 and 32 valid bits the tolerance is 0 and one LSB is a difference.
+ */
+static
+void
+CheckTolerance(
+    void)
+{
+    static const int Steps[] = { -1, 1, 0, -1, 0, 1, -1, 0 };
+    DSPLOOP_MATCH Match;
+    uint8_t* Data;
+    uint32_t N;
+    unsigned C;
+
+    /* every frame but the isolated unmodified ones one LSB away from the tone, as the dither leaves it */
+    Data = BuildCapture(2, 16, 16, 0, DSPLOOP_FRAMES, DSPLOOP_CAPTURE_FRAMES, 0);
+    CHECK(Data != NULL);
+    if (Data)
+    {
+        for (N = 0; N < DSPLOOP_FRAMES; N++)
+            for (C = 0; C < 2; C++)
+                WriteSample(Data, 2, 16, 16, N, C, ReadSample(Data, 2, 16, 16, N, C) + Steps[N % 8]);
+
+        /* exact: no window is the tone's; the frames from the first are compared and the first differs */
+        memset(&Match, 0xCC, sizeof(Match));
+        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 0);
+        CHECK_EQ(Match.FirstDifference, 0);
+
+        /* one LSB: the window matches at 0, every frame compares, the largest error is one LSB */
+        memset(&Match, 0xCC, sizeof(Match));
+        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 1, &Match) == 1);
+        CHECK_EQ(Match.Offset, 0);
+        CHECK_EQ(Match.Compared, DSPLOOP_FRAMES);
+        CHECK_EQ(Match.MaxError, 1);
+        CHECK_EQ(Match.FirstDifference, DSPLOOP_NO_DIFFERENCE);
+
+        /* the tolerance the apitest passes is that one */
+        CHECK_EQ(DsploopTolerance(16), 1);
+        memset(&Match, 0xCC, sizeof(Match));
+        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, DsploopTolerance(16), &Match) == 1);
+        CHECK_EQ(Match.FirstDifference, DSPLOOP_NO_DIFFERENCE);
+
+        /* a frame two LSBs away is the first beyond the tolerance, with its channel */
+        WriteSample(Data, 2, 16, 16, 500, 1, DsploopToneSample(500, 16) - 2);
+        memset(&Match, 0xCC, sizeof(Match));
+        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 1, &Match) == 1);
+        CHECK_EQ(Match.FirstDifference, 500);
+        CHECK_EQ(Match.Channel, 1);
+        CHECK_EQ(Match.MaxError, 2);
+        free(Data);
+    }
+
+    /* 24 and 32 valid bits: the tolerance is 0 and one LSB is a difference */
+    CHECK_EQ(DsploopTolerance(24), 0);
+    CHECK_EQ(DsploopTolerance(32), 0);
+    Data = BuildCapture(2, 32, 24, 0, DSPLOOP_FRAMES, DSPLOOP_CAPTURE_FRAMES, 0);
+    CHECK(Data != NULL);
+    if (Data)
+    {
+        WriteSample(Data, 2, 32, 24, 500, 0, ReadSample(Data, 2, 32, 24, 500, 0) + 1);
+        memset(&Match, 0xCC, sizeof(Match));
+        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 32, 24, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, DsploopTolerance(24), &Match) == 1);
+        CHECK_EQ(Match.FirstDifference, 500);
+        free(Data);
     }
 }
 
@@ -203,7 +275,7 @@ CheckDamaged(
     Expected = DsploopToneSample(At, 16);
     WriteSample(Data, 2, 16, 16, Lead + At, 1, Expected + 3);
     memset(&Match, 0xCC, sizeof(Match));
-    CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 1);
+    CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 1);
     CHECK_EQ(Match.Offset, Lead);
     CHECK_EQ(Match.FirstDifference, At);
     CHECK_EQ(Match.Channel, 1);
@@ -213,7 +285,7 @@ CheckDamaged(
     /* a larger damage earlier in another channel wins both records */
     WriteSample(Data, 2, 16, 16, Lead + 100, 0, -DsploopToneSample(100, 16));
     memset(&Match, 0xCC, sizeof(Match));
-    DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match);
+    DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match);
     CHECK_EQ(Match.FirstDifference, 100);
     CHECK_EQ(Match.Channel, 0);
     CHECK_EQ(Match.Expected, DsploopToneSample(100, 16));
@@ -228,12 +300,12 @@ CheckDamaged(
     Data[(10 + 5) * 8 + 0] = 0xA5;
     Data[(10 + 5) * 8 + 4] = 0x5A;
     memset(&Match, 0xCC, sizeof(Match));
-    CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 32, 24, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 1);
+    CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 32, 24, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 1);
     CHECK_EQ(Match.Offset, 10);
     CHECK_EQ(Match.MaxError, 0);
     WriteSample(Data, 2, 32, 24, 10 + 100, 0, DsploopToneSample(100, 24) - 1);
     memset(&Match, 0xCC, sizeof(Match));
-    DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 32, 24, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match);
+    DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 32, 24, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match);
     CHECK_EQ(Match.Offset, 10);
     CHECK_EQ(Match.FirstDifference, 100);
     CHECK_EQ(Match.MaxError, 1);
@@ -251,7 +323,7 @@ CheckDamaged(
     {
         WriteSample(Data, 2, 16, 16, 10 + 5, 0, DsploopToneSample(5, 16) + 1);
         memset(&Match, 0xCC, sizeof(Match));
-        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 1);
+        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 1);
         CHECK_EQ(Match.Offset, 58);
         CHECK_EQ(Match.Compared, DSPLOOP_FRAMES);
         /* the tone ends 48 frames into the compared range's last cycle: the first of its frames that is not silence is the second */
@@ -281,7 +353,7 @@ CheckNoMatch(
     if (Data)
     {
         memset(&Match, 0xCC, sizeof(Match));
-        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES + 2 * DSPLOOP_WINDOW_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 0);
+        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES + 2 * DSPLOOP_WINDOW_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 0);
         CHECK_EQ(Match.Matched, 0);
         CHECK_EQ(Match.Offset, 0);
         CHECK_EQ(Match.Compared, DSPLOOP_FRAMES);
@@ -305,7 +377,7 @@ CheckNoMatch(
             for (C = 0; C < 2; C++)
                 WriteSample(Data, 2, 16, 16, N, C, ReadSample(Data, 2, 16, 16, N, C) + 1);
         memset(&Match, 0xCC, sizeof(Match));
-        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 0);
+        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 0);
         CHECK_EQ(Match.Matched, 0);
         CHECK_EQ(Match.FirstDifference, 0);
         CHECK_EQ(Match.Channel, 0);
@@ -320,7 +392,7 @@ CheckNoMatch(
     if (Data)
     {
         memset(&Match, 0xCC, sizeof(Match));
-        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES + 24, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 1);
+        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES + 24, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 1);
         CHECK_EQ(Match.Offset, 24);
         CHECK_EQ(Match.Compared, DSPLOOP_FRAMES);
         CHECK_EQ(Match.MaxError, 0);
@@ -332,7 +404,7 @@ CheckNoMatch(
     if (Data)
     {
         memset(&Match, 0xCC, sizeof(Match));
-        CHECK(DsploopCompare(Data, 40, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 0);
+        CHECK(DsploopCompare(Data, 40, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 0);
         CHECK_EQ(Match.Matched, 0);
         CHECK_EQ(Match.Compared, 40);
         CHECK_EQ(Match.FirstDifference, DSPLOOP_NO_DIFFERENCE);
@@ -344,7 +416,7 @@ CheckNoMatch(
     if (Data)
     {
         memset(&Match, 0xCC, sizeof(Match));
-        CHECK(DsploopCompare(Data, 96, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 0);
+        CHECK(DsploopCompare(Data, 96, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 0);
         CHECK_EQ(Match.Matched, 0);
         CHECK_EQ(Match.Compared, 96);
         CHECK_EQ(Match.FirstDifference, 1);
@@ -357,7 +429,7 @@ CheckNoMatch(
     if (Data)
     {
         memset(&Match, 0xCC, sizeof(Match));
-        CHECK(DsploopCompare(Data, 96, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 1);
+        CHECK(DsploopCompare(Data, 96, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 1);
         CHECK_EQ(Match.Offset, 0);
         CHECK_EQ(Match.Compared, 96);
         free(Data);
@@ -368,7 +440,7 @@ CheckNoMatch(
     if (Data)
     {
         memset(&Match, 0xCC, sizeof(Match));
-        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES + 500, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 1);
+        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES + 500, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 1);
         CHECK_EQ(Match.Offset, 1000);
         CHECK_EQ(Match.Compared, DSPLOOP_FRAMES - 500);
         CHECK_EQ(Match.MaxError, 0);
@@ -380,15 +452,15 @@ CheckNoMatch(
     if (Data)
     {
         memset(&Match, 0xCC, sizeof(Match));
-        CHECK(DsploopCompare(NULL, DSPLOOP_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 0);
+        CHECK(DsploopCompare(NULL, DSPLOOP_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 0);
         CHECK_EQ(Match.Matched, 0);
         CHECK_EQ(Match.FirstDifference, DSPLOOP_NO_DIFFERENCE);
         CHECK_EQ(Match.Compared, 0);
-        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES, 0, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 0);
-        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES, 2, 16, 16, 0, DSPLOOP_MAX_OFFSET, &Match) == 0);
-        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES, 2, 24, 24, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 0);
-        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES, 2, 16, 24, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 0);
-        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES, 2, 32, 20, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 0);
+        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES, 0, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 0);
+        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES, 2, 16, 16, 0, DSPLOOP_MAX_OFFSET, 0, &Match) == 0);
+        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES, 2, 24, 24, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 0);
+        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES, 2, 16, 24, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 0);
+        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES, 2, 32, 20, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 0);
         free(Data);
     }
 }
@@ -413,7 +485,7 @@ CheckMidCycle(
     if (Data)
     {
         memset(&Match, 0xCC, sizeof(Match));
-        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES + 36, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 1);
+        CHECK(DsploopCompare(Data, DSPLOOP_FRAMES + 36, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 1);
         CHECK_EQ(Match.Offset, 36);
         CHECK_EQ(Match.MaxError, 0);
         free(Data);
@@ -424,12 +496,12 @@ CheckMidCycle(
     if (Data)
     {
         memset(&Match, 0xCC, sizeof(Match));
-        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 6, 32, 32, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 1);
+        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 6, 32, 32, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 1);
         CHECK_EQ(Match.Offset, 3);
         CHECK_EQ(Match.Compared, DSPLOOP_FRAMES);
         WriteSample(Data, 6, 32, 32, 3 + 500, 5, DsploopToneSample(500, 32) + 65536);
         memset(&Match, 0xCC, sizeof(Match));
-        DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 6, 32, 32, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match);
+        DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 6, 32, 32, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match);
         CHECK_EQ(Match.FirstDifference, 500);
         CHECK_EQ(Match.Channel, 5);
         CHECK_EQ(Match.MaxError, 65536);
@@ -445,7 +517,7 @@ CheckMidCycle(
         for (N = 0; N < DSPLOOP_CAPTURE_FRAMES; N++)
             WriteSample(Data, 2, 16, 16, N, 1, 0);
         memset(&Match, 0xCC, sizeof(Match));
-        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match) == 0);
+        CHECK(DsploopCompare(Data, DSPLOOP_CAPTURE_FRAMES, 2, 16, 16, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, 0, &Match) == 0);
         CHECK_EQ(Match.FirstDifference, 1);
         CHECK_EQ(Match.Channel, 1);
         free(Data);
@@ -458,6 +530,7 @@ main(
 {
     CheckTone();
     CheckExact();
+    CheckTolerance();
     CheckDamaged();
     CheckNoMatch();
     CheckMidCycle();

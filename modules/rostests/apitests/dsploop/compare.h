@@ -32,7 +32,7 @@ typedef struct _DSPLOOP_MATCH
     uint32_t Compared;
     /* the largest distance of a captured sample from the tone's over them */
     int64_t MaxError;
-    /* the first differing frame after the offset (DSPLOOP_NO_DIFFERENCE when every compared frame is the tone's), its channel and the two samples */
+    /* the first differing frame after the offset by more than the tolerance (DSPLOOP_NO_DIFFERENCE when every compared frame is within it), its channel and the two samples */
     uint32_t FirstDifference;
     uint32_t Channel;
     int32_t Expected;
@@ -45,15 +45,21 @@ DsploopToneSample(
     uint32_t Frame,
     int ValidBits);
 
+/* The tolerance of a comparison at a depth, in LSBs: the render engine dithers its 16-bit narrowing by one LSB (pcm_sample.h), so a captured 16-bit tone is within one LSB of the rendered one; 24 and 32 valid bits are not dithered and are compared exactly */
+int
+DsploopTolerance(
+    int ValidBits);
+
 /*
  * Compares a captured stream of interleaved little-endian samples, in words
  * of ContainerBits (16 or 32) carrying ValidBits (16, 24 or 32), Channels
  * wide, against the tone's first Frames frames. The offset is the first
- * frame at which a window of DSPLOOP_WINDOW_FRAMES frames is the tone's,
- * searched up to MaxOffset; from there every frame that was captured is
- * compared, and the first that differs is recorded. Returns Match->Matched:
- * 1 when a window matched, 0 when none did, in which case the frames are
- * compared from the first one for the record.
+ * frame at which a window of DSPLOOP_WINDOW_FRAMES frames is the tone's
+ * within Tolerance LSBs, searched up to MaxOffset; from there every frame
+ * that was captured is compared, and the first that differs by more than
+ * Tolerance LSBs is recorded. Returns Match->Matched: 1 when a window
+ * matched, 0 when none did, in which case the frames are compared from the
+ * first one for the record.
  */
 int
 DsploopCompare(
@@ -64,6 +70,7 @@ DsploopCompare(
     int ValidBits,
     uint32_t Frames,
     uint32_t MaxOffset,
+    int Tolerance,
     DSPLOOP_MATCH* Match);
 
 #ifdef __cplusplus

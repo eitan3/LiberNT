@@ -280,6 +280,8 @@ RunLoop(
     DWORD Flags, Deadline, Wait, Started = 0, Elapsed = 0;
     UINT64 DevicePosition, QpcPosition;
     HRESULT hr;
+    /* one LSB at 16 valid bits: the render engine dithers its 16-bit narrowing; exact at 24 and 32 */
+    int Tolerance = DsploopTolerance(ValidBits);
     int Result = DSPLOOP_FAILED;
 
     ZeroMemory(&Render, sizeof(Render));
@@ -409,7 +411,7 @@ Stopped:
     trace("dsploop%s: %u frames of the tone rendered, %u frames captured in %lu ms\n", Label, Written, Captured, Elapsed);
 
     Held = Captured < DSPLOOP_CAPTURE_FRAMES ? Captured : DSPLOOP_CAPTURE_FRAMES;
-    DsploopCompare(Ring, Held, DSPLOOP_CHANNELS, Wave->wBitsPerSample, ValidBits, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, &Match);
+    DsploopCompare(Ring, Held, DSPLOOP_CHANNELS, Wave->wBitsPerSample, ValidBits, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, Tolerance, &Match);
     if (!Match.Matched)
     {
         if (Match.FirstDifference == DSPLOOP_NO_DIFFERENCE)
@@ -421,14 +423,14 @@ Stopped:
     }
     else
     {
-        trace("dsploop%s: %u frames compared, max abs error %I64d, offset %u%s\n", Label, Match.Compared, Match.MaxError, Match.Offset,
+        trace("dsploop%s: %u frames compared within %d LSB, max abs error %I64d, offset %u%s\n", Label, Match.Compared, Tolerance, Match.MaxError, Match.Offset,
               Match.FirstDifference == DSPLOOP_NO_DIFFERENCE ? ", ok" : "");
         if (Match.FirstDifference != DSPLOOP_NO_DIFFERENCE)
-            trace("dsploop%s: first differing sample %u after the offset (channel %u): expected %d, captured %d\n",
-                  Label, Match.FirstDifference, Match.Channel, Match.Expected, Match.Captured);
+            trace("dsploop%s: first sample beyond %d LSB %u after the offset (channel %u): expected %d, captured %d\n",
+                  Label, Tolerance, Match.FirstDifference, Match.Channel, Match.Expected, Match.Captured);
         ok(Match.FirstDifference == DSPLOOP_NO_DIFFERENCE && Match.Compared == DSPLOOP_FRAMES,
-           "dsploop%s: %u of %u frames compared, max abs error %I64d, first differing sample %u\n",
-           Label, Match.Compared, (UINT32)DSPLOOP_FRAMES, Match.MaxError, Match.FirstDifference);
+           "dsploop%s: %u of %u frames compared within %d LSB, max abs error %I64d, first sample beyond it %u\n",
+           Label, Match.Compared, (UINT32)DSPLOOP_FRAMES, Tolerance, Match.MaxError, Match.FirstDifference);
         if (Match.FirstDifference == DSPLOOP_NO_DIFFERENCE && Match.Compared == DSPLOOP_FRAMES)
             Result = DSPLOOP_OK;
     }

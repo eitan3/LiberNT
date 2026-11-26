@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT API tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The comparison of the dsploop apitest, free of I/O so the host tests run the same code: a captured stream against the tone from the first frame that matches, and the stop at the first differing sample
+ * PURPOSE:     The comparison of the dsploop apitest, free of I/O so the host tests run the same code: a captured stream against the tone from the first frame that matches, within a tolerance in LSBs, and the stop at the first sample beyond it
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -32,6 +32,13 @@ DsploopToneSample(
     return Tone16[Frame % DSPLOOP_TONE_FRAMES] * (ValidBits == 24 ? 256 : ValidBits == 32 ? 65536 : 1);
 }
 
+int
+DsploopTolerance(
+    int ValidBits)
+{
+    return ValidBits == 16 ? 1 : 0;
+}
+
 /* One captured sample in the units of its valid bits: a little-endian word, of which the upper bits are valid when there are 24 of them in 32 */
 static
 int32_t
@@ -60,6 +67,7 @@ DsploopCompare(
     int ValidBits,
     uint32_t Frames,
     uint32_t MaxOffset,
+    int Tolerance,
     DSPLOOP_MATCH* Match)
 {
     uint32_t FrameBytes = Channels * (unsigned)(ContainerBits / 8);
@@ -75,12 +83,12 @@ DsploopCompare(
     Match->Channel = 0;
     Match->Expected = 0;
     Match->Captured = 0;
-    if (Captured == NULL || Channels == 0 || Frames == 0 ||
+    if (Captured == NULL || Channels == 0 || Frames == 0 || Tolerance < 0 ||
         (ContainerBits != 16 && ContainerBits != 32) ||
         (ValidBits != 16 && ValidBits != 24 && ValidBits != 32) || ValidBits > ContainerBits)
         return 0;
 
-    /* the offset: the first frame where a window is the tone's, up to MaxOffset and up to what the capture holds of a window */
+    /* the offset: the first frame where a window is the tone's within the tolerance, up to MaxOffset and up to what the capture holds of a window */
     Last = 0;
     if (Search)
     {
@@ -95,8 +103,11 @@ DsploopCompare(
         {
             for (C = 0; C < Channels; C++)
             {
-                if (CapturedSample(Captured + (size_t)(First + F) * FrameBytes + C * (unsigned)(ContainerBits / 8), ContainerBits, ValidBits) !=
-                    DsploopToneSample(F, ValidBits))
+                int32_t Expected = DsploopToneSample(F, ValidBits);
+                int32_t Got = CapturedSample(Captured + (size_t)(First + F) * FrameBytes + C * (unsigned)(ContainerBits / 8), ContainerBits, ValidBits);
+                int64_t Error = Got > Expected ? (int64_t)Got - Expected : (int64_t)Expected - Got;
+
+                if (Error > Tolerance)
                 {
                     Match->Matched = 0;
                     break;
@@ -125,7 +136,7 @@ DsploopCompare(
 
             if (Error > Match->MaxError)
                 Match->MaxError = Error;
-            if (Error != 0 && Match->FirstDifference == DSPLOOP_NO_DIFFERENCE)
+            if (Error > Tolerance && Match->FirstDifference == DSPLOOP_NO_DIFFERENCE)
             {
                 Match->FirstDifference = F;
                 Match->Channel = C;
