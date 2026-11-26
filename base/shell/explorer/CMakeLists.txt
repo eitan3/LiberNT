@@ -6,9 +6,13 @@ endif()
 
 list(APPEND SOURCE
     appbar.cpp
+    audiodev.cpp
+    brightness.cpp
+    calstore.cpp
     desktop.cpp
     explorer.cpp
     notifyiconscust.cpp
+    powermode.cpp
     rshell.cpp
     settings.cpp
     shellservice.cpp
@@ -16,6 +20,7 @@ list(APPEND SOURCE
     startctxmnu.cpp
     startmnu.cpp
     startmnu2.cpp
+    startmodel.cpp
     startmnucust.cpp
     startmnusite.cpp
     startup.cpp

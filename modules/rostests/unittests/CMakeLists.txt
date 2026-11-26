@@ -1,6 +1,6 @@
-
 add_subdirectory(dwmmaterial)
 add_subdirectory(dxdiag)
+add_subdirectory(explorer)
 add_subdirectory(interop)
 add_subdirectory(newdev)
 if(ISAPNP_ENABLE)

@@ -4,6 +4,9 @@
 #include <windowsx.h>
 #include <libernt/dwmframe.h>
 #include <shellframe.h>
+#include "brightness.h"
+#include "calstore.h"
+#include "powermode.h"
 #include <winioctl.h>
 #include <ntddvdeo.h>
 #include <libernt/rddm/rxgkmonitor.h>
@@ -1084,365 +1087,11 @@ TfyFlyoutEditSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
     return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
-#define TFY_CAL_KEY       L"Software\\ReactOS\\Explorer\\Calendar"
-#define TFY_CAL_MAXEVENTS 64
-#define TFY_CAL_DATA      6144
 #define TFY_CAL_EDIT_ID   111
-#define TFY_CAL_ALLDAY    (-1)
-#define TFY_CAL_STOREPFX  10
 #define TFY_CAL_HOURSVIS  7
 #define TFY_CAL_ALLDAYVIS 3
 #define TFY_CAL_AGENDAMAX 128
 #define TFY_CAL_AGENDAVIS 9
-#define TFY_CAL_MAXDATES  512
-
-struct TFYCALEVENT
-{
-    int nMinutes;
-    int nDuration;
-    WCHAR szTitle[64];
-};
-
-struct TFYCALDAY
-{
-    TFYCALEVENT ev[TFY_CAL_MAXEVENTS];
-    int count;
-};
-
-static VOID TfyCalDayName(int year, int month, int day, LPWSTR psz, size_t cch)
-{
-    StringCchPrintfW(psz, cch, L"%04d%02d%02d", year, month, day);
-}
-
-static int TfyCalDigits(LPCWSTR psz, int n)
-{
-    int v = 0, i;
-
-    for (i = 0; i < n; i++)
-    {
-        if (psz[i] < L'0' || psz[i] > L'9')
-            return -1;
-        v = v * 10 + (psz[i] - L'0');
-    }
-    return v;
-}
-
-static int TfyCalNameToDay(LPCWSTR psz, int year, int month)
-{
-    int v = TfyCalDigits(psz, 8);
-
-    if (v < 0 || psz[8] != 0)
-        return 0;
-    if (v / 10000 != year || (v / 100) % 100 != month)
-        return 0;
-    return v % 100;
-}
-
-static BOOL TfyCalParseStored(LPCWSTR psz, TFYCALEVENT *pev)
-{
-    if (lstrlenW(psz) <= TFY_CAL_STOREPFX)
-        return FALSE;
-    if (psz[0] == L'-')
-    {
-        pev->nMinutes = TFY_CAL_ALLDAY;
-        pev->nDuration = 0;
-    }
-    else
-    {
-        int hm = TfyCalDigits(psz, 4);
-        int dur = TfyCalDigits(psz + 5, 4);
-
-        if (hm < 0 || dur < 0 || hm / 100 > 23 || hm % 100 > 59)
-            return FALSE;
-        pev->nMinutes = (hm / 100) * 60 + hm % 100;
-        pev->nDuration = (dur > 0 && dur <= 1440) ? dur : 60;
-    }
-    StringCchCopyW(pev->szTitle, _countof(pev->szTitle), psz + TFY_CAL_STOREPFX);
-    return pev->szTitle[0] != 0;
-}
-
-static VOID TfyCalFormatStored(const TFYCALEVENT *pev, LPWSTR psz, size_t cch)
-{
-    if (pev->nMinutes == TFY_CAL_ALLDAY)
-    {
-        StringCchPrintfW(psz, cch, L"---- ---- %s", pev->szTitle);
-        return;
-    }
-    StringCchPrintfW(psz, cch, L"%02d%02d %04d %s", pev->nMinutes / 60,
-                     pev->nMinutes % 60, pev->nDuration, pev->szTitle);
-}
-
-static LPCWSTR TfyCalScanTime(LPCWSTR p, int *pMinutes)
-{
-    LPCWSTR q;
-    int h, m, n = 0;
-
-    while (n < 2 && p[n] >= L'0' && p[n] <= L'9')
-        n++;
-    if (n == 0 || p[n] != L':')
-        return NULL;
-    h = TfyCalDigits(p, n);
-    m = TfyCalDigits(p + n + 1, 2);
-    if (h < 0 || m < 0)
-        return NULL;
-    q = p + n + 3;
-    while (*q == L' ')
-        q++;
-    if ((*q == L'a' || *q == L'A' || *q == L'p' || *q == L'P') &&
-        (q[1] == L'm' || q[1] == L'M'))
-    {
-        if (h == 12)
-            h = 0;
-        if (*q == L'p' || *q == L'P')
-            h += 12;
-        q += 2;
-    }
-    if (h > 23 || m > 59)
-        return NULL;
-    *pMinutes = h * 60 + m;
-    return q;
-}
-
-static BOOL TfyCalParseInput(LPCWSTR psz, TFYCALEVENT *pev)
-{
-    LPCWSTR p = psz, pTitle, q;
-    int start = 0, end = 0, n;
-
-    while (*p == L' ' || *p == L'\t')
-        p++;
-    pTitle = p;
-    pev->nMinutes = TFY_CAL_ALLDAY;
-    pev->nDuration = 0;
-    q = TfyCalScanTime(p, &start);
-    if (q != NULL)
-    {
-        pev->nMinutes = start;
-        pev->nDuration = 60;
-        if (*q == L'-' || *q == L'\x2013')
-        {
-            LPCWSTR r = TfyCalScanTime(q + 1, &end);
-
-            if (r != NULL)
-            {
-                if (end > start)
-                    pev->nDuration = end - start;
-                q = r;
-            }
-        }
-        while (*q == L' ' || *q == L'\t')
-            q++;
-        pTitle = q;
-    }
-    StringCchCopyW(pev->szTitle, _countof(pev->szTitle), pTitle);
-    n = lstrlenW(pev->szTitle);
-    while (n > 0 && (pev->szTitle[n - 1] == L' ' || pev->szTitle[n - 1] == L'\t'))
-        pev->szTitle[--n] = 0;
-    if (pev->nMinutes != TFY_CAL_ALLDAY && pev->nMinutes + pev->nDuration > 1440)
-        pev->nDuration = 1440 - pev->nMinutes;
-    return pev->szTitle[0] != 0;
-}
-
-static VOID TfyCalLoadDay(int year, int month, int day, TFYCALDAY *pday)
-{
-    WCHAR szName[16];
-    WCHAR *pszData;
-    HKEY hKey = NULL;
-
-    pday->count = 0;
-    if (year <= 0)
-        return;
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, TFY_CAL_KEY, 0, KEY_QUERY_VALUE,
-                      &hKey) != ERROR_SUCCESS)
-        return;
-    pszData = (WCHAR *)LocalAlloc(LPTR, TFY_CAL_DATA * sizeof(WCHAR));
-    if (pszData)
-    {
-        DWORD cb = (DWORD)((TFY_CAL_DATA - 2) * sizeof(WCHAR)), type = 0;
-
-        TfyCalDayName(year, month, day, szName, _countof(szName));
-        if (RegQueryValueExW(hKey, szName, NULL, &type, (LPBYTE)pszData, &cb) ==
-                ERROR_SUCCESS && type == REG_MULTI_SZ)
-        {
-            LPCWSTR p;
-
-            for (p = pszData; *p != 0; p += lstrlenW(p) + 1)
-            {
-                if (pday->count >= TFY_CAL_MAXEVENTS)
-                    break;
-                if (TfyCalParseStored(p, &pday->ev[pday->count]))
-                    pday->count++;
-            }
-        }
-        LocalFree(pszData);
-    }
-    RegCloseKey(hKey);
-}
-
-static VOID TfyCalSaveDay(int year, int month, int day, const TFYCALDAY *pday)
-{
-    WCHAR szName[16], szLine[96];
-    WCHAR *pszData;
-    HKEY hKey = NULL;
-    int i, o = 0;
-
-    if (year <= 0)
-        return;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, TFY_CAL_KEY, 0, NULL, 0,
-                        KEY_SET_VALUE, NULL, &hKey, NULL) != ERROR_SUCCESS)
-        return;
-    TfyCalDayName(year, month, day, szName, _countof(szName));
-    if (pday->count == 0)
-    {
-        RegDeleteValueW(hKey, szName);
-        RegCloseKey(hKey);
-        return;
-    }
-    pszData = (WCHAR *)LocalAlloc(LPTR, TFY_CAL_DATA * sizeof(WCHAR));
-    if (pszData)
-    {
-        for (i = 0; i < pday->count; i++)
-        {
-            int cch;
-
-            TfyCalFormatStored(&pday->ev[i], szLine, _countof(szLine));
-            cch = lstrlenW(szLine) + 1;
-            if (o + cch + 1 > TFY_CAL_DATA)
-                break;
-            CopyMemory(&pszData[o], szLine, cch * sizeof(WCHAR));
-            o += cch;
-        }
-        pszData[o++] = 0;
-        RegSetValueExW(hKey, szName, 0, REG_MULTI_SZ, (const BYTE *)pszData,
-                       (DWORD)(o * sizeof(WCHAR)));
-        LocalFree(pszData);
-    }
-    RegCloseKey(hKey);
-}
-
-static VOID TfyCalLoadMonthCounts(int year, int month, int *pCounts)
-{
-    HKEY hKey = NULL;
-    WCHAR *pszData;
-    DWORD i = 0;
-
-    ZeroMemory(pCounts, 32 * sizeof(int));
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, TFY_CAL_KEY, 0, KEY_QUERY_VALUE,
-                      &hKey) != ERROR_SUCCESS)
-        return;
-    pszData = (WCHAR *)LocalAlloc(LPTR, TFY_CAL_DATA * sizeof(WCHAR));
-    if (!pszData)
-    {
-        RegCloseKey(hKey);
-        return;
-    }
-    for (;;)
-    {
-        WCHAR szName[32];
-        DWORD cch = _countof(szName);
-        DWORD cb = (DWORD)((TFY_CAL_DATA - 2) * sizeof(WCHAR));
-        DWORD type = 0;
-        LPCWSTR p;
-        int day, n = 0;
-
-        ZeroMemory(pszData, TFY_CAL_DATA * sizeof(WCHAR));
-        if (RegEnumValueW(hKey, i++, szName, &cch, NULL, &type,
-                          (LPBYTE)pszData, &cb) != ERROR_SUCCESS)
-            break;
-        if (type != REG_MULTI_SZ)
-            continue;
-        day = TfyCalNameToDay(szName, year, month);
-        if (day < 1 || day > 31)
-            continue;
-        for (p = pszData; *p != 0; p += lstrlenW(p) + 1)
-            n++;
-        pCounts[day] = n;
-    }
-    LocalFree(pszData);
-    RegCloseKey(hKey);
-}
-
-struct TFYCALROW
-{
-    int date;
-    int bHeader;
-    TFYCALEVENT ev;
-};
-
-static VOID TfyCalSortDates(int *pDates, int count)
-{
-    int i, j, v;
-
-    for (i = 1; i < count; i++)
-    {
-        v = pDates[i];
-        for (j = i; j > 0 && pDates[j - 1] > v; j--)
-            pDates[j] = pDates[j - 1];
-        pDates[j] = v;
-    }
-}
-
-static int TfyCalCollectDates(int fromDate, int *pDates, int maxDates)
-{
-    HKEY hKey = NULL;
-    DWORD i = 0;
-    int count = 0;
-
-    if (RegOpenKeyExW(HKEY_CURRENT_USER, TFY_CAL_KEY, 0, KEY_QUERY_VALUE,
-                      &hKey) != ERROR_SUCCESS)
-        return 0;
-    for (;;)
-    {
-        WCHAR szName[32];
-        DWORD cch = _countof(szName);
-        int v;
-
-        if (count >= maxDates)
-            break;
-        if (RegEnumValueW(hKey, i++, szName, &cch, NULL, NULL, NULL,
-                          NULL) != ERROR_SUCCESS)
-            break;
-        v = TfyCalDigits(szName, 8);
-        if (v <= 0 || szName[8] != 0 || v < fromDate)
-            continue;
-        pDates[count++] = v;
-    }
-    RegCloseKey(hKey);
-    TfyCalSortDates(pDates, count);
-    return count;
-}
-
-static int TfyCalLoadAgenda(int fromDate, TFYCALROW *pRows, int maxRows)
-{
-    int *pDates;
-    int nDates, i, j, count = 0;
-
-    pDates = (int *)LocalAlloc(LPTR, TFY_CAL_MAXDATES * sizeof(int));
-    if (!pDates)
-        return 0;
-    nDates = TfyCalCollectDates(fromDate, pDates, TFY_CAL_MAXDATES);
-    for (i = 0; i < nDates && count < maxRows; i++)
-    {
-        TFYCALDAY day;
-        int date = pDates[i];
-
-        TfyCalLoadDay(date / 10000, (date / 100) % 100, date % 100, &day);
-        if (day.count == 0)
-            continue;
-        pRows[count].date = date;
-        pRows[count].bHeader = TRUE;
-        ZeroMemory(&pRows[count].ev, sizeof(TFYCALEVENT));
-        count++;
-        for (j = 0; j < day.count && count < maxRows; j++)
-        {
-            pRows[count].date = date;
-            pRows[count].bHeader = FALSE;
-            pRows[count].ev = day.ev[j];
-            count++;
-        }
-    }
-    LocalFree(pDates);
-    return count;
-}
 
 class CTrayCalendarWnd :
     public CWindowImpl<CTrayCalendarWnd, CWindow, CTrayFlyoutTraits>,
@@ -3462,6 +3111,7 @@ VOID TrayFlyouts_Destroy(VOID)
 #include <mmdeviceapi.h>
 #include <audiopolicy.h>
 #include <endpointvolume.h>
+#include "audiodev.h"
 
 struct TFYVOLUME
 {
@@ -3654,9 +3304,6 @@ struct TFYMIXROW
     RECT rcMute;
 };
 
-static const PROPERTYKEY TFY_PKEY_Device_FriendlyName =
-    { { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
-
 #define TFY_TIMER_AUDIOLOAD 6
 
 static volatile LONG g_TfyAudioPercent = 50;
@@ -3795,79 +3442,6 @@ VOID TrayVolume_StartWatch(VOID)
     hThread = CreateThread(NULL, 0, TfyVolumeWatchThread, NULL, 0, NULL);
     if (hThread)
         CloseHandle(hThread);
-}
-
-struct TFYAUDIODEV
-{
-    WCHAR szId[256];
-    WCHAR szName[128];
-    BOOL bDefault;
-};
-
-static VOID
-TfyGetDeviceFriendlyName(IMMDevice *pDevice, LPWSTR pszName, SIZE_T cchName)
-{
-    CComPtr<IPropertyStore> pProps;
-    StringCchCopyW(pszName, cchName, L"Speakers");
-    if (!pDevice || FAILED(pDevice->OpenPropertyStore(STGM_READ, &pProps)))
-        return;
-    PROPVARIANT var;
-    PropVariantInit(&var);
-    if (SUCCEEDED(pProps->GetValue(TFY_PKEY_Device_FriendlyName, &var)) &&
-        var.vt == VT_LPWSTR && var.pwszVal && var.pwszVal[0])
-    {
-        StringCchCopyW(pszName, cchName, var.pwszVal);
-    }
-    PropVariantClear(&var);
-}
-
-static VOID
-TfyEnumRenderDevices(IMMDeviceEnumerator *pEnum, CAtlArray<TFYAUDIODEV> &Devices)
-{
-    CComPtr<IMMDeviceCollection> pCollection;
-    CComPtr<IMMDevice> pDefault;
-    LPWSTR pszDefaultId = NULL;
-    UINT nCount = 0;
-    Devices.SetCount(0);
-    if (!pEnum)
-        return;
-    if (SUCCEEDED(pEnum->GetDefaultAudioEndpoint(eRender, eMultimedia, &pDefault)))
-        pDefault->GetId(&pszDefaultId);
-    if (SUCCEEDED(pEnum->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &pCollection)) &&
-        SUCCEEDED(pCollection->GetCount(&nCount)))
-    {
-        for (UINT i = 0; i < nCount && Devices.GetCount() < 16; i++)
-        {
-            CComPtr<IMMDevice> pDevice;
-            LPWSTR pszId = NULL;
-            TFYAUDIODEV dev;
-            ZeroMemory(&dev, sizeof(dev));
-            if (FAILED(pCollection->Item(i, &pDevice)) || FAILED(pDevice->GetId(&pszId)) || !pszId)
-                continue;
-            StringCchCopyW(dev.szId, _countof(dev.szId), pszId);
-            dev.bDefault = (pszDefaultId && !wcscmp(pszDefaultId, pszId));
-            CoTaskMemFree(pszId);
-            TfyGetDeviceFriendlyName(pDevice, dev.szName, _countof(dev.szName));
-            Devices.Add(dev);
-        }
-    }
-    if (pszDefaultId)
-        CoTaskMemFree(pszDefaultId);
-}
-
-static BOOL
-TfySetDefaultRenderDevice(LPCWSTR pszId)
-{
-    HKEY hKey;
-    BOOL bRet = FALSE;
-    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\Wine\\Drivers\\wdmaud.drv", 0, NULL, 0,
-                        KEY_SET_VALUE, NULL, &hKey, NULL) == ERROR_SUCCESS)
-    {
-        bRet = RegSetValueExW(hKey, L"DefaultOutput", 0, REG_SZ, (const BYTE *)pszId,
-                              (DWORD)((wcslen(pszId) + 1) * sizeof(WCHAR))) == ERROR_SUCCESS;
-        RegCloseKey(hKey);
-    }
-    return bRet;
 }
 
 static INIT_ONCE g_TfyMasterInit = INIT_ONCE_STATIC_INIT;
@@ -5131,66 +4705,10 @@ VOID TrayScreenshot_Capture(VOID)
 #define TFY_WM_BRIGHTNESSKEY (WM_APP + 46)
 
 static volatile LONG g_TfyBrightness = -1;
-static volatile LONG g_TfyBrightnessSelfTick;
 static HWND g_hwndTfyBrightnessSink;
 static HANDLE g_hTfyBrightnessEvents[2];
 static DWORD g_cTfyBrightnessEvents;
 
-static HANDLE
-TfyOpenLcd(VOID)
-{
-    return CreateFileW(L"\\\\.\\LCD", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
-                       OPEN_EXISTING, 0, NULL);
-}
-
-static BOOL
-TfyBrightnessQuery(int *pnPercent)
-{
-    DISPLAY_BRIGHTNESS Display;
-    HANDLE hLcd = TfyOpenLcd();
-    DWORD cb = 0;
-    BOOL bRet;
-
-    if (hLcd == INVALID_HANDLE_VALUE)
-        return FALSE;
-    bRet = DeviceIoControl(hLcd, IOCTL_VIDEO_QUERY_DISPLAY_BRIGHTNESS, NULL, 0, &Display, sizeof(Display), &cb, NULL) &&
-           cb >= sizeof(Display);
-    CloseHandle(hLcd);
-    if (bRet)
-        *pnPercent = (Display.ucDisplayPolicy & DISPLAYPOLICY_DC) ? Display.ucDCBrightness : Display.ucACBrightness;
-    return bRet;
-}
-
-static BOOL
-TfyBrightnessSet(int nPercent)
-{
-    DISPLAY_BRIGHTNESS Display;
-    HANDLE hLcd = TfyOpenLcd();
-    DWORD cb = 0;
-    BOOL bRet = FALSE;
-
-    if (hLcd == INVALID_HANDLE_VALUE)
-        return FALSE;
-    if (DeviceIoControl(hLcd, IOCTL_VIDEO_QUERY_DISPLAY_BRIGHTNESS, NULL, 0, &Display, sizeof(Display), &cb, NULL) &&
-        cb >= sizeof(Display))
-    {
-        nPercent = max(0, min(nPercent, 100));
-        if (Display.ucDisplayPolicy & DISPLAYPOLICY_DC)
-        {
-            Display.ucDisplayPolicy = DISPLAYPOLICY_DC;
-            Display.ucDCBrightness = (UCHAR)nPercent;
-        }
-        else
-        {
-            Display.ucDisplayPolicy = DISPLAYPOLICY_AC;
-            Display.ucACBrightness = (UCHAR)nPercent;
-        }
-        InterlockedExchange(&g_TfyBrightnessSelfTick, (LONG)GetTickCount());
-        bRet = DeviceIoControl(hLcd, IOCTL_VIDEO_SET_DISPLAY_BRIGHTNESS, &Display, sizeof(Display), NULL, 0, &cb, NULL);
-    }
-    CloseHandle(hLcd);
-    return bRet;
-}
 
 static LRESULT CALLBACK
 TfyBrightnessSinkProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -9766,53 +9284,6 @@ TfyNetworkToggle(HWND hwndOwner, const RECT *prcAnchor, BOOL bWiredSettings)
 VOID TrayNetwork_Toggle(IN HWND hwndOwner, IN const RECT *prcAnchor)
 {
     TfyNetworkToggle(hwndOwner, prcAnchor, TRUE);
-}
-
-typedef DWORD (WINAPI *PFN_POWERGETACTIVESCHEME)(HKEY, GUID **);
-typedef DWORD (WINAPI *PFN_POWERSETACTIVESCHEME)(HKEY, const GUID *);
-
-static HMODULE g_hPowrProf = NULL;
-static PFN_POWERGETACTIVESCHEME g_pfnPowerGetActiveScheme = NULL;
-static PFN_POWERSETACTIVESCHEME g_pfnPowerSetActiveScheme = NULL;
-
-static const struct
-{
-    GUID Scheme;
-    LPCWSTR pszName;
-} g_TfyPowerModes[] =
-{
-    { { 0xA1841308, 0x3541, 0x4FAB, { 0xBC, 0x81, 0xF7, 0x15, 0x56, 0xF2, 0x0B, 0x4A } }, L"Best power efficiency" },
-    { { 0x381B4222, 0xF694, 0x41F0, { 0x96, 0x85, 0xFF, 0x5B, 0xB2, 0x60, 0xDF, 0x2E } }, L"Balanced" },
-    { { 0x8C5E7FDA, 0xE8BF, 0x4A96, { 0x9A, 0x85, 0xA6, 0xE2, 0x3A, 0x8C, 0x63, 0x5C } }, L"Best performance" }
-};
-
-static BOOL TfyLoadPowrProf()
-{
-    if (g_hPowrProf)
-        return g_pfnPowerGetActiveScheme && g_pfnPowerSetActiveScheme;
-    g_hPowrProf = LoadLibraryW(L"powrprof.dll");
-    if (!g_hPowrProf)
-        return FALSE;
-    g_pfnPowerGetActiveScheme = (PFN_POWERGETACTIVESCHEME)GetProcAddress(g_hPowrProf, "PowerGetActiveScheme");
-    g_pfnPowerSetActiveScheme = (PFN_POWERSETACTIVESCHEME)GetProcAddress(g_hPowrProf, "PowerSetActiveScheme");
-    return g_pfnPowerGetActiveScheme && g_pfnPowerSetActiveScheme;
-}
-
-static int
-TfyActivePowerMode(VOID)
-{
-    GUID *pScheme = NULL;
-    int iMode = -1;
-
-    if (!TfyLoadPowrProf() || g_pfnPowerGetActiveScheme(NULL, &pScheme) != ERROR_SUCCESS || !pScheme)
-        return -1;
-    for (int i = 0; i < (int)_countof(g_TfyPowerModes); i++)
-    {
-        if (IsEqualGUID(*pScheme, g_TfyPowerModes[i].Scheme))
-            iMode = i;
-    }
-    LocalFree(pScheme);
-    return iMode;
 }
 
 #define TFY_PWRHIT_NONE  -1
