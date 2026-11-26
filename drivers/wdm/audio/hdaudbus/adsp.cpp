@@ -67,8 +67,11 @@ NTSTATUS ADSPRegisterInterrupt(_In_ PVOID _context, _In_ PADSP_INTERRUPT_CALLBAC
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
+	/* the service routine reads the pair under the interrupt lock (hdac_controller.cpp hda_interrupt): both are stored under it, so the routine never sees one of a new pair with the other of the old (R1-07) */
+	WdfInterruptAcquireLock(devData->FdoContext->Interrupt);
 	devData->FdoContext->dspInterruptCallback = callback;
 	devData->FdoContext->dspInterruptContext = callbackContext;
+	WdfInterruptReleaseLock(devData->FdoContext->Interrupt);
 	return STATUS_SUCCESS;
 }
 
@@ -81,8 +84,10 @@ NTSTATUS ADSPUnregisterInterrupt(_In_ PVOID _context) {
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
+	WdfInterruptAcquireLock(devData->FdoContext->Interrupt);
 	devData->FdoContext->dspInterruptCallback = NULL;
 	devData->FdoContext->dspInterruptContext = NULL;
+	WdfInterruptReleaseLock(devData->FdoContext->Interrupt);
 	return STATUS_SUCCESS;
 }
 
