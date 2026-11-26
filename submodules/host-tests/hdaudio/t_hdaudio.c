@@ -161,7 +161,7 @@ check_select(
     if (I != J)
         fprintf(stderr, "  in the row '%s': %u pairs, %u expected\n", Case->Name, (unsigned int)I, (unsigned int)J);
     CHECK_EQ(I, J);
-    for (I = 0; I < J && I < 8; I++)
+    for (I = 0; I < J && I < sizeof(Case->Expected) / sizeof(Case->Expected[0]); I++)
     {
         if (Selected[I].Converter != Case->Expected[I].Converter || Selected[I].Connection != Case->Expected[I].Connection)
             fprintf(stderr, "  in the row '%s': pair %u: converter %u/%u connection %u/%u\n", Case->Name, (unsigned int)I,
