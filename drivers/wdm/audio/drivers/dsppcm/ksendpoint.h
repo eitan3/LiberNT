@@ -108,11 +108,41 @@ DsppcmStreamClose(
     _In_ HANDLE Stream);
 
 /*
- * The position of a stream from its position register, as the codec driver
- * reports it (drivers/wdm/audio/drivers/hdaudio/stream.cpp GetPosition):
- * the register's value modulo the buffer size; on capture the read cursor
- * trails the link position by the FIFO, on render the write cursor leads it
- * by the FIFO, for the engine to keep that part of the buffer untouched.
+ * The position of a stream from one reading of its position register: the
+ * arithmetic alone, as the codec driver reports it
+ * (drivers/wdm/audio/drivers/hdaudio/stream.cpp GetPosition). The register
+ * counts the bytes since the stream started and wraps at 2^32; the offsets
+ * are within the cyclic buffer. On capture the read cursor trails the link
+ * position by the FIFO, on render the write cursor leads it by the FIFO,
+ * for the engine to keep that part of the buffer untouched. A stream
+ * without a buffer is refused.
+ */
+NTSTATUS
+DsppcmPositionFromValue(
+    _In_ ULONG Value,
+    _In_ ULONG BufferSize,
+    _In_ ULONG FifoSize,
+    _In_ BOOLEAN Capture,
+    _Out_ PKSAUDIO_POSITION Position);
+
+/*
+ * The position of a stream for KSPROPERTY_AUDIO_POSITION: one reading of
+ * the register the interface names (the controller's extended DMA-position
+ * register of the stream, drivers/wdm/audio/hdaudbus/adsp.cpp ADSPGetPositionRegister:
+ * BAR0 memory, where the stream manager's waits read the position buffer's
+ * entry and the self-test measures that against LPIB), then
+ * DsppcmPositionFromValue. The audio stack asks synchronously from the
+ * thread that wants the position (PASSIVE_LEVEL; the handler bounds itself
+ * to DISPATCH_LEVEL or below: drivers/wdm/audio/backpln/portcls/pin_wavert.cpp
+ * PinWaveRTAudioPosition), and the RT position and clock register
+ * properties, which would let the engine map the register, are not answered
+ * there yet. The engine's clock is therefore derived from these offsets: it
+ * counts the periods the cursors cross and adds them to a 64-bit frame
+ * position that never decreases (dll/win32/mmdevapi/reactos_wdmaud.c
+ * refill_cyclic_period over reactos_wavert.h). So the clock carries across
+ * the buffer's wrap; at the register's own wrap, every 2^32 bytes, the
+ * cursors jump by the remainder of 2^32 over the buffer, which that rule
+ * counts as one period more or less, once, and never as a fall.
  */
 NTSTATUS
 DsppcmStreamPosition(

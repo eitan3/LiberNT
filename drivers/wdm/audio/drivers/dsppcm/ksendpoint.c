@@ -161,28 +161,20 @@ DsppcmStreamClose(
 }
 
 NTSTATUS
-DsppcmStreamPosition(
-    _In_ const INTELDSP_AUDIO_INTERFACE* Interface,
-    _In_ HANDLE Stream,
+DsppcmPositionFromValue(
+    _In_ ULONG Value,
     _In_ ULONG BufferSize,
     _In_ ULONG FifoSize,
     _In_ BOOLEAN Capture,
     _Out_ PKSAUDIO_POSITION Position)
 {
-    PULONG Register = NULL;
     ULONG Offset;
-    NTSTATUS Status;
 
     RtlZeroMemory(Position, sizeof(*Position));
     /* a position is asked of a stream with its buffer */
     if (BufferSize == 0)
         return STATUS_INVALID_PARAMETER;
-    Status = Interface->GetPositionRegister(Interface->Context, Stream, &Register);
-    if (!NT_SUCCESS(Status))
-        return Status;
-    if (Register == NULL)
-        return STATUS_DEVICE_NOT_READY;
-    Offset = DSPPCM_READ_POSITION(Register) % BufferSize;
+    Offset = Value % BufferSize;
     if (Capture)
     {
         /* the capture's read cursor is the link position less the FIFO's share, around the cyclic buffer */
@@ -194,4 +186,28 @@ DsppcmStreamPosition(
     /* the controller may have prefetched up to one FIFO beyond the link position: that part stays outside the writable area */
     Position->WriteOffset = (Offset + FifoSize) % BufferSize;
     return STATUS_SUCCESS;
+}
+
+NTSTATUS
+DsppcmStreamPosition(
+    _In_ const INTELDSP_AUDIO_INTERFACE* Interface,
+    _In_ HANDLE Stream,
+    _In_ ULONG BufferSize,
+    _In_ ULONG FifoSize,
+    _In_ BOOLEAN Capture,
+    _Out_ PKSAUDIO_POSITION Position)
+{
+    PULONG Register = NULL;
+    NTSTATUS Status;
+
+    RtlZeroMemory(Position, sizeof(*Position));
+    /* a position is asked of a stream with its buffer */
+    if (BufferSize == 0)
+        return STATUS_INVALID_PARAMETER;
+    Status = Interface->GetPositionRegister(Interface->Context, Stream, &Register);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    if (Register == NULL)
+        return STATUS_DEVICE_NOT_READY;
+    return DsppcmPositionFromValue(DSPPCM_READ_POSITION(Register), BufferSize, FifoSize, Capture, Position);
 }
