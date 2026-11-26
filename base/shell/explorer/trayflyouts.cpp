@@ -5515,6 +5515,13 @@ BOOL TrayVolume_HandleAppCommand(UINT uAppCmd)
 
 VOID TrayMixer_Open(const RECT *prcAnchor);
 
+/* Outlives the flyout: a device menu's modal loop can return after the window was destroyed under it */
+struct TFYMENU_GUARD
+{
+    LONG References;
+    BOOL Alive;
+};
+
 class CTrayVolumeWnd :
     public CWindowImpl<CTrayVolumeWnd, CWindow, CTrayFlyoutTraits>,
     public CTrayFlyoutAnimation
@@ -5545,6 +5552,7 @@ public:
     BOOL m_bMenu;
     BOOL m_bRebuildAfterMenu;
     BOOL m_bTracking;
+    TFYMENU_GUARD *m_pMenuGuard;
     SIZE m_size;
     RECT m_rcMasterRow, m_rcMasterSlider, m_rcMasterMute, m_rcMixerLink, m_rcDevice;
 
@@ -5552,11 +5560,15 @@ public:
                        m_hFont(NULL), m_hFontSmall(NULL),
                        m_nMaster(0), m_bMasterMute(FALSE),
                        m_iDragRow(-2), m_iHotRow(-2), m_bHotMute(FALSE), m_bHotMixer(FALSE),
-                       m_bHotDevice(FALSE), m_bMenu(FALSE), m_bRebuildAfterMenu(FALSE), m_bTracking(FALSE)
+                       m_bHotDevice(FALSE), m_bMenu(FALSE), m_bRebuildAfterMenu(FALSE), m_bTracking(FALSE),
+                       m_pMenuGuard(NULL)
     {
         ZeroMemory(&m_Pal, sizeof(m_Pal));
         ZeroMemory(&m_size, sizeof(m_size));
         ZeroMemory(&m_rcDevice, sizeof(m_rcDevice));
+        m_pMenuGuard = new TFYMENU_GUARD();
+        m_pMenuGuard->References = 1;
+        m_pMenuGuard->Alive = TRUE;
         m_nMaster = (int)InterlockedCompareExchange(&g_TfyAudioPercent, 0, 0);
         m_bMasterMute = InterlockedCompareExchange(&g_TfyAudioMute, 0, 0) != 0;
         StringCchCopyW(m_szDevice, _countof(m_szDevice), L"Speakers");
@@ -6158,14 +6170,20 @@ public:
     VOID ShowDeviceMenu()
     {
         CAtlArray<TFYAUDIODEV> Devices;
+        TFYMENU_GUARD *pGuard = m_pMenuGuard;
 
         EnsureAudioLoaded();
         TfyEnumRenderDevices(m_pEnum, Devices);
-        if (Devices.GetCount() == 0 || m_bMenu)
+        if (Devices.GetCount() == 0 || m_bMenu || !pGuard)
             return;
+        InterlockedIncrement(&pGuard->References);
         HMENU hMenu = CreatePopupMenu();
         if (!hMenu)
+        {
+            if (!InterlockedDecrement(&pGuard->References))
+                delete pGuard;
             return;
+        }
         for (SIZE_T i = 0; i < Devices.GetCount(); i++)
             AppendMenuW(hMenu, MF_STRING | (Devices[i].bDefault ? MF_CHECKED : 0), (UINT_PTR)(i + 1), Devices[i].szName);
         POINT pt = { m_rcDevice.left, m_rcDevice.bottom + Sc(2) };
@@ -6174,8 +6192,17 @@ public:
         InvalidateRect(NULL, FALSE);
         int cmd = TrackPopupMenuEx(hMenu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_NONOTIFY,
                                    pt.x, pt.y, m_hWnd, NULL);
-        m_bMenu = FALSE;
         DestroyMenu(hMenu);
+        /* The flyout may have been destroyed under the menu: nothing of it is touched unless the guard says it lives */
+        BOOL bAlive = pGuard->Alive;
+        if (!InterlockedDecrement(&pGuard->References))
+        {
+            delete pGuard;
+            bAlive = FALSE;
+        }
+        if (!bAlive)
+            return;
+        m_bMenu = FALSE;
         if (cmd > 0 && (SIZE_T)cmd <= Devices.GetCount() && !Devices[cmd - 1].bDefault)
             TfySetDefaultRenderDevice(Devices[cmd - 1].szId);
         /* A default-device change that arrived under the menu rebuilds the flyout now that its copy is gone */
@@ -6220,6 +6247,13 @@ public:
         KillTimer(TFY_TIMER_ANIM);
         KillTimer(TFY_TIMER_AUDIOLOAD);
         FreeRows();
+        if (m_pMenuGuard)
+        {
+            m_pMenuGuard->Alive = FALSE;
+            if (!InterlockedDecrement(&m_pMenuGuard->References))
+                delete m_pMenuGuard;
+            m_pMenuGuard = NULL;
+        }
         m_pSessionMgr.Release();
         m_pEndpointVolume.Release();
         m_pDevice.Release();
