@@ -174,9 +174,9 @@ SofIpcInit(
  * One request and its reply. The payload, if any, is written into the downlink mailbox first; the reply's type,
  * direction and target must echo the request's and its status must be success; the reply buffer, if any, is read
  * before the reply is acknowledged. A notification that arrives while the reply is waited for is kept and
- * acknowledged, and the wait goes on. Nothing is retried: every failure except a refused payload or a busy
- * caller faults the link, and a faulted link answers every later request with SofIpcBadState until the next
- * SofIpcInit.
+ * acknowledged, and the wait goes on. Nothing is retried: every failure except a busy caller and a payload
+ * or a reply the marshalling rules refuse (SofIpcBadLength, the link untouched) faults the link, and a
+ * faulted link answers every later request with SofIpcBadState until the next SofIpcInit.
  */
 SOFIPC_STATUS
 SofIpcRequest(
