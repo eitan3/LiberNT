@@ -4,6 +4,7 @@ include_directories(${REACTOS_SOURCE_DIR}/modules/rostests/apitests/include)
 list(APPEND SOURCE
     Anim.cpp
     Color.cpp
+    Controls.cpp
     Input.cpp
     Layout.cpp
     Painter.cpp

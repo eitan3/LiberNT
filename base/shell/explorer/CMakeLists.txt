@@ -13,7 +13,9 @@ list(APPEND SOURCE
     dockmodel.cpp
     experience.cpp
     explorer.cpp
+    libercontrol.cpp
     liberdock.cpp
+    libershell.cpp
     notifyiconscust.cpp
     powermode.cpp
     rshell.cpp
