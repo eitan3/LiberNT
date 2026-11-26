@@ -2,12 +2,15 @@
  * PROJECT:     LiberNT header
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
  * PURPOSE:     Change the default audio endpoint of a role for the current user, and its format
+ * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
 #pragma once
 
 #include <mmdeviceapi.h>
 #include <mmreg.h>
+#include <winreg.h>
+#include <string.h>
 
 /*
  * mmdevapi (Wine) keeps the user's default endpoints under this key of its

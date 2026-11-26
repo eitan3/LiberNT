@@ -1,6 +1,6 @@
 /*
  * PROJECT:     LiberNT audio driver libraries
- * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * LICENSE:     GPL-3.0-or-later for this file (https://spdx.org/licenses/GPL-3.0-or-later); the definitions ported from Sound Open Firmware below are BSD-3-Clause, Intel's notice kept below (LICENSING.md §2)
  * PURPOSE:     Reads the Sound Open Firmware container (.ri) of an ACE platform: the $AE1 extended manifest, the partition directory, the signature header and the $AM1 firmware header with its modules
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */

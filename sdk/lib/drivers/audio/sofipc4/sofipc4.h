@@ -1,6 +1,6 @@
 /*
  * PROJECT:     LiberNT audio driver libraries
- * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * LICENSE:     GPL-3.0-or-later for this file (https://spdx.org/licenses/GPL-3.0-or-later); the definitions ported from Sound Open Firmware below are BSD-3-Clause, Intel's notice kept below (LICENSING.md §2)
  * PURPOSE:     Encodes and decodes SOF IPC4 messages, notifications, firmware registers and the extended manifest, without I/O
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */

@@ -2,6 +2,7 @@
  * PROJECT:     LiberNT header
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
  * PURPOSE:     Microphone access decisions of the user and the machine
+ * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
 #pragma once
