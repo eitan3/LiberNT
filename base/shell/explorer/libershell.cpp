@@ -6,6 +6,7 @@
  */
 
 #include <windows.h>
+#include <shlwapi.h>
 
 #include "experience.h"
 #include "libershell.h"
@@ -60,4 +61,13 @@ VOID LiberShell_PlaceAbove(const RECT *prcAnchor, int widthPx, int heightPx, POI
         pptTopLeft->x = mi.rcMonitor.left;
     if (pptTopLeft->y < mi.rcMonitor.top)
         pptTopLeft->y = mi.rcMonitor.top;
+}
+
+BOOL LiberStart_Matches(LPCWSTR pszName, LPCWSTR pszQuery)
+{
+    if (!pszQuery || !*pszQuery)
+        return TRUE;
+    if (!pszName || !*pszName)
+        return FALSE;
+    return StrStrIW(pszName, pszQuery) != NULL;
 }

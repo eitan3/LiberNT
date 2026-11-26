@@ -385,7 +385,7 @@ void CLiberDock::Refresh()
     EnumWindows(WindowProc, (LPARAM)this);
 
     m_Cells[0] = new CDockCell(this, -1);
-    m_Cells[0]->Set(NULL, FALSE, StartMenu2_IsVisible());
+    m_Cells[0]->Set(NULL, FALSE, LiberStart_IsOpen());
     m_DockRoot->AddChild(m_Cells[0]);
     for (UINT i = 0; i < m_Count; i++)
     {
@@ -404,13 +404,8 @@ void CLiberDock::OnCellClick(int index, const RECT &bounds)
 {
     if (index < 0)
     {
-        if (StartMenu2_IsVisible())
-        {
-            StartMenu2_Hide();
-            return;
-        }
         RECT rc = ScreenRect(m_DockSurface, bounds);
-        StartMenu2_Popup(&rc, ABE_BOTTOM);
+        LiberStart_Toggle(&rc);
         return;
     }
     if ((UINT)index >= m_Count)
@@ -548,6 +543,7 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
 void CLiberDock::Stop()
 {
     LiberControlCenter_Close();
+    LiberStart_Destroy();
     if (m_hwndSink)
     {
         DeregisterShellHookWindow(m_hwndSink);
