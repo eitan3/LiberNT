@@ -163,18 +163,18 @@ SetPcmFormatValid(WAVEFORMATEXTENSIBLE *Format, DWORD Rate, WORD ContainerBits, 
 }
 
 static INT
-FindFormat(PENDPOINT_PROPS Props, const PROPVARIANT *Value)
+FindFormat(PENDPOINT_PROPS Props, const BYTE *Data, DWORD cbSize)
 {
     const WAVEFORMATEX *Format;
     WORD ValidBits;
     UINT Index;
 
-    if (Value->vt != VT_BLOB || Value->blob.cbSize < sizeof(WAVEFORMATEX))
+    if (cbSize < sizeof(WAVEFORMATEX))
         return -1;
-    Format = (const WAVEFORMATEX *)Value->blob.pBlobData;
+    Format = (const WAVEFORMATEX *)Data;
     ValidBits = Format->wBitsPerSample;
     if (Format->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
-        Value->blob.cbSize >= sizeof(WAVEFORMATEXTENSIBLE) &&
+        cbSize >= sizeof(WAVEFORMATEXTENSIBLE) &&
         Format->cbSize >= sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX))
     {
         ValidBits = ((const WAVEFORMATEXTENSIBLE *)Format)->Samples.wValidBitsPerSample;
@@ -233,20 +233,15 @@ ReadFormats(IMMDevice *pDevice, IPropertyStore *pProps, PENDPOINT_PROPS Props)
     }
     IAudioClient_Release(pClient);
 
-    /* The user's own choice comes before the device property, as mmdevapi reads them */
+    /* The user's own choice comes before the device property, as mmdevapi reads them; it is a local, never a blob to free */
     PropVariantInit(&Value);
     if (MMDevGetDeviceFormat(Props->EndpointId, &UserFormat) == ERROR_SUCCESS)
-    {
-        Value.vt = VT_BLOB;
-        Value.blob.cbSize = sizeof(UserFormat);
-        Value.blob.pBlobData = (BYTE *)&UserFormat;
-        Props->CurrentFormat = FindFormat(Props, &Value);
-    }
+        Props->CurrentFormat = FindFormat(Props, (const BYTE *)&UserFormat, sizeof(UserFormat));
     if (Props->CurrentFormat < 0 && SUCCEEDED(IPropertyStore_GetValue(pProps, &DeviceFormatKey, &Value)))
-        Props->CurrentFormat = FindFormat(Props, &Value);
+        Props->CurrentFormat = Value.vt == VT_BLOB ? FindFormat(Props, Value.blob.pBlobData, Value.blob.cbSize) : -1;
     PropVariantClear(&Value);
     if (SUCCEEDED(IPropertyStore_GetValue(pProps, &OemFormatKey, &Value)))
-        Props->DefaultFormat = FindFormat(Props, &Value);
+        Props->DefaultFormat = Value.vt == VT_BLOB ? FindFormat(Props, Value.blob.pBlobData, Value.blob.cbSize) : -1;
     PropVariantClear(&Value);
 }
 
