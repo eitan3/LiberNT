@@ -408,7 +408,6 @@ static void TestDither(void)
 int main(void)
 {
     TestContainerBits();
-    TestContainerBits();
     TestPreferredFormat();
     TestPreferredFormatContainer();
     TestLegacyTable();
