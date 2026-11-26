@@ -642,6 +642,16 @@ const KMT_TEST TestList[] =
 #endif
     { "HalDmaAlignment",                    Test_HalDmaAlignment },
     { "HdAudBusInterface",                  Test_HdAudBusInterface },
+    /*
+     * NhltParser to SofIpc, seven: the Intel SST drivers' unit tests.
+     * kmtest_drv compiles a second copy of their sources beside the fake DSP
+     * and the fake bus (submodules/host-tests/fwload), and none of the seven
+     * opens a device. Their green says the code compiles and runs with the
+     * kernel's allocator; it says nothing about the installed drivers
+     * (DriverEntry and AddDevice, PnP start, the bus interface the real bus
+     * exposes, IRP dispatch, the IPC registers, DMA). A real-device kmtest is
+     * a separate task, not this list.
+     */
     { "NhltParser",                         Test_NhltParser },
     { "Policy",                             Test_Policy },
     { "SofIpc4",                            Test_SofIpc4 },

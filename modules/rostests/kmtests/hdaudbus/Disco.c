@@ -144,6 +144,7 @@ CheckShortInputs(VOID)
     SIZE_T Length;
     ULONG R, Byte;
     DISCO_DSD Dsd;
+    DISCO_STATUS Status;
     DISCO_ARGUMENT Name, Value, Element;
     UINT32 Number;
     static const char* const Names[] = { "one", "two", "three", "" };
@@ -157,7 +158,10 @@ CheckShortInputs(VOID)
             continue;
         for (Length = 0; Length <= Reply->Size; Length++)
         {
-            ok(DiscoDsdBegin(Reply->Reply, Length, &Dsd) <= DiscoWrongType, "a short reply stays within the status codes\n");
+            Status = DiscoDsdBegin(Reply->Reply, Length, &Dsd);
+            /* a prefix of the reply is never a well-formed _DSD: DiscoOk here would be the parser reading past what it was given */
+            ok(Length == Reply->Size || Status != DiscoOk, "a prefix of %u bytes of a %u-byte reply parsed as well-formed\n", (ULONG)Length, Reply->Size);
+            ok(Status <= DiscoWrongType, "a short reply stays within the status codes\n");
             for (Index = 0; Index < Dsd.PropertyCount + 1; Index++)
             {
                 if (DiscoDsdPropertyAt(&Dsd, Index, &Name, &Value) == DiscoOk)
@@ -176,7 +180,9 @@ CheckShortInputs(VOID)
         {
             RtlCopyMemory(Buffer, Reply->Reply, Reply->Size);
             Buffer[Byte] ^= 0x5A;
-            ok(DiscoDsdBegin(Buffer, Reply->Size, &Dsd) <= DiscoWrongType, "a flipped byte stays within the status codes\n");
+            /* the whole reply with one byte flipped: within the status codes; which one depends on the byte */
+            Status = DiscoDsdBegin(Buffer, Reply->Size, &Dsd);
+            ok(Status <= DiscoWrongType, "a flipped byte stays within the status codes\n");
             for (Index = 0; Index < Dsd.PropertyCount + 1; Index++)
                 DiscoDsdFind(&Dsd, Names[Index & 3], &Value);
         }

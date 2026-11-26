@@ -297,6 +297,36 @@ check_short_and_garbage_inputs(void)
     CHECK_EQ(Failures, 0);
 }
 
+/* No prefix of a reply is a well-formed _DSD: DiscoOk for fewer bytes than the reply is the parser reading past what it was given (the kmtest's per-prefix sweep, run here) */
+static
+void
+check_short_prefixes(void)
+{
+    unsigned int R, Length, Prefixes = 0;
+
+    for (R = 0; R < sizeof(DiscoBeginCases) / sizeof(DiscoBeginCases[0]); R++)
+    {
+        const DISCO_BEGIN_CASE* Reply = &DiscoBeginCases[R];
+        DISCO_DSD Dsd;
+
+        if (Reply->Reply == NULL)
+            continue;
+        for (Length = 0; Length < Reply->Size; Length++)
+        {
+            memset(&Dsd, 0xA5, sizeof(Dsd));
+            if (DiscoDsdBegin(Reply->Reply, Length, &Dsd) == DiscoOk)
+            {
+                fprintf(stderr, "%s:%d: FAIL: a prefix of %u bytes of the %u-byte reply \"%s\" parsed as well-formed\n",
+                        __FILE__, __LINE__, Length, Reply->Size, Reply->Name);
+                ++Failures;
+            }
+            ++Checks;
+            Prefixes++;
+        }
+    }
+    CHECK(Prefixes > 0);
+}
+
 static
 void
 check_names(void)
@@ -330,6 +360,7 @@ int main(void)
     check_properties();
     check_find();
     check_short_and_garbage_inputs();
+    check_short_prefixes();
     check_names();
 
     printf("disco: %d checks, %d failures\n", Checks, Failures);
