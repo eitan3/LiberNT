@@ -3022,6 +3022,27 @@ check_model_gateway_buffer(void)
         free(Model);
     }
     GenFree(&Topology);
+
+    /* a deep buffer of 65536 milliseconds over a 384-byte frame fits, over a 65536-byte one does not: the model builds on the first format and the validation refuses the second by the deep buffer */
+    Shape.DeepBufferMs = 0x10000;
+    Shape.Formats = 2;
+    Shape.BufferBytes = 0x10000;
+    CHECK(GenBuild(&Topology, &Shape));
+    if (Topology.Data == NULL)
+        return;
+    Model = ModelBuild(Topology.Data, Topology.Bytes, &Bytes);
+    CHECK(Model != NULL);
+    if (Model != NULL)
+    {
+        CHECK_EQ(SoftplgModelConfig(Model, Topology.Copier, 0, 0, 1, &Config), SoftplgModelOk);
+        CHECK_EQ(Config.Words[SOFTPLG_COPIER_DMA_BUFFER_WORD], 0x10000 * GEN_FIRST_BUFFER_BYTES);
+        CHECK_EQ(ModelValidate(Model, 16, 4096, &Named), SoftplgModelGatewayBuffer);
+        if (Named != NULL)
+            CHECK_STR(Named, "host-copier.0.playback");
+        CHECK_EQ(SoftplgModelConfig(Model, Topology.Copier, 1, 0, 1, &Config), SoftplgModelGatewayBuffer);
+        free(Model);
+    }
+    GenFree(&Topology);
     CHECK_STR(SoftplgModelStatusName(SoftplgModelGatewayBuffer), "gateway buffer does not fit its word");
 }
 

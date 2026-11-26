@@ -234,6 +234,14 @@ static void TestPreferredFormatContainer(void)
     CHECK_EQ(Format.Samples.wValidBitsPerSample, 16);
     CHECK_EQ(Format.Format.nBlockAlign, 4);
 
+    /* ... three bytes and a half a channel (seven bytes for two): its whole part is not the range's container */
+    FillRange(&Range, 2, 24, 24, 44100, 48000);
+    Range.DataRange.SampleSize = 7;
+    CHECK(RosSoundAudioRangeToPreferredFormat(&Range, &Format));
+    CHECK_EQ(Format.Format.wBitsPerSample, 32);
+    CHECK_EQ(Format.Samples.wValidBitsPerSample, 24);
+    CHECK_EQ(Format.Format.nBlockAlign, 8);
+
     /* A stated container whose frame does not fit nBlockAlign */
     FillRange(&Range, 65535, 16, 16, 44100, 48000);
     Range.DataRange.SampleSize = 65535 * 2;
