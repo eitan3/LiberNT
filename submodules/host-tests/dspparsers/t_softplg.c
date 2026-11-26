@@ -2596,9 +2596,10 @@ typedef struct _GEN_SHAPE
 {
     UINT32 Pipelines;
     BOOLEAN Copier;
-    /* the copier's input formats: the first takes a 384-byte buffer, every later one BufferBytes */
+    /* the copier's input formats: every one BufferBytes; the first takes FirstBufferBytes instead when it is not zero, else 384 */
     UINT32 Formats;
     UINT32 BufferBytes;
+    UINT32 FirstBufferBytes;
     /* the copier's deep-buffer token, 0 for none */
     UINT32 DeepBufferMs;
     BOOLEAN Graph;
@@ -2749,7 +2750,8 @@ GenCopier(
         Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_INTERLEAVING, 0);
         Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_CFG, 2 | (32 << 8));
         Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_BASE + SOFTPLG_FORMAT_SAMPLE_TYPE, 0);
-        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_IBS, F == 0 ? GEN_FIRST_BUFFER_BYTES : Shape->BufferBytes);
+        Tuple += GenWord(Tuple, SOFTPLG_TOKEN_FORMAT_IN_IBS, F != 0 ? Shape->BufferBytes :
+            Shape->FirstBufferBytes != 0 ? Shape->FirstBufferBytes : GEN_FIRST_BUFFER_BYTES);
     }
     return GEN_WIDGET_BYTES + 32 + Words;
 }
@@ -2897,6 +2899,106 @@ check_model_pipeline_bound(void)
     CHECK_STR(SoftplgModelStatusName(SoftplgModelTooManyPipelines), "more pipelines than the firmware allows");
 }
 
+/* R2-10: a copier whose gateway buffer size, two milliseconds of its stream or the deep buffer it names, does not fit the word it is sent in is refused by the validation with the copier named, and the configuration call says so instead of a wrapped size */
+static
+void
+check_model_gateway_buffer(void)
+{
+    GEN_TOPOLOGY Topology;
+    GEN_SHAPE Shape;
+    PSOFTPLG_IPC4_MODEL Model;
+    SOFTPLG_IPC4_CONFIG Config;
+    SIZE_T Bytes;
+    const char* Named;
+
+    ModelLoadFirmware();
+    memset(&Shape, 0, sizeof(Shape));
+    Shape.Pipelines = 1;
+    Shape.Copier = TRUE;
+    Shape.Graph = TRUE;
+    Shape.Formats = 2;
+    /* the first format's buffer is whole, the second one's is not: the model builds, the validation refuses */
+    Shape.BufferBytes = 0x80000000u;
+    CHECK(GenBuild(&Topology, &Shape));
+    if (Topology.Data == NULL)
+        return;
+    Model = ModelBuild(Topology.Data, Topology.Bytes, &Bytes);
+    CHECK(Model != NULL);
+    if (Model != NULL)
+    {
+        CHECK_EQ(ModelStatus, SoftplgModelOk);
+        CHECK_EQ(SoftplgModelConfig(Model, Topology.Copier, 0, 0, 1, &Config), SoftplgModelOk);
+        CHECK_EQ(Config.Count, SOFTPLG_IPC4_COPIER_CONFIG_WORDS);
+        CHECK_EQ(Config.Words[SOFTPLG_COPIER_DMA_BUFFER_WORD], SOFTPLG_DMA_BUFFER_MS_MIN * GEN_FIRST_BUFFER_BYTES);
+        /* the second format's buffer, two milliseconds of it, does not fit the word */
+        CHECK_EQ(ModelValidate(Model, 16, 4096, &Named), SoftplgModelGatewayBuffer);
+        if (Named != NULL)
+            CHECK_STR(Named, "host-copier.0.playback");
+        CHECK_EQ(SoftplgModelConfig(Model, Topology.Copier, 1, 0, 1, &Config), SoftplgModelGatewayBuffer);
+        CHECK_EQ(Config.Count, 0);
+        free(Model);
+    }
+    GenFree(&Topology);
+
+    /* the boundary: a buffer of 0x7FFFFFFF bytes, two milliseconds of it 0xFFFFFFFE, is the largest that fits */
+    Shape.Formats = 1;
+    Shape.BufferBytes = 0;
+    Shape.FirstBufferBytes = 0x7FFFFFFFu;
+    CHECK(GenBuild(&Topology, &Shape));
+    if (Topology.Data == NULL)
+        return;
+    Model = ModelBuild(Topology.Data, Topology.Bytes, &Bytes);
+    CHECK(Model != NULL);
+    if (Model != NULL)
+    {
+        CHECK_EQ(ModelValidate(Model, 16, 4096, &Named), SoftplgModelOk);
+        CHECK_EQ(SoftplgModelConfig(Model, Topology.Copier, 0, 0, 1, &Config), SoftplgModelOk);
+        CHECK_EQ(Config.Words[SOFTPLG_COPIER_DMA_BUFFER_WORD], 0xFFFFFFFEu);
+        free(Model);
+    }
+    GenFree(&Topology);
+
+    /* the first format's own buffer overflows: the model's configuration of it is made at the build, which refuses it */
+    Shape.FirstBufferBytes = 0x80000000u;
+    CHECK(GenBuild(&Topology, &Shape));
+    if (Topology.Data == NULL)
+        return;
+    Model = ModelBuild(Topology.Data, Topology.Bytes, &Bytes);
+    CHECK(Model == NULL);
+    CHECK_EQ(ModelStatus, SoftplgModelGatewayBuffer);
+    CHECK_EQ(ModelProblem.Status, SoftplgModelGatewayBuffer);
+    CHECK_EQ(ModelProblem.Widget, Topology.Copier);
+    free(Model);
+    GenFree(&Topology);
+
+    /* a deep buffer of 2^31 milliseconds over 384-byte frames: the product the copier names, not two milliseconds */
+    Shape.FirstBufferBytes = 0;
+    Shape.DeepBufferMs = 0x80000000u;
+    CHECK(GenBuild(&Topology, &Shape));
+    if (Topology.Data == NULL)
+        return;
+    Model = ModelBuild(Topology.Data, Topology.Bytes, &Bytes);
+    CHECK(Model == NULL);
+    CHECK_EQ(ModelStatus, SoftplgModelGatewayBuffer);
+    CHECK_EQ(ModelProblem.Widget, Topology.Copier);
+    free(Model);
+    GenFree(&Topology);
+    /* a deep buffer of 2 ms over 384-byte frames is two milliseconds like any other */
+    Shape.DeepBufferMs = SOFTPLG_DMA_BUFFER_MS_MIN;
+    CHECK(GenBuild(&Topology, &Shape));
+    if (Topology.Data == NULL)
+        return;
+    Model = ModelBuild(Topology.Data, Topology.Bytes, &Bytes);
+    CHECK(Model != NULL);
+    if (Model != NULL)
+    {
+        CHECK_EQ(ModelValidate(Model, 16, 4096, &Named), SoftplgModelOk);
+        free(Model);
+    }
+    GenFree(&Topology);
+    CHECK_STR(SoftplgModelStatusName(SoftplgModelGatewayBuffer), "gateway buffer does not fit its word");
+}
+
 static
 void
 check_names(void)
@@ -2933,6 +3035,7 @@ int main(void)
     check_model_rt711();
     check_model_malformed();
     check_model_pipeline_bound();
+    check_model_gateway_buffer();
     check_names();
 
     printf("softplg: %d checks, %d failures\n", Checks, Failures);

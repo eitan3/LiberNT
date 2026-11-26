@@ -376,7 +376,9 @@ typedef enum _SOFTPLG_MODEL_STATUS
     SoftplgModelFormatInexpressible,
     SoftplgModelConfigTooLarge,
     /* a widget or format index the model does not have */
-    SoftplgModelNotFound
+    SoftplgModelNotFound,
+    /* a copier whose gateway buffer size, two milliseconds of its stream or the deep buffer it names, does not fit the word it is sent in */
+    SoftplgModelGatewayBuffer
 } SOFTPLG_MODEL_STATUS;
 
 /* The first problem a check finds, and the widget it names */
@@ -410,14 +412,14 @@ SoftplgModelBuild(
     _Out_ PSOFTPLG_IPC4_MODEL* Model,
     _Out_opt_ SOFTPLG_IPC4_PROBLEM* Problem);
 
-/* Whether the firmware can run what the model describes: the pipelines fit its count, every copier's gateway is a host gateway, every host copier has a format the controller can carry and every configuration fits the mailbox */
+/* Whether the firmware can run what the model describes: the pipelines fit its count, every copier's gateway is a host gateway, every host copier has a format the controller can carry, every gateway buffer size fits its word and every configuration fits the mailbox */
 SOFTPLG_MODEL_STATUS
 SoftplgModelValidate(
     _In_ const SOFTPLG_IPC4_MODEL* Model,
     _In_ const SOFTPLG_IPC4_LIMITS* Limits,
     _Out_ SOFTPLG_IPC4_PROBLEM* Problem);
 
-/* A widget's init-instance configuration for the given input and output formats; a host copier's gateway index is the stream tag minus one, or the placeholder without a tag */
+/* A widget's init-instance configuration for the given input and output formats; a host copier's gateway index is the stream tag minus one, or the placeholder without a tag; a gateway buffer size that does not fit its word is SoftplgModelGatewayBuffer and nothing is written */
 SOFTPLG_MODEL_STATUS
 SoftplgModelConfig(
     _In_ const SOFTPLG_IPC4_MODEL* Model,

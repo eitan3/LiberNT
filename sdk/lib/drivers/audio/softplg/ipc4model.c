@@ -1153,6 +1153,48 @@ SoftplgModelBuild(
     return SoftplgModelOk;
 }
 
+/* The milliseconds of its stream a copier's gateway buffer holds: the deep buffer a playback host copier names above the minimum, else the minimum */
+static
+UINT32
+ModelGatewayMs(
+    const SOFTPLG_IPC4_WIDGET* W)
+{
+    return W->Kind == SoftplgKindHostCopierPlayback && W->DeepBufferDmaMs > SOFTPLG_DMA_BUFFER_MS_MIN ? W->DeepBufferDmaMs : SOFTPLG_DMA_BUFFER_MS_MIN;
+}
+
+/* The gateway buffer of a copier over the buffers of the formats its stream takes: a playback copier's input formats, a capture copier's output ones; FALSE when one does not fit the word it is sent in */
+static
+BOOLEAN
+ModelGatewayBufferFits(
+    const SOFTPLG_IPC4_MODEL* Model,
+    const SOFTPLG_IPC4_WIDGET* W)
+{
+    UINT32 F, Bytes, Count = W->InputFormats + W->OutputFormats;
+    UINT64 Buffer;
+
+    for (F = 0; F < Count; F++)
+    {
+        Bytes = Model->Formats[W->FirstFormat + F].BufferBytes;
+        if (W->Kind == SoftplgKindHostCopierPlayback || W->Kind == SoftplgKindDaiCopierPlayback)
+        {
+            if (F >= W->InputFormats)
+                continue;
+            Buffer = (UINT64)ModelGatewayMs(W) * Bytes;
+        }
+        else if (W->Kind == SoftplgKindHostCopierCapture || W->Kind == SoftplgKindDaiCopierCapture)
+        {
+            if (F < W->InputFormats)
+                continue;
+            Buffer = (UINT64)SOFTPLG_DMA_BUFFER_MS_MIN * Bytes;
+        }
+        else
+            return TRUE;
+        if (Buffer > 0xFFFFFFFFULL)
+            return FALSE;
+    }
+    return TRUE;
+}
+
 SOFTPLG_MODEL_STATUS
 SoftplgModelConfig(
     const SOFTPLG_IPC4_MODEL* Model,
@@ -1168,6 +1210,7 @@ SoftplgModelConfig(
     const SOFTPLG_IPC4_FORMAT* Out;
     const SOFTPLG_IPC4_WIDGET* Scheduler;
     UINT32 I, InputBytes, OutputBytes;
+    UINT64 Buffer;
 
     *Config = Empty;
     if (Model == NULL || Widget >= Model->WidgetCount)
@@ -1226,13 +1269,19 @@ SoftplgModelConfig(
             Config->Words[SOFTPLG_COPIER_NODE_ID_WORD] = SOFTPLG_NODE_INVALID;
             break;
     }
-    /* the gateway buffer holds two milliseconds of the copier's stream, or the deep buffer a playback host copier names */
-    Config->Words[SOFTPLG_COPIER_DMA_BUFFER_WORD] = 0;
+    /* the gateway buffer holds two milliseconds of the copier's stream, or the deep buffer a playback host copier names, in one word: a size the file makes larger than the word is refused, not sent wrapped */
     if (W->Kind == SoftplgKindHostCopierPlayback || W->Kind == SoftplgKindDaiCopierPlayback)
-        Config->Words[SOFTPLG_COPIER_DMA_BUFFER_WORD] =
-            (W->Kind == SoftplgKindHostCopierPlayback && W->DeepBufferDmaMs > SOFTPLG_DMA_BUFFER_MS_MIN ? W->DeepBufferDmaMs : SOFTPLG_DMA_BUFFER_MS_MIN) * InputBytes;
+        Buffer = (UINT64)ModelGatewayMs(W) * InputBytes;
     else if (W->Kind == SoftplgKindHostCopierCapture || W->Kind == SoftplgKindDaiCopierCapture)
-        Config->Words[SOFTPLG_COPIER_DMA_BUFFER_WORD] = SOFTPLG_DMA_BUFFER_MS_MIN * OutputBytes;
+        Buffer = (UINT64)SOFTPLG_DMA_BUFFER_MS_MIN * OutputBytes;
+    else
+        Buffer = 0;
+    if (Buffer > 0xFFFFFFFFULL)
+    {
+        *Config = Empty;
+        return SoftplgModelGatewayBuffer;
+    }
+    Config->Words[SOFTPLG_COPIER_DMA_BUFFER_WORD] = (UINT32)Buffer;
     Config->Count = SOFTPLG_IPC4_COPIER_CONFIG_WORDS;
     return SoftplgModelOk;
 }
@@ -1278,6 +1327,13 @@ SoftplgModelValidate(
         {
             Problem->Widget = N;
             Problem->Status = SoftplgModelConfigTooLarge;
+            return Problem->Status;
+        }
+        /* every gateway buffer the copier can be asked for, over any of its formats, must fit its word */
+        if (!ModelGatewayBufferFits(Model, W))
+        {
+            Problem->Widget = N;
+            Problem->Status = SoftplgModelGatewayBuffer;
             return Problem->Status;
         }
         /* the formats a host copier offers the host: the input formats of a playback copier, the output formats of a capture copier */
@@ -1341,6 +1397,7 @@ SoftplgModelStatusName(
         case SoftplgModelFormatInexpressible: return "no format the controller can carry";
         case SoftplgModelConfigTooLarge: return "configuration larger than the mailbox";
         case SoftplgModelNotFound: return "not in the model";
+        case SoftplgModelGatewayBuffer: return "gateway buffer does not fit its word";
         default: return "unknown";
     }
 }
