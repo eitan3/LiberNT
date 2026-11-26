@@ -835,36 +835,91 @@ FwloadDefaultTimeouts(
     Timeouts->BootAttempts = FWLOAD_BOOT_ATTEMPTS;
 }
 
-/* ACE 1.0 family (Meteor Lake, Arrow Lake, Arrow Lake-S): mtl.h register offsets */
-const FWLOAD_PLATFORM*
-FwloadPlatformArlS(
-    VOID)
+/*
+ * The register map of the ACE 1.0 family, defined once for every controller
+ * that shares it: the offsets of Linux mtl.h, the same at v6.12 and at
+ * master (the two differ in function prototypes alone), with the family's
+ * interrupt masks and mailbox constants. pci-mtl.c gives Meteor Lake
+ * (mtl_desc, HDA_MTL 0x7e28, mtl_chip_info) and Arrow Lake-S (arl_s_desc,
+ * HDA_ARL_S 0x7f50, arl_s_chip_info) this one map and these operations:
+ * both descriptors run sof_mtl_ops with IPC4, boot through mtl_dsp_cl_init,
+ * power down through mtl_power_down_dsp and carry hw_ip_version
+ * SOF_INTEL_ACE_1_0, so the power-control registers of the later families
+ * (PTL_HFPWRCTL2, taken above ACE 2.0 in mtl.c) are not theirs; they differ
+ * in cores_num, 3 and 2, and in their firmware file, sof-mtl.ri and
+ * sof-arl-s.ri. The boot powers the primary core alone and reads no core
+ * count. A controller whose map differed would get a record of its own
+ * offsets beside these.
+ */
+#define FWLOAD_ACE1_REGISTERS \
+    0x1000,     /* MTL_HFDSSCS */ \
+    0x178D04,   /* MTL_DSP2CXCTL_PRIMARY_CORE */ \
+    0x1108,     /* MTL_HFINTIPPTR */ \
+    0x00000001, /* MTL_IRQ_INTEN_L_HOST_IPC_MASK */ \
+    0x00000040, /* MTL_IRQ_INTEN_L_SOUNDWIRE_MASK */ \
+    0x1140,     /* MTL_DSP_REG_HfHIPCIE */ \
+    0x73210,    /* MTL_DSP_REG_HFIPCXIDR */ \
+    0x73380,    /* MTL_DSP_REG_HFIPCXIDDY */ \
+    0x73214,    /* MTL_DSP_REG_HFIPCXIDA */ \
+    0x73228,    /* MTL_DSP_REG_HFIPCXCTL */ \
+    0x73200,    /* MTL_DSP_REG_HFIPCXTDR */ \
+    0x73204,    /* MTL_DSP_REG_HFIPCXTDA */ \
+    0x73300,    /* MTL_DSP_REG_HFIPCXTDDY */ \
+    0x163200,   /* MTL_DSP_REG_HFFLGPXQWY */ \
+    0x163204,   /* MTL_DSP_REG_HFFLGPXQWY_ERROR */ \
+    0x180000,   /* MTL_SRAM_WINDOW_OFFSET(0) */ \
+    0x8000, \
+    0x181000,   /* MTL_DSP_MBOX_UPLINK_OFFSET */ \
+    0x188000,   /* MTL_DSP_MBOX_DOWNLINK_OFFSET */ \
+    0x1000
+
+static const FWLOAD_PLATFORM Ace1Platforms[] =
 {
-    static const FWLOAD_PLATFORM Platform =
+    { FWLOAD_DEV_MTL, "sof-mtl.ri", FWLOAD_ACE1_REGISTERS },
+    { FWLOAD_DEV_ARL_S, "sof-arl-s.ri", FWLOAD_ACE1_REGISTERS }
+};
+
+const FWLOAD_PLATFORM*
+FwloadPlatformForDevice(
+    UINT32 DeviceId)
+{
+    UINT32 Index;
+
+    for (Index = 0; Index < sizeof(Ace1Platforms) / sizeof(Ace1Platforms[0]); Index++)
     {
-        0x1000,     /* MTL_HFDSSCS */
-        0x178D04,   /* MTL_DSP2CXCTL_PRIMARY_CORE */
-        0x1108,     /* MTL_HFINTIPPTR */
-        0x00000001, /* MTL_IRQ_INTEN_L_HOST_IPC_MASK */
-        0x00000040, /* MTL_IRQ_INTEN_L_SOUNDWIRE_MASK */
-        0x1140,     /* MTL_DSP_REG_HfHIPCIE */
-        0x73210,    /* MTL_DSP_REG_HFIPCXIDR */
-        0x73380,    /* MTL_DSP_REG_HFIPCXIDDY */
-        0x73214,    /* MTL_DSP_REG_HFIPCXIDA */
-        0x73228,    /* MTL_DSP_REG_HFIPCXCTL */
-        0x73200,    /* MTL_DSP_REG_HFIPCXTDR */
-        0x73204,    /* MTL_DSP_REG_HFIPCXTDA */
-        0x73300,    /* MTL_DSP_REG_HFIPCXTDDY */
-        0x163200,   /* MTL_DSP_REG_HFFLGPXQWY */
-        0x163204,   /* MTL_DSP_REG_HFFLGPXQWY_ERROR */
-        0x180000,   /* MTL_SRAM_WINDOW_OFFSET(0) */
-        0x8000,
-        0x181000,   /* MTL_DSP_MBOX_UPLINK_OFFSET */
-        0x188000,   /* MTL_DSP_MBOX_DOWNLINK_OFFSET */
-        0x1000
+        if (Ace1Platforms[Index].DeviceId == DeviceId)
+            return &Ace1Platforms[Index];
+    }
+    return NULL;
+}
+
+FWLOAD_BOOT_DECISION
+FwloadBootDecision(
+    const FWLOAD_PLATFORM* Platform,
+    BOOLEAN FirmwareResident,
+    BOOLEAN BootDsp)
+{
+    if (Platform == NULL)
+        return FwloadBootNoRecord;
+    if (!FirmwareResident)
+        return FwloadBootNoFirmware;
+    if (!BootDsp)
+        return FwloadBootNotRequested;
+    return FwloadBootYes;
+}
+
+const char*
+FwloadBootDecisionName(
+    FWLOAD_BOOT_DECISION Decision)
+{
+    static const char* const Names[] =
+    {
+        "booted", "no record for this controller", "the firmware file is not resident", "BootDsp is 0"
     };
 
-    return &Platform;
+    if ((UINT32)Decision >= sizeof(Names) / sizeof(Names[0]))
+        return "unknown";
+    return Names[Decision];
 }
 
 const char*

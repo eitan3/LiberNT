@@ -323,7 +323,7 @@ HarnessBoot(
 {
     FWLOAD_CL_DMA Dma;
 
-    FakeDspInit(H->Dsp, FwloadPlatformArlS(), Faults);
+    FakeDspInit(H->Dsp, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S), Faults);
     FakeDspAccessBegin(H->Dsp, H->Access, HARNESS_ACCESS_ENTRIES);
     memset(&Dma, 0, sizeof(Dma));
     Dma.Virtual = H->Virtual;
@@ -335,7 +335,7 @@ HarnessBoot(
     Dma.BdlBytes = sizeof(H->Bdl);
     Dma.StreamTag = FWLOAD_CL_STREAM_TAG;
     Dma.StreamFormat = FWLOAD_CL_STREAM_FORMAT;
-    FwloadInitContext(H->Ctx, &H->Ops, H, FwloadPlatformArlS(), Image, &Dma, NULL);
+    FwloadInitContext(H->Ctx, &H->Ops, H, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S), Image, &Dma, NULL);
     H->IpcArmed = FALSE;
     H->InterruptsPerDelay = 0;
     H->ClockStalled = FALSE;
@@ -415,7 +415,7 @@ SameAccess(
     if (A->Op != B->Op || A->Bar != B->Bar || A->Offset != B->Offset)
         return FALSE;
     if (A->Op == FAKE_DSP_ACCESS_READ32 && A->Bar == FWLOAD_BAR_DSP &&
-        (A->Offset == FwloadPlatformArlS()->IpcReply || A->Offset == FwloadPlatformArlS()->IpcTarget))
+        (A->Offset == FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->IpcReply || A->Offset == FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->IpcTarget))
         return (A->Value & FWLOAD_IPC_DONE) == (B->Value & FWLOAD_IPC_DONE);
     return A->Value == B->Value;
 }
@@ -513,22 +513,22 @@ CheckRegisterOrderPin(
     }
     /* the steps by name: extension, primary with the busy bit, the two polls, the reply's header and extension, its payload, the acknowledgement */
     CHECK_EQ(Transport[0].Op, FAKE_DSP_ACCESS_WRITE32);
-    CHECK_EQ(Transport[0].Offset, FwloadPlatformArlS()->IpcRequestData);
+    CHECK_EQ(Transport[0].Offset, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->IpcRequestData);
     CHECK_EQ(Transport[0].Value, FWLOAD_PARAM_ID_FW_CONFIG << FWLOAD_PARAM_ID_SHIFT);
     CHECK_EQ(Transport[1].Op, FAKE_DSP_ACCESS_WRITE32);
-    CHECK_EQ(Transport[1].Offset, FwloadPlatformArlS()->IpcRequest);
+    CHECK_EQ(Transport[1].Offset, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->IpcRequest);
     CHECK_EQ(Transport[1].Value, 0xC1000000);
     CHECK_EQ(Transport[2].Op, FAKE_DSP_ACCESS_READ32);
-    CHECK_EQ(Transport[2].Offset, FwloadPlatformArlS()->IpcReply);
+    CHECK_EQ(Transport[2].Offset, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->IpcReply);
     CHECK_EQ(Transport[2].Value & FWLOAD_IPC_DONE, 0);
-    CHECK_EQ(Transport[3].Offset, FwloadPlatformArlS()->IpcTarget);
+    CHECK_EQ(Transport[3].Offset, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->IpcTarget);
     CHECK_EQ(Transport[4].Value, 0xE1000000);
-    CHECK_EQ(Transport[5].Offset, FwloadPlatformArlS()->IpcTargetData);
+    CHECK_EQ(Transport[5].Offset, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->IpcTargetData);
     CHECK_EQ(Transport[6].Op, FAKE_DSP_ACCESS_READMEMORY);
-    CHECK_EQ(Transport[6].Offset, FwloadPlatformArlS()->UplinkOffset);
+    CHECK_EQ(Transport[6].Offset, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->UplinkOffset);
     CHECK_EQ(Transport[6].Value, FWLOAD_MAILBOX_BYTES);
     CHECK_EQ(Transport[7].Op, FAKE_DSP_ACCESS_WRITE32);
-    CHECK_EQ(Transport[7].Offset, FwloadPlatformArlS()->IpcReply);
+    CHECK_EQ(Transport[7].Offset, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->IpcReply);
     CHECK_EQ(Transport[7].Value, FWLOAD_IPC_DONE);
     /* the reply is the loader's reply: status 0 and the same tuples */
     CHECK_EQ(H->Ipc.Last.ReplyPrimary, 0x61000000);

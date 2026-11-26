@@ -79,8 +79,8 @@ IntcDspReadImage(
     NTSTATUS Status;
     PINTCDSP_DEVICE Dev = Context;
 
-    RtlInitUnicodeString(&Path, INTCDSP_FIRMWARE_PATH);
-    Status = IntcDspReadFile(INTCDSP_FIRMWARE_PATH, &Buffer, &Count, INTCDSP_FIRMWARE_MAX_BYTES);
+    RtlInitUnicodeString(&Path, Dev->FirmwarePath);
+    Status = IntcDspReadFile(Dev->FirmwarePath, &Buffer, &Count, INTCDSP_FIRMWARE_MAX_BYTES);
     Dev->FirmwareReadStatus = Status;
     if (!NT_SUCCESS(Status))
     {
@@ -127,6 +127,27 @@ IntcDspFreeFirmware(
     RtlZeroMemory(&Dev->Image.Ri, sizeof(Dev->Image.Ri));
 }
 
+VOID
+IntcDspFirmwarePath(
+    _Inout_ PINTCDSP_DEVICE Dev)
+{
+    const WCHAR* Directory = INTCDSP_FIRMWARE_DIR;
+    const char* Name;
+    WCHAR* Out = Dev->FirmwarePath;
+    WCHAR* End = Out + INTCDSP_FIRMWARE_PATH_BYTES - 1;
+
+    Dev->FirmwarePath[0] = 0;
+    /* a controller without a record names no firmware file */
+    if (!Dev->Platform || !Dev->Platform->FirmwareName)
+        return;
+    while (*Directory && Out < End)
+        *Out++ = *Directory++;
+    /* the file name is the record's, narrow text of the table made wide */
+    for (Name = Dev->Platform->FirmwareName; *Name && Out < End; Name++)
+        *Out++ = (WCHAR)(UCHAR)*Name;
+    *Out = 0;
+}
+
 NTSTATUS
 IntcDspLoadFirmware(
     _Inout_ PINTCDSP_DEVICE Dev)
@@ -138,9 +159,15 @@ IntcDspLoadFirmware(
 
     /* read at the first call that finds no image, at start, and kept for the device: a power-up callback finds it resident and reads nothing */
     Resident = Dev->Image.Data != NULL && Dev->Image.Bytes != 0;
+    if (Dev->FirmwarePath[0] == 0)
+    {
+        /* nothing is read for a controller without a record; the boot's decision names the reason */
+        IntcDspLog("firmware: controller %04x has no record, no file is read\n", Dev->DevId);
+        return STATUS_NOT_FOUND;
+    }
     Status = FwloadImageEnsure(&Dev->Image, &IntcDspImageOps, Dev);
     Dev->FirmwareStatus = Status;
-    RtlInitUnicodeString(&Path, INTCDSP_FIRMWARE_PATH);
+    RtlInitUnicodeString(&Path, Dev->FirmwarePath);
     if (Status != FwloadOk)
     {
         if (Status != FwloadNoData && Status != FwloadOutOfMemory)

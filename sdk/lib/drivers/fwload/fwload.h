@@ -55,9 +55,9 @@
  * sof_ipc4_query_fw_configuration); the DSP-to-host receive path was learned from mtl.c
  * (mtl_ipc_irq_thread, mtl_ipc_dsp_done, mtl_ipc_host_done) with its registers from mtl.h.
  * All studied under LICENSING.md rule 7: own declarations, own comments, no text copied.
- * The Arrow Lake-S descriptor (arl_s_chip_info in pci-mtl.c)
- * selects mtl_dsp_cl_init, mtl_power_down_dsp, the HFIPCX registers and the HFFLGPXQWY status
- * register used here.
+ * The Arrow Lake-S descriptor (arl_s_chip_info in pci-mtl.c) and the Meteor Lake
+ * descriptor (mtl_chip_info) select the same mtl_dsp_cl_init, mtl_power_down_dsp,
+ * the HFIPCX registers and the HFFLGPXQWY status register used here.
  */
 
 #ifndef _DRIVERS_FWLOAD_FWLOAD_H_
@@ -416,9 +416,25 @@ typedef struct _FWLOAD_CL_DMA
     UINT32 Spib;
 } FWLOAD_CL_DMA, *PFWLOAD_CL_DMA;
 
-/* Register map of one DSP family; FwloadPlatformArlS() fills the ACE 1.0 map */
+/*
+ * The controllers whose DSP the ACE 1.0 map boots, by PCI device ID: the
+ * device part of the hdaudbus child's hardware ID (CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_<id>)
+ */
+#define FWLOAD_DEV_MTL              0x7E28
+#define FWLOAD_DEV_ARL_S            0x7F50
+
+/*
+ * The record of one controller in the platform table: its device ID, the
+ * Sound Open Firmware image its DSP runs (a file name, which the driver
+ * resolves beside its own directory), and the register map the boot and
+ * the transport use (BAR4 offsets and the constants the family names).
+ * Controllers that share a map share its definition; one whose map differs
+ * gets a record with its own offsets.
+ */
 typedef struct _FWLOAD_PLATFORM
 {
+    UINT32 DeviceId;
+    const char* FirmwareName;
     UINT32 SubsystemControl;        /* SPA bit 16, CPA bit 24 */
     UINT32 CoreControl;             /* owner bits 25:24, SPA bit 0, CPA bit 8 */
     UINT32 InterruptPointer;        /* bits 20:0 name the interrupt enable register */
@@ -440,6 +456,15 @@ typedef struct _FWLOAD_PLATFORM
     UINT32 DownlinkOffset;
     UINT32 MailboxBytes;
 } FWLOAD_PLATFORM, *PFWLOAD_PLATFORM;
+
+/* Why a controller's DSP is booted, or is not: the driver's boot policy as one decision over its three conditions */
+typedef enum _FWLOAD_BOOT_DECISION
+{
+    FwloadBootYes = 0,          /* booted */
+    FwloadBootNoRecord,         /* the controller has no record: no register map and no firmware file */
+    FwloadBootNoFirmware,       /* its firmware file is not resident */
+    FwloadBootNotRequested      /* the BootDsp value is 0 */
+} FWLOAD_BOOT_DECISION;
 
 typedef struct _FWLOAD_TIMEOUTS
 {
@@ -561,7 +586,11 @@ struct _FWLOAD_CONTEXT
 };
 
 VOID FwloadDefaultTimeouts(_Out_ PFWLOAD_TIMEOUTS Timeouts);
-const FWLOAD_PLATFORM* FwloadPlatformArlS(VOID);
+/* The record of the controller a device ID names, NULL for a controller the table does not name */
+const FWLOAD_PLATFORM* FwloadPlatformForDevice(UINT32 DeviceId);
+/* The boot policy: a record for the controller, its firmware image resident, and BootDsp set; the first condition that fails names the reason */
+FWLOAD_BOOT_DECISION FwloadBootDecision(_In_opt_ const FWLOAD_PLATFORM* Platform, BOOLEAN FirmwareResident, BOOLEAN BootDsp);
+const char* FwloadBootDecisionName(FWLOAD_BOOT_DECISION Decision);
 const char* FwloadStatusName(FWLOAD_STATUS Status);
 const char* FwloadStateName(FWLOAD_STATE State);
 const char* FwloadRomErrorName(UINT32 Code);

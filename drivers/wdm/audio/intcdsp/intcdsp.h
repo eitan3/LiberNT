@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT Intel Smart Sound DSP driver
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     Boots the Intel ACE 1.0 audio DSP of Arrow Lake-S/HX with Sound Open Firmware through the hdaudbus ADSP interface
+ * PURPOSE:     Boots the Intel ACE 1.0 audio DSP of Meteor Lake and Arrow Lake-S/HX with Sound Open Firmware through the hdaudbus ADSP interface
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -20,12 +20,12 @@
 
 #define INTCDSP_POOL_TAG 'PcDI'
 
-/* CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_7F50: the DSP child hdaudbus creates for this controller (drivers/wdm/audio/hdaudbus/buspdo.cpp) */
+/* CSAUDIO\ADSP&CTLR_VEN_8086&CTLR_DEV_<id>: the DSP children hdaudbus creates for the controllers (drivers/wdm/audio/hdaudbus/buspdo.cpp); the platform table names the ones this driver boots by the device IDs of fwload.h (FWLOAD_DEV_MTL, FWLOAD_DEV_ARL_S) and the firmware file of each */
 #define INTCDSP_VEN_INTEL         0x8086
-#define INTCDSP_DEV_ARL_S         0x7F50
 
-/* Firmware and the opt-in value: the INF ships the file next to LICENCE.Intel, the value is written into the service key */
-#define INTCDSP_FIRMWARE_PATH     L"\\SystemRoot\\System32\\drivers\\intel\\sof\\sof-arl-s.ri"
+/* The directory the firmware files ship in (the image puts them there); the file is the record's name, and BootDsp the opt-in value written into the service key */
+#define INTCDSP_FIRMWARE_DIR      L"\\SystemRoot\\System32\\drivers\\intel\\sof\\"
+#define INTCDSP_FIRMWARE_PATH_BYTES 96
 #define INTCDSP_SETTINGS_PATH     L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\intcdsp\\Settings"
 #define INTCDSP_SETTINGS_VALUE    L"BootDsp"
 #define INTCDSP_SETTINGS_SELFTEST L"SelfTest"
@@ -95,7 +95,8 @@ typedef struct _INTCDSP_DEVICE
     UINT32 RomError;
     NHLT_SUMMARY NhltSummary;
     NHLT_PARSE_STATUS NhltStatus;
-    /* the firmware image, read once at start and kept until the hardware is released (R6) */
+    /* the firmware image, read once at start and kept until the hardware is released (R6); the file is the device's record's, its path beside the driver's directory */
+    WCHAR FirmwarePath[INTCDSP_FIRMWARE_PATH_BYTES];
     FWLOAD_IMAGE Image;
     FWLOAD_STATUS FirmwareStatus;
     NTSTATUS FirmwareReadStatus;
@@ -182,6 +183,11 @@ IntcDspReadSetting(
 const SOFIPC_OPS*
 IntcDspIpcOpsTable(
     VOID);
+
+/* The firmware file of the device's record: its path under INTCDSP_FIRMWARE_DIR, empty for a controller without a record */
+VOID
+IntcDspFirmwarePath(
+    _Inout_ PINTCDSP_DEVICE Dev);
 
 NTSTATUS
 IntcDspLoadFirmware(

@@ -91,8 +91,8 @@ BootWith(
     FWLOAD_STATUS Expected,
     FWLOAD_STATE ExpectedState)
 {
-    FakeDspInit(Dsp, FwloadPlatformArlS(), Faults);
-    FwloadInitContext(Context, FakeDspOps(), Dsp, FwloadPlatformArlS(), Parsed, Dma, NULL);
+    FakeDspInit(Dsp, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S), Faults);
+    FwloadInitContext(Context, FakeDspOps(), Dsp, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S), Parsed, Dma, NULL);
     /* the driver keeps one context for the device and re-initializes it in place for every boot (R4): nothing of the boot before survives it */
     ok_eq_uint(Context->State, FwloadStateOff);
     ok_eq_int(Context->Status, FwloadOk);
@@ -134,8 +134,8 @@ CheckInterruptGuard(
 {
     UINT32 Index;
 
-    FakeDspInit(Dsp, FwloadPlatformArlS(), NULL);
-    FwloadInitContext(Context, FakeDspOps(), Dsp, FwloadPlatformArlS(), Parsed, Dma, NULL);
+    FakeDspInit(Dsp, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S), NULL);
+    FwloadInitContext(Context, FakeDspOps(), Dsp, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S), Parsed, Dma, NULL);
     ok(!FwloadInterruptService(Context), "a line with no message pending was claimed\n");
     Dsp->IpcTarget = FWLOAD_IPC_BUSY | SOFIPC4_FW_READY_PRIMARY;
     for (Index = 1; Index < FWLOAD_INTERRUPT_STORM_LIMIT; Index++)
@@ -365,8 +365,8 @@ START_TEST(Fwload)
     CheckInterruptGuard(Dsp, Context, &Parsed, &Dma);
 
     /* a boot without the operations context stops before the model sees a single access */
-    FakeDspInit(Dsp, FwloadPlatformArlS(), NULL);
-    FwloadInitContext(Context, FakeDspOps(), NULL, FwloadPlatformArlS(), &Parsed, &Dma, NULL);
+    FakeDspInit(Dsp, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S), NULL);
+    FwloadInitContext(Context, FakeDspOps(), NULL, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S), &Parsed, &Dma, NULL);
     ok_eq_int(FwloadBoot(Context), FwloadBadState);
     ok_eq_uint(Context->State, FwloadStateOff);
     ok_eq_ulonglong(Dsp->Clock, 0);
@@ -420,7 +420,7 @@ START_TEST(Fwload)
     }
 
     /* the descriptor list of the stream is checked by the model */
-    FakeDspInit(Dsp, FwloadPlatformArlS(), NULL);
+    FakeDspInit(Dsp, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S), NULL);
     Dma.BdlCapacity = 1;
     ok_eq_int(FwloadClDmaPrepare(&Dma, Image + Parsed.PayloadOffset, Parsed.PayloadBytes), FwloadOk);
     ok_eq_uint(Dma.FragmentCount, 1);
@@ -455,7 +455,7 @@ START_TEST(Fwload)
     ok_eq_uint(Dma.Bdl[1].AddressLow, 0);
     ok_eq_uint(Dma.Bdl[1].AddressHigh, 1);
     ok_eq_uint(Dma.Bdl[1].Bytes, 0x1000);
-    FakeDspInit(Dsp, FwloadPlatformArlS(), NULL);
+    FakeDspInit(Dsp, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S), NULL);
     ok_eq_int(FakeDspOps()->StreamSubmit(Dsp, &Dma), FwloadOk);
     ok_eq_uint(Dsp->DmaErrors, 0);
 

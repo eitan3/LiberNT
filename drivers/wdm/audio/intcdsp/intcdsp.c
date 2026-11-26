@@ -273,6 +273,15 @@ IntcDspSelfTestMap(
     return Virtual;
 }
 
+/* Whether the device's firmware image is resident: read at start and kept for the device (R6) */
+static
+BOOLEAN
+IntcDspFirmwareResident(
+    _In_ PINTCDSP_DEVICE Dev)
+{
+    return Dev->Image.Data != NULL && Dev->Image.Bytes != 0;
+}
+
 /* The self-test's wait for the capture's periods: the manager's wait on the device's period event, which the bus's interrupt DPC sets */
 static
 NTSTATUS
@@ -405,6 +414,7 @@ IntcDspBoot(
     const FWLOAD_PLATFORM* Platform = Dev->Platform;
     FWLOAD_TIMEOUTS Timeouts;
     FWLOAD_CL_DMA Dma;
+    FWLOAD_BOOT_DECISION Decision;
     HDAUDIO_STREAM_FORMAT Format;
     PHYSICAL_ADDRESS Low, High, Boundary;
     const SOFIPC4_FW_REGS* Registers;
@@ -415,23 +425,20 @@ IntcDspBoot(
 
     if (Dev->Booted)
         return STATUS_SUCCESS;
-    if (!Platform)
+    /* the boot policy as one decision (fwload.c FwloadBootDecision): a record for this controller, its firmware file resident and BootDsp set; the file is read first, so a controller without a record or without its file stops here, before any register is written */
+    NtStatus = IntcDspLoadFirmware(Dev);
+    Decision = FwloadBootDecision(Platform, NT_SUCCESS(NtStatus), Dev->BootDsp != 0);
+    if (Decision != FwloadBootYes)
     {
-        IntcDspLog("controller %04x has no register map; the DSP is left alone\n", Dev->DevId);
-        return STATUS_SUCCESS;
+        IntcDspLog("boot: %s; the DSP is left alone\n", FwloadBootDecisionName(Decision));
+        Dev->LastStatus = Dev->FirmwareStatus;
+        return NT_SUCCESS(NtStatus) ? STATUS_SUCCESS : NtStatus;
     }
     if (!Dev->AdspBar.Base.Base || Dev->AdspBar.Len < INTCDSP_BAR4_MIN_BYTES || !Dev->Ppcap)
     {
         IntcDspLog("BAR4 (%p, 0x%lx bytes, needs 0x%x) or the processing capabilities (%p) are missing; the DSP is left alone\n",
                    Dev->AdspBar.Base.Base, Dev->AdspBar.Len, INTCDSP_BAR4_MIN_BYTES, Dev->Ppcap);
         return STATUS_SUCCESS;
-    }
-
-    NtStatus = IntcDspLoadFirmware(Dev);
-    if (!NT_SUCCESS(NtStatus))
-    {
-        Dev->LastStatus = Dev->FirmwareStatus;
-        return NtStatus;
     }
 
     Dev->DmaBytes = (SIZE_T)ROUND_TO_PAGES((ULONG)Dev->Image.Ri.PayloadBytes);
@@ -582,6 +589,7 @@ IntcDspEvtDevicePrepareHardware(
 {
     PINTCDSP_DEVICE Dev = IntcDspGetData(Device);
     volatile ULONG* Ppcap;
+    FWLOAD_BOOT_DECISION Decision;
     NTSTATUS Status;
 
     UNREFERENCED_PARAMETER(ResourcesRaw);
@@ -611,7 +619,9 @@ IntcDspEvtDevicePrepareHardware(
     }
     Dev->DevId = Dev->Bus.CtlrDevId;
     Dev->VenId = INTCDSP_VEN_INTEL;
-    Dev->Platform = (Dev->DevId == INTCDSP_DEV_ARL_S) ? FwloadPlatformArlS() : NULL;
+    /* the controller's record names its register map and its firmware file, which the path is built from; NULL for a controller the table does not name */
+    Dev->Platform = FwloadPlatformForDevice(Dev->DevId);
+    IntcDspFirmwarePath(Dev);
 
     Ppcap = Dev->Ppcap;
     if (Ppcap)
@@ -624,13 +634,27 @@ IntcDspEvtDevicePrepareHardware(
     IntcDspLoadFirmware(Dev);
 
     Status = IntcDspReadSetting(INTCDSP_SETTINGS_VALUE, &Dev->BootDsp);
-    if (NT_SUCCESS(Status))
-        IntcDspLog("BootDsp = %lu: %s\n", Dev->BootDsp,
-                   Dev->BootDsp ? (Dev->Platform ? "the DSP is booted at the next D0 entry" : "no register map for this controller, probe only")
-                                : "probe only, the DSP is not touched");
-    else
+    if (!NT_SUCCESS(Status))
+    {
+        Dev->BootDsp = 0;
         IntcDspLog("BootDsp is not set (%s): probe only, the DSP is not touched\n",
                    (Status == STATUS_OBJECT_NAME_NOT_FOUND) ? "value absent" : "unreadable");
+        return STATUS_SUCCESS;
+    }
+    Decision = FwloadBootDecision(Dev->Platform, IntcDspFirmwareResident(Dev), Dev->BootDsp != 0);
+    switch (Decision)
+    {
+        case FwloadBootYes:
+            IntcDspLog("BootDsp = %lu: the DSP is booted at the next D0 entry with '%s'\n", Dev->BootDsp, Dev->Platform->FirmwareName);
+            break;
+        case FwloadBootNotRequested:
+            IntcDspLog("BootDsp = %lu: probe only, the DSP is not touched\n", Dev->BootDsp);
+            break;
+        default:
+            /* the two reasons a set value cannot boot: the controller has no record, or its file is not there */
+            IntcDspLog("BootDsp = %lu: %s, probe only\n", Dev->BootDsp, FwloadBootDecisionName(Decision));
+            break;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -671,6 +695,7 @@ IntcDspEvtDeviceReleaseHardware(
     Dev->Ppcap = NULL;
     Dev->Nhlt.Nhlt = NULL;
     Dev->Nhlt.NhltSz = 0;
+    Dev->FirmwarePath[0] = 0;
     Dev->Platform = NULL;
     return STATUS_SUCCESS;
 }

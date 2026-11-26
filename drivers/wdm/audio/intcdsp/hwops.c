@@ -361,7 +361,8 @@ VOID
 IntcDspProbe(
     _Inout_ PINTCDSP_DEVICE Dev)
 {
-    const FWLOAD_PLATFORM* Platform = FwloadPlatformArlS();
+    /* the map of the device's own record, NULL for a controller the table does not name */
+    const FWLOAD_PLATFORM* Platform = Dev->Platform;
     UINT32 CapId, Offset, State;
 
     CapId = (Dev->PpCapHeader & INTCDSP_CAP_ID_MASK) >> INTCDSP_CAP_ID_SHIFT;

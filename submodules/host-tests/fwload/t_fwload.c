@@ -53,6 +53,9 @@ static int Failures;
 /* the descriptor list hdaudbus gives a stream: 4096 bytes */
 #define STREAM_BDL_ENTRIES  256
 #define HARNESS_BDL_ENTRIES 1024
+/* The Meteor Lake image the driver ships beside it (drivers/wdm/audio/intcdsp/firmware, read from there: the test does not duplicate the blob), intel-signed/sof-mtl.ri of the same package, the same size */
+#define MTL_IMAGE_BYTES     1158164
+#define MTL_IMAGE_FNV1A64   0x3755AE5808363040ULL
 
 #define HARNESS_SIGNATURE   0x4841524E45535321ULL
 
@@ -322,14 +325,15 @@ HarnessInit(
 
 static
 void
-HarnessBoot(
+HarnessBootPlatform(
     HARNESS* H,
+    const FWLOAD_PLATFORM* Platform,
     const SOF_RI_IMAGE* Image,
     const FAKE_DSP_FAULTS* Faults)
 {
     FWLOAD_CL_DMA Dma;
 
-    FakeDspInit(H->Dsp, FwloadPlatformArlS(), Faults);
+    FakeDspInit(H->Dsp, Platform, Faults);
     memset(&Dma, 0, sizeof(Dma));
     Dma.Virtual = H->Virtual;
     Dma.Capacity = H->Bytes;
@@ -340,7 +344,7 @@ HarnessBoot(
     Dma.BdlBytes = H->BdlCapacity * sizeof(FWLOAD_BDL_ENTRY);
     Dma.EntryBoundary = H->EntryBoundary;
     Dma.StreamTag = (UINT8)H->StreamTag;
-    FwloadInitContext(H->Ctx, &HarnessOps, H, FwloadPlatformArlS(), Image, &Dma, &H->Timeouts);
+    FwloadInitContext(H->Ctx, &HarnessOps, H, Platform, Image, &Dma, &H->Timeouts);
     /* the driver keeps one context for the device and re-initializes it in place for every boot (R4): nothing of the boot before survives it */
     CHECK_EQ(H->Ctx->State, FwloadStateOff);
     CHECK_EQ(H->Ctx->Status, FwloadOk);
@@ -353,6 +357,17 @@ HarnessBoot(
     H->OpsSeen = 0;
     H->ClockStalled = FALSE;
     H->InterruptsPerDelay = 0;
+}
+
+/* The boot the cases run: the Arrow Lake-S record with its image */
+static
+void
+HarnessBoot(
+    HARNESS* H,
+    const SOF_RI_IMAGE* Image,
+    const FAKE_DSP_FAULTS* Faults)
+{
+    HarnessBootPlatform(H, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S), Image, Faults);
 }
 
 static
@@ -540,7 +555,7 @@ CheckBootWrites(
     UINT32 InterruptWrites)
 {
     const FAKE_DSP* Dsp = H->Dsp;
-    const FWLOAD_PLATFORM* Platform = FwloadPlatformArlS();
+    const FWLOAD_PLATFORM* Platform = FwloadPlatformForDevice(FWLOAD_DEV_ARL_S);
     const FAKE_DSP_WRITE* Request;
     const FAKE_DSP_WRITE* CoreSpa;
     const FAKE_DSP_WRITE* Done;
@@ -766,7 +781,7 @@ CheckHappyPath(
     HarnessBoot(H, Image, NULL);
     CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
     CHECK_EQ(H->Ctx->Dma.StreamTag, 2);
-    Request = FakeDspWriteFind(H->Dsp, FWLOAD_BAR_DSP, FwloadPlatformArlS()->IpcRequest, 0x80000000UL);
+    Request = FakeDspWriteFind(H->Dsp, FWLOAD_BAR_DSP, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->IpcRequest, 0x80000000UL);
     CHECK(Request != NULL && Request->Value == 0x81004200UL);
     CHECK_EQ(H->Dsp->DmaErrors, 0);
     CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
@@ -900,7 +915,7 @@ CheckFwConfigReply(
     HARNESS* H,
     const SOF_RI_IMAGE* Image)
 {
-    const FWLOAD_PLATFORM* Platform = FwloadPlatformArlS();
+    const FWLOAD_PLATFORM* Platform = FwloadPlatformForDevice(FWLOAD_DEV_ARL_S);
     FAKE_DSP_FAULTS Faults;
     UINT32 Index, Query = 0xFFFFFFFF, Acks = 0, LastAck = 0;
 
@@ -1253,7 +1268,7 @@ CheckInterruptPointer(
     HARNESS* H,
     const SOF_RI_IMAGE* Image)
 {
-    const FWLOAD_PLATFORM* Platform = FwloadPlatformArlS();
+    const FWLOAD_PLATFORM* Platform = FwloadPlatformForDevice(FWLOAD_DEV_ARL_S);
     /* zero, an odd address, the last address of the pointer's field, and the bus's all ones */
     static const UINT32 NoRegister[] = { 0, 1, 0x1D01, 0x1FFFFF, 0xFFFFFFFF };
     FAKE_DSP_FAULTS Faults;
@@ -1418,7 +1433,7 @@ CheckInterruptService(
     HARNESS* H,
     const SOF_RI_IMAGE* Image)
 {
-    const FWLOAD_PLATFORM* Platform = FwloadPlatformArlS();
+    const FWLOAD_PLATFORM* Platform = FwloadPlatformForDevice(FWLOAD_DEV_ARL_S);
     FWLOAD_INTERRUPT_STATE State;
     UINT32 Writes, Index;
 
@@ -2497,12 +2512,123 @@ CheckNames(
     CHECK_STR(FwloadStateName(FwloadStateReady), "ready");
     CHECK_STR(FwloadStateName(FwloadStateFailed), "failed");
     CHECK_STR(FwloadStateName((FWLOAD_STATE)999), "unknown");
-    CHECK(FwloadPlatformArlS() == FwloadPlatformArlS());
-    CHECK_EQ(FwloadPlatformArlS()->RomStatus, 0x163200);
-    CHECK_EQ(FwloadPlatformArlS()->IpcRequest, 0x73210);
-    CHECK_EQ(FwloadPlatformArlS()->IpcReply, 0x73214);
-    CHECK_EQ(FwloadPlatformArlS()->Window0Offset, 0x180000);
-    CHECK_EQ(FwloadPlatformArlS()->UplinkOffset, 0x181000);
+    CHECK(FwloadPlatformForDevice(FWLOAD_DEV_ARL_S) == FwloadPlatformForDevice(FWLOAD_DEV_ARL_S));
+    CHECK_EQ(FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->RomStatus, 0x163200);
+    CHECK_EQ(FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->IpcRequest, 0x73210);
+    CHECK_EQ(FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->IpcReply, 0x73214);
+    CHECK_EQ(FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->Window0Offset, 0x180000);
+    CHECK_EQ(FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->UplinkOffset, 0x181000);
+}
+
+/*
+ * The platform table: the two controllers resolve to their records and
+ * their firmware files, both records carry the ACE 1.0 map of mtl.h (every
+ * offset, the same ones), a controller the table does not name resolves to
+ * none, and the real sof-mtl.ri boots under the 7E28 record with the model
+ * seeing no access outside the map (and under the Arrow Lake-S record too,
+ * the map being one). The boot decision's four answers.
+ */
+static
+void
+CheckPlatforms(
+    HARNESS* H,
+    PSOF_RI_MODULE Modules)
+{
+    /* the map of mtl.h, at v6.12 and at master alike, in the record's order */
+    static const UINT32 Map[] =
+    {
+        0x1000, 0x178D04, 0x1108, 0x00000001, 0x00000040, 0x1140, 0x73210, 0x73380, 0x73214, 0x73228,
+        0x73200, 0x73204, 0x73300, 0x163200, 0x163204, 0x180000, 0x8000, 0x181000, 0x188000, 0x1000
+    };
+    static const size_t Fields[] =
+    {
+        offsetof(FWLOAD_PLATFORM, SubsystemControl), offsetof(FWLOAD_PLATFORM, CoreControl), offsetof(FWLOAD_PLATFORM, InterruptPointer),
+        offsetof(FWLOAD_PLATFORM, InterruptEnableHostIpc), offsetof(FWLOAD_PLATFORM, InterruptEnableSoundwire), offsetof(FWLOAD_PLATFORM, HostIpcInterruptEnable),
+        offsetof(FWLOAD_PLATFORM, IpcRequest), offsetof(FWLOAD_PLATFORM, IpcRequestData), offsetof(FWLOAD_PLATFORM, IpcReply), offsetof(FWLOAD_PLATFORM, IpcControl),
+        offsetof(FWLOAD_PLATFORM, IpcTarget), offsetof(FWLOAD_PLATFORM, IpcTargetAck), offsetof(FWLOAD_PLATFORM, IpcTargetData), offsetof(FWLOAD_PLATFORM, RomStatus),
+        offsetof(FWLOAD_PLATFORM, RomError), offsetof(FWLOAD_PLATFORM, Window0Offset), offsetof(FWLOAD_PLATFORM, WindowStride), offsetof(FWLOAD_PLATFORM, UplinkOffset),
+        offsetof(FWLOAD_PLATFORM, DownlinkOffset), offsetof(FWLOAD_PLATFORM, MailboxBytes)
+    };
+    /* controllers of the same family the INF lists as probe-only, and ids that are none */
+    static const UINT32 Unnamed[] = { 0x7728, 0xA828, 0xE328, 0xE428, 0, 0xFFFFFFFF };
+    const FWLOAD_PLATFORM* Records[] = { FwloadPlatformForDevice(FWLOAD_DEV_MTL), FwloadPlatformForDevice(FWLOAD_DEV_ARL_S) };
+    static const char* const Firmware[] = { "sof-mtl.ri", "sof-arl-s.ri" };
+    SOF_RI_IMAGE MtlImage;
+    char Path[512];
+    UINT8* Data;
+    FILE* File;
+    UINT32 I, K;
+
+    CHECK_EQ(sizeof(Map) / sizeof(Map[0]), sizeof(Fields) / sizeof(Fields[0]));
+    for (K = 0; K < 2; K++)
+    {
+        CHECK(Records[K] != NULL);
+        if (!Records[K])
+            continue;
+        CHECK_EQ(Records[K]->DeviceId, K == 0 ? FWLOAD_DEV_MTL : FWLOAD_DEV_ARL_S);
+        CHECK(Records[K]->FirmwareName != NULL);
+        if (Records[K]->FirmwareName)
+            CHECK_STR(Records[K]->FirmwareName, Firmware[K]);
+        for (I = 0; I < sizeof(Map) / sizeof(Map[0]); I++)
+            CHECK_EQ(*(const UINT32*)((const char*)Records[K] + Fields[I]), Map[I]);
+        /* the same record each time, and the other one for the other controller */
+        CHECK(FwloadPlatformForDevice(Records[K]->DeviceId) == Records[K]);
+    }
+    for (I = 0; I < sizeof(Unnamed) / sizeof(Unnamed[0]); I++)
+        CHECK(FwloadPlatformForDevice(Unnamed[I]) == NULL);
+
+    /* the boot decision: the first condition that fails is the reason; all three hold is the boot */
+    CHECK_EQ(FwloadBootDecision(NULL, TRUE, TRUE), FwloadBootNoRecord);
+    CHECK_EQ(FwloadBootDecision(NULL, FALSE, FALSE), FwloadBootNoRecord);
+    CHECK_EQ(FwloadBootDecision(Records[0], FALSE, TRUE), FwloadBootNoFirmware);
+    CHECK_EQ(FwloadBootDecision(Records[1], FALSE, TRUE), FwloadBootNoFirmware);
+    CHECK_EQ(FwloadBootDecision(Records[0], TRUE, FALSE), FwloadBootNotRequested);
+    CHECK_EQ(FwloadBootDecision(Records[1], TRUE, FALSE), FwloadBootNotRequested);
+    CHECK_EQ(FwloadBootDecision(Records[0], TRUE, TRUE), FwloadBootYes);
+    CHECK_EQ(FwloadBootDecision(Records[1], TRUE, TRUE), FwloadBootYes);
+    CHECK_STR(FwloadBootDecisionName(FwloadBootYes), "booted");
+    CHECK_STR(FwloadBootDecisionName(FwloadBootNoRecord), "no record for this controller");
+    CHECK_STR(FwloadBootDecisionName(FwloadBootNoFirmware), "the firmware file is not resident");
+    CHECK_STR(FwloadBootDecisionName(FwloadBootNotRequested), "BootDsp is 0");
+    CHECK_STR(FwloadBootDecisionName((FWLOAD_BOOT_DECISION)999), "unknown");
+
+    /* the real sof-mtl.ri under the 7E28 record: parsed like the Arrow Lake-S image, booted through the model with no access outside the map */
+    snprintf(Path, sizeof(Path), "%s/sof-mtl.ri", FWLOAD_FIRMWARE_DIR);
+    File = fopen(Path, "rb");
+    if (File == NULL)
+    {
+        fprintf(stderr, "cannot open %s\n", Path);
+        exit(2);
+    }
+    Data = (UINT8*)malloc(MTL_IMAGE_BYTES);
+    if (Data == NULL)
+        exit(2);
+    CHECK_EQ(fread(Data, 1, MTL_IMAGE_BYTES, File), MTL_IMAGE_BYTES);
+    CHECK(fgetc(File) == EOF);
+    fclose(File);
+    CHECK_EQ(Fnv1a64(Data, MTL_IMAGE_BYTES), MTL_IMAGE_FNV1A64);
+    memset(&MtlImage, 0, sizeof(MtlImage));
+    memset(Modules, 0, 64 * sizeof(Modules[0]));
+    CHECK_EQ(SofRiParse(Data, MTL_IMAGE_BYTES, Modules, 64, &MtlImage), FwloadOk);
+    CHECK(MtlImage.ModuleCount != 0);
+    printf("fwload: sof-mtl.ri: image '%s' version %u.%u.%u.%u, %u modules, payload 0x%llx + 0x%llx\n",
+           MtlImage.Name, MtlImage.Major, MtlImage.Minor, MtlImage.Hotfix, MtlImage.Build, MtlImage.ModuleCount,
+           (unsigned long long)MtlImage.PayloadOffset, (unsigned long long)MtlImage.PayloadBytes);
+    if (Records[0] && Records[1])
+    {
+        for (K = 0; K < 2; K++)
+        {
+            HarnessBootPlatform(H, Records[K], &MtlImage, NULL);
+            CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+            CHECK_EQ(H->Ctx->State, FwloadStateReady);
+            CHECK_EQ(H->Ctx->Status, FwloadOk);
+            CHECK_EQ(H->Ctx->Dma.Bytes, MtlImage.PayloadBytes);
+            CHECK_EQ(H->Dsp->DmaErrors, 0);
+            CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
+            CHECK_EQ(H->Dsp->RomRequests, 1);
+        }
+    }
+    free(Data);
 }
 
 static
@@ -2591,6 +2717,7 @@ main(
     CheckSyntheticImage(&H);
     CheckMalformedReal(Data);
     CheckNames();
+    CheckPlatforms(&H, Modules);
     free(Data);
     free(Image);
     free(Modules);

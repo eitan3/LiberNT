@@ -238,7 +238,7 @@ SofIpcHarnessBoot(
 {
     FWLOAD_CL_DMA Dma;
 
-    FakeDspInit(H->Dsp, FwloadPlatformArlS(), Faults);
+    FakeDspInit(H->Dsp, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S), Faults);
     FakeDspAccessBegin(H->Dsp, H->Access, SOFIPC_TEST_ACCESS);
     RtlZeroMemory(&Dma, sizeof(Dma));
     Dma.Virtual = H->Virtual;
@@ -250,7 +250,7 @@ SofIpcHarnessBoot(
     Dma.BdlBytes = sizeof(H->Bdl);
     Dma.StreamTag = FWLOAD_CL_STREAM_TAG;
     Dma.StreamFormat = FWLOAD_CL_STREAM_FORMAT;
-    FwloadInitContext(H->Ctx, &H->Ops, H, FwloadPlatformArlS(), Image, &Dma, NULL);
+    FwloadInitContext(H->Ctx, &H->Ops, H, FwloadPlatformForDevice(FWLOAD_DEV_ARL_S), Image, &Dma, NULL);
     H->IpcArmed = FALSE;
     H->InterruptsPerDelay = 0;
     H->LockHeld = FALSE;
@@ -299,7 +299,7 @@ SameAccess(
     if (A->Op != B->Op || A->Bar != B->Bar || A->Offset != B->Offset)
         return FALSE;
     if (A->Op == FAKE_DSP_ACCESS_READ32 && A->Bar == FWLOAD_BAR_DSP &&
-        (A->Offset == FwloadPlatformArlS()->IpcReply || A->Offset == FwloadPlatformArlS()->IpcTarget))
+        (A->Offset == FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->IpcReply || A->Offset == FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->IpcTarget))
         return (A->Value & FWLOAD_IPC_DONE) == (B->Value & FWLOAD_IPC_DONE);
     return A->Value == B->Value;
 }

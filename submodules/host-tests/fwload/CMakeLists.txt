@@ -33,4 +33,6 @@ fwload_test(fwload t_fwload.c fake_dsp.c fake_bus.c
     ${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/sofipc4/sofipc4.c
     ${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/intcdsp/adspbus.c)
 target_compile_definitions(fwload PRIVATE
-    FWLOAD_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+    FWLOAD_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+    # the Meteor Lake image the driver ships, read where it ships: the test does not duplicate the blob
+    FWLOAD_FIRMWARE_DIR="${REACTOS_HOST_SOURCE_ROOT}/drivers/wdm/audio/intcdsp/firmware")
