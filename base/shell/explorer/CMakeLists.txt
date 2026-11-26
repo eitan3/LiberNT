@@ -20,6 +20,7 @@ list(APPEND SOURCE
     startctxmnu.cpp
     startmnu.cpp
     startmnu2.cpp
+    startmodel.cpp
     startmnucust.cpp
     startmnusite.cpp
     startup.cpp
