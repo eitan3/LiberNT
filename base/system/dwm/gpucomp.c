@@ -1462,6 +1462,7 @@ DwmGpuComposeWindowMeasured(const DWM_WIN *Window, const BYTE *Pixels,
     Client.BasePitch = Window->DxPitch;
     Client.BaseFormat = Window->DxFormat;
     Client.CornerRadius = 0;
+    Client.LiberMaterial = 0;
     if (Window->AnimFlags != 0)
     {
         LONGLONG Left, Top, Right, Bottom;

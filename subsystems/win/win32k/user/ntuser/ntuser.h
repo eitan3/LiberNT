@@ -68,6 +68,8 @@ extern ATOM AtomDwmNcRenderingPolicy;
 extern ATOM AtomDwmTransition;
 extern ATOM AtomDwmTransitionFromLT;
 extern ATOM AtomDwmTransitionFromRB;
+extern ATOM AtomDwmLiberMaterial;
+extern ATOM AtomDwmLiberMaterialTint;
 BOOLEAN FASTCALL IntIsPrivatePropertyAtom(_In_ ATOM Atom);
 typedef struct _USER_CRIT
 {
