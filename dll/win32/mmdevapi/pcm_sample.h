@@ -126,17 +126,15 @@ pcm_dither_next(pcm_dither *dither)
 static __inline void
 write_pcm_sample_dithered(BYTE *data, WORD bits, WORD valid_bits, INT32 value, pcm_dither *dither)
 {
-    UINT32 raw, first, second;
+    UINT32 first, second;
     WORD shift;
 
     if (!valid_bits || valid_bits > bits)
         valid_bits = bits;
-    raw = (UINT32)value;
     shift = (WORD)(32 - valid_bits);
     /* One LSB at the target depth is 2^shift in the 32-bit mix word; two uniform
        words of that size differ to a triangle from -1 to +1 LSB */
     first = pcm_dither_next(dither) >> shift;
     second = pcm_dither_next(dither) >> shift;
-    raw += first - second;
-    write_pcm_sample(data, bits, valid_bits, (INT32)raw);
+    write_pcm_sample(data, bits, valid_bits, saturate_sample((INT64)value + first - second));
 }

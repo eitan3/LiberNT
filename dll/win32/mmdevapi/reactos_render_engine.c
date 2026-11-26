@@ -975,6 +975,7 @@ create_local_endpoint(
     endpoint->endpoint_index = endpoint_index;
     endpoint->format = *format;
     endpoint->transport_ops = *transport_ops;
+    endpoint->dither = (pcm_dither)PCM_DITHER_INIT;
     if (!get_current_process_start_time(&endpoint->process_start_time))
         ZeroMemory(&endpoint->process_start_time, sizeof(endpoint->process_start_time));
 
