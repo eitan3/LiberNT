@@ -728,6 +728,8 @@ Fdo_EvtDevicePrepareHardware(
 {
     PCM_PARTIAL_RESOURCE_DESCRIPTOR bar0Descriptor = NULL;
     PCM_PARTIAL_RESOURCE_DESCRIPTOR bar4Descriptor = NULL;
+    /* the raw list's entry of BAR4, as the bus decoded the register: the one Fdo_ResourceIsPciBar4 compares the register with (R1-15) */
+    PCM_PARTIAL_RESOURCE_DESCRIPTOR bar4RawDescriptor = NULL;
     WDF_INTERRUPT_INFO interruptInfo;
     NTSTATUS status;
     PFDO_CONTEXT fdoCtx;
@@ -870,6 +872,12 @@ Fdo_EvtDevicePrepareHardware(
             else if (bar4Descriptor == NULL)
             {
                 bar4Descriptor = pDescriptor;
+                if (i < rawResourceCount)
+                {
+                    bar4RawDescriptor = WdfCmResourceListGetDescriptor(ResourcesRaw, i);
+                    if (bar4RawDescriptor != NULL && bar4RawDescriptor->Type != CmResourceTypeMemory)
+                        bar4RawDescriptor = NULL;
+                }
             }
             else
             {
@@ -975,12 +983,14 @@ Fdo_EvtDevicePrepareHardware(
                 bar4Descriptor->u.Memory.Start.QuadPart,
                 fdoCtx->m_BAR4.Len,
                 fdoCtx->m_BAR4.Base.Base);
-            fdoCtx->Bar4IsPciBar4 = Fdo_ResourceIsPciBar4(fdoCtx, bar4Descriptor->u.Memory.Start);
+            /* the register holds the address the bus decoded, which a bridge may have translated on the way to the resource: the comparison is with the raw entry (R1-15) */
+            fdoCtx->Bar4IsPciBar4 = Fdo_ResourceIsPciBar4(fdoCtx, bar4RawDescriptor != NULL ? bar4RawDescriptor->u.Memory.Start : bar4Descriptor->u.Memory.Start);
             if (!fdoCtx->Bar4IsPciBar4)
             {
                 SklHdAudBusPrint(DEBUG_LEVEL_ERROR, DBG_PNP,
-                    "The second memory resource 0x%I64x is not the resource of PCI BAR4 (register 0x%08x); the ADSP child is not created\n",
+                    "The second memory resource 0x%I64x (raw 0x%I64x) is not the resource of PCI BAR4 (register 0x%08x); the ADSP child is not created\n",
                     bar4Descriptor->u.Memory.Start.QuadPart,
+                    bar4RawDescriptor != NULL ? bar4RawDescriptor->u.Memory.Start.QuadPart : bar4Descriptor->u.Memory.Start.QuadPart,
                     fdoCtx->Bar4Register);
             }
         }
