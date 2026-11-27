@@ -99,7 +99,10 @@ typedef struct _SOFIPC_NOTIFICATION
  * own operations, reached through the loader context the transport hangs off. RequestLock and RequestUnlock are
  * optional: without them the caller serializes the requests itself, and a request that re-enters a context whose
  * exchange is still running fails busy at once. With them, RequestLock waits up to its timeout for the lock of
- * the only request the mailbox can carry and says whether it got it.
+ * the only request the mailbox can carry and says whether it got it. The contract of that timeout: a timeout
+ * of zero never waits, the lock is tried once and the request is answered SofIpcBusy at once when another
+ * request holds it, exactly as a wait that ran out; the driver's notification poll relies on this (a positive
+ * timeout waits up to it, and never past it).
  */
 typedef struct _SOFIPC_OPS
 {
