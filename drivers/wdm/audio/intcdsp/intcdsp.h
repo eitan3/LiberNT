@@ -154,6 +154,9 @@ typedef struct _INTCDSP_DEVICE
     SIZE_T StreamsStateBytes;
     INTCDSP_STREAMS_OPS StreamOps;
     INTCDSP_SELFTEST_OPS SelfTestOps;
+    /* the poll point of an asynchronous exception (E1c): the DPC the interrupt callback queues at each of its runs, a period's included, and the work item that DPC queues when the uplink's pending bit is set; the work item is the device's child and goes with it */
+    KDPC PeriodDpc;
+    WDFWORKITEM PollWorkItem;
     /* the audio children: the topology the child list last reported, by the generation of the model (topology.c counts one up whenever the model is built or dropped) and by whether a model was resident (E1: powered or not) */
     ULONG TopologyGeneration;
     ULONG AudioReportedGeneration;
@@ -189,6 +192,14 @@ IntcDspClockFrequency(
 PADSP_INTERRUPT_CALLBACK
 IntcDspInterruptRoutine(
     VOID);
+
+/* The DPC of the poll point of an asynchronous exception (E1c, intcdsp.c): the interrupt callback queues it at each of its runs, a period's included */
+VOID
+IntcDspPeriodDpc(
+    _In_ PKDPC Dpc,
+    _In_opt_ PVOID DeferredContext,
+    _In_opt_ PVOID SystemArgument1,
+    _In_opt_ PVOID SystemArgument2);
 
 /* One line of the interrupt registers and the power state, read through the loader so that the pointer means what the loader makes of it: for the first boot on silicon, the branch review's list */
 VOID

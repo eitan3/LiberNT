@@ -819,6 +819,42 @@ IntcDspEvtDeviceReleaseHardware(
     return STATUS_SUCCESS;
 }
 
+/* Whether the firmware posted a message with no request outstanding: the uplink's pending bit, the target register's busy one in the loader's receive order (a reply's done bit is a request's own, sdk/lib/drivers/fwload fwboot.c FwloadInterruptService), read once without a wait; FALSE when the DSP is not up */
+static
+BOOLEAN
+IntcDspUplinkPending(
+    _In_ PINTCDSP_DEVICE Dev)
+{
+    return Dev->Fw.State == FwloadStateReady && Dev->Platform != NULL &&
+        (IntcDspOpsTable()->Read32(Dev, FWLOAD_BAR_DSP, Dev->Platform->IpcTarget) & FWLOAD_IPC_BUSY) != 0;
+}
+
+/* The DPC of the poll point (E1c): the interrupt callback queues it at each of its runs, a period's included (hwops.c IntcDspInterruptCallback). It reads the uplink's pending bit once, without a wait, and queues the work item when the bit is set; nothing is sent, nothing is booted and nothing is released at DISPATCH_LEVEL */
+VOID
+IntcDspPeriodDpc(
+    _In_ PKDPC Dpc,
+    _In_opt_ PVOID DeferredContext,
+    _In_opt_ PVOID SystemArgument1,
+    _In_opt_ PVOID SystemArgument2)
+{
+    PINTCDSP_DEVICE Dev = (PINTCDSP_DEVICE)DeferredContext;
+
+    UNREFERENCED_PARAMETER(Dpc);
+    UNREFERENCED_PARAMETER(SystemArgument1);
+    UNREFERENCED_PARAMETER(SystemArgument2);
+    if (Dev->PollWorkItem != NULL && IntcDspUplinkPending(Dev))
+        WdfWorkItemEnqueue(Dev->PollWorkItem);
+}
+
+/* The work item of the poll point (E1c): at PASSIVE_LEVEL the manager's poll (stream.c IntcDspStreamsPoll), which reads what the firmware posted and faults as after a request that failed; the device is the work item's parent */
+static
+VOID
+IntcDspPollWork(
+    _In_ WDFWORKITEM WorkItem)
+{
+    IntcDspStreamsPoll(&IntcDspGetData(WdfWorkItemGetParentObject(WorkItem))->Streams);
+}
+
 static
 NTSTATUS
 IntcDspEvtDeviceD0Entry(
@@ -872,6 +908,8 @@ IntcDspEvtDeviceContextCleanup(
     PINTCDSP_DEVICE Dev = IntcDspGetData(Object);
 
     Dev->InterruptArmed = FALSE;
+    /* the poll point's DPC goes with the device: one still queued does not run */
+    KeRemoveQueueDpc(&Dev->PeriodDpc);
 }
 
 NTSTATUS
@@ -881,6 +919,8 @@ IntcDspEvtDeviceAdd(
 {
     WDF_OBJECT_ATTRIBUTES Attributes;
     WDF_PNPPOWER_EVENT_CALLBACKS PnpPower;
+    WDF_WORKITEM_CONFIG WorkConfig;
+    WDF_OBJECT_ATTRIBUTES WorkAttributes;
     WDFDEVICE Device;
     NTSTATUS Status;
 
@@ -903,6 +943,17 @@ IntcDspEvtDeviceAdd(
     IntcDspGetData(Device)->Device = Device;
     /* the lock of the stream manager's transitions, made once for the device: a power transition may release what the manager never started, before its first initialization (stream.c) */
     KeInitializeMutex(&IntcDspGetData(Device)->Streams.Lock, 0);
+    /* the poll point of an asynchronous exception (E1c): the DPC and its work item, made once for the device; without the work item an exception with no request outstanding waits for the next request, as before */
+    KeInitializeDpc(&IntcDspGetData(Device)->PeriodDpc, IntcDspPeriodDpc, IntcDspGetData(Device));
+    WDF_WORKITEM_CONFIG_INIT(&WorkConfig, IntcDspPollWork);
+    WDF_OBJECT_ATTRIBUTES_INIT(&WorkAttributes);
+    WorkAttributes.ParentObject = Device;
+    Status = WdfWorkItemCreate(&WorkConfig, &WorkAttributes, &IntcDspGetData(Device)->PollWorkItem);
+    if (!NT_SUCCESS(Status))
+    {
+        IntcDspGetData(Device)->PollWorkItem = NULL;
+        IntcDspLog("the poll's work item: 0x%08lx; an exception with no request outstanding waits for the next request\n", Status);
+    }
     IntcDspLog("loaded for the Intel audio DSP child\n");
     return STATUS_SUCCESS;
 }

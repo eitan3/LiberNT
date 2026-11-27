@@ -341,13 +341,17 @@ IntcDspInterruptCallback(
     PVOID Context)
 {
     PINTCDSP_DEVICE Dev = Context;
+    int Handled = FALSE;
 
     /* the callback stays registered for the device's lifetime: a boot arms it for its own duration and the loader's routine answers; once a boot succeeded the transport's routine answers while the driver's settings ask for interrupts */
     if (Dev->InterruptArmed)
-        return FwloadInterruptService(&Dev->Fw) ? TRUE : FALSE;
-    if (Dev->IpcArmed)
-        return SofIpcInterruptService(&Dev->Ipc) ? TRUE : FALSE;
-    return FALSE;
+        Handled = FwloadInterruptService(&Dev->Fw) ? TRUE : FALSE;
+    else if (Dev->IpcArmed)
+        Handled = SofIpcInterruptService(&Dev->Ipc) ? TRUE : FALSE;
+    /* the poll point of an asynchronous exception (E1c): a period's interrupt is taken here as every other is; the uplink's pending bit is read in the driver's own DPC (IntcDspPeriodDpc, intcdsp.c), which queues the work item that faults; nothing is waited for here */
+    if (Dev->PollWorkItem != NULL)
+        KeInsertQueueDpc(&Dev->PeriodDpc, NULL, NULL);
+    return Handled;
 }
 
 PADSP_INTERRUPT_CALLBACK

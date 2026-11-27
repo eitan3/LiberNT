@@ -807,7 +807,8 @@ UINT32
 IntcDspStreamsLetGo(
     _Inout_ PINTCDSP_STREAMS Streams,
     _In_opt_z_ const char* Fault,
-    UINT32 FaultMs)
+    UINT32 FaultMs,
+    BOOLEAN NoRequest)
 {
     const SOFTPLG_IPC4_MODEL* Model = Streams->Model;
     UINT32 Pending = 0, LetGo = 0, Held = 0, Tags = Streams->Freed, Before, S;
@@ -819,7 +820,13 @@ IntcDspStreamsLetGo(
         if (Stream->State == IntcDspStreamStateFree || Stream->State == IntcDspStreamStateReleased)
             continue;
         if (Fault != NULL)
-            IntcDspStreamLog(Streams, "fault during stream %u: %s after %u ms\n", Stream->Tag, Fault, FaultMs);
+        {
+            /* the poll's fault has no exchange to time: an exception the firmware posted with no request outstanding (IntcDspStreamsPoll) */
+            if (NoRequest)
+                IntcDspStreamLog(Streams, "fault during stream %u: %s with no request outstanding, read at a stream's period\n", Stream->Tag, Fault);
+            else
+                IntcDspStreamLog(Streams, "fault during stream %u: %s after %u ms\n", Stream->Tag, Fault, FaultMs);
+        }
         IntcDspStreamLog(Streams, "stream %u: the pin is told: device removed\n", Stream->Tag);
         Before = Streams->HeldCount;
         IntcDspStreamLetGo(Streams, Stream);
@@ -871,12 +878,15 @@ IntcDspFaultKind(
  * driver powers the DSP down, so every stream gives back what the bus gave
  * it, the paths forget what they built, and the driver is told. The manager
  * refuses every transition until a boot initializes it again, at the next
- * open that finds a Boot operation (E1) or at the next D0 entry.
+ * open that finds a Boot operation (E1) or at the next D0 entry. NoRequest:
+ * the fault is the poll's (IntcDspStreamsPoll), an exception with no
+ * exchange to time; its lines say so instead of a time.
  */
 static
 VOID
-IntcDspStreamsFault(
-    _Inout_ PINTCDSP_STREAMS Streams)
+IntcDspStreamsFaultFrom(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    BOOLEAN NoRequest)
 {
     UINT32 Pending, Ms = 0;
 
@@ -886,14 +896,40 @@ IntcDspStreamsFault(
     Streams->Faults++;
     /* the driver powers the DSP down for this fault: the next open boots it */
     Streams->NeedsBoot = TRUE;
-    if (Streams->Ipc != NULL)
+    if (Streams->Ipc != NULL && !NoRequest)
         Ms = (UINT32)((Streams->Ipc->Last.ElapsedUs + 500) / 1000);
-    Pending = IntcDspStreamsLetGo(Streams, IntcDspFaultKind(Streams), Ms);
+    Pending = IntcDspStreamsLetGo(Streams, IntcDspFaultKind(Streams), Ms, NoRequest);
     IntcDspStreamLog(Streams, "streams: released after the fault; nothing is sent until the next stream open or D0 entry\n");
     if (Pending != 0)
         IntcDspStreamLog(Streams, "streams: %u teardowns were pending at the release; their buffers are returned\n", Pending);
     if (Streams->Ops != NULL && Streams->Ops->Fault != NULL)
         Streams->Ops->Fault(Streams->Ops->Context);
+}
+
+/* Every fault whose time is a request's: the request's own (IntcDspFailed, IntcDspStuck) */
+static
+VOID
+IntcDspStreamsFault(
+    _Inout_ PINTCDSP_STREAMS Streams)
+{
+    IntcDspStreamsFaultFrom(Streams, FALSE);
+}
+
+VOID
+IntcDspStreamsPoll(
+    _Inout_ PINTCDSP_STREAMS Streams)
+{
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return;
+    IntcDspStreamsLock(Streams);
+    /* the manager up and its link ready; the transport's poll answers FALSE alike on a crash it read and on a request lock it left alone, so the link is asked which */
+    if (Streams->Ready && !Streams->Faulted && Streams->Ipc != NULL && Streams->Ipc->Link == SofIpcLinkReady &&
+        !SofIpcPollNotifications(Streams->Ipc) && IntcDspLinkLost(Streams))
+    {
+        IntcDspStreamLog(Streams, "ipc: %s with no request outstanding, read at a stream's period; the link is faulted\n", IntcDspFaultKind(Streams));
+        IntcDspStreamsFaultFrom(Streams, TRUE);
+    }
+    IntcDspStreamsUnlock(Streams);
 }
 
 VOID
@@ -908,7 +944,7 @@ IntcDspStreamsRelease(
     {
         /* the DSP goes off with the model kept: the next open boots it (E1) */
         Streams->NeedsBoot = TRUE;
-        Pending = IntcDspStreamsLetGo(Streams, NULL, 0);
+        Pending = IntcDspStreamsLetGo(Streams, NULL, 0, FALSE);
         IntcDspStreamLog(Streams, "streams: released for the power-down; nothing is sent until the next stream open or D0 entry\n");
         if (Pending != 0)
             IntcDspStreamLog(Streams, "streams: %u teardowns were pending at the release; their buffers are returned\n", Pending);

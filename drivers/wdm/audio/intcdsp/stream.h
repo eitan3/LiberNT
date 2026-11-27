@@ -368,6 +368,23 @@ IntcDspStreamsDeviceBootEnd(
     _Inout_ PINTCDSP_STREAMS Streams);
 
 /*
+ * The poll of an asynchronous exception (E1c): the firmware posted a crash
+ * notification while no request was outstanding, which no wait would meet.
+ * The work item the driver queues at a stream's period calls it at
+ * PASSIVE_LEVEL. Under the lock, the transport's own poll reads what was
+ * posted, behind a request in progress (it takes the request lock without
+ * a wait and leaves the lock alone when a request holds it); a crash
+ * notification faults the link there and the fault is the manager's as
+ * after a request that failed: every stream Released and Lost, its pin
+ * told, the driver told. A notification that is not a crash is kept, as
+ * beside a reply. Nothing is sent and nothing is booted. A manager that is
+ * not up, or whose link is not ready, is not asked.
+ */
+VOID
+IntcDspStreamsPoll(
+    _Inout_ PINTCDSP_STREAMS Streams);
+
+/*
  * The stream object a handle names: NULL for a handle of another
  * generation, for a free object, and for any other value. A handle is the
  * manager's own word, never a pointer (INTCDSP_STREAM_INDEX_BITS).

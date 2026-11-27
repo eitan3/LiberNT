@@ -4941,6 +4941,153 @@ CheckStreamNeverReady(
     free(S);
 }
 
+/* A notification the firmware posts with no request outstanding (E1c): the fake's uplink as fake_dsp.c FakeDspPostNotification leaves it, which a case cannot call; the next receive reads it and its acknowledgement clears the busy bit */
+static
+void
+StreamPostAsync(
+    STREAM_HARNESS* S,
+    UINT32 Type)
+{
+    PFAKE_DSP Dsp = S->H.Dsp;
+
+    Dsp->IpcTarget = FWLOAD_IPC_BUSY | (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) | (Type << SOFIPC4_NOTIFICATION_TYPE_SHIFT);
+    Dsp->IpcTargetData = 0;
+    Dsp->IpcTargetAck |= FWLOAD_IPC_BUSY;
+    Dsp->NotificationPending = TRUE;
+    Dsp->NotificationIsFwReady = FALSE;
+    Dsp->Notifications++;
+}
+
+/* The newest notification the transport kept, its type; SOFIPC_NO_TYPE when there is none */
+static
+UINT32
+StreamNewestNotification(
+    const STREAM_HARNESS* S)
+{
+    const SOFIPC_CONTEXT* Ipc = &S->H.Ipc;
+
+    if (Ipc->RingCount == 0)
+        return SOFIPC_NO_TYPE;
+    return Ipc->Ring[(Ipc->RingHead + SOFIPC_NOTIFICATION_RING - 1) % SOFIPC_NOTIFICATION_RING].Type;
+}
+
+/*
+ * (i23) The poll of an asynchronous exception (E1c): the firmware posts
+ * its exception notification while a stream runs and no request is
+ * outstanding, so no wait meets it. The manager's poll, under its lock,
+ * has the transport read it: kept, acknowledged, the link faulted, and
+ * the fault is as after a request that failed, every stream Released and
+ * Lost, its pin told, the release counted, the driver told, nothing sent,
+ * with lines that name no exchange's time; a second poll adds nothing and
+ * the next open boots again. A notification that is not a crash is kept
+ * and acknowledged with the manager untouched; a manager that is not up
+ * is not asked and its uplink is left as it was.
+ */
+static
+void
+CheckStreamPoll(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    PFAKE_DSP Dsp;
+    HANDLE Render = NULL, Fresh = NULL;
+    UINT32 Pcm, Sx, Requests, Kept;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Dsp = S->H.Dsp;
+    Pcm = StreamPcm(S);
+    S->Ops.Boot = StreamBootAtOpen;
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    StreamPinOpen(S, Render);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_SUCCESS);
+    Requests = Dsp->TransportRequests;
+    Sx = (UINT32)((UINT_PTR)Render & INTCDSP_STREAM_INDEX_MASK) - 1;
+    /* a notification that is not a crash, with no request outstanding: kept and acknowledged, the manager untouched */
+    Kept = S->H.Ipc.RingCount;
+    StreamPostAsync(S, SOFIPC4_NOTIFY_LOG_BUFFER_STATUS);
+    IntcDspStreamsPoll(&S->Streams);
+    CHECK(S->Streams.Ready && !S->Streams.Faulted && !S->Streams.NeedsBoot);
+    CHECK_EQ(S->Streams.Faults, 0);
+    CHECK_EQ(S->Faults, 0);
+    CHECK_EQ(S->H.Ipc.Link, SofIpcLinkReady);
+    CHECK_EQ(Dsp->TransportRequests, Requests);
+    CHECK((Dsp->IpcTarget & FWLOAD_IPC_BUSY) == 0);
+    CHECK_EQ(S->H.Ipc.RingCount, Kept + 1);
+    CHECK_EQ(StreamNewestNotification(S), SOFIPC4_NOTIFY_LOG_BUFFER_STATUS);
+    CHECK(StreamLogCount(S, "fault during stream ") == 0);
+    /* the exception with no request outstanding: read at the poll, the link faulted, every stream let go as after a request that failed, nothing sent */
+    StreamPostAsync(S, SOFIPC4_NOTIFY_EXCEPTION_CAUGHT);
+    IntcDspStreamsPoll(&S->Streams);
+    CHECK(S->Streams.Faulted && S->Streams.NeedsBoot);
+    CHECK_EQ(S->Streams.Faults, 1);
+    CHECK_EQ(S->Faults, 1);
+    CHECK_EQ(S->H.Ipc.Link, SofIpcLinkFaulted);
+    CHECK_EQ(S->H.Ipc.Failure, SofIpcCrash);
+    CHECK(S->Streams.Stream[Sx].State == IntcDspStreamStateReleased && S->Streams.Stream[Sx].Lost);
+    /* the pin is told: its run is answered with nothing sent */
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_DEVICE_REMOVED);
+    CHECK_EQ(Dsp->TransportRequests, Requests);
+    CHECK_EQ(Dsp->TransportRequests, Requests);
+    CHECK((Dsp->IpcTarget & FWLOAD_IPC_BUSY) == 0);
+    CHECK_EQ(StreamNewestNotification(S), SOFIPC4_NOTIFY_EXCEPTION_CAUGHT);
+    CHECK(StreamLogCount(S, "ipc: firmware crash with no request outstanding, read at a stream's period; the link is faulted\n") == 1);
+    CHECK(StreamLogCount(S, "fault during stream ") == 1);
+    CHECK(StreamLogCount(S, ": firmware crash with no request outstanding, read at a stream's period\n") == 1);
+    CHECK(StreamLogCount(S, ": the pin is told: device removed\n") == 1);
+    CHECK(StreamLogCount(S, "release: 1 streams let go, 1 buffers held for their pins, 1 tags back\n") == 1);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE_UNDER_PIN), 0);
+    /* a second poll adds nothing */
+    IntcDspStreamsPoll(&S->Streams);
+    CHECK_EQ(S->Streams.Faults, 1);
+    CHECK_EQ(S->Faults, 1);
+    CHECK(StreamLogCount(S, "fault during stream ") == 1);
+    /* a manager that is not up is not asked: the uplink is left as the firmware left it */
+    StreamPostAsync(S, SOFIPC4_NOTIFY_LOG_BUFFER_STATUS);
+    IntcDspStreamsPoll(&S->Streams);
+    CHECK((Dsp->IpcTarget & FWLOAD_IPC_BUSY) != 0);
+    CHECK_EQ(S->Streams.Faults, 1);
+    CHECK_EQ(S->Faults, 1);
+    CHECK_EQ(StreamNewestNotification(S), SOFIPC4_NOTIFY_EXCEPTION_CAUGHT);
+    CHECK(StreamLogCount(S, "ipc: firmware crash with no request outstanding, read at a stream's period; the link is faulted\n") == 1);
+    /* the message is taken off the fake as a boot's fresh DSP would; the next open boots again and goes through */
+    Dsp->IpcTarget = 0;
+    Dsp->NotificationPending = FALSE;
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_SUCCESS);
+    CHECK_EQ(S->Boots, 1);
+    CHECK(S->Streams.Ready && !S->Streams.Faulted && !S->Streams.NeedsBoot);
+    CHECK(StreamLogCount(S, "recovered: open ok after ") == 1);
+    /* the boot at the open replaced the fake DSP: the one of this boot from here */
+    Dsp = S->H.Dsp;
+    /* the pin's close frees its held buffer under its stale word; the stale close and the new one are answered */
+    CHECK(IntcDspStreamStale(&S->Streams, Render));
+    StreamPinClose(S, Render);
+    StreamPinCloseAgainRemoved(S, Render);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Fresh), STATUS_SUCCESS);
+    CHECK_EQ(S->Streams.HeldCount, 0);
+    for (Sx = 0; Sx < INTCDSP_STREAMS_MAX; Sx++)
+        CHECK_EQ(S->Streams.Stream[Sx].State, IntcDspStreamStateFree);
+    /* a manager let down for a power-down is not up either: its link still ready, its uplink still not asked */
+    StreamPostAsync(S, SOFIPC4_NOTIFY_LOG_BUFFER_STATUS);
+    IntcDspStreamsRelease(&S->Streams);
+    IntcDspStreamsPoll(&S->Streams);
+    CHECK(!S->Streams.Ready && !S->Streams.Faulted);
+    CHECK_EQ(S->H.Ipc.Link, SofIpcLinkReady);
+    CHECK((Dsp->IpcTarget & FWLOAD_IPC_BUSY) != 0);
+    /* the fault count is the boot's: the boot at the open started it over */
+    CHECK_EQ(S->Streams.Faults, 0);
+    Dsp->IpcTarget = 0;
+    Dsp->NotificationPending = FALSE;
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+}
+
 int
 main(
     void)
@@ -4993,6 +5140,7 @@ main(
     CheckStreamFaultAtEachStep();
     CheckStreamDeviceBoot();
     CheckStreamNeverReady();
+    CheckStreamPoll();
 
     printf("sofipc: %d checks, %d failures\n", Checks, Failures);
     free(H->Dsp);
