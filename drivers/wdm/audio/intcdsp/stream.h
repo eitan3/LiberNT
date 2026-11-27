@@ -254,6 +254,19 @@ typedef struct _INTCDSP_STREAMS
      */
     INTCDSP_HELD Held[INTCDSP_HELD_MAX];
     UINT32 HeldCount;
+    /*
+     * The device's own boot sequence is in progress, the D0 entry's
+     * (intcdsp.c IntcDspBootSequence): set and cleared under the lock
+     * before and after the sequence (IntcDspStreamsDeviceBootBegin and
+     * IntcDspStreamsDeviceBootEnd), which takes the lock itself at its
+     * start of the manager. While it is set the Boot operation of an open
+     * is not run (IntcDspStreamOpen): two boots of one device never run at
+     * the same time, and the open, which holds the lock, does not wait for
+     * that boot. It sits before Ops as the held buffers do: the sequence's
+     * own initialization zeroes the manager from Ops on and must not clear
+     * it.
+     */
+    BOOLEAN DeviceBoot;
     const INTCDSP_STREAMS_OPS* Ops;
     const ADSP_BUS_INTERFACE* Bus;
     SOFIPC_CONTEXT* Ipc;
@@ -334,6 +347,24 @@ IntcDspStreamsInit(
  */
 VOID
 IntcDspStreamsRelease(
+    _Inout_ PINTCDSP_STREAMS Streams);
+
+/*
+ * The device's own boot sequence, begun and ended by the driver around
+ * its D0 entry's boot (N10-04). Each takes the lock to set or clear the
+ * flag and lets it go at once: the sequence runs unlocked and takes the
+ * lock itself at the manager's start. The entry's begin waits, at the
+ * lock, for an open that holds it (a Boot operation of an open included)
+ * and holds nothing while its boot runs; an open that comes during that
+ * boot finds the flag set and is refused without its own boot. The lock
+ * keeps its one order (above).
+ */
+VOID
+IntcDspStreamsDeviceBootBegin(
+    _Inout_ PINTCDSP_STREAMS Streams);
+
+VOID
+IntcDspStreamsDeviceBootEnd(
     _Inout_ PINTCDSP_STREAMS Streams);
 
 /*

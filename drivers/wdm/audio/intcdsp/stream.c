@@ -918,6 +918,37 @@ IntcDspStreamsRelease(
     IntcDspStreamsUnlock(Streams);
 }
 
+/*
+ * The device's own boot sequence begins and ends here (N10-04, stream.h
+ * DeviceBoot): the driver's D0 entry calls the first before its
+ * IntcDspBootSequence and the second after it. The flag is set and
+ * cleared under the lock, and the lock is let go before the sequence
+ * runs, since the sequence takes it itself at the manager's start. So the
+ * lock has the one order it had: the entry waits here, at the lock, for
+ * an open that holds it (a Boot operation of an open included) and holds
+ * nothing while its boot runs; an open that comes during that boot finds
+ * the flag set and is refused without its own boot (IntcDspStreamOpen).
+ * Without it an open arriving after a D0 exit, while the entry's boot is
+ * still running, would boot the same device a second time.
+ */
+VOID
+IntcDspStreamsDeviceBootBegin(
+    _Inout_ PINTCDSP_STREAMS Streams)
+{
+    IntcDspStreamsLock(Streams);
+    Streams->DeviceBoot = TRUE;
+    IntcDspStreamsUnlock(Streams);
+}
+
+VOID
+IntcDspStreamsDeviceBootEnd(
+    _Inout_ PINTCDSP_STREAMS Streams)
+{
+    IntcDspStreamsLock(Streams);
+    Streams->DeviceBoot = FALSE;
+    IntcDspStreamsUnlock(Streams);
+}
+
 /* The end of a transition a request failed in: the fault's release when the link was lost, the status otherwise */
 static
 NTSTATUS
@@ -1274,12 +1305,21 @@ IntcDspStreamOpen(
      * faulted it. The Boot operation boots the DSP and starts the manager
      * again on it, inside this lock (the mutex is recursive); a second open
      * while the first boots waits here and then finds the manager ready. No
-     * operation: the open is refused as it always was. After the operation
+     * operation: the open is refused as it always was. The device's own
+     * boot in progress (N10-04): the same refusal, the operation not run.
+     * After the operation
      * the manager is asked again, never the operation's status: not ready
      * still, the open is refused and the next one boots again.
      */
     if (!Streams->Ready || Streams->Faulted)
     {
+        if (Streams->DeviceBoot)
+        {
+            /* the device's own boot sequence is in progress (N10-04): the Boot operation is not run beside it, and the lock is not kept waiting for a boot that takes it; the open is refused as one without the operation is, and the next open finds the manager as that sequence left it */
+            IntcDspStreamLog(Streams, "boot at stream open not run: the D0 entry's boot is in progress; no stream is taken\n");
+            IntcDspStreamsUnlock(Streams);
+            return STATUS_DEVICE_NOT_READY;
+        }
         if (Streams->Ops == NULL || Streams->Ops->Boot == NULL)
         {
             IntcDspStreamsUnlock(Streams);

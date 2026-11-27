@@ -4779,6 +4779,89 @@ CheckStreamFaultAtEachStep(
     }
 }
 
+/*
+ * (i21) A device boot in progress (N10-04): the D0 entry's boot sequence
+ * marks the manager under its lock before it runs and unmarks it after,
+ * the lock let go each time, and the mark is kept through the
+ * initialization the sequence runs itself. While the mark is set an open
+ * on a manager in need of a boot is refused STATUS_DEVICE_NOT_READY with
+ * the Boot operation not called, nothing taken or sent and the need as it
+ * was, a line saying so and none of the failed boot; on a ready manager
+ * the open goes through as any other, the operation not called either.
+ * The mark cleared, the next open boots and goes through. The entry's
+ * begin waiting for an open that holds the lock is the kernel mutex's own
+ * doing, which a host of one thread does not model (fake_bus.c): the rows
+ * are the open's half.
+ */
+static
+void
+CheckStreamDeviceBoot(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    HANDLE Render = NULL, Fresh = NULL;
+    UINT32 Pcm, Sx, Requests;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    S->Ops.Boot = StreamBootAtOpen;
+    /* the power-down's release, as before a D0 entry: the manager not ready and in need of a boot */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    IntcDspStreamsRelease(&S->Streams);
+    CHECK(!S->Streams.Ready && S->Streams.NeedsBoot && !S->Streams.Faulted);
+    Requests = S->H.Dsp->TransportRequests;
+    /* the mark is set under the lock and the lock let go; an open while it is set is refused, the operation not called */
+    IntcDspStreamsDeviceBootBegin(&S->Streams);
+    CHECK_EQ(S->Streams.DeviceBoot, TRUE);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_DEVICE_NOT_READY);
+    CHECK(Fresh == NULL);
+    CHECK_EQ(S->Boots, 0);
+    CHECK_EQ(S->Streams.Path[Pcm].Open, 0);
+    CHECK_EQ(S->H.Dsp->TransportRequests, Requests);
+    CHECK(!S->Streams.Ready && S->Streams.NeedsBoot && !S->Streams.Faulted);
+    CHECK_EQ(S->Streams.Generation, 2);
+    CHECK(StreamLogCount(S, "boot at stream open not run: the D0 entry's boot is in progress; no stream is taken\n") == 1);
+    CHECK(StreamLogCount(S, "boot at stream open failed: ") == 0);
+    /* the sequence's own start of the manager keeps the mark */
+    IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
+    CHECK_EQ(S->Streams.DeviceBoot, TRUE);
+    CHECK(S->Streams.Ready && !S->Streams.NeedsBoot);
+    /* on a ready manager the open goes through as any other, the operation not called */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_SUCCESS);
+    CHECK(Fresh != NULL);
+    CHECK_EQ(S->Boots, 0);
+    IntcDspStreamsDeviceBootEnd(&S->Streams);
+    CHECK_EQ(S->Streams.DeviceBoot, FALSE);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Fresh), STATUS_SUCCESS);
+    /* the power-down's release again, the mark set and cleared around nothing: the next open boots and goes through */
+    IntcDspStreamsRelease(&S->Streams);
+    CHECK(!S->Streams.Ready && S->Streams.NeedsBoot && !S->Streams.Faulted);
+    IntcDspStreamsDeviceBootBegin(&S->Streams);
+    IntcDspStreamsDeviceBootEnd(&S->Streams);
+    CHECK_EQ(S->Streams.DeviceBoot, FALSE);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_SUCCESS);
+    CHECK(Fresh != NULL);
+    CHECK_EQ(S->Boots, 1);
+    CHECK_EQ(S->BootDepth, 1);
+    CHECK(S->Streams.Ready && !S->Streams.NeedsBoot);
+    CHECK(StreamLogCount(S, "recovered: open ok after ") == 1);
+    /* the words of the boots before are stale; their closes and the new one are answered */
+    CHECK(IntcDspStreamStale(&S->Streams, Render));
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Fresh), STATUS_SUCCESS);
+    for (Sx = 0; Sx < INTCDSP_STREAMS_MAX; Sx++)
+        CHECK_EQ(S->Streams.Stream[Sx].State, IntcDspStreamStateFree);
+    CHECK_EQ(S->Streams.HeldCount, 0);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+}
+
 int
 main(
     void)
@@ -4829,6 +4912,7 @@ main(
     CheckStreamBootAtOpen();
     CheckStreamPinTold();
     CheckStreamFaultAtEachStep();
+    CheckStreamDeviceBoot();
 
     printf("sofipc: %d checks, %d failures\n", Checks, Failures);
     free(H->Dsp);

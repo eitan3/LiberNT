@@ -834,7 +834,12 @@ IntcDspEvtDeviceD0Entry(
     IntcDspReadIpcSettings(Dev);
     /* BootDsp = 1 boots at every D0 entry (E2 changes the rule): the sequence the boot at an open shares, with the self-tests */
     if (Dev->BootDsp)
+    {
+        /* serialized with the boot at an open (N10-04): the manager is marked around the sequence, so that an open coming while it runs is refused instead of booting the device a second time; the mark is set and cleared under the manager's lock, which is held around nothing here and which the sequence takes itself at its start of the manager */
+        IntcDspStreamsDeviceBootBegin(&Dev->Streams);
         IntcDspBootSequence(Dev, FALSE);
+        IntcDspStreamsDeviceBootEnd(&Dev->Streams);
+    }
     /* the audio children follow the topology the device holds: one per PCM of its model while the model is resident (audioif.c) */
     IntcDspAudioUpdate(Dev);
     return STATUS_SUCCESS;
