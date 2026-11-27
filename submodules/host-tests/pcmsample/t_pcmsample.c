@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT host-native tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The Core Audio engine's PCM sample conversion and dither (dll/win32/mmdevapi/pcm_sample.h), the same source the engine compiles: the seed leaves the xorshift's fixed point, a dithered write moves a sample by at most one LSB and is not constant on a constant input, the dither's amount is one LSB at 8, 16, 20, 24 and 32 valid bits (the reference derives it on its own), its sign is balanced (the positive and the negative draws are each half of many, within a tenth: a one-sided dither fails), and a sample at the full scale, or one LSB past it, stays at the full scale; under ASan and UBSan
+ * PURPOSE:     The Core Audio engine's PCM sample conversion and dither (dll/win32/mmdevapi/pcm_sample.h), the same source the engine compiles: the seed leaves the xorshift's fixed point, a dithered write moves a sample by at most one LSB and is not constant on a constant input, the dither's amount is one LSB at 8, 16, 20, 24 and 32 valid bits (the reference derives it on its own), its sign is balanced (the positive and the negative draws are each half of many, within a tenth: a one-sided dither fails), and a sample at the full scale, or one 32-bit mix-word unit past it, stays at the full scale; under ASan and UBSan
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -140,10 +140,11 @@ TestDitherAmplitude(
     for (i = 0; i < SAMPLES; ++i)
     {
         INT32 Value = Inputs[i % (int)(sizeof(Inputs) / sizeof(Inputs[0]))];
-        INT64 First, Second, DitherUnits, Sum, Expected, PlainUnits, GotUnits;
+        INT64 First, Second, DitherMixWords, Sum, Expected, PlainUnits, GotUnits;
 
         DrawDither(&Dither, ValidBits, &First, &Second);
-        DitherUnits = First - Second;
+        /* the two words, and so their difference, are in 32-bit mix-word units (the random word with ValidBits bits dropped), as the sample is; the units read back below are the valid bits' */
+        DitherMixWords = First - Second;
         memset(Plain, 0, sizeof(Plain));
         memset(Dithered, 0, sizeof(Dithered));
         write_pcm_sample(Plain, Container, ValidBits, Value);
@@ -153,7 +154,7 @@ TestDitherAmplitude(
         CHECK(GotUnits - PlainUnits >= -1 && GotUnits - PlainUnits <= 1);
         Moved += GotUnits != PlainUnits;
 
-        Sum = (INT64)Value + DitherUnits;
+        Sum = (INT64)Value + DitherMixWords;
         Expected = Sum >= 0 ? Sum / Lsb : -((-Sum + Lsb - 1) / Lsb);
         CHECK_EQ(GotUnits, Expected);
     }
@@ -291,10 +292,10 @@ TestFullScaleStaysAtFullScale(
     CHECK(PastNegative > 0);
 }
 
-/* The sum of the sample and the dither lands exactly one LSB past the full scale on both sides */
+/* The sum of the sample and the dither lands exactly one 32-bit mix-word unit past the full scale on both sides: the words are in mix-word units, and one LSB at 16 valid bits is 65536 of them */
 static
 void
-TestOneLsbPastFullScale(void)
+TestOneMixWordPastFullScale(void)
 {
     pcm_dither Dither = (pcm_dither)PCM_DITHER_INIT;
     BYTE Data[4];
@@ -336,7 +337,7 @@ main(void)
     TestConstantInputIsDithered();
     TestFullScaleStaysAtFullScale(16);
     TestFullScaleStaysAtFullScale(8);
-    TestOneLsbPastFullScale();
+    TestOneMixWordPastFullScale();
     TestDitherSignBalance(16);
     TestDitherSignBalance(8);
     TestDitherAmplitude(16, 8);
