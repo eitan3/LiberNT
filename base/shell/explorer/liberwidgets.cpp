@@ -64,8 +64,7 @@ protected:
         StringCchPrintfW(szWeek, _countof(szWeek), L"Week %d \x00B7 No events", data.IsoWeek);
         context.Painter.Text(data.szDayName, Inset(rc, 16, 16, rc.Width - 32, 20), LIBER_TYPE_BODY_STRONG,
                              tokens.Color(LIBER_COLOR_ACCENT_TEXT), TextLeft | TextMiddle | TextEllipsis);
-        /* FIXME: the spec draws the day at 64 px; the type ramp's nearest style is Display at 68 px */
-        context.Painter.Text(szDay, Inset(rc, 16, 34, rc.Width - 32, 72), LIBER_TYPE_DISPLAY,
+        context.Painter.Text(szDay, Inset(rc, 16, 38, rc.Width - 32, 64), LIBER_TYPE_WIDGET_DAY,
                              tokens.Color(LIBER_COLOR_TEXT1), TextLeft | TextMiddle);
         context.Painter.Text(data.szMonthYear, Inset(rc, 16, rc.Height - 52, rc.Width - 32, 20), LIBER_TYPE_BODY_STRONG,
                              tokens.Color(LIBER_COLOR_TEXT1), TextLeft | TextMiddle | TextEllipsis);
@@ -96,8 +95,7 @@ protected:
         context.Painter.Text(data.City, Inset(rc, 16, 16, rc.Width - 32 - 28, 20), LIBER_TYPE_BODY_STRONG,
                              tokens.Color(LIBER_COLOR_TEXT1), TextLeft | TextMiddle | TextEllipsis);
         context.Painter.Icon(data.Icon, Inset(rc, rc.Width - 16 - 20, 16, 20, 20), tokens.Color(LIBER_COLOR_ACCENT_TEXT));
-        /* FIXME: the spec draws the temperature at 52 px weight 300; the type ramp's nearest style is Title Large */
-        context.Painter.Text(szTemp, Inset(rc, 16, 36, rc.Width - 32, 56), LIBER_TYPE_TITLE_LARGE,
+        context.Painter.Text(szTemp, Inset(rc, 16, 36, rc.Width - 32, 56), LIBER_TYPE_WIDGET_TEMPERATURE,
                              tokens.Color(LIBER_COLOR_TEXT1), TextLeft | TextMiddle);
         context.Painter.Text(data.Condition, Inset(rc, 16, rc.Height - 52, rc.Width - 32, 20), LIBER_TYPE_BODY_STRONG,
                              tokens.Color(LIBER_COLOR_TEXT1), TextLeft | TextMiddle | TextEllipsis);
@@ -278,6 +276,7 @@ HRESULT CLiberWidgets::Start(HWND hwndOwner)
         if (!m_Surfaces[i].Create(hwndOwner, L"Liber Widget", WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE))
             return E_FAIL;
         m_Surfaces[i].SetInputShape((float)LIBER_RADIUS_WIDGET);
+        m_Surfaces[i].SetElevation(LIBER_ELEVATION_E8, (float)LIBER_RADIUS_WIDGET);
         LiberShell_ApplyFont(&m_Surfaces[i]);
         m_Surfaces[i].SetTokens(&m_Tokens);
         m_Surfaces[i].SetRoot(m_Cards[i]);

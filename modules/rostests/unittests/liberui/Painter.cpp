@@ -605,6 +605,65 @@ static void TestSurfaceInput(DWORD flags)
     delete root;
 }
 
+static void TestShadow()
+{
+    Surface surface;
+    StackPanel *root = new StackPanel(Orientation::Horizontal, 0);
+    FillWidget *fill = new FillWidget(0xFFFF0000);
+    ThemeTokens tokens;
+
+    Thickness margin = ShadowMargin(tokens.Shadow(LIBER_ELEVATION_E32));
+    ok(margin.Left == 48 && margin.Top == 30 && margin.Right == 48 && margin.Bottom == 66,
+       "shadow-32 needs %d,%d,%d,%d of margin\n", margin.Left, margin.Top, margin.Right, margin.Bottom);
+
+    fill->SetSize(100, 60);
+    root->AddChild(fill);
+    ok(surface.Create(NULL, L"LiberUI shadow test", WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE),
+       "surface created\n");
+    surface.SetDpi(96);
+    surface.SetTokens(&tokens);
+    surface.SetRoot(root);
+    surface.SetPosition(-1500, -1500, 100, 60);
+    ok(surface.Render(0) && surface.ShadowSurface() == NULL, "no shadow without an elevation\n");
+
+    surface.SetElevation(LIBER_ELEVATION_E32, 8.0f);
+    ShowWindow(surface.Window(), SW_SHOWNOACTIVATE);
+    surface.Render(0);
+    Surface *shadow = surface.ShadowSurface();
+    ok(shadow && shadow->Window(), "an elevation creates a shadow window\n");
+    if (shadow && shadow->Window())
+    {
+        RECT rc;
+        LONG_PTR ex = GetWindowLongPtrW(shadow->Window(), GWL_EXSTYLE);
+        GetWindowRect(shadow->Window(), &rc);
+        ok(rc.left == -1500 - 48 && rc.top == -1500 - 30 && rc.right == -1400 + 48 && rc.bottom == -1440 + 66,
+           "shadow window covers the margins: (%ld,%ld,%ld,%ld)\n", rc.left, rc.top, rc.right, rc.bottom);
+        ok((ex & WS_EX_TRANSPARENT) && (ex & WS_EX_LAYERED) && (ex & WS_EX_TOPMOST),
+           "the shadow is a click-through topmost layered window\n");
+        ok(IsWindowVisible(shadow->Window()), "the shadow shows with the surface\n");
+        ok(GetWindow(surface.Window(), GW_HWNDNEXT) == shadow->Window(), "the shadow sits right below the surface\n");
+
+        static DWORD px[196 * 156];
+        ok(shadow->ReadPixels(px, 196 * 4), "shadow pixels\n");
+        DWORD inside = px[(30 + 30) * 196 + 48 + 50], above = px[2 * 196 + 98], below = px[(30 + 60 + 20) * 196 + 98];
+        ok(ArgbA(inside) > 0x28, "the shadow is dense under the shape: %08lX\n", inside);
+        ok(ArgbA(below) > ArgbA(above), "the shadow falls below the shape: %08lX above %08lX\n", below, above);
+        ok(ArgbR(inside) == 0 && ArgbG(inside) == 0 && ArgbB(inside) == 0, "the shadow is black: %08lX\n", inside);
+
+        surface.SetPosition(-1400, -1500, 100, 60);
+        surface.Render(0);
+        GetWindowRect(shadow->Window(), &rc);
+        ok(rc.left == -1400 - 48, "the shadow follows a move: %ld\n", rc.left);
+
+        ShowWindow(surface.Window(), SW_HIDE);
+        ok(!IsWindowVisible(shadow->Window()), "the shadow hides with the surface\n");
+    }
+    surface.SetRoot(NULL);
+    surface.Destroy();
+    ok(surface.ShadowSurface() == NULL, "destroying the surface removes its shadow\n");
+    delete root;
+}
+
 static void TestSurface(DWORD flags)
 {
     Surface surface;
@@ -684,6 +743,7 @@ START_TEST(Painter)
     TestGpuSurface();
     TestGpuPainter();
     TestGpuParity();
+    TestShadow();
     TestSurfaceInput(0);
     TestSurfaceInput(SurfaceNoGpu);
     ok(AssertionFailures() == failures, "%ld assertions failed\n", AssertionFailures() - failures);

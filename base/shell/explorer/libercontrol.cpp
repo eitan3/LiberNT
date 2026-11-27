@@ -105,7 +105,7 @@ protected:
         float top = rc.Y + (rc.Height - 34.0f) / 2;
         RectF title = { textX, top, textW, 18.0f };
         RectF caption = { textX, top + 18.0f, textW, 16.0f };
-        context.Painter.Text(m_Title, title, LIBER_TYPE_BODY_STRONG, tokens.Color(LIBER_COLOR_TEXT1),
+        context.Painter.Text(m_Title, title, LIBER_TYPE_CONTROL_TITLE, tokens.Color(LIBER_COLOR_TEXT1),
                              TextMiddle | TextEllipsis);
         context.Painter.Text(m_Caption, caption, LIBER_TYPE_CAPTION, tokens.Color(LIBER_COLOR_TEXT2),
                              TextMiddle | TextEllipsis);
@@ -181,8 +181,8 @@ protected:
                                                        : LIBER_COLOR_FILL_TILE));
         RectF orb = { rc.X + (rc.Width - LIBER_CC_ORB) / 2, rc.Y + 11.0f, (float)LIBER_CC_ORB, (float)LIBER_CC_ORB };
         PaintOrb(context, orb, m_Icon, m_On);
-        RectF label = { rc.X + 4.0f, orb.Y + LIBER_CC_ORB + 4.0f, rc.Width - 8.0f, 16.0f };
-        context.Painter.Text(m_Label, label, LIBER_TYPE_CAPTION, tokens.Color(LIBER_COLOR_TEXT1),
+        RectF label = { rc.X + 4.0f, orb.Y + LIBER_CC_ORB + 4.0f, rc.Width - 8.0f, 14.0f };
+        context.Painter.Text(m_Label, label, LIBER_TYPE_TILE_LABEL, tokens.Color(LIBER_COLOR_TEXT1),
                              TextCenter | TextMiddle | TextEllipsis);
     }
 
@@ -202,7 +202,7 @@ public:
 
         SetPadding(pad);
         SetSize(-1, LIBER_CC_SLIDER_H);
-        m_Title = new Label(title, LIBER_TYPE_BODY_STRONG, LIBER_COLOR_TEXT1, TextLeft | TextMiddle);
+        m_Title = new Label(title, LIBER_TYPE_CONTROL_TITLE, LIBER_COLOR_TEXT1, TextLeft | TextMiddle);
         m_Title->SetAlign(Align::Start, Align::Center);
         m_Value = new Label(L"", LIBER_TYPE_CAPTION, LIBER_COLOR_TEXT2, TextRight | TextMiddle);
         m_Value->SetAlign(Align::End, Align::Center);
@@ -483,6 +483,7 @@ BOOL CLiberControlCenter::Open(const RECT *prcAnchor)
         if (!m_Surface.Create(NULL, L"Liber Control Center", WS_EX_TOPMOST | WS_EX_TOOLWINDOW))
             return FALSE;
         m_Surface.SetInputShape((float)LIBER_RADIUS_FLYOUT);
+        m_Surface.SetElevation(LIBER_ELEVATION_E32, (float)LIBER_RADIUS_FLYOUT);
         Build();
         m_Surface.SetRoot(m_Root);
     }

@@ -117,14 +117,14 @@ protected:
                                           { 7.5833f, 1.75f, 28.0f, 7.5833f },
                                           { 22.1667f, 1.75f, 28.0f, 22.1667f } };
         float x = rc.X + (rc.Width - size) / 2, y = rc.Y + (rc.Height - size) / 2, unit = size / 28.0f;
-        /* FIXME: the spec fills the mark with a --logo-from to --logo-to gradient; it is drawn in the middle colour */
-        Argb color = context.Tokens.IsDark() ? 0xFF67C5FA : 0xFF126FCE;
+        PointF from = { x, y + 1.75f * unit }, to = { x + 28.0f * unit, y + 26.25f * unit };
+        Argb fromColor = context.Tokens.Color(LIBER_COLOR_LOGO_FROM), toColor = context.Tokens.Color(LIBER_COLOR_LOGO_TO);
 
         for (UINT i = 0; i < _countof(Bars); i++)
         {
             RectF bar = { x + Bars[i][0] * unit, y + Bars[i][1] * unit, (Bars[i][2] - Bars[i][0]) * unit,
                           (Bars[i][3] - Bars[i][1]) * unit };
-            context.Painter.FillRect(bar, color);
+            context.Painter.FillGradient(bar, 0.0f, from, to, fromColor, toColor);
         }
     }
 
@@ -680,6 +680,7 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
     if (!m_DockSurface.Create(NULL, L"Liber Dock", exStyle) || !m_TraySurface.Create(NULL, L"Liber Tray", exStyle))
         return E_FAIL;
     m_DockSurface.SetInputShape((float)LIBER_DOCK_HEIGHT / 2.0f);
+    m_DockSurface.SetElevation(LIBER_ELEVATION_E16, (float)LIBER_DOCK_HEIGHT / 2.0f);
     m_TraySurface.SetInputShape((float)LIBER_TRAY_HEIGHT / 2.0f);
 
     m_DockRoot = new CLiberPanel(Orientation::Horizontal, LIBER_DOCK_CELL_GAP, (float)LIBER_DOCK_HEIGHT / 2.0f,

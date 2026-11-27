@@ -174,6 +174,13 @@ void *FontSet::Font(LIBER_TYPE style)
         else
             fontStyle = Gdiplus::FontStyleBold;
     }
+    else if (ramp.Weight <= 300)
+    {
+        WCHAR light[LF_FACESIZE + 16];
+        wsprintfW(light, L"%s Light", m_Family);
+        if (FamilyAvailable(light))
+            lstrcpynW(face, light, LF_FACESIZE);
+    }
     if (!FamilyAvailable(face))
         lstrcpynW(face, L"Tahoma", LF_FACESIZE);
 

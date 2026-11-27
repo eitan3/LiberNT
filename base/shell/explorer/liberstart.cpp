@@ -553,6 +553,7 @@ BOOL CLiberStart::Open(const RECT *prcAnchor)
         if (!m_Surface.Create(NULL, L"Liber Start", WS_EX_TOPMOST | WS_EX_TOOLWINDOW))
             return FALSE;
         m_Surface.SetInputShape((float)LIBER_RADIUS_FLYOUT);
+        m_Surface.SetElevation(LIBER_ELEVATION_E32, (float)LIBER_RADIUS_FLYOUT);
         Build();
         m_Surface.SetRoot(m_Root);
     }

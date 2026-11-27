@@ -186,8 +186,8 @@ def generate(tokens):
     w("} LIBER_TYPE;")
     w("static const LIBER_TYPE_STYLE LiberTypeRamp[LIBER_TYPE_COUNT] = {")
     for key, s in tokens["type"].items():
-        if s["weight"] not in (400, 600):
-            raise TokenError("type '%s' weight must be 400 or 600" % key)
+        if s["weight"] not in (300, 400, 600):
+            raise TokenError("type '%s' weight must be 300, 400 or 600" % key)
         w("    { %d, %d, %d, %d }," % (s["size"], s["line"], s["weight"], s["tracking"]))
     w("};")
     w("")

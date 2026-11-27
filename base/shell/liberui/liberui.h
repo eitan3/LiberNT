@@ -670,6 +670,8 @@ enum SurfaceFlags
     SurfaceNoGpu = 0x1
 };
 
+Thickness ShadowMargin(const LIBER_SHADOW &shadow);
+
 class Surface : public IWidgetHost
 {
 public:
@@ -689,6 +691,8 @@ public:
 
     void SetPosition(int x, int y, int widthDip, int heightDip);
     void SetInputShape(float radiusDip);
+    void SetElevation(int elevation, float radiusDip);
+    Surface *ShadowSurface() const { return m_Shadow; }
     SIZE SizeDip() const { return m_SizeDip; }
     BOOL Render(ULONGLONG now);
     const DWORD *Pixels() const { return m_Bits; }
@@ -719,6 +723,7 @@ private:
     BOOL CreateWindowFor(BOOL gpu);
     BOOL RenderPass(ULONGLONG now, BOOL *lost);
     void ApplyInputShape();
+    void UpdateShadow(BOOL show);
 
     HWND m_hwnd;
     UINT m_Dpi;
@@ -743,6 +748,10 @@ private:
     WCHAR m_Title[64];
     DWORD m_ExStyle;
     float m_InputRadius;
+    Surface *m_Shadow;
+    class ShadowWidget *m_ShadowWidget;
+    int m_Elevation;
+    float m_ShadowRadius;
     BOOL m_Recovering;
 };
 

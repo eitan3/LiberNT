@@ -47,8 +47,17 @@ static void TestGeneratedConstants()
     ok(LiberTypeRamp[LIBER_TYPE_DISPLAY].Size == 68 && LiberTypeRamp[LIBER_TYPE_DISPLAY].TrackingPermille == -20,
        "display ramp\n");
     for (int i = 0; i < LIBER_TYPE_COUNT; i++)
-        ok(LiberTypeRamp[i].Weight == 400 || LiberTypeRamp[i].Weight == 600, "type %d weight %d\n", i,
-           LiberTypeRamp[i].Weight);
+        ok(LiberTypeRamp[i].Weight == 400 || LiberTypeRamp[i].Weight == 600 ||
+               (i == LIBER_TYPE_WIDGET_TEMPERATURE && LiberTypeRamp[i].Weight == 300),
+           "type %d weight %d\n", i, LiberTypeRamp[i].Weight);
+    ok(LiberTypeRamp[LIBER_TYPE_WIDGET_DAY].Size == 64 && LiberTypeRamp[LIBER_TYPE_WIDGET_DAY].Weight == 600,
+       "widget day is 64 / 600\n");
+    ok(LiberTypeRamp[LIBER_TYPE_WIDGET_TEMPERATURE].Size == 52 &&
+           LiberTypeRamp[LIBER_TYPE_WIDGET_TEMPERATURE].Weight == 300,
+       "widget temperature is 52 / 300\n");
+    ok(LiberTypeRamp[LIBER_TYPE_CONTROL_TITLE].Size == 13 && LiberTypeRamp[LIBER_TYPE_CONTROL_TITLE].LineHeight == 18 &&
+           LiberTypeRamp[LIBER_TYPE_TILE_LABEL].Size == 11,
+       "control center title and tile label\n");
 
     ok(LiberMaterials[LIBER_MATERIAL_ULTRATHIN].Blur == 14 && LiberMaterials[LIBER_MATERIAL_MICA].Blur == 90,
        "material blurs\n");
@@ -101,6 +110,8 @@ static void TestLightfall()
         { LIBER_COLOR_ACCENT_SUBTLE, 0x1F1F78C2, 0x2984BDF5 },
         { LIBER_COLOR_ACCENT_RING, 0x801F78C2, 0x8C84BDF5 },
         { LIBER_COLOR_ON_ACCENT, 0xFFFFFFFF, 0xFF05101C },
+        { LIBER_COLOR_LOGO_FROM, 0xFF1A8FE8, 0xFF8FE4FF },
+        { LIBER_COLOR_LOGO_TO, 0xFF0A4FB4, 0xFF3FA6F5 },
         { LIBER_COLOR_SURFACE_BASE, 0xFFEDF4FB, 0xFF10171E },
         { LIBER_COLOR_SURFACE_PANE, 0xFFF3F8FE, 0xFF11181F },
         { LIBER_COLOR_SURFACE_CARD_SOLID, 0, 0xFF1A2530 },
