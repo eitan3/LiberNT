@@ -998,6 +998,17 @@ IntcDspEvtDeviceD0Entry(
             IntcDspStreamsDeviceBootBegin(&Dev->Streams);
             IntcDspTopologyParse(Dev);
             IntcDspStreamsDeviceBootEnd(&Dev->Streams);
+            /*
+             * The manager is started on the model with the DSP down: not
+             * ready, since no link is up, but with its operations, the Boot
+             * one above all, so that the first open boots the DSP (E1). The
+             * VM round of E2 found the open refused STATUS_DEVICE_NOT_READY
+             * without a boot at this entry: no boot sequence had ever given
+             * a manager its operations, and the open takes the Boot operation
+             * from them.
+             */
+            if (Dev->TopologyModel != NULL)
+                IntcDspStreamsStart(Dev, FALSE);
             Dev->DspState = Dev->TopologyModel != NULL ? IntcDspNeedsBoot : IntcDspNoDsp;
             IntcDspLog("D0 entry: the DSP is not booted (BootAtStart = 0); the first stream open boots it\n");
         }
