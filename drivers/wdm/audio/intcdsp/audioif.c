@@ -374,7 +374,12 @@ IntcDspAudioSetState(
     PINTCDSP_STREAM Managed = IntcDspStreamOf(Streams, Stream);
 
     if (Managed == NULL)
+    {
+        /* a handle of an older generation is the device's doing, not the pin's (E1, D4): the manager's answer for a stream it let go */
+        if (IntcDspStreamStale(Streams, Stream))
+            return STATUS_DEVICE_REMOVED;
         return STATUS_INVALID_HANDLE;
+    }
     /* a stream without a buffer is stopped already: the pin's acquire and stop before its allocation are answered, and so are those of a stream whose free was answered while its teardown is pending (N7-01) */
     if (State != KSSTATE_RUN && (Managed->State == IntcDspStreamStateOpen || Managed->State == IntcDspStreamStateTeardown))
         return STATUS_SUCCESS;
@@ -416,6 +421,9 @@ IntcDspAudioGetLatency(
     PINTCDSP_STREAM Managed = IntcDspStreamOf(&Pdo->Dev->Streams, Stream);
 
     RtlZeroMemory(Latency, sizeof(*Latency));
+    /* a stream the device let go, or a handle of an older generation (E1, D4): the register getters' answer, before anything of the stream is read */
+    if (IntcDspStreamStale(&Pdo->Dev->Streams, Stream) || (Managed != NULL && Managed->Lost))
+        return STATUS_DEVICE_REMOVED;
     if (Managed == NULL)
         return STATUS_INVALID_HANDLE;
     Latency->FifoSize = Managed->FifoSize;
@@ -699,15 +707,15 @@ VOID
 IntcDspAudioUpdate(
     _Inout_ PINTCDSP_DEVICE Dev)
 {
-    /* children only while the DSP is booted with a topology whose streams are open for them: none otherwise, as the selection decides */
-    BOOLEAN Ready = Dev->Booted && Dev->Streams.Ready && Dev->TopologyModel != NULL;
-    PSOFTPLG_IPC4_MODEL Model = Ready ? Dev->TopologyModel : NULL;
+    /* children while a topology model is resident, powered or not (E1, D2's guarantee): the PCM child stays through a fault's power-down and a D0 exit, since the next open boots the DSP again; none without a model, as the selection decides */
+    PSOFTPLG_IPC4_MODEL Model = Dev->TopologyModel;
+    BOOLEAN Resident = Model != NULL;
     WDFCHILDLIST List = WdfFdoGetDefaultChildList(Dev->Device);
     INTCDSP_AUDIO_DESCRIPTION Description;
     const SOFTPLG_IPC4_PCM* Pcm;
     UINT32 P;
 
-    if (Dev->AudioReportedGeneration == Dev->TopologyGeneration && Dev->AudioReportedReady == Ready)
+    if (Dev->AudioReportedGeneration == Dev->TopologyGeneration && Dev->AudioReportedResident == Resident)
         return;
     WdfChildListBeginScan(List);
     for (P = 0; Model != NULL && P < Model->PcmCount; P++)
@@ -724,5 +732,5 @@ IntcDspAudioUpdate(
     }
     WdfChildListEndScan(List);
     Dev->AudioReportedGeneration = Dev->TopologyGeneration;
-    Dev->AudioReportedReady = Ready;
+    Dev->AudioReportedResident = Resident;
 }

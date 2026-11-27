@@ -154,10 +154,10 @@ typedef struct _INTCDSP_DEVICE
     SIZE_T StreamsStateBytes;
     INTCDSP_STREAMS_OPS StreamOps;
     INTCDSP_SELFTEST_OPS SelfTestOps;
-    /* the audio children: the topology the child list last reported, by the generation of the model (topology.c counts one up whenever the model is built or dropped) and by whether the streams were open for them */
+    /* the audio children: the topology the child list last reported, by the generation of the model (topology.c counts one up whenever the model is built or dropped) and by whether a model was resident (E1: powered or not) */
     ULONG TopologyGeneration;
     ULONG AudioReportedGeneration;
-    BOOLEAN AudioReportedReady;
+    BOOLEAN AudioReportedResident;
     struct
     {
         PMDL Mdl;

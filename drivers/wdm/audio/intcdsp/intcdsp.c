@@ -806,7 +806,7 @@ IntcDspEvtDeviceReleaseHardware(
     /* the topology is gone with the hardware: the next start reports the children the new one names, or none */
     Dev->TopologyGeneration = 1;
     Dev->AudioReportedGeneration = 0;
-    Dev->AudioReportedReady = FALSE;
+    Dev->AudioReportedResident = FALSE;
     if (Dev->BusValid && Dev->Bus.InterfaceDereference)
         Dev->Bus.InterfaceDereference(Dev->Bus.Context);
     Dev->BusValid = FALSE;
