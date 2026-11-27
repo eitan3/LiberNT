@@ -1613,6 +1613,15 @@ StreamIdleDown(
     IntcDspStreamsRelease(&S->Streams);
 }
 
+/* The driver's clock as an operation of the manager (E2): the fake's clock, as the driver's operations table gives the loader's */
+static
+UINT64
+StreamNowUs(
+    PVOID Context)
+{
+    return ((STREAM_HARNESS*)Context)->H.Dsp->Clock;
+}
+
 static const INTCDSP_STREAMS_OPS StreamOpsTemplate =
 {
     NULL,
@@ -5296,6 +5305,22 @@ CheckStreamIdleTimer(
     Dsp = S->H.Dsp;
     Pcm = StreamPcm(S);
     S->Ops.Boot = StreamBootAtOpen;
+    /* the operations' clock (E2): with no transport clock to read, as at the first open of a device whose D0 entry never booted, a NowUs operation is the manager's clock, and the timer is armed by it */
+    S->Streams.Ipc = NULL;
+    S->Ops.NowUs = StreamNowUs;
+    IntcDspStreamsIdleSec(&S->Streams, 5);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &A), STATUS_SUCCESS);
+    Due = Dsp->Clock + 5000000ULL;
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, A), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleArms, 1);
+    CHECK_EQ(S->IdleDueUs, Due);
+    /* the transport's clock again: the setting turned off cancels the timer, and the counts start over */
+    S->Streams.Ipc = &S->H.Ipc;
+    S->Ops.NowUs = NULL;
+    IntcDspStreamsIdleSec(&S->Streams, 0);
+    CHECK_EQ(S->IdleCancels, 1);
+    S->IdleArms = 0;
+    S->IdleCancels = 0;
     /* the setting is off until the driver sets it after a boot (intcdsp.c IntcDspStreamsStart): a close arms nothing */
     CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &A), STATUS_SUCCESS);
     CHECK_EQ(IntcDspStreamClose(&S->Streams, A), STATUS_SUCCESS);

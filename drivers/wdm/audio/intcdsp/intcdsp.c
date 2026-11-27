@@ -38,6 +38,11 @@ static
 VOID
 IntcDspStreamIdleDown(
     _In_opt_ PVOID Context);
+/* the manager's clock (E2) */
+static
+UINT64
+IntcDspStreamNowUs(
+    _In_opt_ PVOID Context);
 
 /* The code-loader stream carries 48 kHz, 32 bits, one channel: Linux hda.h HDA_CL_STREAM_FORMAT (the stream descriptor format register value 0x40) */
 #define INTCDSP_CL_SAMPLE_RATE       48000
@@ -383,6 +388,7 @@ IntcDspStreamsStart(
     Dev->StreamOps.IdleArm = IntcDspStreamIdleArm;
     Dev->StreamOps.IdleCancel = IntcDspStreamIdleCancel;
     Dev->StreamOps.IdleDown = IntcDspStreamIdleDown;
+    Dev->StreamOps.NowUs = IntcDspStreamNowUs;
     Dev->SelfTestOps.Context = Dev;
     Dev->SelfTestOps.Map = IntcDspSelfTestMap;
     Dev->SelfTestOps.WaitPeriods = IntcDspSelfTestWait;
@@ -958,6 +964,15 @@ IntcDspIdleWork(
     _In_ WDFWORKITEM WorkItem)
 {
     IntcDspStreamsIdle(&IntcDspGetData(WdfWorkItemGetParentObject(WorkItem))->Streams);
+}
+
+/* The manager's clock (E2): the driver's, the loader's operations table's, which is there before the first boot attaches the transport; the manager reads the transport's clock when no operation gives one */
+static
+UINT64
+IntcDspStreamNowUs(
+    _In_opt_ PVOID Context)
+{
+    return IntcDspOpsTable()->NowUs((PINTCDSP_DEVICE)Context);
 }
 
 static

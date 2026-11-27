@@ -83,7 +83,11 @@ VOID
 IntcDspStreamsIdleClosedLocked(
     _Inout_ PINTCDSP_STREAMS Streams);
 
-/* The manager's clock, the loader's, for the open's boot (E1) and the self-test's waits; defined with the self-test */
+/*
+ * The manager's clock: the operations' when the driver gives one (there
+ * before the first boot attaches the transport), else the transport's, the
+ * loader's; defined with the self-test
+ */
 static
 BOOLEAN
 IntcDspHasClock(
@@ -2552,6 +2556,8 @@ BOOLEAN
 IntcDspHasClock(
     _In_ const INTCDSP_STREAMS* Streams)
 {
+    if (Streams->Ops != NULL && Streams->Ops->NowUs != NULL)
+        return TRUE;
     return Streams->Ipc != NULL && Streams->Ipc->Fw != NULL && Streams->Ipc->Fw->Ops != NULL &&
         Streams->Ipc->Fw->Ops->NowUs != NULL;
 }
@@ -2561,6 +2567,9 @@ UINT64
 IntcDspNow(
     _In_ const INTCDSP_STREAMS* Streams)
 {
+    /* the operations' clock first (E2): on a device whose D0 entry never booted, the transport is not attached at the first open, and its clock would read 0 */
+    if (Streams->Ops != NULL && Streams->Ops->NowUs != NULL)
+        return Streams->Ops->NowUs(Streams->Ops->Context);
     if (!IntcDspHasClock(Streams))
         return 0;
     return Streams->Ipc->Fw->Ops->NowUs(Streams->Ipc->Fw->OpsContext);

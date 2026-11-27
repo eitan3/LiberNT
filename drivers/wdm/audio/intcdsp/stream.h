@@ -215,6 +215,14 @@ typedef struct _INTCDSP_STREAMS_OPS
      * decision is made and logged, and nothing is powered down.
      */
     VOID (*IdleDown)(_In_opt_ PVOID Context);
+    /*
+     * The driver's clock, in microseconds (E2): the manager's before the
+     * first boot attaches the transport, whose clock the self-test's waits
+     * and a booted manager's lines read (IntcDspNow takes this one first).
+     * With it the line of the first boot at an open, on a device whose D0
+     * entries never booted, carries its time. NULL: the transport's clock.
+     */
+    UINT64 (*NowUs)(_In_opt_ PVOID Context);
 } INTCDSP_STREAMS_OPS, *PINTCDSP_STREAMS_OPS;
 
 /*
