@@ -17,7 +17,8 @@ using namespace LiberUI;
 
 #define LIBER_CLOCK_WIDTH    112
 #define LIBER_PILL_WIDTH     72
-#define LIBER_TRAY_WIDTH     (LIBER_PILL_WIDTH + LIBER_CLOCK_WIDTH)
+#define LIBER_CHEVRON_WIDTH  40
+#define LIBER_TRAY_WIDTH     (LIBER_CHEVRON_WIDTH + LIBER_PILL_WIDTH + LIBER_CLOCK_WIDTH)
 #define LIBER_TIMER_CLOCK    1
 #define LIBER_TIMER_REFRESH  2
 #define LIBER_REFRESH_DELAY  60
@@ -107,6 +108,37 @@ private:
     HICON m_Icon;
     BOOL m_Running;
     BOOL m_Active;
+};
+
+class CTrayChevron : public Widget
+{
+public:
+    CTrayChevron(CLiberDock *dock) : m_Dock(dock)
+    {
+        SetSize(LIBER_CHEVRON_WIDTH, LIBER_TRAY_HEIGHT);
+        SetHitTestable(TRUE);
+        SetFocusable(TRUE);
+    }
+
+    void OnClick();
+
+protected:
+    void PaintOverride(PaintContext &context)
+    {
+        RectF rc = ToRectF(Bounds());
+        const ThemeTokens &tokens = context.Tokens;
+
+        if (HasState(StateHover) || HasState(StatePressed))
+        {
+            RectF plate = { rc.X + 4.0f, rc.Y + 8.0f, rc.Width - 8.0f, rc.Height - 16.0f };
+            context.Painter.FillRoundRect(plate, plate.Height / 2, tokens.Color(LIBER_COLOR_FILL_SUBTLE_HOVER));
+        }
+        RectF icon = { rc.X + (rc.Width - 12.0f) / 2, rc.Y + (rc.Height - 12.0f) / 2, 12.0f, 12.0f };
+        context.Painter.Icon(L"chevron_up_12_regular", icon, tokens.Color(LIBER_COLOR_TEXT1));
+    }
+
+private:
+    CLiberDock *m_Dock;
 };
 
 class CSystemPill : public Widget
@@ -211,6 +243,7 @@ public:
     void OnCellClick(int index, const RECT &bounds);
     void OnClockClick(const RECT &bounds);
     void OnPillClick();
+    void OnChevronClick();
 
 private:
     static LRESULT CALLBACK SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -255,6 +288,11 @@ void CTrayClock::OnClick()
 void CSystemPill::OnClick()
 {
     m_Dock->OnPillClick();
+}
+
+void CTrayChevron::OnClick()
+{
+    m_Dock->OnChevronClick();
 }
 
 void CLiberDock::BuildTheme()
@@ -467,6 +505,14 @@ void CLiberDock::OnPillClick()
     LiberControlCenter_Toggle(&rc);
 }
 
+void CLiberDock::OnChevronClick()
+{
+    RECT rc;
+
+    GetWindowRect(m_TraySurface.Window(), &rc);
+    TrayOverflow_ToggleAll(m_hwndSink, &rc);
+}
+
 void CLiberDock::OnClockClick(const RECT &bounds)
 {
     RECT rc = ScreenRect(m_TraySurface, bounds);
@@ -552,6 +598,7 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
     m_DockRoot->SetPadding(pad);
     m_TrayRoot = new CLiberPanel(Orientation::Horizontal, 0, (float)LIBER_TRAY_HEIGHT / 2.0f, LIBER_MATERIAL_REGULAR);
     m_Clock = new CTrayClock(this);
+    m_TrayRoot->AddChild(new CTrayChevron(this));
     m_TrayRoot->AddChild(new CSystemPill(this));
     m_TrayRoot->AddChild(m_Clock);
     m_Clock->Update();

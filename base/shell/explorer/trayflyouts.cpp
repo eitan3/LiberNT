@@ -9904,6 +9904,8 @@ TfySendIconEvent(HWND hwndPager, const TRAYICONITEM *pItem, UINT uMsg)
 #define TFY_OVF_CELL 32
 #define TFY_OVF_PAD  8
 
+static BOOL g_bTfyOverflowAll;
+
 class CTrayOverflowWnd :
     public CWindowImpl<CTrayOverflowWnd, CWindow, CTrayFlyoutTraits>,
     public CTrayFlyoutAnimation
@@ -9914,6 +9916,7 @@ public:
     SM2_FLYOUT_PALETTE m_Pal;
     HWND m_hwndOwner;
     HWND m_hwndPager;
+    BOOL m_bAllIcons;
     RECT m_rcAnchor;
     TRAYICONLIST m_List;
     int m_cCols;
@@ -9926,7 +9929,7 @@ public:
     SIZE m_size;
     CTooltips m_Tip;
 
-    CTrayOverflowWnd() : m_hwndOwner(NULL), m_hwndPager(NULL), m_cCols(1), m_cRows(1),
+    CTrayOverflowWnd() : m_hwndOwner(NULL), m_hwndPager(NULL), m_bAllIcons(g_bTfyOverflowAll), m_cCols(1), m_cRows(1),
                          m_iHot(-1), m_iPressed(-1), m_bDragging(FALSE), m_bTracking(FALSE)
     {
         ZeroMemory(&m_Pal, sizeof(m_Pal));
@@ -9964,7 +9967,7 @@ public:
 
         ZeroMemory(&m_List, sizeof(m_List));
         if (m_hwndPager)
-            ::SendMessageW(m_hwndPager, TNWM_GETTRAYICONS, 0, (LPARAM)&m_List);
+            ::SendMessageW(m_hwndPager, TNWM_GETTRAYICONS, m_bAllIcons, (LPARAM)&m_List);
         n = max(1u, m_List.cItems);
         m_cCols = (int)ceil(sqrt((double)n));
         m_cRows = (int)((n + m_cCols - 1) / m_cCols);
@@ -10276,6 +10279,13 @@ VOID TrayOverflow_Toggle(IN HWND hwndOwner, IN const RECT *prcAnchor, IN HWND hw
     }
     g_pTrayOverflow = pOverflow;
     pOverflow->Toggle(hwndOwner, prcAnchor, hwndPager);
+}
+
+VOID TrayOverflow_ToggleAll(IN HWND hwndOwner, IN const RECT *prcAnchor)
+{
+    g_bTfyOverflowAll = TRUE;
+    TrayOverflow_Toggle(hwndOwner, prcAnchor, TfyFindPager());
+    g_bTfyOverflowAll = FALSE;
 }
 
 BOOL TrayOverflow_IsOpen(VOID)

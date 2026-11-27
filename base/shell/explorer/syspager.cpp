@@ -362,7 +362,7 @@ public:
     VOID UpdateVisibility();
     int IndexFromCommand(int idCommand);
     int InsertIndex(INT Kind);
-    VOID GetIcons(PTRAYICONLIST pList);
+    VOID GetIcons(PTRAYICONLIST pList, BOOL bAll);
     BOOL ForwardIconEvent(CONST TRAYICONEVENT *pEvent);
     BOOL SetPromoted(HWND hWnd, UINT uID, BOOL bPromoted);
     POINT GetIconAnchor(INT iBtn);
@@ -1471,13 +1471,13 @@ int CNotifyToolbar::IndexFromCommand(int idCommand)
     return (int)SendMessageW(TB_COMMANDTOINDEX, idCommand, 0);
 }
 
-VOID CNotifyToolbar::GetIcons(PTRAYICONLIST pList)
+VOID CNotifyToolbar::GetIcons(PTRAYICONLIST pList, BOOL bAll)
 {
     int count = GetButtonCount();
 
     pList->himl = m_ImageList;
     pList->cItems = 0;
-    if (!m_bModern)
+    if (!m_bModern && !bAll)
         return;
 
     for (int i = 0; i < count && pList->cItems < _countof(pList->Items); i++)
@@ -1486,7 +1486,7 @@ VOID CNotifyToolbar::GetIcons(PTRAYICONLIST pList)
         TBBUTTON btn;
         PTRAYICONITEM pOut;
 
-        if ((pItem->dwState & NIS_HIDDEN) || IsItemVisible(pItem))
+        if (!TrayIcon_Listed(pItem->dwState, IsItemVisible(pItem), bAll))
             continue;
 
         GetButton(i, &btn);
@@ -2181,7 +2181,7 @@ LRESULT CSysPagerWnd::OnGetTrayIcons(UINT uMsg, WPARAM wParam, LPARAM lParam, BO
 
     if (!pList)
         return FALSE;
-    Toolbar.GetIcons(pList);
+    Toolbar.GetIcons(pList, wParam != 0);
     return TRUE;
 }
 
