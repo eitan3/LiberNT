@@ -560,7 +560,8 @@ PVOID FakeBusWaitContext;
 LONG FakeBusLockDepth;
 KIRQL FakeBusIrql;
 
-/* The host's mutex of the stream manager: made as nothing, taken without a wait (KeWaitForSingleObject below), and given back with the depth it was taken to */
+/* The host's mutex of the stream manager: made as nothing, taken without a wait (KeWaitForSingleObject below), and given back with the depth it was taken to.
+ * Its limit (R8-10): a depth counter with no owner. It proves that every take has its release, which a test reads as FakeBusLockDepth == 0 at its end; it would not see a take by the holder itself, a release by another, or a wait that should have blocked, since the host runs one thread and a real mutex's contention is not modelled */
 VOID
 KeInitializeMutex(
     PKMUTEX Mutex,
