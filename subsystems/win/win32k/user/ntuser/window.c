@@ -3890,7 +3890,7 @@ NtUserGetComboBoxInfo(
    COMBOBOXINFO Info;
 
    TRACE("Enter NtUserGetComboBoxInfo\n");
-   UserEnterShared();
+   UserEnterExclusive();
 
    if (!(Wnd = UserGetWindowObject(hWnd)))
    {
@@ -3917,11 +3917,25 @@ NtUserGetComboBoxInfo(
       goto Exit;
    }
 
-   // Pass the user pointer, it was already probed.
+   RtlZeroMemory(&Info, sizeof(Info));
    if ((Wnd->pcls->atomClassName != gpsi->atomSysClass[ICLS_COMBOBOX]) && Wnd->fnid != FNID_COMBOBOX)
    {
-      Ret = (BOOL)co_IntSendMessage(UserHMGetHandle(Wnd), CB_GETCOMBOBOXINFO, 0, (LPARAM)pcbi);
-      goto Exit;
+      PCOMBOBOXINFO Sent = ExAllocatePoolWithTag(PagedPool, sizeof(*Sent), TAG_MSG);
+
+      if (!Sent)
+      {
+         EngSetLastError(ERROR_NOT_ENOUGH_MEMORY);
+         Ret = FALSE;
+         goto Exit;
+      }
+      RtlZeroMemory(Sent, sizeof(*Sent));
+      Sent->cbSize = sizeof(*Sent);
+      ASSERT(UserIsEnteredExclusive());
+      Ret = (BOOL)co_IntSendMessage(UserHMGetHandle(Wnd), CB_GETCOMBOBOXINFO, 0, (LPARAM)Sent);
+      if (Ret)
+         Info = *Sent;
+      ExFreePoolWithTag(Sent, TAG_MSG);
+      goto Copy;
    }
 
    ppi = PsGetCurrentProcessWin32Process();
@@ -3931,7 +3945,6 @@ NtUserGetComboBoxInfo(
       KeAttachProcess(&Wnd->head.pti->ppi->peProcess->Pcb);
    }
 
-   RtlZeroMemory(&Info, sizeof(Info));
    _SEH2_TRY
    {
 #ifdef _WIN64
@@ -3980,6 +3993,7 @@ NtUserGetComboBoxInfo(
       NotSameppi = FALSE;
    }
 
+Copy:
    if (Ret)
    {
       _SEH2_TRY
@@ -4066,7 +4080,7 @@ NtUserGetListBoxInfo(
    DWORD Ret = 0;
 
    TRACE("Enter NtUserGetListBoxInfo\n");
-   UserEnterShared();
+   UserEnterExclusive();
 
    if (!(Wnd = UserGetWindowObject(hWnd)))
    {
@@ -4339,7 +4353,9 @@ co_IntSetWindowLongPtr(HWND hWnd, DWORD Index, LONG_PTR NewValue, BOOL Ansi, ULO
 
    if ((INT)Index >= 0)
    {
-      if (FNID_HAS_PRIVATE_EXTRA(Window->fnid) || (Index + Size) > Window->cbwndExtra)
+      if ((ULONG)Index < FNID_PRIVATE_EXTRA_SIZE(Window->fnid) ||
+          (ULONG)Index > Window->cbwndExtra ||
+          (Window->cbwndExtra - (ULONG)Index) < Size)
       {
          EngSetLastError(ERROR_INVALID_INDEX);
          OldValue = 0;
@@ -4403,12 +4419,21 @@ co_IntSetWindowLongPtr(HWND hWnd, DWORD Index, LONG_PTR NewValue, BOOL Ansi, ULO
             Style.styleOld = OldValue;
             Style.styleNew = NewValue;
 
+            if (((ULONG)NewValue ^ Window->ExStyle) & WS_EX_NOREDIRECTIONBITMAP)
+            {
+               EngSetLastError(ERROR_INVALID_PARAMETER);
+               OldValue = 0;
+               goto Exit;
+            }
+
             co_IntSendMessage(hWnd, WM_STYLECHANGING, GWL_EXSTYLE, (LPARAM) &Style);
             if (Window->state & WNDS_DESTROYED)
             {
                OldValue = 0;
                goto Exit;
             }
+            Style.styleNew = (Style.styleNew & ~WS_EX_NOREDIRECTIONBITMAP) |
+                             (Window->ExStyle & WS_EX_NOREDIRECTIONBITMAP);
 
             /*
              * Remove extended window style bit WS_EX_TOPMOST for shell windows.
@@ -4698,7 +4723,9 @@ NtUserSetWindowWord(HWND hWnd, INT Index, WORD NewValue)
       goto Exit; // Return 0
    }
 
-   if (FNID_HAS_PRIVATE_EXTRA(Window->fnid) || (ULONG)Index > (Window->cbwndExtra - sizeof(WORD)))
+   if ((ULONG)Index < FNID_PRIVATE_EXTRA_SIZE(Window->fnid) ||
+       (ULONG)Index > Window->cbwndExtra ||
+       (Window->cbwndExtra - (ULONG)Index) < sizeof(WORD))
    {
       EngSetLastError(ERROR_INVALID_INDEX);
       goto Exit; // Return 0

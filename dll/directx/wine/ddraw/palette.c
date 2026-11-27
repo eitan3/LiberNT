@@ -20,6 +20,8 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(ddraw);
 
+static unsigned int palette_size(DWORD flags);
+
 /*****************************************************************************
  * IDirectDrawPalette::QueryInterface
  *
@@ -169,6 +171,9 @@ static HRESULT WINAPI ddraw_palette_SetEntries(IDirectDrawPalette *iface,
     if (!entries)
         return DDERR_INVALIDPARAMS;
 
+    if (!wined3d_bound_range(start, count, palette_size(palette->flags)))
+        return DDERR_INVALIDPARAMS;
+
     wined3d_mutex_lock();
     hr = wined3d_palette_set_entries(palette->wined3d_palette, flags, start, count, entries);
 
@@ -206,6 +211,9 @@ static HRESULT WINAPI ddraw_palette_GetEntries(IDirectDrawPalette *iface,
             iface, flags, start, count, entries);
 
     if (!entries)
+        return DDERR_INVALIDPARAMS;
+
+    if (flags || !count || !wined3d_bound_range(start, count, palette_size(palette->flags)))
         return DDERR_INVALIDPARAMS;
 
     wined3d_mutex_lock();
@@ -261,6 +269,15 @@ HRESULT ddraw_palette_init(struct ddraw_palette *palette,
     HRESULT hr;
 
     if ((entry_count = palette_size(flags)) == ~0u)
+    {
+        WARN("Invalid flags %#lx.\n", flags);
+        return DDERR_INVALIDPARAMS;
+    }
+
+    if ((flags & (DDPCAPS_PRIMARYSURFACE | DDPCAPS_PRIMARYSURFACELEFT | DDPCAPS_VSYNC))
+            || ((flags & DDPCAPS_8BITENTRIES) && !(flags & (DDPCAPS_1BIT | DDPCAPS_2BIT | DDPCAPS_4BIT)))
+            || ((flags & DDPCAPS_ALLOW256) && !(flags & DDPCAPS_8BIT))
+            || ((flags & DDPCAPS_ALPHA) && (flags & DDPCAPS_8BITENTRIES)))
     {
         WARN("Invalid flags %#lx.\n", flags);
         return DDERR_INVALIDPARAMS;

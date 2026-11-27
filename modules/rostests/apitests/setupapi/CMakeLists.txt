@@ -1,6 +1,7 @@
 
 list(APPEND SOURCE
     AcpiDeviceCapabilities.c
+    CfgMgr32EnumSubkeys.c
     ClassInstallParams.c
     devclass.c
     DeviceClassName.c
@@ -34,6 +35,7 @@ list(APPEND SOURCE
     SoftwareBusRestart.c
     SetupCommitFileQueue.c
     SetupDiInstallClassExA.c
+    SetupDiInterfaceSubkeys.c
     SetupDiOpenDeviceInterface.c
     SetupDiGetActualModelsSection.c
     SetupInstallFile.c

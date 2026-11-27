@@ -143,8 +143,10 @@ list(APPEND SOURCE
     NtQueryObjectName.c
     NtQueryOpenSubKeys.c
     NtQuerySection.c
+    NtQuerySectionImageNoExecute.c
     NtQuerySecurityObject.c
     NtSetSecurityObjectStatus.c
+    PipeMailslotSecurity.c
     NtQuerySystemEnvironmentValue.c
     NtQueryLicenseValue.c
     NtQuerySystemInformation.c
@@ -188,6 +190,7 @@ list(APPEND SOURCE
     ProcessPoolQuota.c
     ProcessUserModeIopl.c
     MemoryImageInformation.c
+    PartialImageMap.c
     ObjectQuotaLimit.c
     ObjectTypeIndex.c
     ObHandleRace.c

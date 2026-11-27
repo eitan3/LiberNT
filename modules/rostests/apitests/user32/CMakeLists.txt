@@ -24,6 +24,7 @@ list(APPEND SOURCE
     CreateIconFromResourceEx.c
     CoveredWindow.c
     CreateWindowEx.c
+    CrossThreadChildDestroy.c
     CrossThreadWindowPos.c
     DeferWindowPos.c
     DefFrameProc.c
@@ -104,6 +105,7 @@ list(APPEND SOURCE
     NextDlgItem.c
     NonClientPaint.c
     NonClientUpdate.c
+    OccludedPageSwitch.c
     OwnedZOrder.c
     OwnerDestroy.c
     OwnerDrawButtonCues.c
@@ -151,6 +153,7 @@ list(APPEND SOURCE
     TrackMouseEvent.c
     TrackPopupMenuEx.c
     UncoveredWindow.c
+    UnpumpedWindow.c
     UpdateRegion.c
     UserHandleGrantAccess.c
     VirtualKey.c

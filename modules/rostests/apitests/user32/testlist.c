@@ -21,6 +21,7 @@ extern void func_CreateStructHook(void);
 extern void func_CreateIconFromResourceEx(void);
 extern void func_CoveredWindow(void);
 extern void func_CreateWindowEx(void);
+extern void func_CrossThreadChildDestroy(void);
 extern void func_CrossThreadWindowPos(void);
 extern void func_DeferWindowPos(void);
 extern void func_DefFrameProc(void);
@@ -106,6 +107,7 @@ extern void func_NestedDialogKeys(void);
 extern void func_NextDlgItem(void);
 extern void func_NonClientPaint(void);
 extern void func_NonClientUpdate(void);
+extern void func_OccludedPageSwitch(void);
 extern void func_OwnedZOrder(void);
 extern void func_OwnerDestroy(void);
 extern void func_OwnerDrawButtonCues(void);
@@ -152,6 +154,7 @@ extern void func_SystemMenu(void);
 extern void func_TrackMouseEvent(void);
 extern void func_TrackPopupMenuEx(void);
 extern void func_UncoveredWindow(void);
+extern void func_UnpumpedWindow(void);
 extern void func_UpdateRegion(void);
 extern void func_UserHandleGrantAccess(void);
 extern void func_VirtualKey(void);
@@ -186,6 +189,7 @@ const struct test winetest_testlist[] =
     { "CreateIconFromResourceEx", func_CreateIconFromResourceEx },
     { "CoveredWindow", func_CoveredWindow },
     { "CreateWindowEx", func_CreateWindowEx },
+    { "CrossThreadChildDestroy", func_CrossThreadChildDestroy },
     { "CrossThreadWindowPos", func_CrossThreadWindowPos },
     { "DeferWindowPos", func_DeferWindowPos },
     { "DefFrameProc", func_DefFrameProc },
@@ -271,6 +275,7 @@ const struct test winetest_testlist[] =
     { "NextDlgItem", func_NextDlgItem },
     { "NonClientPaint", func_NonClientPaint },
     { "NonClientUpdate", func_NonClientUpdate },
+    { "OccludedPageSwitch", func_OccludedPageSwitch },
     { "OwnedZOrder", func_OwnedZOrder },
     { "OwnerDestroy", func_OwnerDestroy },
     { "OwnerDrawButtonCues", func_OwnerDrawButtonCues },
@@ -317,6 +322,7 @@ const struct test winetest_testlist[] =
     { "TrackMouseEvent", func_TrackMouseEvent },
     { "TrackPopupMenuEx", func_TrackPopupMenuEx },
     { "UncoveredWindow", func_UncoveredWindow },
+    { "UnpumpedWindow", func_UnpumpedWindow },
     { "UpdateRegion", func_UpdateRegion },
     { "UserHandleGrantAccess", func_UserHandleGrantAccess },
     { "VirtualKey", func_VirtualKey },

@@ -227,6 +227,7 @@ struct d3d11_swapchain
     DXGI_RGBA background;
     BOOL null_driver;
     BOOL composition;
+    BOOL presented;
     UINT source_width;
     UINT source_height;
     DXGI_MATRIX_3X2_F transform;
@@ -249,6 +250,7 @@ LONG dxgi_open_wddm_adapter(LUID luid);
 void dxgi_close_wddm_adapter(LONG kmt_adapter);
 HRESULT dxgi_query_wddm_video_memory_info(LONG kmt_adapter, UINT node_index, DXGI_MEMORY_SEGMENT_GROUP segment_group,
         DXGI_QUERY_VIDEO_MEMORY_INFO *info);
+BOOL dxgi_wddm_adapter_is_render_only_software(LUID luid);
 BOOL dxgi_wddm_adapter_has_d3d11_umd(LUID luid);
 HRESULT dxgi_get_wddm_umd_version(LUID luid, LARGE_INTEGER *version);
 BOOL dxgi_wddm_adapters_have_d3d11_umd(void);
