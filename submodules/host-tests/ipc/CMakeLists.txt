@@ -17,6 +17,10 @@ target_include_directories(ipc_common INTERFACE
     ${REACTOS_HOST_SOURCE_ROOT}/modules/rostests/kmtests/fwload
     ${REACTOS_HOST_SOURCE_ROOT}/modules/rostests/kmtests/intcdsp)
 
+# the stream cases wrap the transport's request to fail one exchange with the link ready (N7-02): sofipc.c's own entry is compiled under another name for the wrapper
+set_source_files_properties(${REACTOS_HOST_SOURCE_ROOT}/sdk/lib/drivers/audio/sofipc/sofipc.c PROPERTIES
+    COMPILE_DEFINITIONS "SofIpcRequest=SofIpcRequestReal")
+
 function(ipc_test name)
     add_executable(${name} ${ARGN})
     target_link_libraries(${name} PRIVATE ipc_common)

@@ -20,6 +20,29 @@
 #include "stream.h"
 #include "ipc4_transport_cases.h"
 
+/*
+ * The transport's request, wrapped (N7-02): the transport faults the link on
+ * every failed exchange, a firmware status included, so no fake DSP makes a
+ * deletion fail with the link ready, the case R8-12 asks for. With
+ * FailDeleteRequest set, a delete-pipeline request is answered as a timeout
+ * that left the link ready, and sent nowhere; sofipc.c's own entry is
+ * compiled under the name SofIpcRequestReal beside it.
+ */
+SOFIPC_STATUS SofIpcRequestReal(SOFIPC_CONTEXT* Ipc, SOFIPC_REQUEST* Request);
+static BOOLEAN FailDeleteRequest;
+
+SOFIPC_STATUS SofIpcRequest(SOFIPC_CONTEXT* Ipc, SOFIPC_REQUEST* Request)
+{
+    if (FailDeleteRequest && Request != NULL && SofIpc4MsgType(&Request->Msg) == SofIpc4GlbDeletePipeline)
+    {
+        Ipc->Failure = SofIpcTimeout;
+        Ipc->Faults++;
+        Ipc->Timeouts++;
+        return SofIpcTimeout;
+    }
+    return SofIpcRequestReal(Ipc, Request);
+}
+
 static int Checks;
 static int Failures;
 
@@ -3258,7 +3281,9 @@ CheckStreamLock(
  * failed exchange, a firmware status included (sofipc.c SofIpcRequest), so
  * the forced release is reached through the lost link and no outcome of the
  * fake DSP leaves the link ready beside a failed undo; the case asserts the
- * release as it comes. The buffer the allocate did not hand to its pin is
+ * release as it comes, and, with the transport's entry wrapped so that a
+ * deletion fails with the link ready (N7-02), once more as R8-12 asked it.
+ * The buffer the allocate did not hand to its pin is
  * the manager's to return. Then the same forced release from the pin's own
  * free, with another pin's buffer live: held across a D0 entry, returned by
  * that pin's free once. The contract in each: nothing is freed while a pin
@@ -3306,6 +3331,39 @@ CheckStreamHeldBuffer(
     /* the pin's free of a word nothing is held under: refused, nothing freed */
     CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_DEVICE_NOT_READY);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 1);
+    StreamStop(S);
+    free(S);
+
+    /* R8-12's case as it was asked (N7-02): the build busy at its third request, and the undo's deletion of the pipeline failing while the link stays ready, which only the wrapped transport gives. The forcing branch of IntcDspStuck releases everything as after a lost link, the driver is told, and the status is the undo's */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    S->H.LockBusyAtRequest = 3;
+    FailDeleteRequest = TRUE;
+    Status = IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2);
+    FailDeleteRequest = FALSE;
+    /* the undo's status, and the link never faulted by the transport: the manager faulted itself */
+    CHECK_EQ(Status, STATUS_IO_TIMEOUT);
+    CHECK_EQ(S->H.Ipc.Link, SofIpcLinkReady);
+    CHECK_EQ(S->H.Ipc.Faults, 1);
+    CHECK_EQ(S->H.Ipc.Timeouts, 1);
+    CHECK_EQ(S->Streams.Faulted, TRUE);
+    CHECK_EQ(S->Streams.Faults, 1);
+    CHECK_EQ(S->Faults, 1);
+    CHECK_EQ(S->FaultDepth, 1);
+    /* the release: the bus has its tag back and the buffer detached, the pin never had it, so the manager returned it at once */
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 1);
+    StreamPinHeld(S, 0, 1);
+    CHECK_EQ(S->Unmaps, 1);
+    CHECK(IntcDspStreamOf(&S->Streams, Render) != NULL && IntcDspStreamOf(&S->Streams, Render)->State == IntcDspStreamStateReleased);
+    CHECK(StreamLogCount(S, "could not be deleted again (0xc00000b5); released as after a fault\n") == 1);
+    CHECK(StreamLogCount(S, "released after the fault; nothing is sent until the DSP is booted again\n") == 1);
+    /* the deletion's own line says the link ready, as the build's busy request's does: the failures were the exchanges' alone, never the link's */
+    CHECK(StreamLogCount(S, "the link is ready\n") == 2);
     StreamStop(S);
     free(S);
 
