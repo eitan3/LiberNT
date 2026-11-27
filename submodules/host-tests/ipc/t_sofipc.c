@@ -1463,6 +1463,12 @@ typedef struct _STREAM_HARNESS
     UINT32 Wakes;
     /* the pins that hold their stream's buffer (R5-01): each a wave pin with the MDL its allocation gave, until its close */
     STREAM_PIN Pins[STREAM_PINS];
+    /* the idle timer of the device (E2): how often the manager armed and cancelled it, the due time of the last arming, the manager's clock, how many idle power-downs came and at what depth of the manager's lock */
+    UINT32 IdleArms;
+    UINT32 IdleCancels;
+    UINT64 IdleDueUs;
+    UINT32 IdleDowns;
+    UINT32 IdleDownDepth;
 } STREAM_HARNESS;
 
 static const INTCDSP_SELFTEST_OPS StreamSelfTestOps;
@@ -1513,13 +1519,49 @@ StreamUnmap(
     S->Unmaps++;
 }
 
+/* The idle timer of the device (E2), as the driver's operations see it: armed for a due time, cancelled; the power-down is the driver's power-down's half the manager knows, its release, as intcdsp.c IntcDspPowerDown begins */
+static
+void
+StreamIdleArm(
+    PVOID Context,
+    UINT64 DueUs)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)Context;
+
+    S->IdleArms++;
+    S->IdleDueUs = DueUs;
+}
+
+static
+void
+StreamIdleCancel(
+    PVOID Context)
+{
+    ((STREAM_HARNESS*)Context)->IdleCancels++;
+}
+
+static
+void
+StreamIdleDown(
+    PVOID Context)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)Context;
+
+    S->IdleDowns++;
+    S->IdleDownDepth = (UINT32)FakeBusLockDepth;
+    IntcDspStreamsRelease(&S->Streams);
+}
+
 static const INTCDSP_STREAMS_OPS StreamOpsTemplate =
 {
     NULL,
     StreamLog,
     StreamFault,
     NULL,
-    StreamUnmap
+    StreamUnmap,
+    StreamIdleArm,
+    StreamIdleCancel,
+    StreamIdleDown
 };
 
 /* How often the log holds a line */
@@ -5088,6 +5130,356 @@ CheckStreamPoll(
     free(S);
 }
 
+/* The harness's clock moved forward as a wait's delay moves it: the fake DSP's delay operation, which runs what the clock makes due */
+static
+void
+StreamClockAdvance(
+    STREAM_HARNESS* S,
+    UINT64 Microseconds)
+{
+    FakeDspOps()->DelayUs(S->H.Dsp, Microseconds);
+}
+
+/*
+ * (i24) The idle decision (E2), a pure function of the allocated streams,
+ * the clock, the last close and the setting: no power-down while any
+ * stream is allocated, however long; the setting off, never; the idle
+ * seconds counted from the last close, the boundary included; the largest
+ * setting no overflow. The allocated count is the PCMs' open streams,
+ * summed over every state but Free and Released, and zero after a release.
+ */
+static
+void
+CheckStreamIdleDecision(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    HANDLE Render = NULL, Capture = NULL;
+    UINT32 Pcm;
+
+    CHECK(!IntcDspIdleDue(0, 0, 0, 0));
+    CHECK(!IntcDspIdleDue(0, 1000000000000ULL, 0, 0));
+    CHECK(!IntcDspIdleDue(1, 1000000000000ULL, 0, 5));
+    CHECK(!IntcDspIdleDue(16, 1000000000000ULL, 0, 5));
+    CHECK(!IntcDspIdleDue(0, 4999999ULL, 0, 5));
+    CHECK(IntcDspIdleDue(0, 5000000ULL, 0, 5));
+    CHECK(!IntcDspIdleDue(0, 8999999ULL, 4000000ULL, 5));
+    CHECK(IntcDspIdleDue(0, 9000000ULL, 4000000ULL, 5));
+    CHECK(IntcDspIdleDue(0, MAXULONG64 - 1, MAXULONG64 - 1 - 1000000ULL, 1));
+    CHECK(IntcDspIdleDue(0, 4294967295000000ULL, 0, MAXULONG32));
+    CHECK(!IntcDspIdleDue(0, 4294967294999999ULL, 0, MAXULONG32));
+    CHECK(IntcDspIdleDue(0, 1000000, 0, 1));
+    CHECK(!IntcDspIdleDue(0, 999999, 0, 1));
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 0);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 1);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 2);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 2);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 2);
+    CHECK_EQ(IntcDspStreamPause(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 2);
+    /* the free leaves the stream open on its pin: allocated until the close (P5-R5) */
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 2);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 2);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 1);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 0);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    /* a fault's release and a power-down's empty the count with the rest */
+    IntcDspStreamsRelease(&S->Streams);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 0);
+    StreamStop(S);
+    free(S);
+}
+
+/*
+ * (i25) The idle timer's arithmetic (E2) over the manager: armed only when
+ * the allocated streams drop to zero, once per close that leaves none; an
+ * open inside the window cancels it; an open that arrives after the timer
+ * fired is honoured by the work item's re-check; a pin open but not running
+ * across the idle time keeps the DSP up; a timer armed again before a
+ * stale work item runs is left armed; the setting turned off, a power-down
+ * and a fault cancel an armed timer; the power-down comes under the lock
+ * with one line of the measured seconds, and the next open's line is a
+ * boot's, not a recovery's. The driver's power-down's half the manager
+ * knows is its release, which the harness's operation calls.
+ */
+static
+void
+CheckStreamIdleTimer(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    PFAKE_DSP Dsp;
+    HANDLE A = NULL, B = NULL, C = NULL, D = NULL, E = NULL, F = NULL, G = NULL, H = NULL, I = NULL, J = NULL, K = NULL;
+    UINT64 Due;
+    UINT32 Pcm, Sx;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Dsp = S->H.Dsp;
+    Pcm = StreamPcm(S);
+    S->Ops.Boot = StreamBootAtOpen;
+    /* the setting is off until the driver sets it after a boot (intcdsp.c IntcDspStreamsStart): a close arms nothing */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &A), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, A), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleArms, 0);
+    CHECK(S->Streams.IdleArmed == FALSE);
+    IntcDspStreamsIdleSec(&S->Streams, 5);
+    CHECK_EQ(S->Streams.IdleSec, 5);
+    /* two opens: the work item finds streams allocated and powers nothing down */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &A), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &B), STATUS_SUCCESS);
+    IntcDspStreamsIdle(&S->Streams);
+    CHECK_EQ(S->IdleDowns, 0);
+    CHECK(S->Streams.Ready && !S->Streams.NeedsBoot);
+    /* the first close leaves one stream: no timer; the second leaves none: one timer, for five seconds */
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, A), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleArms, 0);
+    Due = Dsp->Clock + 5000000ULL;
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, B), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleArms, 1);
+    CHECK(S->Streams.IdleArmed);
+    CHECK_EQ(S->IdleDueUs, Due);
+    /* an open inside the window cancels the timer: the pin keeps the DSP up, running or not (P5-R5) */
+    StreamClockAdvance(S, 2000000);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &C), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleCancels, 1);
+    CHECK(S->Streams.IdleArmed == FALSE);
+    IntcDspStreamsIdle(&S->Streams);
+    CHECK_EQ(S->IdleDowns, 0);
+    CHECK(S->Streams.Ready && !S->Streams.NeedsBoot);
+    /* the timer fires and an open arrives before the work item runs: the open is honoured by the re-check */
+    Due = Dsp->Clock + 5000000ULL;
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, C), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleArms, 2);
+    CHECK_EQ(S->IdleDueUs, Due);
+    StreamClockAdvance(S, 5000000);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &D), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleCancels, 2);
+    IntcDspStreamsIdle(&S->Streams);
+    CHECK_EQ(S->IdleDowns, 0);
+    CHECK(S->Streams.Ready && !S->Streams.NeedsBoot);
+    CHECK(StreamLogCount(S, "idle power down") == 0);
+    /* a pin open but not running across the idle time: no power-down */
+    StreamClockAdvance(S, 20000000);
+    IntcDspStreamsIdle(&S->Streams);
+    CHECK_EQ(S->IdleDowns, 0);
+    CHECK(S->Streams.Ready);
+    /* two closes give one timer, and a close that frees nothing (a released stream's) gives none */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &E), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, D), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleArms, 2);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, E), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleArms, 3);
+    CHECK(S->Streams.IdleArmed);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, E), STATUS_INVALID_HANDLE);
+    CHECK_EQ(S->IdleArms, 3);
+    /* armed again before the work item of the fire before runs: that work item is not the new arming's, and the timer stays armed */
+    StreamClockAdvance(S, 5000000);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &F), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleCancels, 3);
+    Due = Dsp->Clock + 5000000ULL;
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, F), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleArms, 4);
+    CHECK_EQ(S->IdleDueUs, Due);
+    IntcDspStreamsIdle(&S->Streams);
+    CHECK_EQ(S->IdleDowns, 0);
+    CHECK(S->Streams.IdleArmed);
+    /* the setting turned off cancels an armed timer, and the work item then decides nothing */
+    IntcDspStreamsIdleSec(&S->Streams, 0);
+    CHECK_EQ(S->IdleCancels, 4);
+    CHECK(S->Streams.IdleArmed == FALSE);
+    IntcDspStreamsIdle(&S->Streams);
+    CHECK_EQ(S->IdleDowns, 0);
+    CHECK(S->Streams.Ready);
+    /* armed, then a power-down's release: the timer is cancelled, not left to fire on a device going off */
+    IntcDspStreamsIdleSec(&S->Streams, 5);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &G), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, G), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleArms, 5);
+    CHECK(S->Streams.IdleArmed);
+    IntcDspStreamsRelease(&S->Streams);
+    CHECK_EQ(S->IdleCancels, 5);
+    CHECK(S->Streams.IdleArmed == FALSE);
+    /* the next open boots, its line a recovery's: the power-down put the DSP down, and the boot zeroed the setting with the manager's state */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &H), STATUS_SUCCESS);
+    CHECK_EQ(S->Boots, 1);
+    CHECK(StreamLogCount(S, "recovered: open ok after ") == 1);
+    CHECK(StreamLogCount(S, "boot at stream open: ok") == 0);
+    CHECK_EQ(S->Streams.IdleSec, 0);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, H), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleArms, 5);
+    /* the idle power-down: armed, the time passes, the work item powers the DSP down under the lock with one line of the measured seconds, and the next open's line is a boot's */
+    Dsp = S->H.Dsp;
+    IntcDspStreamsIdleSec(&S->Streams, 5);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &I), STATUS_SUCCESS);
+    Due = Dsp->Clock + 5000000ULL;
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, I), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleArms, 6);
+    CHECK_EQ(S->IdleDueUs, Due);
+    /* a work item before the time: nothing, the timer still armed */
+    StreamClockAdvance(S, 4999999);
+    IntcDspStreamsIdle(&S->Streams);
+    CHECK_EQ(S->IdleDowns, 0);
+    CHECK(S->Streams.IdleArmed);
+    /* the timer fired at five seconds and the work item ran at seven and nine tenths: measured, seven */
+    StreamClockAdvance(S, 2900001);
+    IntcDspStreamsIdle(&S->Streams);
+    CHECK_EQ(S->IdleDowns, 1);
+    CHECK_EQ(S->IdleDownDepth, 1);
+    CHECK(S->Streams.Ready == FALSE && S->Streams.NeedsBoot && S->Streams.IdleDown);
+    CHECK(S->Streams.IdleArmed == FALSE);
+    CHECK(StreamLogCount(S, "idle power down after 7 s\n") == 1);
+    CHECK(StreamLogCount(S, "idle power down") == 1);
+    /* the release's own line: the power-down's release before, and the idle's */
+    CHECK(StreamLogCount(S, "streams: released for the power-down; nothing is sent until the next stream open or D0 entry\n") == 2);
+    /* a manager that is not up is not asked again */
+    IntcDspStreamsIdle(&S->Streams);
+    CHECK_EQ(S->IdleDowns, 1);
+    /* the next open boots, and its line is a boot's: nothing went wrong */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &J), STATUS_SUCCESS);
+    CHECK_EQ(S->Boots, 2);
+    CHECK(StreamLogCount(S, "boot at stream open: ok after ") == 1);
+    CHECK(StreamLogCount(S, "recovered: open ok after ") == 1);
+    CHECK(S->Streams.Ready && !S->Streams.Faulted && !S->Streams.NeedsBoot && !S->Streams.IdleDown);
+    CHECK_EQ(S->Streams.IdleSec, 0);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, J), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleArms, 6);
+    /* armed, then an exception with no request outstanding (E1c): the fault's release cancels the timer with the rest */
+    IntcDspStreamsIdleSec(&S->Streams, 5);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &K), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, K), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleArms, 7);
+    CHECK(S->Streams.IdleArmed);
+    StreamPostAsync(S, SOFIPC4_NOTIFY_EXCEPTION_CAUGHT);
+    IntcDspStreamsPoll(&S->Streams);
+    CHECK(S->Streams.Faulted && S->Streams.NeedsBoot);
+    CHECK_EQ(S->Faults, 1);
+    CHECK_EQ(S->IdleCancels, 6);
+    CHECK(S->Streams.IdleArmed == FALSE);
+    IntcDspStreamsIdle(&S->Streams);
+    CHECK_EQ(S->IdleDowns, 1);
+    for (Sx = 0; Sx < INTCDSP_STREAMS_MAX; Sx++)
+        CHECK_EQ(S->Streams.Stream[Sx].State, IntcDspStreamStateFree);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+}
+
+/*
+ * (i26) The pending teardowns finished with no transition of their own
+ * (N8-02, the public poll): a free that met the busy transport leaves the
+ * teardown pending and the pin closes meanwhile; the transport still busy,
+ * the poll's drain leaves it; free, the poll finishes it, the buffer
+ * returned and the tag back, the object freed. The idle work item's drain
+ * is the same: a teardown it cannot finish keeps the stream allocated and
+ * the DSP up; finished, the count drops to zero and arms the timer, and
+ * the work item decides with the time of that close.
+ */
+static
+void
+CheckStreamTeardownPoll(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    HANDLE Render = NULL, Capture = NULL;
+    PINTCDSP_STREAM Stream;
+    UINT32 Pcm, Sx;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    StreamPinOpen(S, Render);
+    StreamPinOpen(S, Capture);
+    IntcDspStreamsIdleSec(&S->Streams, 5);
+    /* the capture's free meets a busy transport: the teardown pending, the pin having forgotten its buffer and closed */
+    S->H.LockBusyFromRequest = S->H.LockAttempts + 1;
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
+    StreamPinForget(S, Capture);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+    Stream = IntcDspStreamOf(&S->Streams, Capture);
+    CHECK(Stream != NULL && Stream->State == IntcDspStreamStateTeardown && Stream->Orphaned);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 2);
+    /* the transport still busy: the poll's drain leaves the teardown pending, one request asked */
+    CHECK_EQ(IntcDspStreamsTeardownPoll(&S->Streams), 1);
+    Stream = IntcDspStreamOf(&S->Streams, Capture);
+    CHECK(Stream != NULL && Stream->State == IntcDspStreamStateTeardown);
+    CHECK(StreamLogCount(S, "its pending teardown is done") == 0);
+    /* the transport free: the poll finishes it with no transition, the object freed since its pin closed it */
+    S->H.LockBusyFromRequest = 0;
+    CHECK_EQ(IntcDspStreamsTeardownPoll(&S->Streams), 0);
+    CHECK(IntcDspStreamOf(&S->Streams, Capture) == NULL);
+    CHECK(StreamLogCount(S, "its pending teardown is done; the buffer is returned and the tag is back, its pin having closed it\n") == 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 1);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 1);
+    CHECK_EQ(S->Faults, 0);
+    CHECK(S->Streams.Ready && !S->Streams.Faulted);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 1);
+    CHECK_EQ(S->IdleArms, 0);
+    /* the render's free meets the busy transport: its teardown pending, the stream allocated */
+    S->H.LockBusyFromRequest = S->H.LockAttempts + 1;
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    StreamPinForget(S, Render);
+    Stream = IntcDspStreamOf(&S->Streams, Render);
+    CHECK(Stream != NULL && Stream->State == IntcDspStreamStateTeardown);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 1);
+    /* the idle work item: its drain meets the busy transport again and leaves the teardown; the stream keeps the DSP up */
+    IntcDspStreamsIdle(&S->Streams);
+    Stream = IntcDspStreamOf(&S->Streams, Render);
+    CHECK(Stream != NULL && Stream->State == IntcDspStreamStateTeardown);
+    CHECK_EQ(S->IdleDowns, 0);
+    CHECK(S->Streams.Ready);
+    CHECK(StreamLogCount(S, "idle power down") == 0);
+    /* the transport free: the work item's drain finishes the teardown, the count drops to zero and arms the timer, and the work item decides with the time of that close */
+    S->H.LockBusyFromRequest = 0;
+    IntcDspStreamsIdle(&S->Streams);
+    Stream = IntcDspStreamOf(&S->Streams, Render);
+    CHECK(Stream != NULL && Stream->State == IntcDspStreamStateReleased && !Stream->Lost);
+    CHECK(StreamLogCount(S, "its pending teardown is done; the buffer is returned and the tag is back, the stream left for its pin's close\n") == 1);
+    CHECK_EQ(IntcDspStreamsAllocated(&S->Streams), 0);
+    CHECK_EQ(S->IdleArms, 1);
+    CHECK(S->Streams.IdleArmed);
+    CHECK_EQ(S->IdleDueUs, S->H.Dsp->Clock + 5000000ULL);
+    CHECK_EQ(S->IdleDowns, 0);
+    /* the pin's close of the released stream frees nothing: no second timer */
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(S->IdleArms, 1);
+    /* the time passes and the work item powers the DSP down: five seconds, measured */
+    StreamClockAdvance(S, 5000000);
+    IntcDspStreamsIdle(&S->Streams);
+    CHECK_EQ(S->IdleDowns, 1);
+    CHECK(StreamLogCount(S, "idle power down after 5 s\n") == 1);
+    /* a manager that is not up: the poll asks nothing, nothing is pending */
+    CHECK_EQ(IntcDspStreamsTeardownPoll(&S->Streams), 0);
+    for (Sx = 0; Sx < INTCDSP_STREAMS_MAX; Sx++)
+        CHECK_EQ(S->Streams.Stream[Sx].State, IntcDspStreamStateFree);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+}
+
 int
 main(
     void)
@@ -5141,6 +5533,9 @@ main(
     CheckStreamDeviceBoot();
     CheckStreamNeverReady();
     CheckStreamPoll();
+    CheckStreamIdleDecision();
+    CheckStreamIdleTimer();
+    CheckStreamTeardownPoll();
 
     printf("sofipc: %d checks, %d failures\n", Checks, Failures);
     free(H->Dsp);

@@ -72,6 +72,17 @@ VOID
 IntcDspStreamsDrain(
     _Inout_ PINTCDSP_STREAMS Streams);
 
+/* The idle timer of the device (E2), cancelled and armed by the manager under its lock; defined with the idle power-down */
+static
+VOID
+IntcDspStreamsIdleCancelLocked(
+    _Inout_ PINTCDSP_STREAMS Streams);
+
+static
+VOID
+IntcDspStreamsIdleClosedLocked(
+    _Inout_ PINTCDSP_STREAMS Streams);
+
 /* The manager's clock, the loader's, for the open's boot (E1) and the self-test's waits; defined with the self-test */
 static
 BOOLEAN
@@ -894,8 +905,9 @@ IntcDspStreamsFaultFrom(
         return;
     Streams->Faulted = TRUE;
     Streams->Faults++;
-    /* the driver powers the DSP down for this fault: the next open boots it */
+    /* the driver powers the DSP down for this fault: the next open boots it, and the idle timer has nothing left to time */
     Streams->NeedsBoot = TRUE;
+    IntcDspStreamsIdleCancelLocked(Streams);
     if (Streams->Ipc != NULL && !NoRequest)
         Ms = (UINT32)((Streams->Ipc->Last.ElapsedUs + 500) / 1000);
     Pending = IntcDspStreamsLetGo(Streams, IntcDspFaultKind(Streams), Ms, NoRequest);
@@ -939,6 +951,8 @@ IntcDspStreamsRelease(
     UINT32 Pending;
 
     IntcDspStreamsLock(Streams);
+    /* the idle timer is not left to fire on a device going off (E2) */
+    IntcDspStreamsIdleCancelLocked(Streams);
     /* only a manager that was started holds anything: its streams were opened while it was ready */
     if (Streams->Ready)
     {
@@ -1034,6 +1048,148 @@ IntcDspStreamsHeld(
     _In_ const INTCDSP_STREAMS* Streams)
 {
     return Streams->HeldCount;
+}
+
+BOOLEAN
+IntcDspIdleDue(
+    UINT32 Allocated,
+    UINT64 NowUs,
+    UINT64 LastCloseUs,
+    ULONG IdleSec)
+{
+    return Allocated == 0 && IdleSec != 0 && NowUs - LastCloseUs >= (UINT64)IdleSec * 1000000ULL;
+}
+
+/* The streams allocated on the manager, under the lock: the PCMs' open streams, counted by path (INTCDSP_PATH.Open) */
+static
+UINT32
+IntcDspStreamsAllocatedLocked(
+    _In_ const INTCDSP_STREAMS* Streams)
+{
+    UINT32 P, Allocated = 0;
+
+    if (Streams->Model == NULL || Streams->Path == NULL)
+        return 0;
+    for (P = 0; P < Streams->Model->PcmCount; P++)
+        Allocated += Streams->Path[P].Open;
+    return Allocated;
+}
+
+UINT32
+IntcDspStreamsAllocated(
+    _In_ const INTCDSP_STREAMS* Streams)
+{
+    return IntcDspStreamsAllocatedLocked(Streams);
+}
+
+/*
+ * The idle timer, cancelled (E2), under the lock: the device's timer is
+ * stopped while the manager says it is armed, and then it is not.
+ */
+static
+VOID
+IntcDspStreamsIdleCancelLocked(
+    _Inout_ PINTCDSP_STREAMS Streams)
+{
+    if (!Streams->IdleArmed)
+        return;
+    Streams->IdleArmed = FALSE;
+    if (Streams->Ops != NULL && Streams->Ops->IdleCancel != NULL)
+        Streams->Ops->IdleCancel(Streams->Ops->Context);
+}
+
+/*
+ * A stream stopped being allocated (E2), under the lock: the close, or the
+ * drain of a pending teardown. The time is kept for the decision, and when
+ * no stream is left the timer is armed once for the setting's time, by a
+ * manager that is up with a clock; a timer already armed (a close that
+ * left the count above zero cannot be this one's) is left as it is.
+ */
+static
+VOID
+IntcDspStreamsIdleClosedLocked(
+    _Inout_ PINTCDSP_STREAMS Streams)
+{
+    UINT64 Now = IntcDspNow(Streams);
+
+    Streams->LastCloseUs = Now;
+    if (Streams->IdleSec == 0 || Streams->IdleArmed || !Streams->Ready || Streams->Faulted || !IntcDspHasClock(Streams) ||
+        Streams->Ops == NULL || Streams->Ops->IdleArm == NULL)
+        return;
+    if (IntcDspStreamsAllocatedLocked(Streams) != 0)
+        return;
+    Streams->IdleDueUs = Now + (UINT64)Streams->IdleSec * 1000000ULL;
+    Streams->IdleArmed = TRUE;
+    Streams->Ops->IdleArm(Streams->Ops->Context, Streams->IdleDueUs);
+}
+
+VOID
+IntcDspStreamsIdleSec(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    ULONG IdleSec)
+{
+    IntcDspStreamsLock(Streams);
+    Streams->IdleSec = IdleSec;
+    if (IdleSec == 0)
+        IntcDspStreamsIdleCancelLocked(Streams);
+    IntcDspStreamsUnlock(Streams);
+}
+
+VOID
+IntcDspStreamsIdle(
+    _Inout_ PINTCDSP_STREAMS Streams)
+{
+    UINT64 Now;
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return;
+    IntcDspStreamsLock(Streams);
+    Now = IntcDspNow(Streams);
+    /* armed for a later time: a newer arming replaced the timer whose fire queued this, and the work item is not its */
+    if (Streams->IdleArmed && Now < Streams->IdleDueUs)
+    {
+        IntcDspStreamsUnlock(Streams);
+        return;
+    }
+    Streams->IdleArmed = FALSE;
+    /* the pending teardowns first, as every transition's prologue does (N8-02): a release that faults the link here ends in the fault's release, and the driver powers the DSP down for it */
+    IntcDspStreamsDrain(Streams);
+    if (!Streams->Ready || Streams->Faulted)
+    {
+        IntcDspStreamsUnlock(Streams);
+        return;
+    }
+    /* the clock is read after the drain: a teardown it finished may have released the last stream, and that close's time is the drain's, not the fire's; the timer it armed is for later, and this work item is not its */
+    Now = IntcDspNow(Streams);
+    /* the count is read again: an open may have arrived since the timer fired */
+    if (!IntcDspIdleDue(IntcDspStreamsAllocatedLocked(Streams), Now, Streams->LastCloseUs, Streams->IdleSec))
+    {
+        IntcDspStreamsUnlock(Streams);
+        return;
+    }
+    Streams->IdleDown = TRUE;
+    Streams->IdleDowns++;
+    IntcDspStreamLog(Streams, "idle power down after %u s\n", (UINT32)((Now - Streams->LastCloseUs) / 1000000ULL));
+    if (Streams->Ops != NULL && Streams->Ops->IdleDown != NULL)
+        Streams->Ops->IdleDown(Streams->Ops->Context);
+    IntcDspStreamsUnlock(Streams);
+}
+
+UINT32
+IntcDspStreamsTeardownPoll(
+    _Inout_ PINTCDSP_STREAMS Streams)
+{
+    UINT32 S, Pending = 0;
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return 0;
+    IntcDspStreamsLock(Streams);
+    IntcDspStreamsDrain(Streams);
+    for (S = 0; S < INTCDSP_STREAMS_MAX; S++)
+        if (Streams->Stream[S].State == IntcDspStreamStateTeardown)
+            Pending++;
+    IntcDspStreamsUnlock(Streams);
+    return Pending;
 }
 
 /* The module ids the manager keeps an instance count for are stream.h's (INTCDSP_STREAM_MODULES_MAX): a module widget's index by its id */
@@ -1313,6 +1469,8 @@ IntcDspStreamOpenLocked(
     Found->Lost = FALSE;
     Streams->Path[Pcm].Open++;
     IntcDspTrace(Streams, Found, INTCDSP_TRACE_OPEN, 0, 0, SampleRate);
+    /* a stream is allocated: the DSP stays up while the pin holds it, running or not (P5-R5) */
+    IntcDspStreamsIdleCancelLocked(Streams);
     *Stream = IntcDspStreamHandle(Streams, Found);
     return STATUS_SUCCESS;
 }
@@ -1361,7 +1519,8 @@ IntcDspStreamOpen(
             IntcDspStreamsUnlock(Streams);
             return STATUS_DEVICE_NOT_READY;
         }
-        Recovering = Streams->NeedsBoot;
+        /* a recovery after a fault or a power-down (E1), or a first boot at an open: after an idle power-down the line is a boot's, since nothing went wrong (E2) */
+        Recovering = Streams->NeedsBoot && !Streams->IdleDown;
         Clocked = IntcDspHasClock(Streams);
         Start = IntcDspNow(Streams);
         Boot = Streams->Ops->Boot(Streams->Ops->Context);
@@ -1842,6 +2001,7 @@ IntcDspStreamTeardownDrain(
     IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream), FALSE);
     Streams->Path[Stream->Pcm].Open--;
     IntcDspStreamLetGo(Streams, Stream);
+    IntcDspStreamsIdleClosedLocked(Streams);
     Stream->State = Stream->Orphaned ? IntcDspStreamStateFree : IntcDspStreamStateReleased;
     IntcDspStreamLog(Streams, "stream %u: its pending teardown is done; the buffer is returned and the tag is back, %s\n",
                      Stream->Tag, Stream->Orphaned ? "its pin having closed it" : "the stream left for its pin's close");
@@ -1969,6 +2129,7 @@ IntcDspStreamCloseLocked(
     {
         Streams->Path[Stream->Pcm].Open--;
         IntcDspStreamLetGo(Streams, Stream);
+        IntcDspStreamsIdleClosedLocked(Streams);
     }
     Stream->State = IntcDspStreamStateFree;
     return STATUS_SUCCESS;

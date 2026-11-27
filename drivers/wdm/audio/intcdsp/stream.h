@@ -196,6 +196,25 @@ typedef struct _INTCDSP_STREAMS_OPS
      * power-down alike.
      */
     VOID (*Unmap)(_In_opt_ PVOID Context, _In_ PMDL Mdl);
+    /*
+     * The idle timer of the device (E2): armed for DueUs, the manager's
+     * clock (IntcDspNow), by the close that leaves no stream allocated
+     * when the setting asks (INTCDSP_STREAMS.IdleSec), and cancelled by
+     * the open that takes a stream. The driver's timer queues a work item
+     * when it fires and nothing else; the work item calls
+     * IntcDspStreamsIdle, which decides again under the lock. NULL: no
+     * idle timer, and the DSP stays up while the device is D0.
+     */
+    VOID (*IdleArm)(_In_opt_ PVOID Context, UINT64 DueUs);
+    VOID (*IdleCancel)(_In_opt_ PVOID Context);
+    /*
+     * The idle power-down (E2): under the lock, with no stream allocated
+     * and the idle time passed since the last close, the manager logged its
+     * line and calls this; the driver powers the DSP down as a D0 exit does,
+     * the PCM child kept, and the device is in need of a boot. NULL: the
+     * decision is made and logged, and nothing is powered down.
+     */
+    VOID (*IdleDown)(_In_opt_ PVOID Context);
 } INTCDSP_STREAMS_OPS, *PINTCDSP_STREAMS_OPS;
 
 /*
@@ -277,6 +296,21 @@ typedef struct _INTCDSP_STREAMS
     /* the DSP is powered down with the topology model kept, after a fault or a power-down: the next open boots (E1); cleared by the initialization */
     BOOLEAN NeedsBoot;
     UINT32 Faults;
+    /*
+     * The idle power-down (E2): the setting's seconds, 0 = off; whether the
+     * device's timer is armed, for IdleDueUs; the time of the close that
+     * left no stream allocated; whether the device went down by idle, so
+     * the next open's line is a boot's and not a recovery's; how many idle
+     * power-downs the boot saw. The timer is armed only when the allocated
+     * streams (IntcDspStreamsAllocated) drop to zero and cancelled when
+     * one is taken; the init zeroes all of it with the rest from Ops on.
+     */
+    ULONG IdleSec;
+    BOOLEAN IdleArmed;
+    BOOLEAN IdleDown;
+    UINT64 IdleDueUs;
+    UINT64 LastCloseUs;
+    UINT32 IdleDowns;
     /* what the manager told the firmware and the bus since its initialization, for the self-test's lines: the streams whose tags went back to the pool, the instances and the pipelines deleted */
     UINT32 Freed;
     UINT32 InstanceDeletes;
@@ -306,6 +340,65 @@ IntcDspStreamsBytes(
 UINT32
 IntcDspStreamsHeld(
     _In_ const INTCDSP_STREAMS* Streams);
+
+/*
+ * The idle decision (E2), a pure function of what it is given: the DSP
+ * goes down when no stream is allocated (IntcDspStreamsAllocated: a pin
+ * that is open but not running keeps it up, P5-R5), the setting is on and
+ * IdleSec seconds passed since the last close that left no stream, the
+ * boundary included. The clock is the manager's, in microseconds.
+ */
+BOOLEAN
+IntcDspIdleDue(
+    UINT32 Allocated,
+    UINT64 NowUs,
+    UINT64 LastCloseUs,
+    ULONG IdleSec);
+
+/*
+ * The streams allocated on the manager: the sum of the PCMs' open streams
+ * (Open, Prepared, Running, Paused and Teardown, stream.h INTCDSP_PATH),
+ * read under the lock.
+ */
+UINT32
+IntcDspStreamsAllocated(
+    _In_ const INTCDSP_STREAMS* Streams);
+
+/*
+ * The idle setting of a booted manager (E2): IdleSec seconds without a
+ * stream, 0 = off, under the lock. Turning it off cancels an armed timer;
+ * turning it on arms none until the next close that leaves no stream.
+ */
+VOID
+IntcDspStreamsIdleSec(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    ULONG IdleSec);
+
+/*
+ * The idle power-down's work item (E2): the device's timer fired and
+ * queued the work item that calls this at PASSIVE_LEVEL. Under the lock the
+ * timer's arming ends (a timer armed again for a later time is not this
+ * one's), the pending teardowns are finished as every transition's prologue
+ * does (N8-02), and the decision is made again with what is true now: an
+ * open that arrived since the fire keeps the DSP up, and nothing is asked
+ * of a manager that is not up or faulted. Due, one line says how long the
+ * DSP was idle and the IdleDown operation powers it down, inside the lock,
+ * so that no open takes a stream from a manager about to let it go.
+ */
+VOID
+IntcDspStreamsIdle(
+    _Inout_ PINTCDSP_STREAMS Streams);
+
+/*
+ * The pending teardowns finished with no transition of their own (N8-02,
+ * the public poll): under the lock the prologue's drain, as every
+ * transition runs it; how many stay pending is returned, a release that
+ * met the busy transport again left as it was. A manager that is not up,
+ * or faulted, is not asked, and a call at a raised IRQL drains nothing.
+ */
+UINT32
+IntcDspStreamsTeardownPoll(
+    _Inout_ PINTCDSP_STREAMS Streams);
 
 /*
  * The first module widget of a model whose module id the manager cannot
