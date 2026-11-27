@@ -6,7 +6,9 @@
  */
 
 #include <windows.h>
+#include <shlobj.h>
 #include <shlwapi.h>
+#include <strsafe.h>
 
 #include "experience.h"
 #include "libershell.h"
@@ -17,6 +19,14 @@ VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens)
 {
     LiberUI::ThemeParams params = { LiberExperience_IsDark() ? LiberUI::ThemeMode::Dark : LiberUI::ThemeMode::Light,
                                     LiberUI::AccentPreset(LIBER_ACCENT_AZURE),
+                                    (LiberUI::SurfaceTint)LiberExperience_SurfaceTint() };
+    pTokens->Build(params);
+}
+
+VOID LiberShell_BuildWallpaperInkTokens(LiberUI::ThemeTokens *pTokens)
+{
+    /* TODO: pick the ink from the wallpaper luminance behind the tray instead of always using dark-theme ink */
+    LiberUI::ThemeParams params = { LiberUI::ThemeMode::Dark, LiberUI::AccentPreset(LIBER_ACCENT_AZURE),
                                     (LiberUI::SurfaceTint)LiberExperience_SurfaceTint() };
     pTokens->Build(params);
 }
@@ -62,29 +72,208 @@ BOOL LiberShell_SetDarkMode(BOOL bDark)
     return TRUE;
 }
 
-VOID LiberShell_PlaceAbove(const RECT *prcAnchor, int widthPx, int heightPx, POINT *pptTopLeft)
+static int ScreenDpi(VOID)
 {
-    HMONITOR monitor = MonitorFromRect(prcAnchor, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO mi = { sizeof(mi) };
-    UINT dpi = 96;
+    int dpi = 96;
     HDC screen = GetDC(NULL);
 
     if (screen)
     {
-        dpi = (UINT)GetDeviceCaps(screen, LOGPIXELSX);
+        dpi = GetDeviceCaps(screen, LOGPIXELSX);
         ReleaseDC(NULL, screen);
     }
-    if (!GetMonitorInfoW(monitor, &mi))
-        SetRect(&mi.rcMonitor, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+    return dpi;
+}
 
-    pptTopLeft->x = prcAnchor->right - widthPx;
-    pptTopLeft->y = prcAnchor->top - LiberUI::ScaleToDpi(LIBER_FLYOUT_GAP, dpi) - heightPx;
-    if (pptTopLeft->x + widthPx > mi.rcMonitor.right)
-        pptTopLeft->x = mi.rcMonitor.right - widthPx;
-    if (pptTopLeft->x < mi.rcMonitor.left)
-        pptTopLeft->x = mi.rcMonitor.left;
-    if (pptTopLeft->y < mi.rcMonitor.top)
-        pptTopLeft->y = mi.rcMonitor.top;
+VOID LiberShell_FlyoutOrigin(const RECT *prcMonitor, UINT dpi, const RECT *prcAnchor, int widthPx, int heightPx,
+                             BOOL bCenter, POINT *pptTopLeft)
+{
+    int inset = LiberUI::ScaleToDpi(LIBER_FLYOUT_INSET, dpi);
+
+    if (bCenter)
+        pptTopLeft->x = prcMonitor->left + (prcMonitor->right - prcMonitor->left - widthPx) / 2;
+    else
+        pptTopLeft->x = prcAnchor->right - widthPx;
+    if (pptTopLeft->x + widthPx > prcMonitor->right - inset)
+        pptTopLeft->x = prcMonitor->right - inset - widthPx;
+    if (pptTopLeft->x < prcMonitor->left + inset)
+        pptTopLeft->x = prcMonitor->left + inset;
+    pptTopLeft->y = prcMonitor->bottom - LiberUI::ScaleToDpi(LIBER_TASKBAR_DOCK + LIBER_FLYOUT_GAP, dpi) - heightPx;
+    if (pptTopLeft->y < prcMonitor->top + inset)
+        pptTopLeft->y = prcMonitor->top + inset;
+}
+
+VOID LiberShell_PlaceFlyout(const RECT *prcAnchor, int widthPx, int heightPx, BOOL bCenter, POINT *pptTopLeft)
+{
+    MONITORINFO mi = { sizeof(mi) };
+
+    if (!GetMonitorInfoW(MonitorFromRect(prcAnchor, MONITOR_DEFAULTTONEAREST), &mi))
+        SetRect(&mi.rcMonitor, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+    LiberShell_FlyoutOrigin(&mi.rcMonitor, (UINT)ScreenDpi(), prcAnchor, widthPx, heightPx, bCenter, pptTopLeft);
+}
+
+static ULONGLONG DayNumber(const SYSTEMTIME *pTime)
+{
+    SYSTEMTIME day = *pTime;
+    FILETIME ft;
+
+    day.wHour = day.wMinute = day.wSecond = day.wMilliseconds = 0;
+    day.wDayOfWeek = 0;
+    if (!SystemTimeToFileTime(&day, &ft))
+        return 0;
+    return (((ULONGLONG)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / (10000000ULL * 60 * 60 * 24);
+}
+
+static ULONGLONG MinuteNumber(const SYSTEMTIME *pTime)
+{
+    SYSTEMTIME minute = *pTime;
+    FILETIME ft;
+
+    minute.wSecond = minute.wMilliseconds = 0;
+    minute.wDayOfWeek = 0;
+    if (!SystemTimeToFileTime(&minute, &ft))
+        return 0;
+    return (((ULONGLONG)ft.dwHighDateTime << 32) | ft.dwLowDateTime) / (10000000ULL * 60);
+}
+
+VOID LiberStart_FormatWhen(const SYSTEMTIME *pNow, const SYSTEMTIME *pThen, LPWSTR pszText, UINT cchText)
+{
+    ULONGLONG nowMinute = MinuteNumber(pNow), thenMinute = MinuteNumber(pThen);
+    ULONGLONG nowDay = DayNumber(pNow), thenDay = DayNumber(pThen);
+    WCHAR szTime[32];
+
+    if (!cchText)
+        return;
+    pszText[0] = 0;
+    if (thenMinute <= nowMinute && nowMinute - thenMinute < 60)
+    {
+        if (nowMinute == thenMinute)
+            StringCchCopyW(pszText, cchText, L"Just now");
+        else
+            StringCchPrintfW(pszText, cchText, L"%u min ago", (UINT)(nowMinute - thenMinute));
+        return;
+    }
+    if (!GetTimeFormatW(LOCALE_USER_DEFAULT, TIME_NOSECONDS, pThen, NULL, szTime, _countof(szTime)))
+        szTime[0] = 0;
+    if (thenDay == nowDay)
+        StringCchPrintfW(pszText, cchText, L"Today %s", szTime);
+    else if (thenDay + 1 == nowDay)
+        StringCchPrintfW(pszText, cchText, L"Yesterday %s", szTime);
+    else if (!GetDateFormatW(LOCALE_USER_DEFAULT, DATE_SHORTDATE, pThen, NULL, pszText, (int)cchText))
+        pszText[0] = 0;
+}
+
+UINT LiberStart_ScrollOffset(UINT offset, UINT count, UINT columns, UINT visible, int rows)
+{
+    UINT last = 0;
+
+    if (!columns)
+        return 0;
+    if (count > visible)
+        last = ((count - visible + columns - 1) / columns) * columns;
+    if (rows < 0)
+        return (UINT)-rows * columns >= offset ? 0 : offset - (UINT)-rows * columns;
+    offset += (UINT)rows * columns;
+    return offset > last ? last : offset;
+}
+
+UINT LiberStart_LoadRecentFiles(LIBER_RECENT_FILE *pFiles, UINT cMax)
+{
+    WCHAR szDir[MAX_PATH], szPattern[MAX_PATH];
+    WIN32_FIND_DATAW fd;
+    FILETIME written[32];
+    UINT count = 0;
+
+    if (!cMax || !SHGetSpecialFolderPathW(NULL, szDir, CSIDL_RECENT, FALSE) ||
+        FAILED(StringCchPrintfW(szPattern, _countof(szPattern), L"%s\\*.lnk", szDir)))
+    {
+        return 0;
+    }
+    HANDLE find = FindFirstFileW(szPattern, &fd);
+    if (find == INVALID_HANDLE_VALUE)
+        return 0;
+    do
+    {
+        UINT slot;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            continue;
+        for (slot = count; slot > 0 && CompareFileTime(&written[slot - 1], &fd.ftLastWriteTime) < 0; slot--)
+        {
+            if (slot < cMax && slot < _countof(written))
+            {
+                pFiles[slot] = pFiles[slot - 1];
+                written[slot] = written[slot - 1];
+            }
+        }
+        if (slot >= cMax || slot >= _countof(written))
+            continue;
+        LIBER_RECENT_FILE &file = pFiles[slot];
+        written[slot] = fd.ftLastWriteTime;
+        StringCchPrintfW(file.szLink, _countof(file.szLink), L"%s\\%s", szDir, fd.cFileName);
+        StringCchCopyW(file.szName, _countof(file.szName), fd.cFileName);
+        PathRemoveExtensionW(file.szName);
+        FILETIME local;
+        if (!FileTimeToLocalFileTime(&fd.ftLastWriteTime, &local) || !FileTimeToSystemTime(&local, &file.stWritten))
+            ZeroMemory(&file.stWritten, sizeof(file.stWritten));
+        if (count < cMax && count < _countof(written))
+            count++;
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+    return count;
+}
+
+UINT LiberCalendar_DaysInMonth(UINT year, UINT month)
+{
+    static const BYTE Days[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    BOOL leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+
+    if (month < 1 || month > 12)
+        return 0;
+    return Days[month - 1] + (month == 2 && leap ? 1 : 0);
+}
+
+UINT LiberCalendar_DayOfWeek(UINT year, UINT month, UINT day)
+{
+    static const BYTE Offsets[12] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
+
+    if (month < 3)
+        year--;
+    return (year + year / 4 - year / 100 + year / 400 + Offsets[month - 1] + day) % 7;
+}
+
+VOID LiberCalendar_MonthGrid(UINT year, UINT month, UINT firstDayOfWeek, LIBER_CALENDAR_DAY *pDays)
+{
+    UINT lead = (LiberCalendar_DayOfWeek(year, month, 1) + 7 - firstDayOfWeek % 7) % 7;
+    UINT prevMonth = month == 1 ? 12 : month - 1, prevYear = month == 1 ? year - 1 : year;
+    UINT nextMonth = month == 12 ? 1 : month + 1, nextYear = month == 12 ? year + 1 : year;
+    UINT prevDays = LiberCalendar_DaysInMonth(prevYear, prevMonth);
+    UINT days = LiberCalendar_DaysInMonth(year, month);
+
+    for (UINT i = 0; i < LIBER_CALENDAR_CELLS; i++)
+    {
+        LIBER_CALENDAR_DAY &cell = pDays[i];
+        if (i < lead)
+        {
+            cell.wYear = (WORD)prevYear;
+            cell.wMonth = (WORD)prevMonth;
+            cell.wDay = (WORD)(prevDays - lead + 1 + i);
+            cell.bInMonth = FALSE;
+        }
+        else if (i - lead < days)
+        {
+            cell.wYear = (WORD)year;
+            cell.wMonth = (WORD)month;
+            cell.wDay = (WORD)(i - lead + 1);
+            cell.bInMonth = TRUE;
+        }
+        else
+        {
+            cell.wYear = (WORD)nextYear;
+            cell.wMonth = (WORD)nextMonth;
+            cell.wDay = (WORD)(i - lead - days + 1);
+            cell.bInMonth = FALSE;
+        }
+    }
 }
 
 BOOL LiberStart_Matches(LPCWSTR pszName, LPCWSTR pszQuery)

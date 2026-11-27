@@ -3097,6 +3097,30 @@ BOOL TrayNotifications_IsHidden(VOID)
     return g_TfyNotifHideUntil && GetTickCount64() < g_TfyNotifHideUntil;
 }
 
+VOID TrayNotifications_SetHidden(IN BOOL bHidden)
+{
+    g_TfyNotifHideUntil = bHidden ? MAXULONGLONG : 0;
+    TfyNotifySink();
+}
+
+UINT TrayNotifications_GetCount(VOID)
+{
+    return g_cTfyNotifs;
+}
+
+BOOL TrayNotifications_Get(IN UINT uIndex, OUT TRAY_NOTIFICATION_INFO *pInfo)
+{
+    if (!pInfo || uIndex >= g_cTfyNotifs)
+        return FALSE;
+    const TFYNOTIF &notif = g_TfyNotifs[uIndex];
+    pInfo->hIcon = notif.hIcon;
+    pInfo->stTime = notif.stTime;
+    StringCchCopyW(pInfo->szApp, _countof(pInfo->szApp), notif.szApp);
+    StringCchCopyW(pInfo->szTitle, _countof(pInfo->szTitle), notif.szTitle);
+    StringCchCopyW(pInfo->szText, _countof(pInfo->szText), notif.szText);
+    return TRUE;
+}
+
 VOID TrayFlyouts_Destroy(VOID)
 {
     TaskPreview_Hide();
@@ -9860,26 +9884,12 @@ TfyW11Position(HWND hwndOwner, const RECT *prcAnchor, SIZE size, BOOL bCenter, P
     MONITORINFO mi;
     RECT rcBar;
     HWND hwndRoot = GetAncestor(hwndOwner, GA_ROOT);
-    int nGap = ShellScaleForDpi(12);
 
     mi.cbSize = sizeof(mi);
     GetMonitorInfoW(MonitorFromRect(prcAnchor, MONITOR_DEFAULTTONEAREST), &mi);
-    if (!hwndRoot || !::GetWindowRect(hwndRoot, &rcBar))
-        rcBar = *prcAnchor;
-
-    if (bCenter)
-        ppt->x = (prcAnchor->left + prcAnchor->right - size.cx) / 2;
-    else
-        ppt->x = mi.rcMonitor.right - nGap - size.cx;
-    if (ppt->x + size.cx > mi.rcMonitor.right - nGap)
-        ppt->x = mi.rcMonitor.right - nGap - size.cx;
-    if (ppt->x < mi.rcMonitor.left + nGap)
-        ppt->x = mi.rcMonitor.left + nGap;
-
-    if (rcBar.top > (mi.rcMonitor.top + mi.rcMonitor.bottom) / 2)
-        ppt->y = rcBar.top - nGap - size.cy;
-    else
-        ppt->y = rcBar.bottom + nGap;
+    if (!hwndRoot || !::IsWindowVisible(hwndRoot) || !::GetWindowRect(hwndRoot, &rcBar))
+        SetRectEmpty(&rcBar);
+    TrayFlyout_Position(&rcBar, prcAnchor, &mi.rcMonitor, size, bCenter, ShellScaleForDpi(12), ppt);
 }
 
 static HWND
@@ -12895,6 +12905,19 @@ TfyNotifRemove(UINT i)
     if (g_cTfyUnread > g_cTfyNotifs)
         g_cTfyUnread = g_cTfyNotifs;
     TfyNotifySink();
+}
+
+VOID TrayNotifications_Remove(IN UINT uIndex)
+{
+    TfyNotifRemove(uIndex);
+    TrayNotifCenter_Refresh();
+}
+
+VOID TrayNotifications_Clear(VOID)
+{
+    while (g_cTfyNotifs)
+        TfyNotifRemove(g_cTfyNotifs - 1);
+    TrayNotifCenter_Refresh();
 }
 
 static VOID

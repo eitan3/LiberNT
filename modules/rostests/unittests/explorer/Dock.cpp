@@ -25,17 +25,23 @@ static void TestLayout()
     RECT monitor = { 0, 0, 1920, 1080 };
     LIBER_DOCK_LAYOUT layout;
 
+    ok(LiberDock_Width(10) == 514, "ten cells make the spec's 514 px dock: %d\n", LiberDock_Width(10));
+    ok(LiberDock_Width(1) == 64, "one cell: %d\n", LiberDock_Width(1));
+    ok(LiberDock_SystemPillWidth(TRUE) == 100 && LiberDock_SystemPillWidth(FALSE) == 70,
+       "system group is %d px with a battery and %d px without\n", LiberDock_SystemPillWidth(TRUE),
+       LiberDock_SystemPillWidth(FALSE));
+
     LiberDock_Layout(&monitor, 96, 5, 112, &layout);
-    CheckRect(layout.Dock, (1920 - 252) / 2, 1080 - 8 - 60, (1920 - 252) / 2 + 252, 1080 - 8, "dock at 96 DPI");
-    CheckRect(layout.Tray, 1920 - 8 - 112, 1012 + 6, 1920 - 8, 1012 + 6 + 48, "tray at 96 DPI");
+    CheckRect(layout.Dock, (1920 - 264) / 2, 1080 - 8 - 60, (1920 - 264) / 2 + 264, 1080 - 8, "dock at 96 DPI");
+    CheckRect(layout.Tray, 1920 - 12 - 112, 1012 + 6, 1920 - 12, 1012 + 6 + 48, "tray at 96 DPI");
     ok((layout.Tray.top + layout.Tray.bottom) == (layout.Dock.top + layout.Dock.bottom), "tray sits on the dock's center line\n");
     ok(LIBER_TASKBAR_DOCK - (1080 - layout.Dock.top) == 8, "dock fits the reserved 76 px\n");
 
     RECT second = { 1920, 0, 3840, 1080 };
     LiberDock_Layout(&second, 144, 1, 112, &layout);
-    CheckRect(layout.Dock, 1920 + (1920 - 90) / 2, 1080 - 12 - 90, 1920 + (1920 - 90) / 2 + 90, 1080 - 12,
+    CheckRect(layout.Dock, 1920 + (1920 - 96) / 2, 1080 - 12 - 90, 1920 + (1920 - 96) / 2 + 96, 1080 - 12,
               "one cell at 144 DPI on a second monitor");
-    CheckRect(layout.Tray, 3840 - 12 - 168, 978 + 9, 3840 - 12, 978 + 9 + 72, "tray at 144 DPI");
+    CheckRect(layout.Tray, 3840 - 18 - 168, 978 + 9, 3840 - 18, 978 + 9 + 72, "tray at 144 DPI");
 }
 
 static void TestWorkArea()
@@ -121,29 +127,103 @@ static void TestExperience()
     RegCloseKey(key);
 }
 
-static void TestPlaceAbove()
+static void TestFlyoutOrigin()
 {
-    HDC screen = GetDC(NULL);
-    UINT dpi = screen ? (UINT)GetDeviceCaps(screen, LOGPIXELSX) : 96;
-    MONITORINFO mi = { sizeof(mi) };
+    RECT monitor = { 0, 0, 1600, 900 }, tray = { 1317, 838, 1588, 886 }, dock = { 543, 832, 1057, 892 };
     POINT pt;
 
-    if (screen)
-        ReleaseDC(NULL, screen);
-    GetMonitorInfoW(MonitorFromPoint(POINT(), MONITOR_DEFAULTTOPRIMARY), &mi);
+    LiberShell_FlyoutOrigin(&monitor, 96, &tray, 384, 474, FALSE, &pt);
+    ok(pt.x == 1588 - 384 && pt.y == 900 - 80 - 474, "control center sits above the reserved taskbar at %ld,%ld\n",
+       pt.x, pt.y);
+    LiberShell_FlyoutOrigin(&monitor, 96, &dock, 660, 700, TRUE, &pt);
+    ok(pt.x == (1600 - 660) / 2 && pt.y == 900 - 80 - 700, "Start is centered at %ld,%ld\n", pt.x, pt.y);
 
-    RECT anchor = { mi.rcMonitor.right - 200, mi.rcMonitor.bottom - 60, mi.rcMonitor.right - 8, mi.rcMonitor.bottom - 12 };
-    LiberShell_PlaceAbove(&anchor, 372, 300, &pt);
-    ok(pt.x == anchor.right - 372, "right aligned to the anchor: %ld\n", pt.x);
-    ok(pt.y == anchor.top - LiberUI::ScaleToDpi(LIBER_FLYOUT_GAP, dpi) - 300, "above the anchor with the gap: %ld\n", pt.y);
+    RECT edge = { 1500, 838, 1600, 886 };
+    LiberShell_FlyoutOrigin(&monitor, 96, &edge, 384, 474, FALSE, &pt);
+    ok(pt.x == 1600 - 12 - 384, "kept 12 px from the right edge: %ld\n", pt.x);
+    RECT left = { 0, 838, 50, 886 };
+    LiberShell_FlyoutOrigin(&monitor, 96, &left, 384, 474, FALSE, &pt);
+    ok(pt.x == 12, "kept 12 px from the left edge: %ld\n", pt.x);
+    LiberShell_FlyoutOrigin(&monitor, 96, &tray, 384, 2000, FALSE, &pt);
+    ok(pt.y == 12, "a tall flyout stays below the top inset: %ld\n", pt.y);
+    LiberShell_FlyoutOrigin(&monitor, 144, &tray, 576, 600, FALSE, &pt);
+    ok(pt.y == 900 - 120 - 600, "gap and reserve scale with DPI: %ld\n", pt.y);
+}
 
-    RECT left = { mi.rcMonitor.left, mi.rcMonitor.bottom - 60, mi.rcMonitor.left + 50, mi.rcMonitor.bottom - 12 };
-    LiberShell_PlaceAbove(&left, 372, 300, &pt);
-    ok(pt.x == mi.rcMonitor.left, "kept on screen on the left: %ld\n", pt.x);
+static void TestCalendarGrid()
+{
+    LIBER_CALENDAR_DAY days[LIBER_CALENDAR_CELLS];
 
-    RECT high = { mi.rcMonitor.right - 200, mi.rcMonitor.top + 10, mi.rcMonitor.right - 8, mi.rcMonitor.top + 50 };
-    LiberShell_PlaceAbove(&high, 372, 300, &pt);
-    ok(pt.y == mi.rcMonitor.top, "kept on screen at the top: %ld\n", pt.y);
+    ok(LiberCalendar_DaysInMonth(2024, 2) == 29 && LiberCalendar_DaysInMonth(2026, 2) == 28 &&
+       LiberCalendar_DaysInMonth(1900, 2) == 28 && LiberCalendar_DaysInMonth(2000, 2) == 29,
+       "February follows the leap year rules\n");
+    ok(LiberCalendar_DaysInMonth(2026, 11) == 30 && LiberCalendar_DaysInMonth(2026, 12) == 31 &&
+       LiberCalendar_DaysInMonth(2026, 13) == 0, "month lengths\n");
+    ok(LiberCalendar_DayOfWeek(2026, 11, 27) == 5 && LiberCalendar_DayOfWeek(2026, 11, 1) == 0 &&
+       LiberCalendar_DayOfWeek(2000, 1, 1) == 6, "weekdays (0 is Sunday)\n");
+
+    LiberCalendar_MonthGrid(2026, 11, 0, days);
+    ok(days[0].wMonth == 11 && days[0].wDay == 1 && days[0].bInMonth, "November 2026 starts on a Sunday\n");
+    ok(days[29].wDay == 30 && days[29].bInMonth && days[30].wMonth == 12 && days[30].wDay == 1 && !days[30].bInMonth,
+       "the grid runs into December\n");
+
+    LiberCalendar_MonthGrid(2026, 11, 1, days);
+    ok(days[0].wMonth == 10 && days[0].wDay == 26 && !days[0].bInMonth && days[6].wDay == 1 && days[6].bInMonth,
+       "a Monday-first grid matches the spec demo: %u/%u\n", days[0].wMonth, days[0].wDay);
+    ok(days[32].wDay == 27 && days[32].wMonth == 11, "the 27th sits in the fifth row, column five\n");
+    ok(days[41].wMonth == 12 && days[41].wDay == 6, "six full weeks: %u/%u\n", days[41].wMonth, days[41].wDay);
+
+    LiberCalendar_MonthGrid(2027, 1, 0, days);
+    ok(days[0].wYear == 2026 && days[0].wMonth == 12 && days[0].wDay == 27 && days[5].wYear == 2027 &&
+       days[5].wDay == 1, "January 2027 reaches back into December 2026\n");
+}
+
+static void TestRecentHelpers()
+{
+    SYSTEMTIME now = { 2026, 11, 5, 27, 11, 20, 0, 0 }, then = now;
+    WCHAR text[64], time[32];
+
+    LiberStart_FormatWhen(&now, &then, text, _countof(text));
+    ok(!wcscmp(text, L"Just now"), "same minute: %S\n", text);
+    then.wMinute = 20 - 41 + 60;
+    then.wHour = 10;
+    LiberStart_FormatWhen(&now, &then, text, _countof(text));
+    ok(!wcscmp(text, L"41 min ago"), "41 minutes: %S\n", text);
+    then = now;
+    then.wHour = 6;
+    then.wMinute = 18;
+    GetTimeFormatW(LOCALE_USER_DEFAULT, TIME_NOSECONDS, &then, NULL, time, _countof(time));
+    LiberStart_FormatWhen(&now, &then, text, _countof(text));
+    ok(!wcsncmp(text, L"Today ", 6) && !wcscmp(text + 6, time), "earlier today: %S\n", text);
+    then.wDay = 26;
+    LiberStart_FormatWhen(&now, &then, text, _countof(text));
+    ok(!wcsncmp(text, L"Yesterday ", 10), "yesterday: %S\n", text);
+    SYSTEMTIME first = { 2026, 12, 2, 1, 0, 5, 0, 0 }, last = { 2026, 11, 1, 30, 23, 50, 0, 0 };
+    LiberStart_FormatWhen(&first, &last, text, _countof(text));
+    ok(!wcscmp(text, L"15 min ago"), "minutes across midnight and a month: %S\n", text);
+    then.wDay = 20;
+    LiberStart_FormatWhen(&now, &then, text, _countof(text));
+    ok(wcsncmp(text, L"Today", 5) && wcsncmp(text, L"Yesterday", 9) && text[0], "older shows a date: %S\n", text);
+
+    ok(LiberStart_ScrollOffset(0, 40, 6, 18, 1) == 6, "one row down\n");
+    ok(LiberStart_ScrollOffset(18, 40, 6, 18, 1) == 24, "last full page starts at 24\n");
+    ok(LiberStart_ScrollOffset(24, 40, 6, 18, 1) == 24, "does not scroll past the end\n");
+    ok(LiberStart_ScrollOffset(6, 40, 6, 18, -1) == 0 && LiberStart_ScrollOffset(0, 40, 6, 18, -1) == 0,
+       "scrolls back to the top and no further\n");
+    ok(LiberStart_ScrollOffset(0, 10, 6, 18, 1) == 0, "nothing to scroll when everything fits\n");
+
+    LIBER_RECENT_FILE files[6];
+    UINT count = LiberStart_LoadRecentFiles(files, _countof(files));
+    ok(count <= 6, "at most six recent files: %u\n", count);
+    for (UINT i = 1; i < count; i++)
+    {
+        FILETIME a, b;
+        SystemTimeToFileTime(&files[i - 1].stWritten, &a);
+        SystemTimeToFileTime(&files[i].stWritten, &b);
+        ok(CompareFileTime(&a, &b) >= 0, "recent file %u is not newer than the one before\n", i);
+        ok(GetFileAttributesW(files[i].szLink) != INVALID_FILE_ATTRIBUTES, "recent link %u exists\n", i);
+    }
+    ok(LiberStart_LoadRecentFiles(files, 0) == 0, "no room returns nothing\n");
 }
 
 static void TestDesignValues()
@@ -204,7 +284,9 @@ START_TEST(Dock)
     TestDesignValues();
     TestLayout();
     TestWorkArea();
-    TestPlaceAbove();
+    TestFlyoutOrigin();
+    TestRecentHelpers();
+    TestCalendarGrid();
     TestTaskWindows();
     TestExperience();
 }

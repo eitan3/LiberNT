@@ -27,6 +27,21 @@ VOID TrayNotifications_Add(IN HWND hWndOwner, IN UINT uID, IN LPCWSTR pszApp,
 UINT TrayNotifications_GetUnread(VOID);
 VOID TrayNotifications_SetSink(IN HWND hwndSink);
 BOOL TrayNotifications_IsHidden(VOID);
+VOID TrayNotifications_SetHidden(IN BOOL bHidden);
+
+typedef struct _TRAY_NOTIFICATION_INFO
+{
+    HICON hIcon;
+    SYSTEMTIME stTime;
+    WCHAR szApp[128];
+    WCHAR szTitle[64];
+    WCHAR szText[256];
+} TRAY_NOTIFICATION_INFO;
+
+UINT TrayNotifications_GetCount(VOID);
+BOOL TrayNotifications_Get(IN UINT uIndex, OUT TRAY_NOTIFICATION_INFO *pInfo);
+VOID TrayNotifications_Remove(IN UINT uIndex);
+VOID TrayNotifications_Clear(VOID);
 
 VOID TrayOverflow_Toggle(IN HWND hwndOwner, IN const RECT *prcAnchor, IN HWND hwndPager);
 VOID TrayOverflow_ToggleAll(IN HWND hwndOwner, IN const RECT *prcAnchor);
@@ -36,6 +51,25 @@ static inline BOOL TrayIcon_Listed(DWORD dwState, BOOL bVisible, BOOL bAll)
     if (dwState & NIS_HIDDEN)
         return FALSE;
     return bAll || !bVisible;
+}
+static inline VOID TrayFlyout_Position(const RECT *prcBar, const RECT *prcAnchor, const RECT *prcMonitor, SIZE size,
+                                       BOOL bCenter, int nGap, POINT *ppt)
+{
+    const RECT *prcEdge = (prcBar && !IsRectEmpty(prcBar)) ? prcBar : prcAnchor;
+
+    if (bCenter)
+        ppt->x = (prcAnchor->left + prcAnchor->right - size.cx) / 2;
+    else
+        ppt->x = prcMonitor->right - nGap - size.cx;
+    if (ppt->x + size.cx > prcMonitor->right - nGap)
+        ppt->x = prcMonitor->right - nGap - size.cx;
+    if (ppt->x < prcMonitor->left + nGap)
+        ppt->x = prcMonitor->left + nGap;
+
+    if (prcEdge->top > (prcMonitor->top + prcMonitor->bottom) / 2)
+        ppt->y = prcEdge->top - nGap - size.cy;
+    else
+        ppt->y = prcEdge->bottom + nGap;
 }
 BOOL TrayOverflow_IsOpen(VOID);
 VOID TrayOverflow_Refresh(VOID);

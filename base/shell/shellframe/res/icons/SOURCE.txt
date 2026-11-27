@@ -9,6 +9,7 @@ Files used, copied unmodified and drawn from their path data at run time:
 - assets/Add Circle/SVG/ic_fluent_add_circle_20_regular.svg
 - assets/Airplane/SVG/ic_fluent_airplane_20_regular.svg
 - assets/Alert/SVG/ic_fluent_alert_20_regular.svg
+- assets/Alert Snooze/SVG/ic_fluent_alert_snooze_20_regular.svg
 - assets/Apps/SVG/ic_fluent_apps_20_regular.svg
 - assets/Apps Add In/SVG/ic_fluent_apps_add_in_20_regular.svg
 - assets/Apps List/SVG/ic_fluent_apps_list_20_regular.svg
@@ -30,9 +31,11 @@ Files used, copied unmodified and drawn from their path data at run time:
 - assets/Checkmark/SVG/ic_fluent_checkmark_20_regular.svg
 - assets/Checkmark Circle/SVG/ic_fluent_checkmark_circle_20_regular.svg
 - assets/Chevron Down/SVG/ic_fluent_chevron_down_12_regular.svg
+- assets/Chevron Down/SVG/ic_fluent_chevron_down_16_regular.svg
 - assets/Chevron Right/SVG/ic_fluent_chevron_right_12_regular.svg
 - assets/Chevron Right/SVG/ic_fluent_chevron_right_16_regular.svg
 - assets/Chevron Up/SVG/ic_fluent_chevron_up_12_regular.svg
+- assets/Chevron Up/SVG/ic_fluent_chevron_up_16_regular.svg
 - assets/Clipboard Paste/SVG/ic_fluent_clipboard_paste_20_regular.svg
 - assets/Clock/SVG/ic_fluent_clock_20_regular.svg
 - assets/Closed Caption/SVG/ic_fluent_closed_caption_20_regular.svg
@@ -48,6 +51,7 @@ Files used, copied unmodified and drawn from their path data at run time:
 - assets/Desktop/SVG/ic_fluent_desktop_20_regular.svg
 - assets/Desktop Pulse/SVG/ic_fluent_desktop_pulse_20_regular.svg
 - assets/Device Meeting Room/SVG/ic_fluent_device_meeting_room_20_regular.svg
+- assets/Dismiss/SVG/ic_fluent_dismiss_12_regular.svg
 - assets/Dismiss/SVG/ic_fluent_dismiss_16_regular.svg
 - assets/Document/SVG/ic_fluent_document_20_regular.svg
 - assets/Edit/SVG/ic_fluent_edit_20_regular.svg
@@ -106,6 +110,8 @@ Files used, copied unmodified and drawn from their path data at run time:
 - assets/Router/SVG/ic_fluent_router_20_regular.svg
 - assets/Save/SVG/ic_fluent_save_20_regular.svg
 - assets/Search/SVG/ic_fluent_search_16_regular.svg
+- assets/Search/SVG/ic_fluent_search_20_regular.svg
+- assets/Search/SVG/ic_fluent_search_24_regular.svg
 - assets/Settings/SVG/ic_fluent_settings_20_regular.svg
 - assets/Settings/SVG/ic_fluent_settings_24_regular.svg
 - assets/Share/SVG/ic_fluent_share_20_regular.svg

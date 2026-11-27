@@ -12,16 +12,23 @@
 
 using namespace LiberUI;
 
-#define LIBER_START_WIDTH   650
-#define LIBER_START_COLUMNS 6
-#define LIBER_START_ROWS    3
-#define LIBER_START_TILES   (LIBER_START_COLUMNS * LIBER_START_ROWS)
-#define LIBER_START_TILE_H  84
+#define LIBER_START_WIDTH    660
+#define LIBER_START_COLUMNS  6
+#define LIBER_START_ROWS     3
+#define LIBER_START_TILES    (LIBER_START_COLUMNS * LIBER_START_ROWS)
+#define LIBER_START_TILE_H   88
+#define LIBER_START_RECENT   6
+#define LIBER_START_ROW_H    56
+#define LIBER_START_FOOTER_H 68
 
 enum
 {
     LST_POWER = 1,
-    LST_TILE = 100
+    LST_ALL_APPS,
+    LST_MORE,
+    LST_USER,
+    LST_TILE = 100,
+    LST_RECENT = 200
 };
 
 class CAppTile : public Control
@@ -59,16 +66,82 @@ protected:
             m_Item->bSmallTried = TRUE;
             m_Item->hLargeIcon = SM2LoadShellIcon(m_Item->szPath, TRUE);
         }
-        RectF icon = { rc.X + (rc.Width - 40.0f) / 2, rc.Y + 10.0f, 40.0f, 40.0f };
+        RectF icon = { rc.X + (rc.Width - 40.0f) / 2, rc.Y + 12.0f, 40.0f, 40.0f };
         if (m_Item->hLargeIcon)
             context.Painter.Image(m_Item->hLargeIcon, icon);
-        RectF text = { rc.X + 4.0f, rc.Y + 54.0f, rc.Width - 8.0f, 20.0f };
+        RectF text = { rc.X + 4.0f, rc.Y + 60.0f, rc.Width - 8.0f, 16.0f };
         context.Painter.Text(m_Item->szName, text, LIBER_TYPE_CAPTION, tokens.Color(LIBER_COLOR_TEXT1),
                              TextCenter | TextMiddle | TextEllipsis);
     }
 
 private:
     SM2ITEM *m_Item;
+};
+
+class CRecentRow : public Control
+{
+public:
+    CRecentRow() : m_Icon(NULL)
+    {
+        m_Path[0] = m_Name[0] = m_When[0] = 0;
+        SetSize(-1, LIBER_START_ROW_H);
+    }
+
+    ~CRecentRow()
+    {
+        Reset();
+    }
+
+    void Set(const LIBER_RECENT_FILE *file, const SYSTEMTIME *now)
+    {
+        Reset();
+        if (file)
+        {
+            StringCchCopyW(m_Path, _countof(m_Path), file->szLink);
+            StringCchCopyW(m_Name, _countof(m_Name), file->szName);
+            LiberStart_FormatWhen(now, &file->stWritten, m_When, _countof(m_When));
+            SHFILEINFOW sfi = { 0 };
+            if (SHGetFileInfoW(m_Path, 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON))
+                m_Icon = sfi.hIcon;
+        }
+        SetVisible(file != NULL);
+        Invalidate();
+    }
+
+    LPCWSTR Path() const { return m_Path; }
+    void OnClick() { Raise(ControlClicked); }
+
+protected:
+    void PaintOverride(PaintContext &context)
+    {
+        RectF rc = ToRectF(Bounds());
+        const ThemeTokens &tokens = context.Tokens;
+
+        if (HasState(StateHover) || HasState(StatePressed) || HasState(StateFocused))
+            context.Painter.FillRoundRect(rc, (float)LIBER_RADIUS_R6,
+                                          tokens.Color(HasState(StatePressed) ? LIBER_COLOR_FILL_SUBTLE_PRESSED
+                                                                              : LIBER_COLOR_FILL_SUBTLE_HOVER));
+        RectF icon = { rc.X + 12.0f, rc.Y + (rc.Height - 32.0f) / 2, 32.0f, 32.0f };
+        if (m_Icon)
+            context.Painter.Image(m_Icon, icon);
+        RectF name = { rc.X + 56.0f, rc.Y + 10.0f, rc.Width - 68.0f, 20.0f };
+        RectF when = { rc.X + 56.0f, rc.Y + 30.0f, rc.Width - 68.0f, 16.0f };
+        context.Painter.Text(m_Name, name, LIBER_TYPE_BODY, tokens.Color(LIBER_COLOR_TEXT1), TextMiddle | TextEllipsis);
+        context.Painter.Text(m_When, when, LIBER_TYPE_CAPTION, tokens.Color(LIBER_COLOR_TEXT2), TextMiddle | TextEllipsis);
+    }
+
+private:
+    void Reset()
+    {
+        if (m_Icon)
+            DestroyIcon(m_Icon);
+        m_Icon = NULL;
+    }
+
+    WCHAR m_Path[MAX_PATH];
+    WCHAR m_Name[MAX_PATH];
+    WCHAR m_When[64];
+    HICON m_Icon;
 };
 
 class CSearchBox : public Widget
@@ -113,21 +186,92 @@ protected:
         const ThemeTokens &tokens = context.Tokens;
         float radius = rc.Height / 2;
 
-        context.Painter.FillRoundRect(rc, radius, tokens.Color(LIBER_COLOR_FILL_INPUT));
-        context.Painter.StrokeRoundRect(rc, radius, tokens.Color(m_Query[0] ? LIBER_COLOR_ACCENT : LIBER_COLOR_STROKE_CONTROL),
-                                        m_Query[0] ? 2.0f : 1.0f);
-        RectF icon = { rc.X + 14.0f, rc.Y + (rc.Height - 16.0f) / 2, 16.0f, 16.0f };
-        context.Painter.Icon(L"search_16_regular", icon, tokens.Color(LIBER_COLOR_TEXT2));
-        RectF text = { rc.X + 40.0f, rc.Y, rc.Width - 56.0f, rc.Height };
+        context.Painter.FillRoundRect(rc, radius, tokens.Color(m_Query[0] ? LIBER_COLOR_FILL_INPUT_FOCUS
+                                                                          : LIBER_COLOR_FILL_INPUT));
+        if (m_Query[0])
+        {
+            RectF ring = { rc.X - 1.0f, rc.Y - 1.0f, rc.Width + 2.0f, rc.Height + 2.0f };
+            context.Painter.StrokeRoundRect(ring, radius + 1.0f, tokens.Color(LIBER_COLOR_ACCENT_RING), 2.0f);
+        }
+        else
+        {
+            context.Painter.StrokeRoundRect(rc, radius, tokens.Color(LIBER_COLOR_STROKE_CONTROL), 1.0f);
+        }
+        RectF icon = { rc.X + 13.0f, rc.Y + (rc.Height - 20.0f) / 2, 20.0f, 20.0f };
+        context.Painter.Icon(L"search_20_regular", icon, tokens.Color(LIBER_COLOR_TEXT2));
+        RectF text = { rc.X + 41.0f, rc.Y, rc.Width - 53.0f, rc.Height };
         if (m_Query[0])
             context.Painter.Text(m_Query, text, LIBER_TYPE_BODY, tokens.Color(LIBER_COLOR_TEXT1), TextMiddle | TextEllipsis);
         else
-            context.Painter.Text(L"Type to search apps", text, LIBER_TYPE_BODY, tokens.Color(LIBER_COLOR_TEXT3),
-                                 TextMiddle | TextEllipsis);
+            context.Painter.Text(L"Search apps, settings and documents", text, LIBER_TYPE_BODY,
+                                 tokens.Color(LIBER_COLOR_TEXT3), TextMiddle | TextEllipsis);
     }
 
 private:
     WCHAR m_Query[64];
+};
+
+class CStartFooter : public StackPanel
+{
+public:
+    CStartFooter() : StackPanel(Orientation::Horizontal, 0)
+    {
+        Thickness pad = { 40, (LIBER_START_FOOTER_H - 44) / 2, 40, (LIBER_START_FOOTER_H - 44) / 2 };
+        SetPadding(pad);
+        SetSize(-1, LIBER_START_FOOTER_H);
+    }
+
+protected:
+    void PaintOverride(PaintContext &context)
+    {
+        RectF rc = ToRectF(Bounds());
+        RectF flyout = Parent() ? ToRectF(Parent()->Bounds()) : rc;
+
+        context.Painter.PushClip(flyout, (float)LIBER_RADIUS_FLYOUT);
+        context.Painter.FillRect(rc, context.Tokens.Color(LIBER_COLOR_FILL_SUBTLE_HOVER));
+        RectF divider = { rc.X, rc.Y, rc.Width, 1.0f };
+        context.Painter.FillRect(divider, context.Tokens.Color(LIBER_COLOR_STROKE_DIVIDER));
+        context.Painter.PopClip();
+    }
+};
+
+class CUserButton : public Control
+{
+public:
+    CUserButton(LPCWSTR name)
+    {
+        StringCchCopyW(m_Name, _countof(m_Name), name ? name : L"");
+        SetSize(-1, 44);
+    }
+
+    void OnClick() { Raise(ControlClicked); }
+
+protected:
+    SIZE MeasureOverride(SIZE available)
+    {
+        SIZE size = { min(available.cx, (LONG)(6 + 32 + 12 + lstrlenW(m_Name) * 8 + 16)), 44 };
+        return size;
+    }
+
+    void PaintOverride(PaintContext &context)
+    {
+        RectF rc = ToRectF(Bounds());
+        const ThemeTokens &tokens = context.Tokens;
+
+        if (HasState(StateHover) || HasState(StatePressed))
+            context.Painter.FillRoundRect(rc, rc.Height / 2, tokens.Color(HasState(StatePressed)
+                                                                              ? LIBER_COLOR_FILL_SUBTLE_PRESSED
+                                                                              : LIBER_COLOR_FILL_SUBTLE_HOVER));
+        RectF avatar = { rc.X + 6.0f, rc.Y + (rc.Height - 32.0f) / 2, 32.0f, 32.0f };
+        context.Painter.FillEllipse(avatar, tokens.Color(LIBER_COLOR_ACCENT_SUBTLE));
+        RectF glyph = { avatar.X + 6.0f, avatar.Y + 6.0f, 20.0f, 20.0f };
+        context.Painter.Icon(L"person_20_regular", glyph, tokens.Color(LIBER_COLOR_ACCENT_TEXT));
+        RectF name = { avatar.X + 44.0f, rc.Y, rc.Width - 60.0f, rc.Height };
+        context.Painter.Text(m_Name, name, LIBER_TYPE_BODY, tokens.Color(LIBER_COLOR_TEXT1), TextMiddle | TextEllipsis);
+    }
+
+private:
+    WCHAR m_Name[64];
 };
 
 class CStartSurface : public Surface
@@ -162,22 +306,28 @@ public:
     void OnControlEvent(Widget *source, ControlEvent event);
     BOOL OnChar(WCHAR ch);
     BOOL OnKey(UINT vk);
+    BOOL OnWheel(int delta);
 
 private:
     void Build();
     void Filter();
-    void ShowPowerMenu();
+    void LoadRecent();
+    void ShowPowerMenu(BOOL user);
 
     CStartSurface m_Surface;
     ThemeTokens m_Tokens;
     CLiberPanel *m_Root;
     CSearchBox *m_Search;
-    Label *m_Heading;
+    CLiberSectionHead *m_PinnedHead;
+    CLiberSectionHead *m_RecentHead;
     CAppTile *m_Tiles[LIBER_START_TILES];
-    Label *m_User;
+    GridPanel *m_RecentGrid;
+    CRecentRow *m_Recent[LIBER_START_RECENT];
     SM2ITEM m_Tree;
     CAtlArray<SM2ITEM *> m_Apps;
     BOOL m_Loaded;
+    BOOL m_AllApps;
+    UINT m_Offset;
 };
 
 static CLiberStart *g_pLiberStart;
@@ -210,13 +360,20 @@ LRESULT CStartSurface::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
         Render(AnimationClock::Now());
         return 0;
     }
+    if (msg == WM_MOUSEWHEEL && m_Owner && m_Owner->OnWheel(GET_WHEEL_DELTA_WPARAM(wParam)))
+    {
+        Render(AnimationClock::Now());
+        return 0;
+    }
     return Surface::HandleMessage(msg, wParam, lParam);
 }
 
 CLiberStart::CLiberStart()
-    : m_Root(NULL), m_Search(NULL), m_Heading(NULL), m_User(NULL), m_Loaded(FALSE)
+    : m_Root(NULL), m_Search(NULL), m_PinnedHead(NULL), m_RecentHead(NULL), m_RecentGrid(NULL), m_Loaded(FALSE),
+      m_AllApps(FALSE), m_Offset(0)
 {
     ZeroMemory(m_Tiles, sizeof(m_Tiles));
+    ZeroMemory(m_Recent, sizeof(m_Recent));
     m_Surface.m_Owner = this;
 }
 
@@ -230,18 +387,23 @@ CLiberStart::~CLiberStart()
 
 void CLiberStart::Build()
 {
-    Thickness pad = { 32, 24, 32, 20 };
-    GridPanel *grid = new GridPanel(LIBER_START_COLUMNS, 8, 4);
-    StackPanel *footer = new StackPanel(Orientation::Horizontal, 8);
-    IconButton *power = new IconButton(L"power_20_regular", LIBER_CONTROL_LG);
+    Thickness searchPad = { 8, 8, 8, 0 };
+    Thickness bodyPad = { 32, 22, 32, 12 };
+    StackPanel *searchRow = new StackPanel(Orientation::Vertical, 0);
+    StackPanel *body = new StackPanel(Orientation::Vertical, 10);
+    GridPanel *grid = new GridPanel(LIBER_START_COLUMNS, 2, 2);
+    CStartFooter *footer = new CStartFooter();
+    IconButton *power = new IconButton(L"power_20_regular", LIBER_CONTROL_MD);
     WCHAR szUser[257];
     DWORD cch = _countof(szUser);
 
-    m_Root = new CLiberPanel(Orientation::Vertical, 16, (float)LIBER_RADIUS_FLYOUT, LIBER_MATERIAL_THICK);
-    m_Root->SetPadding(pad);
+    m_Root = new CLiberPanel(Orientation::Vertical, 0, (float)LIBER_RADIUS_FLYOUT, LIBER_MATERIAL_THICK);
+    searchRow->SetPadding(searchPad);
+    body->SetPadding(bodyPad);
     m_Search = new CSearchBox();
-    m_Heading = new Label(L"Apps", LIBER_TYPE_BODY_STRONG, LIBER_COLOR_TEXT1, TextLeft | TextMiddle);
-    m_Heading->SetSize(-1, 20);
+    searchRow->AddChild(m_Search);
+
+    m_PinnedHead = new CLiberSectionHead(L"Pinned", L"All apps", LST_ALL_APPS, this);
     for (UINT i = 0; i < LIBER_START_TILES; i++)
     {
         m_Tiles[i] = new CAppTile();
@@ -249,34 +411,73 @@ void CLiberStart::Build()
         m_Tiles[i]->SetListener(this);
         grid->AddChild(m_Tiles[i]);
     }
+    m_RecentHead = new CLiberSectionHead(L"Recommended", L"More", LST_MORE, this);
+    Thickness headGap = { 0, 12, 0, 0 };
+    m_RecentHead->SetMargin(headGap);
+    m_RecentGrid = new GridPanel(2, 2, 2);
+    for (UINT i = 0; i < LIBER_START_RECENT; i++)
+    {
+        m_Recent[i] = new CRecentRow();
+        m_Recent[i]->SetId(LST_RECENT + i);
+        m_Recent[i]->SetListener(this);
+        m_RecentGrid->AddChild(m_Recent[i]);
+    }
+    body->AddChild(m_PinnedHead);
+    body->AddChild(grid);
+    body->AddChild(m_RecentHead);
+    body->AddChild(m_RecentGrid);
+
     if (!GetUserNameW(szUser, &cch))
         szUser[0] = 0;
-    m_User = new Label(szUser, LIBER_TYPE_BODY, LIBER_COLOR_TEXT1, TextLeft | TextMiddle);
-    m_User->SetSize(LIBER_START_WIDTH - 64 - LIBER_CONTROL_LG - 8, LIBER_CONTROL_LG);
+    CUserButton *user = new CUserButton(szUser);
+    user->SetId(LST_USER);
+    user->SetListener(this);
+    user->SetAlign(Align::Start, Align::Center);
     power->SetId(LST_POWER);
     power->SetListener(this);
-    footer->AddChild(m_User);
-    footer->AddChild(power);
+    power->SetAlign(Align::End, Align::Center);
+    Panel *footerRow = new Panel();
+    footerRow->SetSize(-1, 44);
+    footerRow->AddChild(user);
+    footerRow->AddChild(power);
+    footer->AddChild(footerRow);
 
-    m_Root->AddChild(m_Search);
-    m_Root->AddChild(m_Heading);
-    m_Root->AddChild(grid);
+    m_Root->AddChild(searchRow);
+    m_Root->AddChild(body);
     m_Root->AddChild(footer);
+}
+
+void CLiberStart::LoadRecent()
+{
+    LIBER_RECENT_FILE files[LIBER_START_RECENT];
+    SYSTEMTIME now;
+    UINT count = LiberStart_LoadRecentFiles(files, _countof(files));
+
+    GetLocalTime(&now);
+    for (UINT i = 0; i < LIBER_START_RECENT; i++)
+        m_Recent[i]->Set(i < count ? &files[i] : NULL, &now);
 }
 
 void CLiberStart::Filter()
 {
-    UINT shown = 0;
+    UINT shown = 0, matched = 0;
     LPCWSTR query = m_Search->Query();
+    BOOL searching = query[0] != 0;
 
     for (SIZE_T i = 0; i < m_Apps.GetCount() && shown < LIBER_START_TILES; i++)
     {
-        if (LiberStart_Matches(m_Apps[i]->szName, query))
-            m_Tiles[shown++]->SetItem(m_Apps[i]);
+        if (!LiberStart_Matches(m_Apps[i]->szName, query))
+            continue;
+        if (!searching && m_AllApps && matched++ < m_Offset)
+            continue;
+        m_Tiles[shown++]->SetItem(m_Apps[i]);
     }
     for (UINT i = shown; i < LIBER_START_TILES; i++)
         m_Tiles[i]->SetItem(NULL);
-    m_Heading->SetText(query[0] ? (shown ? L"Best matches" : L"No apps match") : L"Apps");
+    m_PinnedHead->SetTitle(searching ? (shown ? L"Best matches" : L"No apps match") : m_AllApps ? L"All apps" : L"Pinned");
+    m_PinnedHead->SetAction(searching ? NULL : m_AllApps ? L"Back" : L"All apps");
+    m_RecentHead->SetVisible(!searching && !m_AllApps);
+    m_RecentGrid->SetVisible(!searching && !m_AllApps);
     m_Surface.RequestLayout();
     m_Surface.InvalidateRect(m_Root->Bounds());
 }
@@ -310,6 +511,11 @@ BOOL CLiberStart::OnKey(UINT vk)
             m_Search->Clear();
             Filter();
         }
+        else if (m_AllApps)
+        {
+            m_AllApps = FALSE;
+            Filter();
+        }
         else
         {
             Close();
@@ -323,6 +529,21 @@ BOOL CLiberStart::OnKey(UINT vk)
         return TRUE;
     }
     return FALSE;
+}
+
+BOOL CLiberStart::OnWheel(int delta)
+{
+    UINT offset;
+
+    if (!m_AllApps || m_Search->Query()[0])
+        return FALSE;
+    offset = LiberStart_ScrollOffset(m_Offset, (UINT)m_Apps.GetCount(), LIBER_START_COLUMNS, LIBER_START_TILES,
+                                     delta < 0 ? 1 : -1);
+    if (offset == m_Offset)
+        return FALSE;
+    m_Offset = offset;
+    Filter();
+    return TRUE;
 }
 
 BOOL CLiberStart::Open(const RECT *prcAnchor)
@@ -345,24 +566,20 @@ BOOL CLiberStart::Open(const RECT *prcAnchor)
     }
 
     m_Search->Clear();
+    m_AllApps = FALSE;
+    m_Offset = 0;
     m_Surface.Input().SetFocus(NULL);
     LiberShell_BuildTokens(&m_Tokens);
     LiberShell_ApplyFont(&m_Surface);
     m_Surface.SetTokens(&m_Tokens);
+    LoadRecent();
     Filter();
 
     SIZE available = { LIBER_START_WIDTH, LayoutInfinite };
     SIZE size = m_Root->Measure(available);
     UINT dpi = m_Surface.Dpi();
-    HMONITOR monitor = MonitorFromRect(prcAnchor, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO mi = { sizeof(mi) };
-    GetMonitorInfoW(monitor, &mi);
-    int width = ScaleToDpi(LIBER_START_WIDTH, dpi);
-    int height = ScaleToDpi(size.cy, dpi);
-    POINT pt = { mi.rcMonitor.left + (mi.rcMonitor.right - mi.rcMonitor.left - width) / 2,
-                 prcAnchor->top - ScaleToDpi(LIBER_FLYOUT_GAP, dpi) - height };
-    if (pt.y < mi.rcMonitor.top)
-        pt.y = mi.rcMonitor.top;
+    POINT pt;
+    LiberShell_PlaceFlyout(prcAnchor, ScaleToDpi(LIBER_START_WIDTH, dpi), ScaleToDpi(size.cy, dpi), TRUE, &pt);
 
     m_Surface.SetPosition(pt.x, pt.y, LIBER_START_WIDTH, size.cy);
     m_Surface.RequestLayout();
@@ -372,16 +589,16 @@ BOOL CLiberStart::Open(const RECT *prcAnchor)
     return TRUE;
 }
 
-void CLiberStart::ShowPowerMenu()
+void CLiberStart::ShowPowerMenu(BOOL user)
 {
-    static const struct { INT Cmd; LPCWSTR Text; } Items[] =
+    static const struct { INT Cmd; LPCWSTR Text; BOOL User; } Items[] =
     {
-        { SM2F_LOCK, L"Lock" },
-        { SM2F_SLEEP, L"Sleep" },
-        { SM2F_HIBERNATE, L"Hibernate" },
-        { SM2F_LOGOFF, L"Sign out" },
-        { SM2F_RESTART, L"Restart" },
-        { SM2F_SHUTDOWN, L"Shut down" },
+        { SM2F_LOCK, L"Lock", TRUE },
+        { SM2F_LOGOFF, L"Sign out", TRUE },
+        { SM2F_SLEEP, L"Sleep", FALSE },
+        { SM2F_HIBERNATE, L"Hibernate", FALSE },
+        { SM2F_RESTART, L"Restart", FALSE },
+        { SM2F_SHUTDOWN, L"Shut down", FALSE },
     };
     HMENU menu = CreatePopupMenu();
     POINT pt;
@@ -390,7 +607,7 @@ void CLiberStart::ShowPowerMenu()
         return;
     for (UINT i = 0; i < _countof(Items); i++)
     {
-        if (StartMenu2_IsPowerCommandAllowed(Items[i].Cmd))
+        if (Items[i].User == user && StartMenu2_IsPowerCommandAllowed(Items[i].Cmd))
             AppendMenuW(menu, MF_STRING, (UINT_PTR)Items[i].Cmd, Items[i].Text);
     }
     GetCursorPos(&pt);
@@ -409,10 +626,24 @@ void CLiberStart::OnControlEvent(Widget *source, ControlEvent event)
     Control *control = static_cast<Control *>(source);
 
     UNREFERENCED_PARAMETER(event);
-    if (control->Id() == LST_POWER)
+    switch (control->Id())
     {
-        ShowPowerMenu();
-        return;
+        case LST_POWER:
+            ShowPowerMenu(FALSE);
+            return;
+        case LST_ALL_APPS:
+            m_AllApps = !m_AllApps;
+            m_Offset = 0;
+            Filter();
+            m_Surface.Render(AnimationClock::Now());
+            return;
+        case LST_MORE:
+            Close();
+            SM2OpenCsidlFolder(CSIDL_RECENT);
+            return;
+        case LST_USER:
+            ShowPowerMenu(TRUE);
+            return;
     }
     if (control->Id() >= LST_TILE && control->Id() < LST_TILE + LIBER_START_TILES)
     {
@@ -421,6 +652,15 @@ void CLiberStart::OnControlEvent(Widget *source, ControlEvent event)
         {
             Close();
             SM2LaunchItem(item);
+        }
+    }
+    else if (control->Id() >= LST_RECENT && control->Id() < LST_RECENT + LIBER_START_RECENT)
+    {
+        LPCWSTR path = m_Recent[control->Id() - LST_RECENT]->Path();
+        if (path[0])
+        {
+            Close();
+            ShellExecuteW(NULL, NULL, path, NULL, NULL, SW_SHOWNORMAL);
         }
     }
 }
