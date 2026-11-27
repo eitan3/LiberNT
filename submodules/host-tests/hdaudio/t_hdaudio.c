@@ -190,6 +190,7 @@ int main(void)
 {
     HDA_WIDGET Widgets[HDA_WIDGETS_MAX];
     HDA_CAPTURE_AMP Selected[HDA_WIDGETS_MAX];
+    static USHORT Links[HDA_WIDGETS_MAX][3];
     static const USHORT Pin[] = { 0 };
     ULONG I, Count;
 
@@ -232,6 +233,54 @@ int main(void)
     /* a count past the array's own bound is cut to it */
     Count = HdaCaptureAmpsSelect(Widgets, HDA_WIDGETS_MAX + 100, 0, Selected, HDA_WIDGETS_MAX);
     CHECK_EQ(Count, HDA_WIDGETS_MAX - 1);
+
+    /*
+     * The stack of the walk (R5-06): a converter's connection leads down a
+     * chain of 200 nodes, each naming the same two widgets and the next
+     * node, and the last node names the pin beside one more widget. A walk
+     * that pushes a widget once per predecessor has 255 entries pending by
+     * the 128th node and drops the next node in silence, so the pin is never
+     * reached; a walk that queues a widget once reaches it.
+     */
+    memset(Widgets, 0, sizeof(Widgets));
+    memset(Selected, 0xAA, sizeof(Selected));
+    Widgets[0].Id = 0;
+    Widgets[0].Type = 0x01;
+    Widgets[0].ConnectionCount = 1;
+    Widgets[0].Connections = Links[0];
+    Links[0][0] = 1;
+    for (I = 1; I <= 200; I++)
+    {
+        Widgets[I].Id = (UCHAR)I;
+        Widgets[I].Type = 0x03;
+        Widgets[I].Connections = Links[I];
+        if (I < 200)
+        {
+            Widgets[I].ConnectionCount = 3;
+            Links[I][0] = 254;
+            Links[I][1] = 255;
+            Links[I][2] = (USHORT)(I + 1);
+        }
+        else
+        {
+            Widgets[I].ConnectionCount = 2;
+            Links[I][0] = 253;
+            Links[I][1] = 252;
+        }
+    }
+    Widgets[253].Id = 253;
+    Widgets[253].Type = 0x03;
+    Widgets[254].Id = 254;
+    Widgets[254].Type = 0x03;
+    Widgets[255].Id = 255;
+    Widgets[255].Type = 0x03;
+    Widgets[252].Id = 252;
+    Widgets[252].Type = 0x04;
+    Count = HdaCaptureAmpsSelect(Widgets, HDA_WIDGETS_MAX, 252, Selected, 8);
+    CHECK_EQ(Count, 1);
+    CHECK_EQ(Selected[0].Converter, 0);
+    CHECK_EQ(Selected[0].Connection, 0);
+    CHECK_EQ(Selected[1].Converter, 0xAA);
 
     CheckPnpRelease();
 
