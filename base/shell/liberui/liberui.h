@@ -660,13 +660,18 @@ private:
 
 Widget *NextInTree(Widget *root, Widget *from, BOOL forward);
 
+enum SurfaceFlags
+{
+    SurfaceNoGpu = 0x1
+};
+
 class Surface : public IWidgetHost
 {
 public:
     Surface();
     virtual ~Surface();
 
-    BOOL Create(HWND owner, LPCWSTR title, DWORD exStyle);
+    BOOL Create(HWND owner, LPCWSTR title, DWORD exStyle, DWORD flags = 0);
     void Destroy();
     HWND Window() const { return m_hwnd; }
     UINT Dpi() const { return m_Dpi; }
@@ -678,6 +683,7 @@ public:
     FontSet &Fonts() { return m_Fonts; }
 
     void SetPosition(int x, int y, int widthDip, int heightDip);
+    void SetInputShape(float radiusDip);
     SIZE SizeDip() const { return m_SizeDip; }
     BOOL Render(ULONGLONG now);
     const DWORD *Pixels() const { return m_Bits; }
@@ -688,6 +694,7 @@ public:
     POINT PixelToDip(POINT pt) const;
     BOOL IsGpu() const { return m_Gpu != NULL; }
     UINT PresentCount() const { return m_Presents; }
+    BOOL RecreateGpu();
 
     void InvalidateRect(const RECT &rc);
     void RequestLayout();
@@ -703,7 +710,10 @@ private:
     BOOL EnsureBuffer();
     void FreeBuffer();
     void Layout();
-    void Present();
+    BOOL Present();
+    BOOL CreateWindowFor(BOOL gpu);
+    BOOL RenderPass(ULONGLONG now, BOOL *lost);
+    void ApplyInputShape();
 
     HWND m_hwnd;
     UINT m_Dpi;
@@ -724,6 +734,11 @@ private:
     struct SurfaceGpu *m_Gpu;
     UINT m_Presents;
     RECT m_Placed;
+    HWND m_Owner;
+    WCHAR m_Title[64];
+    DWORD m_ExStyle;
+    float m_InputRadius;
+    BOOL m_Recovering;
 };
 
 int ScaleToDpi(int value, UINT dpi);

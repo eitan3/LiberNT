@@ -93,6 +93,7 @@ void D3DPainter::Draw(GpuShape shape, const float quad[4], const float rect[4], 
         CopyMemory(constants.ClipRect, clip.Rect, sizeof(constants.ClipRect));
         constants.ClipParams[0] = clip.Radius;
         constants.ClipParams[1] = clip.Enabled ? 1.0f : 0.0f;
+        constants.ClipParams[2] = clip.Empty ? 1.0f : 0.0f;
     }
     constants.Target[0] = (float)m_Gpu->Width;
     constants.Target[1] = (float)m_Gpu->Height;
@@ -182,7 +183,7 @@ void D3DPainter::Line(PointF from, PointF to, Argb color, float width)
 }
 
 ID3D11ShaderResourceView *D3DPainter::Raster(LPCWSTR key, UINT width, UINT height, UINT kind, LPCWSTR text,
-                                             LIBER_TYPE style, UINT flags, HICON icon, const RectF &dipRect)
+                                             LIBER_TYPE style, UINT flags, HICON icon, const RectF &local)
 {
     GpuCacheEntry *empty = NULL, *oldest = NULL, *slot;
 
@@ -214,7 +215,11 @@ ID3D11ShaderResourceView *D3DPainter::Raster(LPCWSTR key, UINT width, UINT heigh
         return NULL;
     {
         GdiplusPainter raster(bits, (int)width, (int)height, (int)width * 4, m_Dpi, m_Fonts);
-        RectF local = { 0.0f, 0.0f, dipRect.Width, dipRect.Height };
+        if (!raster.IsValid())
+        {
+            LocalFree(bits);
+            return NULL;
+        }
         if (kind == RasterText)
             raster.Text(text, local, style, 0xFFFFFFFF, flags);
         else if (kind == RasterIcon)
@@ -268,19 +273,44 @@ static BOOL PixelBox(const RectF &rc, float scale, float box[4], UINT *width, UI
     return TRUE;
 }
 
-void D3DPainter::Text(LPCWSTR text, const RectF &rc, LIBER_TYPE style, Argb color, UINT flags)
+static ULONGLONG HashText(LPCWSTR text)
+{
+    ULONGLONG hash = 1469598103934665603ULL;
+
+    for (; text && *text; text++)
+    {
+        hash ^= (ULONGLONG)(USHORT)*text;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+void D3DPainter::Mask(UINT kind, LPCWSTR name, LPCWSTR text, LIBER_TYPE style, UINT flags, HICON icon, const RectF &rc,
+                      Argb color)
 {
     float box[4], uv[4] = { 0, 0, 1, 1 };
     UINT width, height;
     WCHAR key[GpuCacheKeyChars];
 
-    if (!text || !*text || !m_Fonts || !PixelBox(rc, m_Scale, box, &width, &height))
+    if (!PixelBox(rc, m_Scale, box, &width, &height))
         return;
-    RectF dip = { box[0] / m_Scale, box[1] / m_Scale, (box[2] - box[0]) / m_Scale, (box[3] - box[1]) / m_Scale };
-    StringCchPrintfW(key, _countof(key), L"T|%u|%u|%u|%s|%.100s", (UINT)style, flags, m_Dpi, m_Fonts->Family(), text);
-    ID3D11ShaderResourceView *view = Raster(key, width, height, RasterText, text, style, flags, NULL, dip);
+    float offsetX = rc.X * m_Scale - box[0];
+    float offsetY = rc.Y * m_Scale - box[1];
+    RectF local = { offsetX / m_Scale, offsetY / m_Scale, rc.Width, rc.Height };
+    StringCchPrintfW(key, _countof(key), L"%u|%u|%u|%u|%d|%d|%u|%p|%I64x|%I64x|%u", kind, (UINT)style, flags, m_Dpi,
+                     (int)(offsetX * 4.0f + 0.5f), (int)(offsetY * 4.0f + 0.5f), (UINT)lstrlenW(name ? name : L""),
+                     icon, HashText(name), HashText(m_Fonts ? m_Fonts->Family() : L""),
+                     (UINT)(rc.Width * 4.0f + 0.5f));
+    ID3D11ShaderResourceView *view = Raster(key, width, height, kind, text, style, flags, icon, local);
     if (view)
-        Draw(GpuMask, box, box, 0.0f, 0.0f, color, NULL, view, uv, FALSE);
+        Draw(kind == RasterImage ? GpuImage : GpuMask, box, box, 0.0f, 0.0f, color, NULL, view, uv, FALSE);
+}
+
+void D3DPainter::Text(LPCWSTR text, const RectF &rc, LIBER_TYPE style, Argb color, UINT flags)
+{
+    if (!text || !*text || !m_Fonts)
+        return;
+    Mask(RasterText, text, text, style, flags, NULL, rc, color);
 }
 
 SIZE D3DPainter::MeasureText(LPCWSTR text, LIBER_TYPE style, float maxWidth)
@@ -292,32 +322,16 @@ SIZE D3DPainter::MeasureText(LPCWSTR text, LIBER_TYPE style, float maxWidth)
 
 void D3DPainter::Icon(LPCWSTR name, const RectF &rc, Argb color)
 {
-    float box[4], uv[4] = { 0, 0, 1, 1 };
-    UINT width, height;
-    WCHAR key[GpuCacheKeyChars];
-
-    if (!name || !PixelBox(rc, m_Scale, box, &width, &height))
+    if (!name)
         return;
-    RectF dip = { box[0] / m_Scale, box[1] / m_Scale, (box[2] - box[0]) / m_Scale, (box[3] - box[1]) / m_Scale };
-    StringCchPrintfW(key, _countof(key), L"I|%u|%.120s", m_Dpi, name);
-    ID3D11ShaderResourceView *view = Raster(key, width, height, RasterIcon, name, LIBER_TYPE_BODY, 0, NULL, dip);
-    if (view)
-        Draw(GpuMask, box, box, 0.0f, 0.0f, color, NULL, view, uv, FALSE);
+    Mask(RasterIcon, name, name, LIBER_TYPE_BODY, 0, NULL, rc, color);
 }
 
 void D3DPainter::Image(HICON icon, const RectF &rc)
 {
-    float box[4], uv[4] = { 0, 0, 1, 1 };
-    UINT width, height;
-    WCHAR key[GpuCacheKeyChars];
-
-    if (!icon || !PixelBox(rc, m_Scale, box, &width, &height))
+    if (!icon)
         return;
-    RectF dip = { box[0] / m_Scale, box[1] / m_Scale, (box[2] - box[0]) / m_Scale, (box[3] - box[1]) / m_Scale };
-    StringCchPrintfW(key, _countof(key), L"H|%u|%p", m_Dpi, icon);
-    ID3D11ShaderResourceView *view = Raster(key, width, height, RasterImage, NULL, LIBER_TYPE_BODY, 0, icon, dip);
-    if (view)
-        Draw(GpuImage, box, box, 0.0f, 0.0f, 0xFFFFFFFF, NULL, view, uv, FALSE);
+    Mask(RasterImage, NULL, NULL, LIBER_TYPE_BODY, 0, icon, rc, 0xFFFFFFFF);
 }
 
 void D3DPainter::PushClip(const RectF &rc, float radius)
@@ -333,15 +347,22 @@ void D3DPainter::PushClip(const RectF &rc, float radius)
     clip.Rect[3] = Px(rc.Y + rc.Height);
     clip.Radius = Px(radius);
     clip.Enabled = TRUE;
+    clip.Empty = FALSE;
     if (m_ClipDepth)
     {
         const Clip &outer = m_Clips[m_ClipDepth - 1];
+        BOOL inside = clip.Rect[0] >= outer.Rect[0] && clip.Rect[1] >= outer.Rect[1] && clip.Rect[2] <= outer.Rect[2] &&
+                      clip.Rect[3] <= outer.Rect[3];
         clip.Rect[0] = max(clip.Rect[0], outer.Rect[0]);
         clip.Rect[1] = max(clip.Rect[1], outer.Rect[1]);
         clip.Rect[2] = min(clip.Rect[2], outer.Rect[2]);
         clip.Rect[3] = min(clip.Rect[3], outer.Rect[3]);
-        clip.Radius = max(clip.Radius, outer.Radius);
+        if (!inside)
+            clip.Radius = max(clip.Radius, outer.Radius);
+        clip.Empty = outer.Empty;
     }
+    if (clip.Rect[2] <= clip.Rect[0] || clip.Rect[3] <= clip.Rect[1] || rc.Width <= 0.0f || rc.Height <= 0.0f)
+        clip.Empty = TRUE;
     m_Clips[m_ClipDepth++] = clip;
 }
 
