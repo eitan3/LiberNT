@@ -13,6 +13,7 @@ list(APPEND SOURCE
     dockmodel.cpp
     experience.cpp
     explorer.cpp
+    libercalendar.cpp
     libercontrol.cpp
     liberdock.cpp
     libershell.cpp

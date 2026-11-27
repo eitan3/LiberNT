@@ -150,6 +150,34 @@ static void TestFlyoutOrigin()
     ok(pt.y == 900 - 120 - 600, "gap and reserve scale with DPI: %ld\n", pt.y);
 }
 
+static void TestCalendarGrid()
+{
+    LIBER_CALENDAR_DAY days[LIBER_CALENDAR_CELLS];
+
+    ok(LiberCalendar_DaysInMonth(2024, 2) == 29 && LiberCalendar_DaysInMonth(2026, 2) == 28 &&
+       LiberCalendar_DaysInMonth(1900, 2) == 28 && LiberCalendar_DaysInMonth(2000, 2) == 29,
+       "February follows the leap year rules\n");
+    ok(LiberCalendar_DaysInMonth(2026, 11) == 30 && LiberCalendar_DaysInMonth(2026, 12) == 31 &&
+       LiberCalendar_DaysInMonth(2026, 13) == 0, "month lengths\n");
+    ok(LiberCalendar_DayOfWeek(2026, 11, 27) == 5 && LiberCalendar_DayOfWeek(2026, 11, 1) == 0 &&
+       LiberCalendar_DayOfWeek(2000, 1, 1) == 6, "weekdays (0 is Sunday)\n");
+
+    LiberCalendar_MonthGrid(2026, 11, 0, days);
+    ok(days[0].wMonth == 11 && days[0].wDay == 1 && days[0].bInMonth, "November 2026 starts on a Sunday\n");
+    ok(days[29].wDay == 30 && days[29].bInMonth && days[30].wMonth == 12 && days[30].wDay == 1 && !days[30].bInMonth,
+       "the grid runs into December\n");
+
+    LiberCalendar_MonthGrid(2026, 11, 1, days);
+    ok(days[0].wMonth == 10 && days[0].wDay == 26 && !days[0].bInMonth && days[6].wDay == 1 && days[6].bInMonth,
+       "a Monday-first grid matches the spec demo: %u/%u\n", days[0].wMonth, days[0].wDay);
+    ok(days[32].wDay == 27 && days[32].wMonth == 11, "the 27th sits in the fifth row, column five\n");
+    ok(days[41].wMonth == 12 && days[41].wDay == 6, "six full weeks: %u/%u\n", days[41].wMonth, days[41].wDay);
+
+    LiberCalendar_MonthGrid(2027, 1, 0, days);
+    ok(days[0].wYear == 2026 && days[0].wMonth == 12 && days[0].wDay == 27 && days[5].wYear == 2027 &&
+       days[5].wDay == 1, "January 2027 reaches back into December 2026\n");
+}
+
 static void TestRecentHelpers()
 {
     SYSTEMTIME now = { 2026, 11, 5, 27, 11, 20, 0, 0 }, then = now;
@@ -258,6 +286,7 @@ START_TEST(Dock)
     TestWorkArea();
     TestFlyoutOrigin();
     TestRecentHelpers();
+    TestCalendarGrid();
     TestTaskWindows();
     TestExperience();
 }

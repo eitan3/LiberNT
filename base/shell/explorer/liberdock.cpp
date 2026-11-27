@@ -602,7 +602,7 @@ void CLiberDock::OnChevronClick()
 void CLiberDock::OnClockClick(const RECT &bounds)
 {
     RECT rc = ScreenRect(m_TraySurface, bounds);
-    TrayCalendar_Toggle(m_hwndSink, &rc);
+    LiberCalendar_Toggle(&rc);
 }
 
 LRESULT CALLBACK CLiberDock::SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -728,6 +728,7 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
 void CLiberDock::Stop()
 {
     LiberControlCenter_Close();
+    LiberCalendar_Destroy();
     LiberStart_Destroy();
     if (m_hwndSink)
     {

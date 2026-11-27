@@ -139,6 +139,23 @@ typedef struct _LIBER_RECENT_FILE
     SYSTEMTIME stWritten;
 } LIBER_RECENT_FILE;
 
+#define LIBER_CALENDAR_CELLS 42
+
+typedef struct _LIBER_CALENDAR_DAY
+{
+    WORD wYear;
+    WORD wMonth;
+    WORD wDay;
+    BOOL bInMonth;
+} LIBER_CALENDAR_DAY;
+
+UINT LiberCalendar_DaysInMonth(UINT year, UINT month);
+UINT LiberCalendar_DayOfWeek(UINT year, UINT month, UINT day);
+VOID LiberCalendar_MonthGrid(UINT year, UINT month, UINT firstDayOfWeek, LIBER_CALENDAR_DAY *pDays);
+VOID LiberCalendar_Toggle(IN const RECT *prcAnchor);
+BOOL LiberCalendar_IsOpen(VOID);
+VOID LiberCalendar_Destroy(VOID);
+
 UINT LiberStart_LoadRecentFiles(LIBER_RECENT_FILE *pFiles, UINT cMax);
 VOID LiberStart_FormatWhen(const SYSTEMTIME *pNow, const SYSTEMTIME *pThen, LPWSTR pszText, UINT cchText);
 UINT LiberStart_ScrollOffset(UINT offset, UINT count, UINT columns, UINT visible, int rows);

@@ -222,6 +222,60 @@ UINT LiberStart_LoadRecentFiles(LIBER_RECENT_FILE *pFiles, UINT cMax)
     return count;
 }
 
+UINT LiberCalendar_DaysInMonth(UINT year, UINT month)
+{
+    static const BYTE Days[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    BOOL leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+
+    if (month < 1 || month > 12)
+        return 0;
+    return Days[month - 1] + (month == 2 && leap ? 1 : 0);
+}
+
+UINT LiberCalendar_DayOfWeek(UINT year, UINT month, UINT day)
+{
+    static const BYTE Offsets[12] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
+
+    if (month < 3)
+        year--;
+    return (year + year / 4 - year / 100 + year / 400 + Offsets[month - 1] + day) % 7;
+}
+
+VOID LiberCalendar_MonthGrid(UINT year, UINT month, UINT firstDayOfWeek, LIBER_CALENDAR_DAY *pDays)
+{
+    UINT lead = (LiberCalendar_DayOfWeek(year, month, 1) + 7 - firstDayOfWeek % 7) % 7;
+    UINT prevMonth = month == 1 ? 12 : month - 1, prevYear = month == 1 ? year - 1 : year;
+    UINT nextMonth = month == 12 ? 1 : month + 1, nextYear = month == 12 ? year + 1 : year;
+    UINT prevDays = LiberCalendar_DaysInMonth(prevYear, prevMonth);
+    UINT days = LiberCalendar_DaysInMonth(year, month);
+
+    for (UINT i = 0; i < LIBER_CALENDAR_CELLS; i++)
+    {
+        LIBER_CALENDAR_DAY &cell = pDays[i];
+        if (i < lead)
+        {
+            cell.wYear = (WORD)prevYear;
+            cell.wMonth = (WORD)prevMonth;
+            cell.wDay = (WORD)(prevDays - lead + 1 + i);
+            cell.bInMonth = FALSE;
+        }
+        else if (i - lead < days)
+        {
+            cell.wYear = (WORD)year;
+            cell.wMonth = (WORD)month;
+            cell.wDay = (WORD)(i - lead + 1);
+            cell.bInMonth = TRUE;
+        }
+        else
+        {
+            cell.wYear = (WORD)nextYear;
+            cell.wMonth = (WORD)nextMonth;
+            cell.wDay = (WORD)(i - lead - days + 1);
+            cell.bInMonth = FALSE;
+        }
+    }
+}
+
 BOOL LiberStart_Matches(LPCWSTR pszName, LPCWSTR pszQuery)
 {
     if (!pszQuery || !*pszQuery)
