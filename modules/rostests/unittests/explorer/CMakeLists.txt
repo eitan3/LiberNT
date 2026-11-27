@@ -9,6 +9,7 @@ list(APPEND SOURCE
     Dock.cpp
     Power.cpp
     StartModel.cpp
+    Tray.cpp
     Widgets.cpp
     ${REACTOS_SOURCE_DIR}/base/shell/explorer/audiodev.cpp
     ${REACTOS_SOURCE_DIR}/base/shell/explorer/calstore.cpp

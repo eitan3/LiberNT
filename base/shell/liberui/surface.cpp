@@ -114,6 +114,7 @@ void Surface::Destroy()
         GpuDestroy(m_Gpu);
         m_Gpu = NULL;
     }
+    m_Fonts.Reset();
     SetRectEmpty(&m_Placed);
     if (m_hwnd)
     {
@@ -547,11 +548,16 @@ LRESULT Surface::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
 
         case WM_LBUTTONUP:
+            m_Input.PointerUp(PixelToDip(pt));
             if (GetCapture() == m_hwnd)
                 ReleaseCapture();
-            m_Input.PointerUp(PixelToDip(pt));
             Render(AnimationClock::Now());
             return 0;
+
+        case WM_WINDOWPOSCHANGED:
+            if (((const WINDOWPOS *)lParam)->flags & SWP_SHOWWINDOW)
+                Present();
+            break;
 
         case WM_CAPTURECHANGED:
             if ((HWND)lParam != m_hwnd && m_Input.Capture())

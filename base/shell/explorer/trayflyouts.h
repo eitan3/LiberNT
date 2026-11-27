@@ -29,6 +29,14 @@ VOID TrayNotifications_SetSink(IN HWND hwndSink);
 BOOL TrayNotifications_IsHidden(VOID);
 
 VOID TrayOverflow_Toggle(IN HWND hwndOwner, IN const RECT *prcAnchor, IN HWND hwndPager);
+VOID TrayOverflow_ToggleAll(IN HWND hwndOwner, IN const RECT *prcAnchor);
+
+static inline BOOL TrayIcon_Listed(DWORD dwState, BOOL bVisible, BOOL bAll)
+{
+    if (dwState & NIS_HIDDEN)
+        return FALSE;
+    return bAll || !bVisible;
+}
 BOOL TrayOverflow_IsOpen(VOID);
 VOID TrayOverflow_Refresh(VOID);
 

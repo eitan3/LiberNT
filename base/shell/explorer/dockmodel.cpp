@@ -36,6 +36,13 @@ BOOL LiberDock_SameApp(LPCWSTR pszTarget, LPCWSTR pszImage)
     return pszTarget && pszImage && *pszTarget && *pszImage && !lstrcmpiW(pszTarget, pszImage);
 }
 
+VOID LiberDock_WorkArea(const RECT *prcMonitor, UINT dpi, RECT *prcWork)
+{
+    ATLASSERT(prcMonitor && prcWork && dpi != 0);
+    *prcWork = *prcMonitor;
+    prcWork->bottom = max(prcMonitor->top, prcMonitor->bottom - ScaleToDpi(LIBER_TASKBAR_DOCK, dpi));
+}
+
 VOID LiberDock_Layout(const RECT *prcMonitor, UINT dpi, UINT cells, int trayWidthDip, LIBER_DOCK_LAYOUT *pLayout)
 {
     int dockWidth = ScaleToDpi((int)cells * LIBER_DOCK_CELL + 2 * LIBER_DOCK_PAD, dpi);

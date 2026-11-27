@@ -518,6 +518,56 @@ static void TestGpuSurface()
         setAwareness(previous);
 }
 
+class ClickWidget : public Widget
+{
+public:
+    ClickWidget() : Clicks(0)
+    {
+        SetHitTestable(TRUE);
+        SetFocusable(TRUE);
+    }
+    void OnClick() { Clicks++; }
+    UINT Clicks;
+};
+
+static void TestSurfaceInput(DWORD flags)
+{
+    Surface surface;
+    StackPanel *root = new StackPanel(Orientation::Horizontal, 0);
+    ClickWidget *button = new ClickWidget();
+    ThemeTokens tokens;
+
+    button->SetSize(40, 40);
+    root->AddChild(button);
+    ok(surface.Create(NULL, L"LiberUI input test", WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, flags),
+       "surface created\n");
+    surface.SetDpi(96);
+    surface.SetTokens(&tokens);
+    surface.SetRoot(root);
+    surface.SetPosition(-1000, -1000, 40, 40);
+    ok(surface.Render(0), "render\n");
+
+    SendMessageW(surface.Window(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(10, 10));
+    ok(button->HasState(StatePressed), "mouse down presses the widget\n");
+    SendMessageW(surface.Window(), WM_LBUTTONUP, 0, MAKELPARAM(10, 10));
+    ok(button->Clicks == 1, "a click through window messages reaches the widget, %u clicks\n", button->Clicks);
+    ok(!button->HasState(StatePressed) && GetCapture() != surface.Window(), "released and capture freed\n");
+
+    SendMessageW(surface.Window(), WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(10, 10));
+    ok(GetCapture() == surface.Window(), "a press captures the mouse\n");
+    ReleaseCapture();
+    ok(!button->HasState(StatePressed) && button->Clicks == 1, "losing capture cancels the press\n");
+
+    UINT presents = surface.PresentCount();
+    ShowWindow(surface.Window(), SW_SHOWNOACTIVATE);
+    ok(surface.PresentCount() > presents, "showing the surface presents its pixels again\n");
+    ShowWindow(surface.Window(), SW_HIDE);
+
+    surface.SetRoot(NULL);
+    surface.Destroy();
+    delete root;
+}
+
 static void TestSurface(DWORD flags)
 {
     Surface surface;
@@ -573,8 +623,10 @@ static void TestSurface(DWORD flags)
     surface.Input().PointerMove(dip);
     surface.SetRoot(NULL);
     ok(surface.Input().Root() == NULL && root->Host() == NULL, "root detached\n");
+    ok(surface.Fonts().Font(LIBER_TYPE_BODY) != NULL && surface.Fonts().LoadedCount() > 0, "a font is loaded\n");
     surface.Destroy();
     ok(surface.Window() == NULL, "window destroyed\n");
+    ok(surface.Fonts().LoadedCount() == 0, "destroying the surface frees its GDI+ fonts\n");
     delete root;
 }
 
@@ -595,6 +647,8 @@ START_TEST(Painter)
     TestGpuSurface();
     TestGpuPainter();
     TestGpuParity();
+    TestSurfaceInput(0);
+    TestSurfaceInput(SurfaceNoGpu);
     ok(AssertionFailures() == failures, "%ld assertions failed\n", AssertionFailures() - failures);
     TestInvalidStyles();
     Shutdown();

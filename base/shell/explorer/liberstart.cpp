@@ -345,6 +345,7 @@ BOOL CLiberStart::Open(const RECT *prcAnchor)
     }
 
     m_Search->Clear();
+    m_Surface.Input().SetFocus(NULL);
     LiberShell_BuildTokens(&m_Tokens);
     LiberShell_ApplyFont(&m_Surface);
     m_Surface.SetTokens(&m_Tokens);

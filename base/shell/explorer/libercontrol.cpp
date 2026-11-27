@@ -245,7 +245,8 @@ void CLiberControlCenter::OnControlEvent(Widget *source, ControlEvent event)
             TrayBluetooth_Toggle(NULL, &rc);
             break;
         case CC_DARK:
-            LiberShell_SetDarkMode(m_Dark->IsOn());
+            if (!LiberShell_SetDarkMode(m_Dark->IsOn()))
+                m_Dark->SetOn(!m_Dark->IsOn());
             LiberShell_BuildTokens(&m_Tokens);
             m_Surface.SetTokens(&m_Tokens);
             break;

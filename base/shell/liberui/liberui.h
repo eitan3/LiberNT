@@ -271,9 +271,10 @@ public:
     void *Font(LIBER_TYPE style);
     float Tracking(LIBER_TYPE style) const;
     void Face(LIBER_TYPE style, LPCWSTR *face, INT *fontStyle) const;
+    void Reset();
+    UINT LoadedCount() const;
 
 private:
-    void Reset();
 
     WCHAR m_Family[LF_FACESIZE];
     BOOL m_Fallback;

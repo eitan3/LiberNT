@@ -97,7 +97,11 @@ BuildLiberExperience(PageBuilder &page)
 
     page.Toggle(Str(IDS_LIBER_WIDGETS), Str(IDS_LIBER_WIDGETS_DESC), L"data_pie_20_regular",
                 ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Widgets", 1) != 0,
-                [](int on) { WriteDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Widgets", on ? 1 : 0); });
+                [](int on)
+                {
+                    WriteDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Widgets", on ? 1 : 0);
+                    BroadcastSetting(L"LiberWidgets");
+                });
 
     fonts.push_back(Str(IDS_LIBER_FONT_DEFAULT));
     names.push_back(std::wstring());

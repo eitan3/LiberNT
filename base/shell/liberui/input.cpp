@@ -221,6 +221,9 @@ BOOL InputRouter::KeyDown(UINT vk, BOOL shift)
 {
     FocusMove move;
 
+    if (m_Focus && !m_Focus->IsVisibleInTree())
+        SetFocus(NULL);
+
     if (m_Focus && m_Focus->OnKeyDown(vk))
         return TRUE;
 

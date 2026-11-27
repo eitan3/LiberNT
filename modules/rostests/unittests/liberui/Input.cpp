@@ -179,6 +179,10 @@ static void TestKeyboard()
     input.SetFocus(cells[3]);
     grid->SetVisible(FALSE);
     ok(NextInTree(&root, NULL, TRUE) == top, "hidden subtree is skipped\n");
+
+    clicks = cells[3]->Clicks;
+    ok(!input.KeyDown(VK_RETURN, FALSE) && cells[3]->Clicks == clicks, "Enter does not click a hidden focused widget\n");
+    ok(input.Focus() == NULL && !cells[3]->HasState(StateFocused), "a hidden widget loses focus on the next key\n");
     root.SetHost(NULL);
 }
 
