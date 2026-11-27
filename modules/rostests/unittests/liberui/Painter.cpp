@@ -412,8 +412,8 @@ static void TestSurface()
        surface.PixelSize().cy);
     static DWORD px[80 * 20];
     ok(surface.ReadPixels(px, 40 * 4), "read back\n");
-    ok(px && px[5 * 40 + 5] == 0xFFFF0000 && px[5 * 40 + 35] == 0xFF0000FF, "widgets painted: %08lX %08lX\n",
-       px ? px[5 * 40 + 5] : 0, px ? px[5 * 40 + 35] : 0);
+    ok(px[5 * 40 + 5] == 0xFFFF0000 && px[5 * 40 + 35] == 0xFF0000FF, "widgets painted: %08lX %08lX\n",
+       px[5 * 40 + 5], px[5 * 40 + 35]);
     ok(!surface.HasDirty(), "nothing dirty after render\n");
 
     UINT before = right->Paints;
