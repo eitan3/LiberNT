@@ -156,27 +156,38 @@ void Surface::SetMaterial(int material, Argb tint, BYTE alpha, float radiusDip)
     SetRectEmpty(&m_Placed);
 }
 
+static LPCWSTR MaterialProp(UINT index)
+{
+    static const LPCWSTR Names[] = { DWM_PROP_LIBER_MATERIAL, DWM_PROP_LIBER_MATERIAL_TINT, DWM_PROP_CORNER_RADIUS };
+    static ATOM Atoms[_countof(Names)];
+
+    LUI_ASSERT(index < _countof(Names));
+    if (!Atoms[index])
+        Atoms[index] = GlobalAddAtomW(Names[index]);
+    return Atoms[index] ? MAKEINTATOM(Atoms[index]) : Names[index];
+}
+
 void Surface::ApplyMaterial()
 {
     if (!m_hwnd)
         return;
     if (m_Material < 0)
     {
-        RemovePropW(m_hwnd, DWM_PROP_LIBER_MATERIAL);
-        RemovePropW(m_hwnd, DWM_PROP_LIBER_MATERIAL_TINT);
-        RemovePropW(m_hwnd, DWM_PROP_CORNER_RADIUS);
+        RemovePropW(m_hwnd, MaterialProp(0));
+        RemovePropW(m_hwnd, MaterialProp(1));
+        RemovePropW(m_hwnd, MaterialProp(2));
         return;
     }
     ULONG packed = DWM_LIBER_MATERIAL_PACK(m_Material + 1, FALSE, DWM_LIBER_LAYER_SHELL,
                                            m_Elevation >= 0 ? m_Elevation + 1 : 0, DWM_LIBER_EDGE_GLASS, m_MaterialAlpha);
     COLORREF tint = RGB(ArgbR(m_MaterialTint), ArgbG(m_MaterialTint), ArgbB(m_MaterialTint));
     ULONG radius = (ULONG)ScaleToDpi((int)(m_MaterialRadius + 0.5f), m_Dpi);
-    SetPropW(m_hwnd, DWM_PROP_LIBER_MATERIAL, (HANDLE)(ULONG_PTR)packed);
-    SetPropW(m_hwnd, DWM_PROP_LIBER_MATERIAL_TINT, (HANDLE)(ULONG_PTR)(tint + 1));
+    SetPropW(m_hwnd, MaterialProp(0), (HANDLE)(ULONG_PTR)packed);
+    SetPropW(m_hwnd, MaterialProp(1), (HANDLE)(ULONG_PTR)(tint + 1));
     if (radius >= 1 && radius <= 64)
-        SetPropW(m_hwnd, DWM_PROP_CORNER_RADIUS, (HANDLE)(ULONG_PTR)radius);
+        SetPropW(m_hwnd, MaterialProp(2), (HANDLE)(ULONG_PTR)radius);
     else
-        RemovePropW(m_hwnd, DWM_PROP_CORNER_RADIUS);
+        RemovePropW(m_hwnd, MaterialProp(2));
 }
 
 void Surface::SetElevation(int elevation, float radiusDip)

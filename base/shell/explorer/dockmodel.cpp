@@ -44,6 +44,16 @@ VOID LiberDock_WorkArea(const RECT *prcMonitor, UINT dpi, RECT *prcWork)
     prcWork->bottom = max(prcMonitor->top, prcMonitor->bottom - ScaleToDpi(LIBER_TASKBAR_DOCK, dpi));
 }
 
+VOID LiberDock_CellRect(const RECT *prcDock, UINT dpi, UINT cell, RECT *prcCell)
+{
+    ATLASSERT(prcDock && prcCell && dpi != 0);
+    prcCell->left = prcDock->left + ScaleToDpi(LIBER_DOCK_PAD_X + (int)cell * (LIBER_DOCK_CELL + LIBER_DOCK_CELL_GAP), dpi);
+    prcCell->top = prcDock->top + ScaleToDpi(LIBER_DOCK_PAD_Y, dpi);
+    prcCell->right = prcDock->left +
+                     ScaleToDpi(LIBER_DOCK_PAD_X + (int)cell * (LIBER_DOCK_CELL + LIBER_DOCK_CELL_GAP) + LIBER_DOCK_CELL, dpi);
+    prcCell->bottom = prcDock->top + ScaleToDpi(LIBER_DOCK_PAD_Y + LIBER_DOCK_CELL, dpi);
+}
+
 int LiberDock_Width(UINT cells)
 {
     ATLASSERT(cells > 0);

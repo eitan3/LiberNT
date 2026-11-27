@@ -3504,7 +3504,10 @@ ChangePos:
     LRESULT OnEndSession(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
     {
         if (wParam)
+        {
             SaveState();
+            LiberDock_EndSession();
+        }
         return 0;
     }
 

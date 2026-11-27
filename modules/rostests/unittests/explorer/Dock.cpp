@@ -265,6 +265,30 @@ static void TestStartPins()
     ok(!LiberStart_SetPinned(pins, L"", TRUE), "an empty path is refused\n");
     ok(!LiberStart_LoadPins(pins, 1, &count), "a tiny buffer is refused\n");
 
+    ok(LiberStart_SetPinned(pins, L"C:\\Apps\\Long-one.lnk", TRUE) &&
+           LiberStart_LoadPins(pins, _countof(pins), &count) &&
+           LiberStart_SetPinned(pins, L"C:\\Apps\\Long-two.lnk", TRUE) &&
+           LiberStart_LoadPins(pins, _countof(pins), &count) && count == 2,
+       "two long pins loaded into the buffer\n");
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\LiberNT\\Shell\\Start", 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS)
+    {
+        static const WCHAR Unterminated[] = L"C:\\A.lnk";
+        ok(RegSetValueExW(key, L"Pins", 0, REG_MULTI_SZ, (const BYTE *)Unterminated,
+                          (DWORD)(lstrlenW(Unterminated) * sizeof(WCHAR))) == ERROR_SUCCESS,
+           "store a list without its terminators\n");
+        RegCloseKey(key);
+        ok(LiberStart_LoadPins(pins, _countof(pins), &count) && count == 1 && !wcscmp(pins, Unterminated),
+           "an unterminated list is read as one pin, not with stale pins after it: %u\n", count);
+    }
+    else
+    {
+        skip("cannot write the Start key\n");
+    }
+    WCHAR small2[8];
+    ok(!LiberStart_LoadPins(small2, _countof(small2), &count) || small2[_countof(small2) - 1] == 0 ||
+           small2[_countof(small2) - 2] == 0,
+       "a short buffer never ends without a terminator\n");
+
     if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\LiberNT\\Shell\\Start", 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS)
     {
         if (had)
@@ -382,8 +406,134 @@ static void TestStartSearch()
     ok(!LiberStart_Matches(L"", L"a") && !LiberStart_Matches(NULL, L"a"), "empty names never match a query\n");
 }
 
+static void TestWallpaperCache()
+{
+    RECT tray = { 0, 0, 200, 48 }, other = { 100, 100, 300, 148 };
+    double first = -1.0, second = -2.0, moved = -3.0;
+    LARGE_INTEGER freq, t0, t1;
+
+    if (!LiberShell_WallpaperLuma(&tray, &first))
+    {
+        skip("no decodable wallpaper\n");
+        return;
+    }
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t0);
+    for (int i = 0; i < 20; i++)
+        ok(LiberShell_WallpaperLuma(&tray, &second), "the luminance is read again\n");
+    QueryPerformanceCounter(&t1);
+    ok(second == first, "the same wallpaper and area give the same luminance: %f %f\n", first, second);
+    ok((t1.QuadPart - t0.QuadPart) * 1000 / freq.QuadPart < 20,
+       "repeated reads do not decode the wallpaper again: %lld ms\n", (t1.QuadPart - t0.QuadPart) * 1000 / freq.QuadPart);
+    ok(LiberShell_WallpaperLuma(&other, &moved) && moved >= 0.0 && moved <= 1.0, "another area is sampled\n");
+    ok(LiberShell_WallpaperLuma(&tray, &second) && second == first, "the first area reads the same again\n");
+}
+
+static void TestCellRect()
+{
+    RECT dock = { 400, 1012, 400 + LiberDock_Width(5), 1012 + LIBER_DOCK_HEIGHT }, cell;
+
+    LiberDock_CellRect(&dock, 96, 0, &cell);
+    CheckRect(cell, 408, 1018, 456, 1066, "the Start cell");
+    LiberDock_CellRect(&dock, 96, 2, &cell);
+    CheckRect(cell, 508, 1018, 556, 1066, "the first app cell follows Start and Search");
+    LiberDock_CellRect(&dock, 96, 4, &cell);
+    ok(cell.right == dock.right - LIBER_DOCK_PAD_X, "the last cell ends at the dock padding: %ld\n", cell.right);
+    ok(cell.bottom == dock.bottom - LIBER_DOCK_PAD_Y, "cells are centred vertically: %ld\n", cell.bottom);
+
+    RECT scaled = { 100, 200, 100 + LiberUI::ScaleToDpi(LiberDock_Width(3), 144), 200 + LiberUI::ScaleToDpi(LIBER_DOCK_HEIGHT, 144) };
+    LiberDock_CellRect(&scaled, 144, 2, &cell);
+    CheckRect(cell, 100 + LiberUI::ScaleToDpi(108, 144), 200 + LiberUI::ScaleToDpi(6, 144), 100 + LiberUI::ScaleToDpi(156, 144),
+              200 + LiberUI::ScaleToDpi(54, 144), "an app cell at 150%");
+    ok(cell.right <= scaled.right && cell.bottom <= scaled.bottom, "the cell stays inside the dock at 150%%\n");
+}
+
+static void TestMenuDismiss()
+{
+    RECT menu = { 100, 100, 300, 260 };
+    POINT inside = { 150, 150 }, outside = { 50, 50 }, edge = { 300, 150 };
+
+    ok(LiberMenu_DismissesOn(WM_LBUTTONDOWN, outside, &menu), "a left click outside closes the menu\n");
+    ok(LiberMenu_DismissesOn(WM_RBUTTONDOWN, outside, &menu), "so does a right click\n");
+    ok(LiberMenu_DismissesOn(WM_MBUTTONDOWN, outside, &menu) && LiberMenu_DismissesOn(WM_XBUTTONDOWN, outside, &menu),
+       "and the middle and extra buttons\n");
+    ok(LiberMenu_DismissesOn(WM_NCLBUTTONDOWN, outside, &menu), "a click on a caption outside closes it\n");
+    ok(!LiberMenu_DismissesOn(WM_LBUTTONDOWN, inside, &menu), "a click inside is for the menu\n");
+    ok(LiberMenu_DismissesOn(WM_LBUTTONDOWN, edge, &menu), "the right edge is outside the menu\n");
+    ok(!LiberMenu_DismissesOn(WM_MOUSEMOVE, outside, &menu), "moving outside keeps the menu\n");
+    ok(!LiberMenu_DismissesOn(WM_LBUTTONUP, outside, &menu), "a release outside keeps the menu\n");
+    ok(!LiberMenu_DismissesOn(WM_MOUSEWHEEL, outside, &menu), "scrolling outside keeps the menu\n");
+    ok(LiberMenu_DismissesOn(WM_LBUTTONDOWN, inside, NULL), "without a menu rectangle every click dismisses\n");
+}
+
+static void TestStartDefaults()
+{
+    WCHAR path[MAX_PATH], expected[MAX_PATH];
+    LPCWSTR name = NULL;
+
+    ok(LiberStart_DefaultPinRank(L"C:\\Windows\\explorer.exe") == 0, "File Explorer leads the default pins\n");
+    ok(LiberStart_DefaultPinRank(L"C:\\Windows\\ImmersiveControlPanel\\SystemSettings.exe") == 1,
+       "Settings follows, case-insensitively\n");
+    ok(LiberStart_DefaultPinRank(L"control.exe") == 2, "Control Panel is third\n");
+    ok(LiberStart_DefaultPinRank(L"C:\\Windows\\system32\\notepad.exe") <
+           LiberStart_DefaultPinRank(L"C:\\Windows\\system32\\calc.exe"),
+       "the default pins keep their order\n");
+    ok(LiberStart_DefaultPinRank(L"C:\\Windows\\system32\\sol.exe") == UINT_MAX, "a game is not a default pin\n");
+    ok(LiberStart_DefaultPinRank(L"C:\\Windows\\system32\\notepad.exe.lnk") == UINT_MAX,
+       "only the exact file name counts\n");
+    ok(LiberStart_DefaultPinRank(L"") == UINT_MAX && LiberStart_DefaultPinRank(NULL) == UINT_MAX,
+       "no target, no rank\n");
+
+    ok(LiberStart_SystemApp(0, path, _countof(path), &name) && name && !lstrcmpW(name, L"Settings"),
+       "Settings is a built-in Start entry\n");
+    ExpandEnvironmentStringsW(L"%SystemRoot%\\ImmersiveControlPanel\\systemsettings.exe", expected, _countof(expected));
+    ok(!lstrcmpiW(path, expected), "Settings path %S\n", path);
+    ok(LiberStart_SystemApp(1, path, _countof(path), &name) && name && !lstrcmpW(name, L"Control Panel"),
+       "Control Panel is a built-in Start entry\n");
+    ExpandEnvironmentStringsW(L"%SystemRoot%\\system32\\control.exe", expected, _countof(expected));
+    ok(!lstrcmpiW(path, expected), "Control Panel path %S\n", path);
+    ok(GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES, "control.exe exists where the entry points\n");
+    ok(!LiberStart_SystemApp(2, path, _countof(path), &name), "two built-in entries\n");
+    ok(LiberStart_SystemApp(1, path, 4, &name) && path[0] == 0, "a short buffer yields an empty path\n");
+    ok(!LiberStart_SystemApp(0, NULL, 0, NULL), "no buffer is rejected\n");
+}
+
+static void TestPillWidth()
+{
+    static const LPCWSTR Labels[] = { L"More", L"All", L"Back", L"WWWW" };
+
+    if (!LiberUI::Startup())
+    {
+        skip("DirectWrite is not available\n");
+        return;
+    }
+    for (UINT i = 0; i < _countof(Labels); i++)
+    {
+        CLiberPillButton pill(Labels[i]);
+        SIZE available = { 600, 24 };
+        SIZE size = pill.Measure(available);
+        LONG text = LiberUI::MeasureText(Labels[i], LIBER_TYPE_CAPTION, 0.0f).cx;
+        ok(text > 0, "%S measures a width\n", Labels[i]);
+        ok(size.cx - 38 >= text, "%S fits its pill: %ld text in %ld\n", Labels[i], text, size.cx - 38);
+        ok(size.cx - 38 <= text + 2, "%S pill hugs its text: %ld for %ld\n", Labels[i], size.cx - 38, text);
+        ok(size.cy == 24, "%S pill is 24 high\n", Labels[i]);
+    }
+    ok(LiberUI::MeasureText(L"WWWW", LIBER_TYPE_CAPTION, 0.0f).cx >
+           LiberUI::MeasureText(L"iiii", LIBER_TYPE_CAPTION, 0.0f).cx,
+       "measurement follows the glyphs, not the character count\n");
+    CLiberPillButton narrow(L"More");
+    SIZE tight = { 30, 24 };
+    ok(narrow.Measure(tight).cx == 30, "a pill never exceeds the space it is given\n");
+    LiberUI::Shutdown();
+}
+
 START_TEST(Dock)
 {
+    TestPillWidth();
+    TestStartDefaults();
+    TestMenuDismiss();
+    TestCellRect();
+    TestWallpaperCache();
     TestStartSearch();
     TestDesignValues();
     TestLayout();

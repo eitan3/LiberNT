@@ -283,6 +283,7 @@ private:
 
 BOOL Startup();
 void Shutdown();
+SIZE MeasureText(LPCWSTR text, LIBER_TYPE style, float maxWidth);
 
 class Widget;
 

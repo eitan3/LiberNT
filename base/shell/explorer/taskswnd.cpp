@@ -4705,7 +4705,7 @@ public:
 
     LRESULT OnKludgeItemRect(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
     {
-        PTASK_ITEM TaskItem = FindTaskItem((HWND) wParam);
+        PTASK_ITEM TaskItem = IsWindowVisible() ? FindTaskItem((HWND) wParam) : NULL;
         if (TaskItem)
         {
             RECT* prcMinRect = (RECT*) lParam;

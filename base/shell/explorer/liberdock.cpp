@@ -298,11 +298,13 @@ public:
     BOOL Update()
     {
         SYSTEMTIME st;
-        WCHAR szTime[32], szDate[32];
+        WCHAR szTime[32] = L"", szDate[32] = L"";
 
         GetLocalTime(&st);
-        GetTimeFormatW(LOCALE_USER_DEFAULT, TIME_NOSECONDS, &st, NULL, szTime, _countof(szTime));
-        GetDateFormatW(LOCALE_USER_DEFAULT, DATE_SHORTDATE, &st, NULL, szDate, _countof(szDate));
+        if (!GetTimeFormatW(LOCALE_USER_DEFAULT, TIME_NOSECONDS, &st, NULL, szTime, _countof(szTime)))
+            szTime[0] = 0;
+        if (!GetDateFormatW(LOCALE_USER_DEFAULT, DATE_SHORTDATE, &st, NULL, szDate, _countof(szDate)))
+            szDate[0] = 0;
         if (!wcscmp(szTime, m_szTime) && !wcscmp(szDate, m_szDate))
             return FALSE;
         StringCchCopyW(m_szTime, _countof(m_szTime), szTime);
@@ -332,7 +334,8 @@ class CLiberDock
 {
 public:
     CLiberDock() : m_Tray(NULL), m_hwndSink(NULL), m_uShellHook(0), m_Count(0), m_DockRoot(NULL), m_TrayRoot(NULL),
-        m_Pill(NULL), m_Chevron(NULL), m_Language(NULL), m_TrayWidth(0), m_Clock(NULL), m_Dpi(96)
+        m_Pill(NULL), m_Chevron(NULL), m_Language(NULL), m_TrayWidth(0), m_Clock(NULL), m_Dpi(96),
+        m_RestoreTray(TRUE)
     {
         ZeroMemory(m_Entries, sizeof(m_Entries));
         ZeroMemory(m_Cells, sizeof(m_Cells));
@@ -352,6 +355,7 @@ public:
     void OpenStart();
     void RenderDock(ULONGLONG now) { m_DockSurface.Render(now); }
     BOOL CellMenu(int index, POINT screen);
+    BOOL MinimizeRect(HWND hwnd, RECT *prc);
     UINT Dpi() const { return m_Dpi; }
     void OnChevronClick();
 
@@ -386,6 +390,9 @@ private:
     CTrayClock *m_Clock;
     UINT m_Dpi;
     LIBER_DOCK_LAYOUT m_Layout;
+
+public:
+    BOOL m_RestoreTray;
 };
 
 static CLiberDock *g_pLiberDock;
@@ -498,6 +505,39 @@ BOOL CALLBACK CLiberDock::WindowProc(HWND hwnd, LPARAM lParam)
     return TRUE;
 }
 
+static HRESULT LaunchSource(LPCWSTR pszSource)
+{
+    HANDLE process = NULL;
+    HRESULT hr;
+
+    if (!pszSource || !*pszSource)
+        return E_INVALIDARG;
+    AllowSetForegroundWindow(ASFW_ANY);
+    hr = TaskbarPin_Launch(pszSource, &process);
+    if (FAILED(hr) && hr != HRESULT_FROM_WIN32(ERROR_CANCELLED))
+    {
+        SHELLEXECUTEINFOW execute = { sizeof(execute) };
+
+        ERR("Dock launch failed for %S: %08lx\n", pszSource, hr);
+        execute.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI;
+        execute.lpFile = pszSource;
+        execute.nShow = SW_SHOWNORMAL;
+        if (ShellExecuteExW(&execute))
+        {
+            hr = S_OK;
+            process = execute.hProcess;
+        }
+        else
+        {
+            DWORD error = GetLastError();
+            hr = error == ERROR_CANCELLED ? HRESULT_FROM_WIN32(error) : hr;
+        }
+    }
+    if (process)
+        CloseHandle(process);
+    return hr;
+}
+
 void CLiberDock::ClearEntries()
 {
     for (UINT i = 0; i < m_Count; i++)
@@ -558,7 +598,9 @@ void CLiberDock::Refresh()
 
     same = m_Cells[0] != NULL && m_Count == previousCount;
     for (UINT i = 0; same && i < m_Count; i++)
-        same = previous[i].hwnd == m_Entries[i].hwnd && !lstrcmpiW(previous[i].szTarget, m_Entries[i].szTarget);
+        same = previous[i].hwnd == m_Entries[i].hwnd && previous[i].bPinned == m_Entries[i].bPinned &&
+               !lstrcmpiW(previous[i].szTarget, m_Entries[i].szTarget) &&
+               !lstrcmpiW(previous[i].szSource, m_Entries[i].szSource);
 
     if (same)
     {
@@ -643,15 +685,44 @@ void CLiberDock::OnCellClick(int index, const RECT &bounds)
     }
     if (entry.bPinned)
     {
-        HANDLE process = NULL;
         if ((UINT)index + LIBER_DOCK_FIXED_CELLS < _countof(m_Cells) && m_Cells[index + LIBER_DOCK_FIXED_CELLS])
             m_Cells[index + LIBER_DOCK_FIXED_CELLS]->Hop();
-        HRESULT hr = TaskbarPin_Launch(entry.szSource, &process);
-        if (process)
-            CloseHandle(process);
+        HRESULT hr = LaunchSource(entry.szSource[0] ? entry.szSource : entry.szTarget);
         if (FAILED(hr) && hr != HRESULT_FROM_WIN32(ERROR_CANCELLED))
             MessageBeep(MB_ICONERROR);
     }
+}
+
+BOOL CLiberDock::MinimizeRect(HWND hwnd, RECT *prc)
+{
+    DWORD pid = 0;
+    RECT dock;
+    UINT index = m_Count;
+
+    if (!hwnd || !prc || !m_DockSurface.Window() || !GetWindowRect(m_DockSurface.Window(), &dock))
+        return FALSE;
+    for (UINT i = 0; i < m_Count && index == m_Count; i++)
+    {
+        if (m_Entries[i].hwnd == hwnd)
+            index = i;
+    }
+    if (index == m_Count && GetWindowThreadProcessId(hwnd, &pid) && pid)
+    {
+        for (UINT i = 0; i < m_Count && index == m_Count; i++)
+        {
+            DWORD entryPid = 0;
+            if (m_Entries[i].hwnd && GetWindowThreadProcessId(m_Entries[i].hwnd, &entryPid) && entryPid == pid)
+                index = i;
+        }
+    }
+    if (index == m_Count)
+        return FALSE;
+    LiberDock_CellRect(&dock, m_Dpi, index + LIBER_DOCK_FIXED_CELLS, prc);
+    CDockCell *cell = m_Cells[index + LIBER_DOCK_FIXED_CELLS];
+    RECT laidOut = cell && !IsRectEmpty(&cell->Bounds()) ? ScreenRect(m_DockSurface, cell->Bounds()) : *prc;
+    ATLASSERT(EqualRect(prc, &laidOut));
+    UNREFERENCED_PARAMETER(laidOut);
+    return TRUE;
 }
 
 BOOL CLiberDock::CellMenu(int index, POINT screen)
@@ -674,12 +745,9 @@ BOOL CLiberDock::CellMenu(int index, POINT screen)
     switch (LiberMenu_Track(menu, _countof(menu), screen))
     {
         case DOCK_MENU_OPEN:
-        {
-            HANDLE process = NULL;
-            if (SUCCEEDED(TaskbarPin_Launch(entry.szSource[0] ? entry.szSource : entry.szTarget, &process)) && process)
-                CloseHandle(process);
+            if (FAILED(LaunchSource(entry.szSource[0] ? entry.szSource : entry.szTarget)))
+                MessageBeep(MB_ICONERROR);
             break;
-        }
         case DOCK_MENU_PIN:
             TaskbarPin_Create(entry.szTarget);
             SetTimer(m_hwndSink, LIBER_TIMER_REFRESH, LIBER_REFRESH_DELAY, NULL);
@@ -741,6 +809,8 @@ LRESULT CALLBACK CLiberDock::SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         }
         return 0;
     }
+    if (msg == WM_KLUDGEMINRECT)
+        return self && self->MinimizeRect((HWND)wParam, (RECT *)lParam);
     if (self && msg == WM_TIMER)
     {
         if (wParam == LIBER_TIMER_REFRESH)
@@ -889,7 +959,7 @@ void CLiberDock::Stop()
     ClearEntries();
     if (g_pLiberDock == this)
         g_pLiberDock = NULL;
-    if (m_Tray && m_Tray->GetHWND())
+    if (m_Tray && m_Tray->GetHWND() && m_RestoreTray)
     {
         ShowWindow(m_Tray->GetHWND(), SW_SHOW);
         SendMessageW(m_Tray->GetHWND(), WM_SIZE, SIZE_RESTORED, 0);
@@ -937,4 +1007,13 @@ BOOL LiberDock_ReservedWorkArea(HMONITOR hMonitor, RECT *prcWork)
 VOID LiberDock_Stop(VOID)
 {
     delete g_pLiberDock;
+}
+
+VOID LiberDock_EndSession(VOID)
+{
+    LiberWidgets_Stop();
+    if (g_pLiberDock)
+        g_pLiberDock->m_RestoreTray = FALSE;
+    LiberDock_Stop();
+    ATLASSERT(g_pLiberDock == NULL);
 }
