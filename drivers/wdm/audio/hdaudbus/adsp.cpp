@@ -226,6 +226,13 @@ NTSTATUS ADSPFreeStream(
 	}
 
 	stream->PdoContext = NULL;
+	/* the stream goes back to the pool and forgets the events its owner registered on it: an owner
+	 * that lets its streams go without unregistering them (intcdsp's fault release, stream.c
+	 * IntcDspStreamsLetGo, which drops them by count) would leave a pointer to a freed event on
+	 * the record, and the next stream to take it would have the DPC set that event
+	 * (hdac_controller.cpp hda_dpc): a freed object, 0xc0000420 in KeSetEvent on the VM */
+	RtlZeroMemory(stream->registeredEvents, sizeof(stream->registeredEvents));
+	InterlockedExchange(&stream->notificationPending, FALSE);
 	WdfInterruptReleaseLock(devData->FdoContext->Interrupt);
 	WdfDeviceResumeIdle(devData->FdoContext->WdfDevice);
 
