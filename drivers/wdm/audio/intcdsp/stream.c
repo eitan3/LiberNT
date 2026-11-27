@@ -1292,10 +1292,9 @@ IntcDspStreamOpen(
         Booted = TRUE;
         if (!Streams->Ready || Streams->Faulted)
         {
+            /* not ready still: the need of a boot stays and the line says so; the refusal is the locked open's own, the same status it gives every manager that is not ready */
             Streams->NeedsBoot = TRUE;
             IntcDspStreamLog(Streams, "boot at stream open failed: the DSP is not ready after the boot (0x%08x); no stream is taken\n", (UINT32)Boot);
-            IntcDspStreamsUnlock(Streams);
-            return STATUS_DEVICE_NOT_READY;
         }
     }
     IntcDspStreamsDrain(Streams);
