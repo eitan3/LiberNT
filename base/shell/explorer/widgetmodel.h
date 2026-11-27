@@ -8,9 +8,10 @@
 #pragma once
 
 #define LIBER_WIDGETS_VALUE     L"Widgets"
-#define LIBER_WIDGET_TILE       160
+#define LIBER_WIDGET_TILE       164
+#define LIBER_WIDGET_WIDE_H     112
 #define LIBER_WIDGET_GAP        12
-#define LIBER_WIDGET_MARGIN     24
+#define LIBER_WIDGET_MARGIN     20
 #define LIBER_WIDGET_COUNT      3
 
 enum LIBER_WIDGET_KIND

@@ -93,19 +93,22 @@ static void TestProviders()
 
 static void TestLayout()
 {
-    RECT work = { 0, 0, 1920, 1032 };
+    RECT work = { 0, 0, 1600, 824 };
     RECT rc[LIBER_WIDGET_COUNT];
 
     LiberWidget_Layout(&work, 96, rc);
-    ok(rc[LIBER_WIDGET_WEATHER].right == 1896 && rc[LIBER_WIDGET_WEATHER].top == 24, "weather at the top right\n");
-    ok(rc[LIBER_WIDGET_DATE].right == rc[LIBER_WIDGET_WEATHER].left - 12, "date left of weather with the gap\n");
-    ok(rc[LIBER_WIDGET_SYSTEM].left == rc[LIBER_WIDGET_DATE].left && rc[LIBER_WIDGET_SYSTEM].right == 1896 &&
-       rc[LIBER_WIDGET_SYSTEM].top == 24 + 160 + 12, "system monitor spans both columns below\n");
-    ok(rc[LIBER_WIDGET_DATE].bottom - rc[LIBER_WIDGET_DATE].top == 160, "tile is 160\n");
+    ok(rc[LIBER_WIDGET_WEATHER].left == 1416 && rc[LIBER_WIDGET_WEATHER].top == 20 &&
+       rc[LIBER_WIDGET_WEATHER].right == 1580 && rc[LIBER_WIDGET_WEATHER].bottom == 184,
+       "weather matches the spec demo at (%ld,%ld,%ld,%ld)\n", rc[LIBER_WIDGET_WEATHER].left,
+       rc[LIBER_WIDGET_WEATHER].top, rc[LIBER_WIDGET_WEATHER].right, rc[LIBER_WIDGET_WEATHER].bottom);
+    ok(rc[LIBER_WIDGET_DATE].left == 1240 && rc[LIBER_WIDGET_DATE].right == rc[LIBER_WIDGET_WEATHER].left - 12,
+       "date left of weather with the gap\n");
+    ok(rc[LIBER_WIDGET_SYSTEM].left == 1240 && rc[LIBER_WIDGET_SYSTEM].top == 196 && rc[LIBER_WIDGET_SYSTEM].right == 1580 &&
+       rc[LIBER_WIDGET_SYSTEM].bottom == 308, "system monitor is the 340 x 112 wide card below\n");
 
     LiberWidget_Layout(&work, 192, rc);
-    ok(rc[LIBER_WIDGET_WEATHER].right == 1920 - 48 && rc[LIBER_WIDGET_WEATHER].bottom - rc[LIBER_WIDGET_WEATHER].top == 320,
-       "scaled at 192 DPI\n");
+    ok(rc[LIBER_WIDGET_WEATHER].right == 1600 - 40 && rc[LIBER_WIDGET_WEATHER].bottom - rc[LIBER_WIDGET_WEATHER].top == 328 &&
+       rc[LIBER_WIDGET_SYSTEM].bottom - rc[LIBER_WIDGET_SYSTEM].top == 224, "scaled at 192 DPI\n");
 }
 
 START_TEST(Widgets)

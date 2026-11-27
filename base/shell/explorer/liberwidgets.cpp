@@ -25,10 +25,16 @@ protected:
     {
         RectF rc = ToRectF(Bounds());
         GlassTint tint = context.Tokens.Material(LIBER_MATERIAL_THIN, 0.5);
+        float radius = (float)LIBER_RADIUS_WIDGET;
+        RectF edge = { rc.X + 0.5f, rc.Y + 0.5f, rc.Width - 1.0f, rc.Height - 1.0f };
+        RectF top = { rc.X, rc.Y, rc.Width, radius };
+        RectF highlight = { rc.X + 0.5f, rc.Y + 1.5f, rc.Width - 1.0f, rc.Height - 2.0f };
 
-        context.Painter.FillRoundRect(rc, (float)LIBER_RADIUS_WIDGET, OklchToArgb(tint.Color, 1.0));
-        context.Painter.StrokeRoundRect(rc, (float)LIBER_RADIUS_WIDGET, context.Tokens.Color(LIBER_COLOR_STROKE_CARD),
-                                        1.0f);
+        context.Painter.FillRoundRect(rc, radius, OklchToArgb(tint.Color, 1.0));
+        context.Painter.StrokeRoundRect(edge, radius - 0.5f, context.Tokens.Color(LIBER_COLOR_GLASS_EDGE), 1.0f);
+        context.Painter.PushClip(top, 0.0f);
+        context.Painter.StrokeRoundRect(highlight, radius - 1.5f, context.Tokens.Color(LIBER_COLOR_GLASS_EDGE_TOP), 1.0f);
+        context.Painter.PopClip();
     }
 
     static RectF Inset(const RectF &rc, float x, float y, float width, float height)
@@ -56,14 +62,15 @@ protected:
         PaintCard(context);
         StringCchPrintfW(szDay, _countof(szDay), L"%d", data.Day);
         StringCchPrintfW(szWeek, _countof(szWeek), L"Week %d \x00B7 No events", data.IsoWeek);
-        context.Painter.Text(data.szDayName, Inset(rc, 16, 14, rc.Width - 32, 20), LIBER_TYPE_BODY_STRONG,
-                             tokens.Color(LIBER_COLOR_ACCENT_TEXT), TextLeft | TextEllipsis);
-        context.Painter.Text(szDay, Inset(rc, 16, 34, rc.Width - 32, 52), LIBER_TYPE_TITLE_LARGE,
-                             tokens.Color(LIBER_COLOR_TEXT1), TextLeft);
-        context.Painter.Text(data.szMonthYear, Inset(rc, 16, 90, rc.Width - 32, 20), LIBER_TYPE_BODY,
-                             tokens.Color(LIBER_COLOR_TEXT1), TextLeft | TextEllipsis);
-        context.Painter.Text(szWeek, Inset(rc, 16, 120, rc.Width - 32, 16), LIBER_TYPE_CAPTION,
-                             tokens.Color(LIBER_COLOR_TEXT2), TextLeft | TextEllipsis);
+        context.Painter.Text(data.szDayName, Inset(rc, 16, 16, rc.Width - 32, 20), LIBER_TYPE_BODY_STRONG,
+                             tokens.Color(LIBER_COLOR_ACCENT_TEXT), TextLeft | TextMiddle | TextEllipsis);
+        /* FIXME: the spec draws the day at 64 px; the type ramp's nearest style is Display at 68 px */
+        context.Painter.Text(szDay, Inset(rc, 16, 34, rc.Width - 32, 72), LIBER_TYPE_DISPLAY,
+                             tokens.Color(LIBER_COLOR_TEXT1), TextLeft | TextMiddle);
+        context.Painter.Text(data.szMonthYear, Inset(rc, 16, rc.Height - 52, rc.Width - 32, 20), LIBER_TYPE_BODY_STRONG,
+                             tokens.Color(LIBER_COLOR_TEXT1), TextLeft | TextMiddle | TextEllipsis);
+        context.Painter.Text(szWeek, Inset(rc, 16, rc.Height - 32, rc.Width - 32, 16), LIBER_TYPE_CAPTION,
+                             tokens.Color(LIBER_COLOR_TEXT2), TextLeft | TextMiddle | TextEllipsis);
     }
 
 private:
@@ -85,16 +92,17 @@ protected:
 
         PaintCard(context);
         StringCchPrintfW(szTemp, _countof(szTemp), L"%d\x00B0", data.Temperature);
-        StringCchPrintfW(szRange, _countof(szRange), L"H %d\x00B0  L %d\x00B0", data.High, data.Low);
-        context.Painter.Text(data.City, Inset(rc, 16, 14, rc.Width - 32, 20), LIBER_TYPE_BODY_STRONG,
-                             tokens.Color(LIBER_COLOR_TEXT1), TextLeft | TextEllipsis);
-        context.Painter.Icon(data.Icon, Inset(rc, rc.Width - 44, 14, 28, 28), tokens.Color(LIBER_COLOR_ACCENT));
-        context.Painter.Text(szTemp, Inset(rc, 16, 38, rc.Width - 32, 52), LIBER_TYPE_TITLE_LARGE,
-                             tokens.Color(LIBER_COLOR_TEXT1), TextLeft);
-        context.Painter.Text(data.Condition, Inset(rc, 16, 94, rc.Width - 32, 20), LIBER_TYPE_BODY,
-                             tokens.Color(LIBER_COLOR_TEXT1), TextLeft | TextEllipsis);
-        context.Painter.Text(data.Sample ? L"Sample data" : szRange, Inset(rc, 16, 120, rc.Width - 32, 16),
-                             LIBER_TYPE_CAPTION, tokens.Color(LIBER_COLOR_TEXT2), TextLeft | TextEllipsis);
+        StringCchPrintfW(szRange, _countof(szRange), L"H %d\x00B0 \x00B7 L %d\x00B0", data.High, data.Low);
+        context.Painter.Text(data.City, Inset(rc, 16, 16, rc.Width - 32 - 28, 20), LIBER_TYPE_BODY_STRONG,
+                             tokens.Color(LIBER_COLOR_TEXT1), TextLeft | TextMiddle | TextEllipsis);
+        context.Painter.Icon(data.Icon, Inset(rc, rc.Width - 16 - 20, 16, 20, 20), tokens.Color(LIBER_COLOR_ACCENT_TEXT));
+        /* FIXME: the spec draws the temperature at 52 px weight 300; the type ramp's nearest style is Title Large */
+        context.Painter.Text(szTemp, Inset(rc, 16, 36, rc.Width - 32, 56), LIBER_TYPE_TITLE_LARGE,
+                             tokens.Color(LIBER_COLOR_TEXT1), TextLeft | TextMiddle);
+        context.Painter.Text(data.Condition, Inset(rc, 16, rc.Height - 52, rc.Width - 32, 20), LIBER_TYPE_BODY_STRONG,
+                             tokens.Color(LIBER_COLOR_TEXT1), TextLeft | TextMiddle | TextEllipsis);
+        context.Painter.Text(data.Sample ? L"Sample data" : szRange, Inset(rc, 16, rc.Height - 32, rc.Width - 32, 16),
+                             LIBER_TYPE_CAPTION, tokens.Color(LIBER_COLOR_TEXT2), TextLeft | TextMiddle | TextEllipsis);
     }
 
 private:
@@ -107,34 +115,34 @@ public:
     CSystemCard(CSystemStatsProvider *provider) : CWidgetCard(provider), m_Stats(provider) {}
 
 protected:
-    void Ring(PaintContext &context, const RectF &rc, int percent, LPCWSTR label)
+    void Gauge(PaintContext &context, const RectF &rc, int percent, LPCWSTR label)
     {
         const ThemeTokens &tokens = context.Tokens;
-        float size = 72.0f;
-        RectF ring = { rc.X + (rc.Width - size) / 2, rc.Y, size, size };
+        float size = 48.0f, stroke = 5.0f;
+        RectF ring = { rc.X + stroke / 2, rc.Y + (rc.Height - size) / 2 + stroke / 2, size - stroke, size - stroke };
         WCHAR szValue[8];
 
-        context.Painter.StrokeArc(ring, 0.0f, 360.0f, tokens.Color(LIBER_COLOR_FILL_TRACK), 8.0f);
+        context.Painter.StrokeArc(ring, 0.0f, 360.0f, tokens.Color(LIBER_COLOR_FILL_TRACK), stroke);
         if (percent > 0)
             context.Painter.StrokeArc(ring, -90.0f, 3.6f * (float)(percent > 100 ? 100 : percent),
-                                      tokens.Color(LIBER_COLOR_ACCENT), 8.0f);
+                                      tokens.Color(LIBER_COLOR_ACCENT), stroke);
         StringCchPrintfW(szValue, _countof(szValue), L"%d%%", percent);
-        context.Painter.Text(szValue, ring, LIBER_TYPE_BODY_STRONG, tokens.Color(LIBER_COLOR_TEXT1),
-                             TextCenter | TextMiddle);
-        RectF text = { rc.X, rc.Y + size + 10.0f, rc.Width, 16.0f };
-        context.Painter.Text(label, text, LIBER_TYPE_CAPTION, tokens.Color(LIBER_COLOR_TEXT2), TextCenter | TextMiddle);
+        RectF value = { rc.X + size + 10.0f, rc.Y + rc.Height / 2 - 20.0f, rc.Width - size - 10.0f, 20.0f };
+        RectF text = { value.X, value.Y + 20.0f, value.Width, 16.0f };
+        context.Painter.Text(szValue, value, LIBER_TYPE_BODY_STRONG, tokens.Color(LIBER_COLOR_TEXT1), TextMiddle);
+        context.Painter.Text(label, text, LIBER_TYPE_CAPTION, tokens.Color(LIBER_COLOR_TEXT2), TextMiddle);
     }
 
     void PaintOverride(PaintContext &context)
     {
         const LIBER_SYSTEM_DATA &data = m_Stats->Data();
         RectF rc = ToRectF(Bounds());
-        float column = (rc.Width - 32.0f) / 3.0f;
+        float column = (rc.Width - 32.0f - 16.0f) / 3.0f;
 
         PaintCard(context);
-        Ring(context, Inset(rc, 16, 28, column, 110), data.CpuPercent, L"CPU");
-        Ring(context, Inset(rc, 16 + column, 28, column, 110), data.MemoryPercent, L"Memory");
-        Ring(context, Inset(rc, 16 + 2 * column, 28, column, 110), data.StoragePercent, L"Storage");
+        Gauge(context, Inset(rc, 16, 16, column, rc.Height - 32), data.CpuPercent, L"CPU");
+        Gauge(context, Inset(rc, 16 + column + 8, 16, column, rc.Height - 32), data.MemoryPercent, L"Memory");
+        Gauge(context, Inset(rc, 16 + 2 * (column + 8), 16, column, rc.Height - 32), data.StoragePercent, L"Storage");
     }
 
 private:

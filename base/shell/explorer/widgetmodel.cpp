@@ -69,12 +69,13 @@ VOID LiberWidget_Layout(const RECT *prcWork, UINT dpi, RECT prcWidgets[LIBER_WID
     int tile = MulDiv(LIBER_WIDGET_TILE, (int)dpi, 96);
     int gap = MulDiv(LIBER_WIDGET_GAP, (int)dpi, 96);
     int margin = MulDiv(LIBER_WIDGET_MARGIN, (int)dpi, 96);
+    int wide = MulDiv(LIBER_WIDGET_WIDE_H, (int)dpi, 96);
     LONG right = prcWork->right - margin;
     LONG top = prcWork->top + margin;
 
     SetRect(&prcWidgets[LIBER_WIDGET_DATE], right - 2 * tile - gap, top, right - tile - gap, top + tile);
     SetRect(&prcWidgets[LIBER_WIDGET_WEATHER], right - tile, top, right, top + tile);
-    SetRect(&prcWidgets[LIBER_WIDGET_SYSTEM], right - 2 * tile - gap, top + tile + gap, right, top + 2 * tile + gap);
+    SetRect(&prcWidgets[LIBER_WIDGET_SYSTEM], right - 2 * tile - gap, top + tile + gap, right, top + tile + gap + wide);
 }
 
 CDateProvider::CDateProvider()
