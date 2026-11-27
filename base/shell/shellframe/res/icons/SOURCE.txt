@@ -9,6 +9,7 @@ Files used, copied unmodified and drawn from their path data at run time:
 - assets/Add Circle/SVG/ic_fluent_add_circle_20_regular.svg
 - assets/Airplane/SVG/ic_fluent_airplane_20_regular.svg
 - assets/Alert/SVG/ic_fluent_alert_20_regular.svg
+- assets/Alert Snooze/SVG/ic_fluent_alert_snooze_20_regular.svg
 - assets/Apps/SVG/ic_fluent_apps_20_regular.svg
 - assets/Apps Add In/SVG/ic_fluent_apps_add_in_20_regular.svg
 - assets/Apps List/SVG/ic_fluent_apps_list_20_regular.svg

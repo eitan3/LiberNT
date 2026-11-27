@@ -27,6 +27,21 @@ VOID TrayNotifications_Add(IN HWND hWndOwner, IN UINT uID, IN LPCWSTR pszApp,
 UINT TrayNotifications_GetUnread(VOID);
 VOID TrayNotifications_SetSink(IN HWND hwndSink);
 BOOL TrayNotifications_IsHidden(VOID);
+VOID TrayNotifications_SetHidden(IN BOOL bHidden);
+
+typedef struct _TRAY_NOTIFICATION_INFO
+{
+    HICON hIcon;
+    SYSTEMTIME stTime;
+    WCHAR szApp[128];
+    WCHAR szTitle[64];
+    WCHAR szText[256];
+} TRAY_NOTIFICATION_INFO;
+
+UINT TrayNotifications_GetCount(VOID);
+BOOL TrayNotifications_Get(IN UINT uIndex, OUT TRAY_NOTIFICATION_INFO *pInfo);
+VOID TrayNotifications_Remove(IN UINT uIndex);
+VOID TrayNotifications_Clear(VOID);
 
 VOID TrayOverflow_Toggle(IN HWND hwndOwner, IN const RECT *prcAnchor, IN HWND hwndPager);
 VOID TrayOverflow_ToggleAll(IN HWND hwndOwner, IN const RECT *prcAnchor);

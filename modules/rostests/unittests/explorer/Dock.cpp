@@ -127,29 +127,75 @@ static void TestExperience()
     RegCloseKey(key);
 }
 
-static void TestPlaceAbove()
+static void TestFlyoutOrigin()
 {
-    HDC screen = GetDC(NULL);
-    UINT dpi = screen ? (UINT)GetDeviceCaps(screen, LOGPIXELSX) : 96;
-    MONITORINFO mi = { sizeof(mi) };
+    RECT monitor = { 0, 0, 1600, 900 }, tray = { 1317, 838, 1588, 886 }, dock = { 543, 832, 1057, 892 };
     POINT pt;
 
-    if (screen)
-        ReleaseDC(NULL, screen);
-    GetMonitorInfoW(MonitorFromPoint(POINT(), MONITOR_DEFAULTTOPRIMARY), &mi);
+    LiberShell_FlyoutOrigin(&monitor, 96, &tray, 384, 474, FALSE, &pt);
+    ok(pt.x == 1588 - 384 && pt.y == 900 - 80 - 474, "control center sits above the reserved taskbar at %ld,%ld\n",
+       pt.x, pt.y);
+    LiberShell_FlyoutOrigin(&monitor, 96, &dock, 660, 700, TRUE, &pt);
+    ok(pt.x == (1600 - 660) / 2 && pt.y == 900 - 80 - 700, "Start is centered at %ld,%ld\n", pt.x, pt.y);
 
-    RECT anchor = { mi.rcMonitor.right - 200, mi.rcMonitor.bottom - 60, mi.rcMonitor.right - 8, mi.rcMonitor.bottom - 12 };
-    LiberShell_PlaceAbove(&anchor, 372, 300, &pt);
-    ok(pt.x == anchor.right - 372, "right aligned to the anchor: %ld\n", pt.x);
-    ok(pt.y == anchor.top - LiberUI::ScaleToDpi(LIBER_FLYOUT_GAP, dpi) - 300, "above the anchor with the gap: %ld\n", pt.y);
+    RECT edge = { 1500, 838, 1600, 886 };
+    LiberShell_FlyoutOrigin(&monitor, 96, &edge, 384, 474, FALSE, &pt);
+    ok(pt.x == 1600 - 12 - 384, "kept 12 px from the right edge: %ld\n", pt.x);
+    RECT left = { 0, 838, 50, 886 };
+    LiberShell_FlyoutOrigin(&monitor, 96, &left, 384, 474, FALSE, &pt);
+    ok(pt.x == 12, "kept 12 px from the left edge: %ld\n", pt.x);
+    LiberShell_FlyoutOrigin(&monitor, 96, &tray, 384, 2000, FALSE, &pt);
+    ok(pt.y == 12, "a tall flyout stays below the top inset: %ld\n", pt.y);
+    LiberShell_FlyoutOrigin(&monitor, 144, &tray, 576, 600, FALSE, &pt);
+    ok(pt.y == 900 - 120 - 600, "gap and reserve scale with DPI: %ld\n", pt.y);
+}
 
-    RECT left = { mi.rcMonitor.left, mi.rcMonitor.bottom - 60, mi.rcMonitor.left + 50, mi.rcMonitor.bottom - 12 };
-    LiberShell_PlaceAbove(&left, 372, 300, &pt);
-    ok(pt.x == mi.rcMonitor.left, "kept on screen on the left: %ld\n", pt.x);
+static void TestRecentHelpers()
+{
+    SYSTEMTIME now = { 2026, 11, 5, 27, 11, 20, 0, 0 }, then = now;
+    WCHAR text[64], time[32];
 
-    RECT high = { mi.rcMonitor.right - 200, mi.rcMonitor.top + 10, mi.rcMonitor.right - 8, mi.rcMonitor.top + 50 };
-    LiberShell_PlaceAbove(&high, 372, 300, &pt);
-    ok(pt.y == mi.rcMonitor.top, "kept on screen at the top: %ld\n", pt.y);
+    LiberStart_FormatWhen(&now, &then, text, _countof(text));
+    ok(!wcscmp(text, L"Just now"), "same minute: %S\n", text);
+    then.wMinute = 20 - 41 + 60;
+    then.wHour = 10;
+    LiberStart_FormatWhen(&now, &then, text, _countof(text));
+    ok(!wcscmp(text, L"41 min ago"), "41 minutes: %S\n", text);
+    then = now;
+    then.wHour = 6;
+    then.wMinute = 18;
+    GetTimeFormatW(LOCALE_USER_DEFAULT, TIME_NOSECONDS, &then, NULL, time, _countof(time));
+    LiberStart_FormatWhen(&now, &then, text, _countof(text));
+    ok(!wcsncmp(text, L"Today ", 6) && !wcscmp(text + 6, time), "earlier today: %S\n", text);
+    then.wDay = 26;
+    LiberStart_FormatWhen(&now, &then, text, _countof(text));
+    ok(!wcsncmp(text, L"Yesterday ", 10), "yesterday: %S\n", text);
+    SYSTEMTIME first = { 2026, 12, 2, 1, 0, 5, 0, 0 }, last = { 2026, 11, 1, 30, 23, 50, 0, 0 };
+    LiberStart_FormatWhen(&first, &last, text, _countof(text));
+    ok(!wcscmp(text, L"15 min ago"), "minutes across midnight and a month: %S\n", text);
+    then.wDay = 20;
+    LiberStart_FormatWhen(&now, &then, text, _countof(text));
+    ok(wcsncmp(text, L"Today", 5) && wcsncmp(text, L"Yesterday", 9) && text[0], "older shows a date: %S\n", text);
+
+    ok(LiberStart_ScrollOffset(0, 40, 6, 18, 1) == 6, "one row down\n");
+    ok(LiberStart_ScrollOffset(18, 40, 6, 18, 1) == 24, "last full page starts at 24\n");
+    ok(LiberStart_ScrollOffset(24, 40, 6, 18, 1) == 24, "does not scroll past the end\n");
+    ok(LiberStart_ScrollOffset(6, 40, 6, 18, -1) == 0 && LiberStart_ScrollOffset(0, 40, 6, 18, -1) == 0,
+       "scrolls back to the top and no further\n");
+    ok(LiberStart_ScrollOffset(0, 10, 6, 18, 1) == 0, "nothing to scroll when everything fits\n");
+
+    LIBER_RECENT_FILE files[6];
+    UINT count = LiberStart_LoadRecentFiles(files, _countof(files));
+    ok(count <= 6, "at most six recent files: %u\n", count);
+    for (UINT i = 1; i < count; i++)
+    {
+        FILETIME a, b;
+        SystemTimeToFileTime(&files[i - 1].stWritten, &a);
+        SystemTimeToFileTime(&files[i].stWritten, &b);
+        ok(CompareFileTime(&a, &b) >= 0, "recent file %u is not newer than the one before\n", i);
+        ok(GetFileAttributesW(files[i].szLink) != INVALID_FILE_ATTRIBUTES, "recent link %u exists\n", i);
+    }
+    ok(LiberStart_LoadRecentFiles(files, 0) == 0, "no room returns nothing\n");
 }
 
 static void TestDesignValues()
@@ -210,7 +256,8 @@ START_TEST(Dock)
     TestDesignValues();
     TestLayout();
     TestWorkArea();
-    TestPlaceAbove();
+    TestFlyoutOrigin();
+    TestRecentHelpers();
     TestTaskWindows();
     TestExperience();
 }

@@ -3097,6 +3097,30 @@ BOOL TrayNotifications_IsHidden(VOID)
     return g_TfyNotifHideUntil && GetTickCount64() < g_TfyNotifHideUntil;
 }
 
+VOID TrayNotifications_SetHidden(IN BOOL bHidden)
+{
+    g_TfyNotifHideUntil = bHidden ? MAXULONGLONG : 0;
+    TfyNotifySink();
+}
+
+UINT TrayNotifications_GetCount(VOID)
+{
+    return g_cTfyNotifs;
+}
+
+BOOL TrayNotifications_Get(IN UINT uIndex, OUT TRAY_NOTIFICATION_INFO *pInfo)
+{
+    if (!pInfo || uIndex >= g_cTfyNotifs)
+        return FALSE;
+    const TFYNOTIF &notif = g_TfyNotifs[uIndex];
+    pInfo->hIcon = notif.hIcon;
+    pInfo->stTime = notif.stTime;
+    StringCchCopyW(pInfo->szApp, _countof(pInfo->szApp), notif.szApp);
+    StringCchCopyW(pInfo->szTitle, _countof(pInfo->szTitle), notif.szTitle);
+    StringCchCopyW(pInfo->szText, _countof(pInfo->szText), notif.szText);
+    return TRUE;
+}
+
 VOID TrayFlyouts_Destroy(VOID)
 {
     TaskPreview_Hide();
@@ -12881,6 +12905,19 @@ TfyNotifRemove(UINT i)
     if (g_cTfyUnread > g_cTfyNotifs)
         g_cTfyUnread = g_cTfyNotifs;
     TfyNotifySink();
+}
+
+VOID TrayNotifications_Remove(IN UINT uIndex)
+{
+    TfyNotifRemove(uIndex);
+    TrayNotifCenter_Refresh();
+}
+
+VOID TrayNotifications_Clear(VOID)
+{
+    while (g_cTfyNotifs)
+        TfyNotifRemove(g_cTfyNotifs - 1);
+    TrayNotifCenter_Refresh();
 }
 
 static VOID
