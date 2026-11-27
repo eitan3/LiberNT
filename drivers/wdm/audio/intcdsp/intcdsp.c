@@ -24,6 +24,20 @@ static
 NTSTATUS
 IntcDspStreamBoot(
     _In_opt_ PVOID Context);
+/* the idle timer's operations (E2) */
+static
+VOID
+IntcDspStreamIdleArm(
+    _In_opt_ PVOID Context,
+    UINT64 DueUs);
+static
+VOID
+IntcDspStreamIdleCancel(
+    _In_opt_ PVOID Context);
+static
+VOID
+IntcDspStreamIdleDown(
+    _In_opt_ PVOID Context);
 
 /* The code-loader stream carries 48 kHz, 32 bits, one channel: Linux hda.h HDA_CL_STREAM_FORMAT (the stream descriptor format register value 0x40) */
 #define INTCDSP_CL_SAMPLE_RATE       48000
@@ -366,11 +380,16 @@ IntcDspStreamsStart(
     Dev->StreamOps.Fault = IntcDspStreamFault;
     Dev->StreamOps.Boot = IntcDspStreamBoot;
     Dev->StreamOps.Unmap = IntcDspStreamUnmap;
+    Dev->StreamOps.IdleArm = IntcDspStreamIdleArm;
+    Dev->StreamOps.IdleCancel = IntcDspStreamIdleCancel;
+    Dev->StreamOps.IdleDown = IntcDspStreamIdleDown;
     Dev->SelfTestOps.Context = Dev;
     Dev->SelfTestOps.Map = IntcDspSelfTestMap;
     Dev->SelfTestOps.WaitPeriods = IntcDspSelfTestWait;
     KeInitializeEvent(&Dev->SelfTestEvent, SynchronizationEvent, FALSE);
     IntcDspStreamsInit(&Dev->Streams, Dev->StreamsState, Dev->StreamsStateBytes, Dev->TopologyModel, &Dev->Ipc, &Dev->Bus, &Dev->StreamOps);
+    /* the idle setting is the boot's: the initialization zeroed it with the manager's state (E2) */
+    IntcDspStreamsIdleSec(&Dev->Streams, Dev->DspIdleSec);
     /* a bus without the stream members, or a link that is not ready: the DSP stays as the earlier checkpoints left it, with no stream and no self-test */
     if (!Dev->Streams.Ready)
         return STATUS_SUCCESS;
@@ -869,6 +888,78 @@ IntcDspPollWork(
     IntcDspStreamsPoll(&IntcDspGetData(WdfWorkItemGetParentObject(WorkItem))->Streams);
 }
 
+/*
+ * The idle timer of the device (E2), the manager's three operations. The
+ * manager arms it under its lock for the idle time past the last close,
+ * with the clock the driver's operations table keeps, and cancels it at
+ * the open that takes a stream; the timer is a synchronization timer with
+ * a DPC of its own, so that a fire queues the work item and nothing else
+ * runs at DISPATCH_LEVEL: no bus call, no lock.
+ */
+static
+VOID
+IntcDspStreamIdleArm(
+    _In_opt_ PVOID Context,
+    UINT64 DueUs)
+{
+    PINTCDSP_DEVICE Dev = (PINTCDSP_DEVICE)Context;
+    ULONGLONG Now = IntcDspOpsTable()->NowUs(Dev), At = DueUs;
+    LARGE_INTEGER Due;
+
+    /* the kernel timer counts 100 ns from now: the due time is relative, as the manager's clock is not the system time's */
+    if (At < Now)
+        At = Now;
+    Due.QuadPart = -(LONGLONG)((At - Now) * 10);
+    KeSetTimer(&Dev->IdleTimer, Due, &Dev->IdleDpc);
+}
+
+static
+VOID
+IntcDspStreamIdleCancel(
+    _In_opt_ PVOID Context)
+{
+    KeCancelTimer(&((PINTCDSP_DEVICE)Context)->IdleTimer);
+}
+
+/* The idle power-down (E2): today's power-down, the streams released and the DSP off, with the PCM child kept (the child list's rule is a resident model, audioif.c); the device is in need of a boot and the next open boots it */
+static
+VOID
+IntcDspStreamIdleDown(
+    _In_opt_ PVOID Context)
+{
+    PINTCDSP_DEVICE Dev = (PINTCDSP_DEVICE)Context;
+
+    IntcDspPowerDown(Dev);
+    Dev->DspState = IntcDspNeedsBoot;
+}
+
+/* The DPC of the idle timer (E2): the work item alone is queued here; the decision is the work item's, at PASSIVE_LEVEL */
+static
+VOID
+IntcDspIdleDpc(
+    _In_ PKDPC Dpc,
+    _In_opt_ PVOID DeferredContext,
+    _In_opt_ PVOID SystemArgument1,
+    _In_opt_ PVOID SystemArgument2)
+{
+    PINTCDSP_DEVICE Dev = (PINTCDSP_DEVICE)DeferredContext;
+
+    UNREFERENCED_PARAMETER(Dpc);
+    UNREFERENCED_PARAMETER(SystemArgument1);
+    UNREFERENCED_PARAMETER(SystemArgument2);
+    if (Dev->IdleWorkItem != NULL)
+        WdfWorkItemEnqueue(Dev->IdleWorkItem);
+}
+
+/* The work item of the idle timer (E2): the manager's decision under its lock, the device the work item's parent */
+static
+VOID
+IntcDspIdleWork(
+    _In_ WDFWORKITEM WorkItem)
+{
+    IntcDspStreamsIdle(&IntcDspGetData(WdfWorkItemGetParentObject(WorkItem))->Streams);
+}
+
 static
 NTSTATUS
 IntcDspEvtDeviceD0Entry(
@@ -943,8 +1034,10 @@ IntcDspEvtDeviceContextCleanup(
     PINTCDSP_DEVICE Dev = IntcDspGetData(Object);
 
     Dev->InterruptArmed = FALSE;
-    /* the poll point's DPC goes with the device: one still queued does not run */
+    /* the poll point's DPC goes with the device: one still queued does not run; the idle timer is stopped and its DPC likewise */
     KeRemoveQueueDpc(&Dev->PeriodDpc);
+    KeCancelTimer(&Dev->IdleTimer);
+    KeRemoveQueueDpc(&Dev->IdleDpc);
 }
 
 NTSTATUS
@@ -988,6 +1081,16 @@ IntcDspEvtDeviceAdd(
     {
         IntcDspGetData(Device)->PollWorkItem = NULL;
         IntcDspLog("the poll's work item: 0x%08lx; an exception with no request outstanding waits for the next request\n", Status);
+    }
+    /* the idle power-down (E2): the device's timer and its DPC, made once for the device (a notification timer, as KeInitializeTimer makes one), and the work item the DPC queues; without the work item the timer fires into nothing and the DSP stays up while the device is D0 */
+    KeInitializeTimer(&IntcDspGetData(Device)->IdleTimer);
+    KeInitializeDpc(&IntcDspGetData(Device)->IdleDpc, IntcDspIdleDpc, IntcDspGetData(Device));
+    WDF_WORKITEM_CONFIG_INIT(&WorkConfig, IntcDspIdleWork);
+    Status = WdfWorkItemCreate(&WorkConfig, &WorkAttributes, &IntcDspGetData(Device)->IdleWorkItem);
+    if (!NT_SUCCESS(Status))
+    {
+        IntcDspGetData(Device)->IdleWorkItem = NULL;
+        IntcDspLog("the idle power-down's work item: 0x%08lx; the DSP stays up while no stream is open\n", Status);
     }
     IntcDspLog("loaded for the Intel audio DSP child\n");
     return STATUS_SUCCESS;

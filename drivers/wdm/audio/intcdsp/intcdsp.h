@@ -166,6 +166,10 @@ typedef struct _INTCDSP_DEVICE
     /* the poll point of an asynchronous exception (E1c): the DPC the interrupt callback queues at each of its runs, a period's included, and the work item that DPC queues when the uplink's pending bit is set; the work item is the device's child and goes with it */
     KDPC PeriodDpc;
     WDFWORKITEM PollWorkItem;
+    /* the idle power-down (E2): the device's timer, its DPC and the work item the DPC queues; the manager arms and cancels the timer through its operations (stream.c), and the work item calls IntcDspStreamsIdle */
+    KTIMER IdleTimer;
+    KDPC IdleDpc;
+    WDFWORKITEM IdleWorkItem;
     /* the audio children: the topology the child list last reported, by the generation of the model (topology.c counts one up whenever the model is built or dropped) and by whether a model was resident (E1: powered or not) */
     ULONG TopologyGeneration;
     ULONG AudioReportedGeneration;
