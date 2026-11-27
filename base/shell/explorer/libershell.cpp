@@ -21,6 +21,14 @@ VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens)
     pTokens->Build(params);
 }
 
+VOID LiberShell_BuildWallpaperInkTokens(LiberUI::ThemeTokens *pTokens)
+{
+    /* TODO: pick the ink from the wallpaper luminance behind the tray instead of always using dark-theme ink */
+    LiberUI::ThemeParams params = { LiberUI::ThemeMode::Dark, LiberUI::AccentPreset(LIBER_ACCENT_AZURE),
+                                    (LiberUI::SurfaceTint)LiberExperience_SurfaceTint() };
+    pTokens->Build(params);
+}
+
 VOID LiberShell_ApplyFont(LiberUI::Surface *pSurface)
 {
     WCHAR family[LF_FACESIZE];

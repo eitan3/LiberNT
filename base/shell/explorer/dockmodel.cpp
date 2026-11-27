@@ -43,9 +43,21 @@ VOID LiberDock_WorkArea(const RECT *prcMonitor, UINT dpi, RECT *prcWork)
     prcWork->bottom = max(prcMonitor->top, prcMonitor->bottom - ScaleToDpi(LIBER_TASKBAR_DOCK, dpi));
 }
 
+int LiberDock_Width(UINT cells)
+{
+    ATLASSERT(cells > 0);
+    return (int)cells * LIBER_DOCK_CELL + ((int)cells - 1) * LIBER_DOCK_CELL_GAP + 2 * LIBER_DOCK_PAD_X;
+}
+
+int LiberDock_SystemPillWidth(BOOL bBattery)
+{
+    int icons = bBattery ? 3 : 2;
+    return 2 * LIBER_TRAY_BUTTON_PAD + icons * 20 + (icons - 1) * LIBER_TRAY_ICON_GAP;
+}
+
 VOID LiberDock_Layout(const RECT *prcMonitor, UINT dpi, UINT cells, int trayWidthDip, LIBER_DOCK_LAYOUT *pLayout)
 {
-    int dockWidth = ScaleToDpi((int)cells * LIBER_DOCK_CELL + 2 * LIBER_DOCK_PAD, dpi);
+    int dockWidth = ScaleToDpi(LiberDock_Width(cells), dpi);
     int dockHeight = ScaleToDpi(LIBER_DOCK_HEIGHT, dpi);
     int trayWidth = ScaleToDpi(trayWidthDip, dpi);
     int trayHeight = ScaleToDpi(LIBER_TRAY_HEIGHT, dpi);
@@ -58,7 +70,7 @@ VOID LiberDock_Layout(const RECT *prcMonitor, UINT dpi, UINT cells, int trayWidt
     pLayout->Dock.top = pLayout->Dock.bottom - dockHeight;
     pLayout->Dock.right = pLayout->Dock.left + dockWidth;
 
-    pLayout->Tray.right = prcMonitor->right - gap;
+    pLayout->Tray.right = prcMonitor->right - ScaleToDpi(LIBER_TRAY_INSET, dpi);
     pLayout->Tray.left = pLayout->Tray.right - trayWidth;
     pLayout->Tray.top = pLayout->Dock.top + (dockHeight - trayHeight) / 2;
     pLayout->Tray.bottom = pLayout->Tray.top + trayHeight;

@@ -25,17 +25,23 @@ static void TestLayout()
     RECT monitor = { 0, 0, 1920, 1080 };
     LIBER_DOCK_LAYOUT layout;
 
+    ok(LiberDock_Width(10) == 514, "ten cells make the spec's 514 px dock: %d\n", LiberDock_Width(10));
+    ok(LiberDock_Width(1) == 64, "one cell: %d\n", LiberDock_Width(1));
+    ok(LiberDock_SystemPillWidth(TRUE) == 100 && LiberDock_SystemPillWidth(FALSE) == 70,
+       "system group is %d px with a battery and %d px without\n", LiberDock_SystemPillWidth(TRUE),
+       LiberDock_SystemPillWidth(FALSE));
+
     LiberDock_Layout(&monitor, 96, 5, 112, &layout);
-    CheckRect(layout.Dock, (1920 - 252) / 2, 1080 - 8 - 60, (1920 - 252) / 2 + 252, 1080 - 8, "dock at 96 DPI");
-    CheckRect(layout.Tray, 1920 - 8 - 112, 1012 + 6, 1920 - 8, 1012 + 6 + 48, "tray at 96 DPI");
+    CheckRect(layout.Dock, (1920 - 264) / 2, 1080 - 8 - 60, (1920 - 264) / 2 + 264, 1080 - 8, "dock at 96 DPI");
+    CheckRect(layout.Tray, 1920 - 12 - 112, 1012 + 6, 1920 - 12, 1012 + 6 + 48, "tray at 96 DPI");
     ok((layout.Tray.top + layout.Tray.bottom) == (layout.Dock.top + layout.Dock.bottom), "tray sits on the dock's center line\n");
     ok(LIBER_TASKBAR_DOCK - (1080 - layout.Dock.top) == 8, "dock fits the reserved 76 px\n");
 
     RECT second = { 1920, 0, 3840, 1080 };
     LiberDock_Layout(&second, 144, 1, 112, &layout);
-    CheckRect(layout.Dock, 1920 + (1920 - 90) / 2, 1080 - 12 - 90, 1920 + (1920 - 90) / 2 + 90, 1080 - 12,
+    CheckRect(layout.Dock, 1920 + (1920 - 96) / 2, 1080 - 12 - 90, 1920 + (1920 - 96) / 2 + 96, 1080 - 12,
               "one cell at 144 DPI on a second monitor");
-    CheckRect(layout.Tray, 3840 - 12 - 168, 978 + 9, 3840 - 12, 978 + 9 + 72, "tray at 144 DPI");
+    CheckRect(layout.Tray, 3840 - 18 - 168, 978 + 9, 3840 - 18, 978 + 9 + 72, "tray at 144 DPI");
 }
 
 static void TestWorkArea()

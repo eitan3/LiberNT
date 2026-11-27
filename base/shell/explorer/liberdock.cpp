@@ -15,10 +15,15 @@
 
 using namespace LiberUI;
 
-#define LIBER_CLOCK_WIDTH    112
-#define LIBER_PILL_WIDTH     72
-#define LIBER_CHEVRON_WIDTH  40
-#define LIBER_TRAY_WIDTH     (LIBER_CHEVRON_WIDTH + LIBER_PILL_WIDTH + LIBER_CLOCK_WIDTH)
+#define LIBER_CLOCK_WIDTH    84
+#define LIBER_CHEVRON_WIDTH  32
+#define LIBER_TRAY_BUTTON    36
+#define LIBER_TRAY_PAD_X     8
+#define LIBER_TRAY_GAP       2
+#define LIBER_TRAY_SHADOW    0x59000000
+#define LIBER_DOCK_FIXED_CELLS 2
+#define LIBER_CELL_START     (-1)
+#define LIBER_CELL_SEARCH    (-2)
 #define LIBER_TIMER_CLOCK    1
 #define LIBER_TIMER_REFRESH  2
 #define LIBER_REFRESH_DELAY  60
@@ -78,28 +83,48 @@ protected:
     {
         RectF rc = ToRectF(Bounds());
         const ThemeTokens &tokens = context.Tokens;
-        float inset = HasState(StatePressed) ? 4.0f : 0.0f;
 
-        if (m_Active || HasState(StateHover) || HasState(StatePressed))
+        if (m_Active)
+            context.Painter.FillEllipse(rc, tokens.Color(LIBER_COLOR_FILL_PLATE));
+        else if (HasState(StateHover) || HasState(StatePressed))
+            context.Painter.FillEllipse(rc, tokens.Color(LIBER_COLOR_FILL_PLATE_HOVER));
+
+        float scale = HasState(StatePressed) ? 0.84f : 1.0f;
+        if (m_Index == LIBER_CELL_START)
+            PaintLogo(context, rc, 30.0f * scale);
+        else
         {
-            RectF plate = { rc.X + inset, rc.Y + inset, rc.Width - 2 * inset, rc.Height - 2 * inset };
-            context.Painter.FillEllipse(plate, tokens.Color(m_Active ? LIBER_COLOR_FILL_PLATE : LIBER_COLOR_FILL_PLATE_HOVER));
+            float size = (m_Index == LIBER_CELL_SEARCH ? 24.0f : (float)LIBER_DOCK_ICON) * scale;
+            RectF icon = { rc.X + (rc.Width - size) / 2, rc.Y + (rc.Height - size) / 2, size, size };
+            if (m_Index == LIBER_CELL_SEARCH)
+                context.Painter.Icon(L"search_24_regular", icon, tokens.Color(LIBER_COLOR_TEXT1));
+            else if (m_Icon)
+                context.Painter.Image(m_Icon, icon);
         }
-
-        float size = m_Index < 0 ? 24.0f : (float)LIBER_DOCK_ICON;
-        if (HasState(StatePressed))
-            size *= 0.84f;
-        RectF icon = { rc.X + (rc.Width - size) / 2, rc.Y + (rc.Height - size) / 2, size, size };
-        if (m_Index < 0)
-            context.Painter.Icon(L"apps_20_regular", icon, tokens.Color(LIBER_COLOR_ACCENT));
-        else if (m_Icon)
-            context.Painter.Image(m_Icon, icon);
 
         if (m_Running)
         {
             float dot = (float)LIBER_DOCK_RUNNING_DOT;
-            RectF rcDot = { rc.X + (rc.Width - dot) / 2, rc.Y + rc.Height - dot - 1.0f, dot, dot };
-            context.Painter.FillEllipse(rcDot, tokens.Color(m_Active ? LIBER_COLOR_ACCENT : LIBER_COLOR_TEXT3));
+            RectF rcDot = { rc.X + (rc.Width - dot) / 2, rc.Y + rc.Height - dot - 2.0f, dot, dot };
+            context.Painter.FillEllipse(rcDot, tokens.Color(LIBER_COLOR_TEXT2));
+        }
+    }
+
+    static void PaintLogo(PaintContext &context, const RectF &rc, float size)
+    {
+        static const float Bars[4][4] = { { 0.0f, 5.8333f, 5.8333f, 26.25f },
+                                          { 0.0f, 20.4167f, 20.4167f, 26.25f },
+                                          { 7.5833f, 1.75f, 28.0f, 7.5833f },
+                                          { 22.1667f, 1.75f, 28.0f, 22.1667f } };
+        float x = rc.X + (rc.Width - size) / 2, y = rc.Y + (rc.Height - size) / 2, unit = size / 28.0f;
+        /* FIXME: the spec fills the mark with a --logo-from to --logo-to gradient; it is drawn in the middle colour */
+        Argb color = context.Tokens.IsDark() ? 0xFF67C5FA : 0xFF126FCE;
+
+        for (UINT i = 0; i < _countof(Bars); i++)
+        {
+            RectF bar = { x + Bars[i][0] * unit, y + Bars[i][1] * unit, (Bars[i][2] - Bars[i][0]) * unit,
+                          (Bars[i][3] - Bars[i][1]) * unit };
+            context.Painter.FillRect(bar, color);
         }
     }
 
@@ -111,79 +136,106 @@ private:
     BOOL m_Active;
 };
 
-class CTrayChevron : public Widget
+class CTrayButton : public Widget
 {
 public:
-    CTrayChevron(CLiberDock *dock) : m_Dock(dock)
+    CTrayButton(CLiberDock *dock, int width) : m_Dock(dock), m_Open(FALSE)
     {
-        SetSize(LIBER_CHEVRON_WIDTH, LIBER_TRAY_HEIGHT);
+        SetSize(width, LIBER_TRAY_BUTTON);
         SetHitTestable(TRUE);
         SetFocusable(TRUE);
     }
 
-    void OnClick();
+    void SetOpen(BOOL open)
+    {
+        if (open != m_Open)
+        {
+            m_Open = open;
+            Invalidate();
+        }
+    }
 
 protected:
+    virtual void PaintContent(PaintContext &context, const RectF &rc) = 0;
+
     void PaintOverride(PaintContext &context)
     {
         RectF rc = ToRectF(Bounds());
         const ThemeTokens &tokens = context.Tokens;
 
-        if (HasState(StateHover) || HasState(StatePressed))
-        {
-            RectF plate = { rc.X + 4.0f, rc.Y + 8.0f, rc.Width - 8.0f, rc.Height - 16.0f };
-            context.Painter.FillRoundRect(plate, plate.Height / 2, tokens.Color(LIBER_COLOR_FILL_SUBTLE_HOVER));
-        }
+        if (m_Open)
+            context.Painter.FillRoundRect(rc, rc.Height / 2, tokens.Color(LIBER_COLOR_FILL_PLATE));
+        else if (HasState(StateHover) || HasState(StatePressed))
+            context.Painter.FillRoundRect(rc, rc.Height / 2, tokens.Color(LIBER_COLOR_FILL_PLATE_HOVER));
+        PaintContent(context, rc);
+    }
+
+    static void ShadowedIcon(PaintContext &context, LPCWSTR name, const RectF &rc)
+    {
+        RectF shadow = { rc.X, rc.Y + 1.0f, rc.Width, rc.Height };
+        context.Painter.Icon(name, shadow, LIBER_TRAY_SHADOW);
+        context.Painter.Icon(name, rc, context.Tokens.Color(LIBER_COLOR_TEXT1));
+    }
+
+    static void ShadowedText(PaintContext &context, LPCWSTR text, const RectF &rc, UINT flags)
+    {
+        RectF shadow = { rc.X, rc.Y + 1.0f, rc.Width, rc.Height };
+        context.Painter.Text(text, shadow, LIBER_TYPE_CAPTION, LIBER_TRAY_SHADOW, flags);
+        context.Painter.Text(text, rc, LIBER_TYPE_CAPTION, context.Tokens.Color(LIBER_COLOR_TEXT1), flags);
+    }
+
+    CLiberDock *m_Dock;
+    BOOL m_Open;
+};
+
+class CTrayChevron : public CTrayButton
+{
+public:
+    CTrayChevron(CLiberDock *dock) : CTrayButton(dock, LIBER_CHEVRON_WIDTH) {}
+    void OnClick();
+
+protected:
+    void PaintContent(PaintContext &context, const RectF &rc)
+    {
         RectF icon = { rc.X + (rc.Width - 12.0f) / 2, rc.Y + (rc.Height - 12.0f) / 2, 12.0f, 12.0f };
-        context.Painter.Icon(L"chevron_up_12_regular", icon, tokens.Color(LIBER_COLOR_TEXT1));
+        ShadowedIcon(context, L"chevron_up_12_regular", icon);
     }
-
-private:
-    CLiberDock *m_Dock;
 };
 
-class CSystemPill : public Widget
+class CSystemPill : public CTrayButton
 {
 public:
-    CSystemPill(CLiberDock *dock) : m_Dock(dock)
+    CSystemPill(CLiberDock *dock, BOOL battery)
+        : CTrayButton(dock, LiberDock_SystemPillWidth(battery)), m_Battery(battery)
     {
-        SetSize(LIBER_PILL_WIDTH, LIBER_TRAY_HEIGHT);
-        SetHitTestable(TRUE);
-        SetFocusable(TRUE);
     }
 
     void OnClick();
 
 protected:
-    void PaintOverride(PaintContext &context)
+    void PaintContent(PaintContext &context, const RectF &rc)
     {
-        RectF rc = ToRectF(Bounds());
-        const ThemeTokens &tokens = context.Tokens;
+        static LPCWSTR const Icons[] = { L"wifi_1_20_regular", L"speaker_2_20_regular", L"battery_10_20_regular" };
+        UINT count = m_Battery ? 3 : 2;
 
-        if (HasState(StateHover) || HasState(StatePressed))
+        for (UINT i = 0; i < count; i++)
         {
-            RectF plate = { rc.X + 4.0f, rc.Y + 6.0f, rc.Width - 8.0f, rc.Height - 12.0f };
-            context.Painter.FillRoundRect(plate, plate.Height / 2, tokens.Color(LIBER_COLOR_FILL_SUBTLE_HOVER));
+            RectF icon = { rc.X + (float)(LIBER_TRAY_BUTTON_PAD + i * (20 + LIBER_TRAY_ICON_GAP)),
+                           rc.Y + (rc.Height - 20.0f) / 2, 20.0f, 20.0f };
+            ShadowedIcon(context, Icons[i], icon);
         }
-        RectF wifi = { rc.X + 14.0f, rc.Y + (rc.Height - 20.0f) / 2, 20.0f, 20.0f };
-        RectF sound = { rc.X + 38.0f, rc.Y + (rc.Height - 20.0f) / 2, 20.0f, 20.0f };
-        context.Painter.Icon(L"wifi_1_20_regular", wifi, tokens.Color(LIBER_COLOR_TEXT1));
-        context.Painter.Icon(L"speaker_2_20_regular", sound, tokens.Color(LIBER_COLOR_TEXT1));
     }
 
 private:
-    CLiberDock *m_Dock;
+    BOOL m_Battery;
 };
 
-class CTrayClock : public Widget
+class CTrayClock : public CTrayButton
 {
 public:
-    CTrayClock(CLiberDock *dock) : m_Dock(dock)
+    CTrayClock(CLiberDock *dock) : CTrayButton(dock, LIBER_CLOCK_WIDTH)
     {
         m_szTime[0] = m_szDate[0] = 0;
-        SetSize(LIBER_CLOCK_WIDTH, LIBER_TRAY_HEIGHT);
-        SetHitTestable(TRUE);
-        SetFocusable(TRUE);
     }
 
     BOOL Update()
@@ -205,21 +257,16 @@ public:
     void OnClick();
 
 protected:
-    void PaintOverride(PaintContext &context)
+    void PaintContent(PaintContext &context, const RectF &rc)
     {
-        RectF rc = ToRectF(Bounds());
-        const ThemeTokens &tokens = context.Tokens;
-
-        if (HasState(StateHover) || HasState(StatePressed))
-            context.Painter.FillRoundRect(rc, rc.Height / 2, tokens.Color(LIBER_COLOR_FILL_SUBTLE_HOVER));
-        RectF time = { rc.X, rc.Y + 6.0f, rc.Width, 18.0f };
-        RectF date = { rc.X, rc.Y + 24.0f, rc.Width, 16.0f };
-        context.Painter.Text(m_szTime, time, LIBER_TYPE_CAPTION, tokens.Color(LIBER_COLOR_TEXT1), TextCenter | TextMiddle);
-        context.Painter.Text(m_szDate, date, LIBER_TYPE_CAPTION, tokens.Color(LIBER_COLOR_TEXT2), TextCenter | TextMiddle);
+        float pad = (float)LIBER_TRAY_BUTTON_PAD;
+        RectF time = { rc.X + pad, rc.Y + 2.0f, rc.Width - 2 * pad, 16.0f };
+        RectF date = { rc.X + pad, rc.Y + 18.0f, rc.Width - 2 * pad, 16.0f };
+        ShadowedText(context, m_szTime, time, TextRight | TextMiddle);
+        ShadowedText(context, m_szDate, date, TextRight | TextMiddle);
     }
 
 private:
-    CLiberDock *m_Dock;
     WCHAR m_szTime[32];
     WCHAR m_szDate[32];
 };
@@ -228,7 +275,7 @@ class CLiberDock
 {
 public:
     CLiberDock() : m_Tray(NULL), m_hwndSink(NULL), m_uShellHook(0), m_Count(0), m_DockRoot(NULL), m_TrayRoot(NULL),
-        m_Clock(NULL), m_Dpi(96)
+        m_Pill(NULL), m_Chevron(NULL), m_TrayWidth(0), m_Clock(NULL), m_Dpi(96)
     {
         ZeroMemory(m_Entries, sizeof(m_Entries));
         ZeroMemory(m_Cells, sizeof(m_Cells));
@@ -269,8 +316,12 @@ private:
     LIBER_DOCK_ENTRY m_Entries[LIBER_DOCK_MAX_ITEMS];
     UINT m_Count;
     CLiberPanel *m_DockRoot;
-    CLiberPanel *m_TrayRoot;
-    CDockCell *m_Cells[LIBER_DOCK_MAX_ITEMS + 1];
+    StackPanel *m_TrayRoot;
+    CSystemPill *m_Pill;
+    CTrayChevron *m_Chevron;
+    ThemeTokens m_TrayTokens;
+    int m_TrayWidth;
+    CDockCell *m_Cells[LIBER_DOCK_MAX_ITEMS + LIBER_DOCK_FIXED_CELLS];
     CTrayClock *m_Clock;
     UINT m_Dpi;
     LIBER_DOCK_LAYOUT m_Layout;
@@ -301,6 +352,7 @@ void CTrayChevron::OnClick()
 void CLiberDock::BuildTheme()
 {
     LiberShell_BuildTokens(&m_Tokens);
+    LiberShell_BuildWallpaperInkTokens(&m_TrayTokens);
 }
 
 BOOL CALLBACK CLiberDock::PinProc(PCWSTR pszShortcut, PCWSTR pszTarget, PCWSTR pszAppId, const FILETIME *pCreationTime,
@@ -398,14 +450,14 @@ void CLiberDock::Place()
 {
     HMONITOR monitor = MonitorFromPoint(POINT(), MONITOR_DEFAULTTOPRIMARY);
     MONITORINFO mi = { sizeof(mi) };
-    UINT cells = m_Count + 1;
+    UINT cells = m_Count + LIBER_DOCK_FIXED_CELLS;
 
     if (!GetMonitorInfoW(monitor, &mi))
         SetRect(&mi.rcMonitor, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
-    LiberDock_Layout(&mi.rcMonitor, m_Dpi, cells, LIBER_TRAY_WIDTH, &m_Layout);
-    m_DockSurface.SetPosition(m_Layout.Dock.left, m_Layout.Dock.top, (int)cells * LIBER_DOCK_CELL + 2 * LIBER_DOCK_PAD,
+    LiberDock_Layout(&mi.rcMonitor, m_Dpi, cells, m_TrayWidth, &m_Layout);
+    m_DockSurface.SetPosition(m_Layout.Dock.left, m_Layout.Dock.top, LiberDock_Width(cells),
                               LIBER_DOCK_HEIGHT);
-    m_TraySurface.SetPosition(m_Layout.Tray.left, m_Layout.Tray.top, LIBER_TRAY_WIDTH, LIBER_TRAY_HEIGHT);
+    m_TraySurface.SetPosition(m_Layout.Tray.left, m_Layout.Tray.top, m_TrayWidth, LIBER_TRAY_HEIGHT);
 
     RECT work;
     LiberDock_WorkArea(&mi.rcMonitor, m_Dpi, &work);
@@ -447,8 +499,9 @@ void CLiberDock::Refresh()
         m_Cells[0]->Set(NULL, FALSE, LiberStart_IsOpen());
         for (UINT i = 0; i < m_Count; i++)
         {
-            m_Cells[i + 1]->Set(m_Entries[i].hIcon, m_Entries[i].hwnd != NULL,
-                                m_Entries[i].hwnd != NULL && m_Entries[i].hwnd == foreground);
+            m_Cells[i + LIBER_DOCK_FIXED_CELLS]->Set(m_Entries[i].hIcon, m_Entries[i].hwnd != NULL,
+                                                     m_Entries[i].hwnd != NULL && m_Entries[i].hwnd == foreground &&
+                                                         !LiberStart_IsOpen());
         }
         Place();
         m_DockSurface.Render(AnimationClock::Now());
@@ -462,7 +515,7 @@ void CLiberDock::Refresh()
             DestroyIcon(previous[i].hIcon);
     }
     LocalFree(previous);
-    for (UINT i = 0; i <= LIBER_DOCK_MAX_ITEMS; i++)
+    for (UINT i = 0; i < _countof(m_Cells); i++)
     {
         if (m_Cells[i])
         {
@@ -472,15 +525,18 @@ void CLiberDock::Refresh()
         }
     }
 
-    m_Cells[0] = new CDockCell(this, -1);
+    m_Cells[0] = new CDockCell(this, LIBER_CELL_START);
     m_Cells[0]->Set(NULL, FALSE, LiberStart_IsOpen());
     m_DockRoot->AddChild(m_Cells[0]);
+    m_Cells[1] = new CDockCell(this, LIBER_CELL_SEARCH);
+    m_DockRoot->AddChild(m_Cells[1]);
     for (UINT i = 0; i < m_Count; i++)
     {
-        m_Cells[i + 1] = new CDockCell(this, (int)i);
-        m_Cells[i + 1]->Set(m_Entries[i].hIcon, m_Entries[i].hwnd != NULL,
-                            m_Entries[i].hwnd != NULL && m_Entries[i].hwnd == foreground);
-        m_DockRoot->AddChild(m_Cells[i + 1]);
+        CDockCell *cell = new CDockCell(this, (int)i);
+        cell->Set(m_Entries[i].hIcon, m_Entries[i].hwnd != NULL,
+                  m_Entries[i].hwnd != NULL && m_Entries[i].hwnd == foreground && !LiberStart_IsOpen());
+        m_Cells[i + LIBER_DOCK_FIXED_CELLS] = cell;
+        m_DockRoot->AddChild(cell);
     }
 
     Place();
@@ -490,12 +546,14 @@ void CLiberDock::Refresh()
 
 void CLiberDock::OnCellClick(int index, const RECT &bounds)
 {
-    if (index < 0)
+    if (index == LIBER_CELL_START || index == LIBER_CELL_SEARCH)
     {
         RECT rc = ScreenRect(m_DockSurface, bounds);
         LiberStart_Toggle(&rc);
         return;
     }
+    if (index < 0)
+        return;
     if ((UINT)index >= m_Count)
         return;
 
@@ -522,7 +580,7 @@ void CLiberDock::OnCellClick(int index, const RECT &bounds)
 void CLiberDock::OpenStart()
 {
     if (m_Cells[0])
-        OnCellClick(-1, m_Cells[0]->Bounds());
+        OnCellClick(LIBER_CELL_START, m_Cells[0]->Bounds());
 }
 
 void CLiberDock::OnPillClick()
@@ -583,7 +641,7 @@ LRESULT CALLBACK CLiberDock::SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         LiberShell_ApplyFont(&self->m_DockSurface);
         LiberShell_ApplyFont(&self->m_TraySurface);
         self->m_DockSurface.SetTokens(&self->m_Tokens);
-        self->m_TraySurface.SetTokens(&self->m_Tokens);
+        self->m_TraySurface.SetTokens(&self->m_TrayTokens);
         LiberWidgets_Sync(GetShellWindow());
         SetTimer(hwnd, LIBER_TIMER_REFRESH, LIBER_REFRESH_DELAY, NULL);
         return 0;
@@ -624,14 +682,24 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
     m_DockSurface.SetInputShape((float)LIBER_DOCK_HEIGHT / 2.0f);
     m_TraySurface.SetInputShape((float)LIBER_TRAY_HEIGHT / 2.0f);
 
-    m_DockRoot = new CLiberPanel(Orientation::Horizontal, 0, (float)LIBER_DOCK_HEIGHT / 2.0f, LIBER_MATERIAL_REGULAR);
-    Thickness pad = { LIBER_DOCK_PAD, LIBER_DOCK_PAD, LIBER_DOCK_PAD, LIBER_DOCK_PAD };
+    m_DockRoot = new CLiberPanel(Orientation::Horizontal, LIBER_DOCK_CELL_GAP, (float)LIBER_DOCK_HEIGHT / 2.0f,
+                                 LIBER_MATERIAL_REGULAR);
+    Thickness pad = { LIBER_DOCK_PAD_X, LIBER_DOCK_PAD_Y, LIBER_DOCK_PAD_X, LIBER_DOCK_PAD_Y };
     m_DockRoot->SetPadding(pad);
-    m_TrayRoot = new CLiberPanel(Orientation::Horizontal, 0, (float)LIBER_TRAY_HEIGHT / 2.0f, LIBER_MATERIAL_REGULAR);
+    SYSTEM_POWER_STATUS power;
+    BOOL battery = GetSystemPowerStatus(&power) && power.BatteryFlag != 128 && power.BatteryFlag != 255;
+    m_TrayRoot = new StackPanel(Orientation::Horizontal, LIBER_TRAY_GAP);
+    Thickness trayPad = { LIBER_TRAY_PAD_X, (LIBER_TRAY_HEIGHT - LIBER_TRAY_BUTTON) / 2, LIBER_TRAY_PAD_X,
+                          (LIBER_TRAY_HEIGHT - LIBER_TRAY_BUTTON) / 2 };
+    m_TrayRoot->SetPadding(trayPad);
     m_Clock = new CTrayClock(this);
-    m_TrayRoot->AddChild(new CTrayChevron(this));
-    m_TrayRoot->AddChild(new CSystemPill(this));
+    m_Chevron = new CTrayChevron(this);
+    m_Pill = new CSystemPill(this, battery);
+    m_TrayRoot->AddChild(m_Chevron);
+    m_TrayRoot->AddChild(m_Pill);
     m_TrayRoot->AddChild(m_Clock);
+    m_TrayWidth = 2 * LIBER_TRAY_PAD_X + LIBER_CHEVRON_WIDTH + LiberDock_SystemPillWidth(battery) + LIBER_CLOCK_WIDTH +
+                  2 * LIBER_TRAY_GAP;
     m_Clock->Update();
 
     LiberShell_ApplyFont(&m_DockSurface);
@@ -639,7 +707,7 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
     m_DockSurface.SetDpi(m_Dpi);
     m_TraySurface.SetDpi(m_Dpi);
     m_DockSurface.SetTokens(&m_Tokens);
-    m_TraySurface.SetTokens(&m_Tokens);
+    m_TraySurface.SetTokens(&m_TrayTokens);
     m_DockSurface.SetRoot(m_DockRoot);
     m_TraySurface.SetRoot(m_TrayRoot);
 
@@ -675,7 +743,10 @@ void CLiberDock::Stop()
     m_TraySurface.Destroy();
     delete m_DockRoot;
     delete m_TrayRoot;
-    m_DockRoot = m_TrayRoot = NULL;
+    m_DockRoot = NULL;
+    m_TrayRoot = NULL;
+    m_Pill = NULL;
+    m_Chevron = NULL;
     m_Clock = NULL;
     ZeroMemory(m_Cells, sizeof(m_Cells));
     ClearEntries();
