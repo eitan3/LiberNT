@@ -57,6 +57,7 @@ typedef HANDLE* PHANDLE;
 #define STATUS_NOT_FOUND            ((NTSTATUS)0xC0000225L)
 #define STATUS_CANCELLED            ((NTSTATUS)0xC0000120L)
 #define STATUS_RETRY                ((NTSTATUS)0xC0000227L)
+#define STATUS_DEVICE_REMOVED       ((NTSTATUS)0xC00002B6L)
 
 typedef int32_t INT32, *PINT32;
 typedef int64_t INT64, *PINT64;

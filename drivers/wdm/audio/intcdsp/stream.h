@@ -104,7 +104,10 @@ typedef enum _INTCDSP_STREAM_STATE
      * The object holds nothing, no tag and no buffer, and waits for its
      * close: after a fault cost the firmware its objects and the bus its
      * streams, or after a pending teardown was drained while its pin still
-     * lives (N7-01).
+     * lives (N7-01). A stream the device let go (a fault's or the
+     * power-down's release) carries Lost, and its pin is answered
+     * STATUS_DEVICE_REMOVED until its close (E1, D4); one released by the
+     * drain of its own pending teardown is answered as before.
      */
     IntcDspStreamStateReleased
 } INTCDSP_STREAM_STATE;
@@ -131,6 +134,8 @@ typedef struct _INTCDSP_STREAM
     UINT32 Events;
     /* its pin closed it while its teardown was still pending (N7-01): the drain frees the object instead of leaving it for the close */
     BOOLEAN Orphaned;
+    /* the device let the stream go, a fault's or the power-down's release (E1, D4): its pin is answered STATUS_DEVICE_REMOVED at every call but its buffer's free and its close; cleared at the open that takes the object */
+    BOOLEAN Lost;
 } INTCDSP_STREAM, *PINTCDSP_STREAM;
 
 /*
@@ -170,6 +175,18 @@ typedef struct _INTCDSP_STREAMS_OPS
      * objects, when it calls this.
      */
     VOID (*Fault)(_In_opt_ PVOID Context);
+    /*
+     * The boot at an open (E1): the manager is not ready, or a request
+     * faulted it, and the open boots the DSP and starts the manager again
+     * through this, under the manager's lock, which is recursive: the boot
+     * sequence's own start of the manager (IntcDspStreamsInit) runs inside
+     * the open. Called once per open that finds the manager not ready; the
+     * status is the boot's, and the open then asks the manager again: ready
+     * and not faulted, the open goes on; otherwise the open is refused with
+     * STATUS_DEVICE_NOT_READY and the manager stays in need of a boot. NULL:
+     * no boot at an open, the open refused as before (STATUS_DEVICE_NOT_READY).
+     */
+    NTSTATUS (*Boot)(_In_opt_ PVOID Context);
     /*
      * A buffer goes back to the bus, or is held for its pin: whatever the
      * driver mapped of it is unmapped here, before the bus frees its pages
@@ -244,6 +261,8 @@ typedef struct _INTCDSP_STREAMS
     /* initialized for a booted DSP and its model, and no request has faulted the link since */
     BOOLEAN Ready;
     BOOLEAN Faulted;
+    /* the DSP is powered down with the topology model kept, after a fault or a power-down: the next open boots (E1); cleared by the initialization */
+    BOOLEAN NeedsBoot;
     UINT32 Faults;
     /* what the manager told the firmware and the bus since its initialization, for the self-test's lines: the streams whose tags went back to the pool, the instances and the pipelines deleted */
     UINT32 Freed;
@@ -307,10 +326,11 @@ IntcDspStreamsInit(
  * The power-down's release: every stream gives the bus what it gave it,
  * as after a fault (IntcDspStreamsFault's release, without the firmware
  * messages), the paths forget what they built, the manager is not ready
- * until its next initialization, and every handle is of an older generation.
- * The driver calls it before the DSP goes off. The streams are not
- * re-created at the next D0 entry: a pin that held one finds its handle
- * refused (STATUS_INVALID_HANDLE) for the rest of its life.
+ * until its next initialization and needs a boot, and every handle is of
+ * an older generation. The driver calls it before the DSP goes off. The
+ * streams are not re-created at the next D0 entry: a pin that held one
+ * finds its handle answered STATUS_DEVICE_REMOVED (E1, D4) for the rest
+ * of its life, its buffer's free and its close excepted.
  */
 VOID
 IntcDspStreamsRelease(
@@ -326,6 +346,19 @@ IntcDspStreamOf(
     _In_ const INTCDSP_STREAMS* Streams,
     HANDLE Handle);
 
+/*
+ * Whether a handle is of an older generation (E1, D4): the word's
+ * generation differs from the manager's and its index is in range. The pin
+ * that holds it is answered STATUS_DEVICE_REMOVED, not STATUS_INVALID_HANDLE:
+ * the device let its stream go, and the pin is told so. A word without an
+ * object's index is no handle, stale or not; a closed handle's word is of
+ * the manager's generation, and names nothing.
+ */
+BOOLEAN
+IntcDspStreamStale(
+    _In_ const INTCDSP_STREAMS* Streams,
+    HANDLE Handle);
+
 /* The PCM of a name, or SOFTPLG_NO_PCM */
 UINT32
 IntcDspStreamPcm(
@@ -336,8 +369,12 @@ IntcDspStreamPcm(
  * The transitions of the plan's §5.10, each PASSIVE_LEVEL and serialized
  * with every other transition by the manager's lock (the transport's lock
  * serializes the requests within them); a call at a raised IRQL is refused
- * with STATUS_INVALID_DEVICE_STATE, and a handle of another generation with
- * STATUS_INVALID_HANDLE, before anything is read. Open: the format is
+ * with STATUS_INVALID_DEVICE_STATE, and a handle of another generation or
+ * a stream the device let go (Lost) with STATUS_DEVICE_REMOVED (E1, D4),
+ * before anything is read. Open: when the manager is not ready, or a
+ * request faulted it, the Boot operation is called first, under the lock
+ * (E1); without it, or when the boot leaves the manager not ready, the
+ * open is refused with STATUS_DEVICE_NOT_READY. Then the format is
  * matched against the host copier's formats of that direction and the bus
  * gives a stream of its pool its tag. Allocate: the buffer, then the PCM's
  * pipelines created, its widgets initialized and bound, a copier that
@@ -414,6 +451,18 @@ UINT32
 IntcDspStreamPosition(
     _In_ const INTCDSP_STREAMS* Streams,
     HANDLE Stream);
+
+/*
+ * The position property's query (E1, D4): STATUS_DEVICE_REMOVED for a
+ * stream the device let go or a handle of an older generation, before
+ * anything is read, so that the pin's handler returns it; otherwise
+ * STATUS_SUCCESS and the position IntcDspStreamPosition gives.
+ */
+NTSTATUS
+IntcDspStreamPositionQuery(
+    _In_ const INTCDSP_STREAMS* Streams,
+    HANDLE Stream,
+    _Out_ PULONG Position);
 
 NTSTATUS
 IntcDspStreamRegisterEvent(

@@ -72,6 +72,17 @@ VOID
 IntcDspStreamsDrain(
     _Inout_ PINTCDSP_STREAMS Streams);
 
+/* The manager's clock, the loader's, for the open's boot (E1) and the self-test's waits; defined with the self-test */
+static
+BOOLEAN
+IntcDspHasClock(
+    _In_ const INTCDSP_STREAMS* Streams);
+
+static
+UINT64
+IntcDspNow(
+    _In_ const INTCDSP_STREAMS* Streams);
+
 /* The status the driver answers for a transport outcome */
 static
 NTSTATUS
@@ -100,6 +111,26 @@ IntcDspLinkLost(
     _In_ const INTCDSP_STREAMS* Streams)
 {
     return Streams->Ipc->Link != SofIpcLinkReady && Streams->Ipc->Link != SofIpcLinkBusy;
+}
+
+/*
+ * A notification the transport kept beside a reply (E1, INFO_NEEDED 2):
+ * the firmware posted while a request was outstanding, which nothing
+ * polls for at run time (SofIpcPollNotifications has no caller in the
+ * driver). One line per request that saw any, with the newest one's type
+ * from the transport's ring, beside the request's own line.
+ */
+static
+VOID
+IntcDspNoteNotification(
+    _In_ const INTCDSP_STREAMS* Streams)
+{
+    const SOFIPC_CONTEXT* Ipc = Streams->Ipc;
+    UINT32 Type = SOFIPC_NO_TYPE;
+
+    if (Ipc->RingCount != 0)
+        Type = Ipc->Ring[(Ipc->RingHead + SOFIPC_NOTIFICATION_RING - 1) % SOFIPC_NOTIFICATION_RING].Type;
+    IntcDspStreamLog(Streams, "ipc: a notification of type 0x%08x beside the reply\n", Type);
 }
 
 static
@@ -200,13 +231,17 @@ IntcDspSend(
 {
     SOFIPC_REQUEST Request;
     SOFIPC_STATUS Result;
+    UINT32 Notifications;
 
     RtlZeroMemory(&Request, sizeof(Request));
     Request.Class = Class;
     Request.Msg = *Msg;
     Request.Payload = Payload;
     Request.PayloadBytes = Bytes;
+    Notifications = Streams->Ipc->Notifications;
     Result = SofIpcRequest(Streams->Ipc, &Request);
+    if (Streams->Ipc->Notifications != Notifications)
+        IntcDspNoteNotification(Streams);
     IntcDspTrace(Streams, Stream, INTCDSP_TRACE_IPC, Msg->Primary, Msg->Extension,
                  Result == SofIpcOk ? Streams->Ipc->Last.Status : (UINT32)Result);
     if (Result == SofIpcOk)
@@ -238,14 +273,17 @@ IntcDspNameStream(
     SOFTPLG_IPC4_CONFIG Config;
     SOFIPC4_MSG Msg;
     SOFIPC_STATUS Result;
-    UINT32 Bytes, Flags = SOFIPC4_LARGE_CONFIG_INIT_BLOCK | SOFIPC4_LARGE_CONFIG_FINAL_BLOCK;
+    UINT32 Bytes, Notifications, Flags = SOFIPC4_LARGE_CONFIG_INIT_BLOCK | SOFIPC4_LARGE_CONFIG_FINAL_BLOCK;
 
     if (SoftplgModelConfig(Streams->Model, Widget, Stream->Capture ? 0 : Stream->Format, Stream->Capture ? Stream->Format : 0,
                            Tag, &Config) != SoftplgModelOk)
         return STATUS_INVALID_PARAMETER;
     Bytes = Config.Count * sizeof(UINT32);
+    Notifications = Streams->Ipc->Notifications;
     Result = SofIpcLargeConfigSet(Streams->Ipc, Copier->ModuleId, Streams->WidgetInstance[Widget], INTCDSP_COPIER_STREAM_PARAM,
                                   Config.Words, Bytes);
+    if (Streams->Ipc->Notifications != Notifications)
+        IntcDspNoteNotification(Streams);
     SofIpc4ModuleLargeConfig(&Msg, Copier->ModuleId, Streams->WidgetInstance[Widget], INTCDSP_COPIER_STREAM_PARAM, Bytes, Flags, FALSE);
     IntcDspTrace(Streams, Stream, INTCDSP_TRACE_IPC, Msg.Primary, Msg.Extension,
                  Result == SofIpcOk ? Streams->Ipc->Last.Status : (UINT32)Result);
@@ -605,21 +643,26 @@ IntcDspHeldOf(
  * MDL), at PASSIVE_LEVEL under the manager's mutex, which is a KMUTEX; no
  * bus call is made, so it works after a power-down and after the release of
  * the hardware. The record goes, the last taking its place. The caller
- * holds the lock.
+ * holds the lock. Pin: the pin's own free returned it, which is said in a
+ * line (E1, N9-03's way back), with how many held buffers are left; a
+ * buffer the manager returns on a transition's way out is freed silently.
  */
 static
 VOID
 IntcDspHeldRelease(
     _Inout_ PINTCDSP_STREAMS Streams,
-    _Inout_ PINTCDSP_HELD Held)
+    _Inout_ PINTCDSP_HELD Held,
+    BOOLEAN Pin)
 {
     PMDL Mdl = Held->Mdl;
     UINT8 Tag = Held->Tag;
     BOOLEAN Capture = Held->Capture;
     UINT32 Bytes = (UINT32)Held->Bytes;
+    UINT32 Left;
 
     *Held = Streams->Held[--Streams->HeldCount];
     RtlZeroMemory(&Streams->Held[Streams->HeldCount], sizeof(Streams->Held[0]));
+    Left = Streams->HeldCount;
     MmFreePagesFromMdl(Mdl);
     ExFreePool(Mdl);
     {
@@ -630,19 +673,22 @@ IntcDspHeldRelease(
         Stream.Capture = Capture;
         IntcDspTrace(Streams, &Stream, INTCDSP_TRACE_BUFFER_FREE, 0, 0, Bytes);
     }
+    if (Pin)
+        IntcDspStreamLog(Streams, "stream %u: its pin's free returned the buffer (%u bytes); %u held left\n", Tag, Bytes, Left);
 }
 
-/* The held buffer of a handle's word given back, if the manager holds one: the buffer a transition kept for nobody (the allocate that did not hand it over, the pin's free that forced a fault) */
+/* The held buffer of a handle's word given back, if the manager holds one: the buffer a transition kept for nobody (the allocate that did not hand it over, the pin's free that forced a fault), Pin when it is the pin's own free that returns it */
 static
 VOID
 IntcDspHeldGiveBack(
     _Inout_ PINTCDSP_STREAMS Streams,
-    HANDLE Handle)
+    HANDLE Handle,
+    BOOLEAN Pin)
 {
     PINTCDSP_HELD Held = IntcDspHeldOf(Streams, Handle);
 
     if (Held != NULL)
-        IntcDspHeldRelease(Streams, Held);
+        IntcDspHeldRelease(Streams, Held, Pin);
 }
 
 /*
@@ -748,16 +794,23 @@ IntcDspStreamLetGo(
  * waits for its close. A stream whose teardown was pending holds its buffer
  * for nobody, its pin's free having been answered, so the buffer is returned
  * here, after its tag (N7-01). The fault and the power-down's release end
- * here, the caller holding the lock. The count of the teardowns that were
- * pending is returned.
+ * here, the caller holding the lock; each is the device letting its streams
+ * go (E1, D4), so every stream released here is marked Lost, its pin to be
+ * answered STATUS_DEVICE_REMOVED, and told so in one line. Fault: the kind
+ * of the fault and the time the failing exchange took, a line per stream
+ * before the pin's; NULL at a power-down. The count of the teardowns that
+ * were pending is returned. One line counts the release: the streams let
+ * go, the buffers it held for their pins, the tags it gave back.
  */
 static
 UINT32
 IntcDspStreamsLetGo(
-    _Inout_ PINTCDSP_STREAMS Streams)
+    _Inout_ PINTCDSP_STREAMS Streams,
+    _In_opt_z_ const char* Fault,
+    UINT32 FaultMs)
 {
     const SOFTPLG_IPC4_MODEL* Model = Streams->Model;
-    UINT32 Pending = 0, S;
+    UINT32 Pending = 0, LetGo = 0, Held = 0, Tags = Streams->Freed, Before, S;
 
     for (S = 0; S < INTCDSP_STREAMS_MAX; S++)
     {
@@ -765,42 +818,78 @@ IntcDspStreamsLetGo(
 
         if (Stream->State == IntcDspStreamStateFree || Stream->State == IntcDspStreamStateReleased)
             continue;
+        if (Fault != NULL)
+            IntcDspStreamLog(Streams, "fault during stream %u: %s after %u ms\n", Stream->Tag, Fault, FaultMs);
+        IntcDspStreamLog(Streams, "stream %u: the pin is told: device removed\n", Stream->Tag);
+        Before = Streams->HeldCount;
         IntcDspStreamLetGo(Streams, Stream);
+        if (Streams->HeldCount > Before)
+            Held++;
         if (Stream->State == IntcDspStreamStateTeardown)
         {
-            IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream));
+            IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream), FALSE);
             Pending++;
         }
         Stream->State = IntcDspStreamStateReleased;
+        Stream->Lost = TRUE;
         Stream->Events = 0;
+        LetGo++;
     }
     RtlZeroMemory(Streams->Path, (SIZE_T)Model->PcmCount * sizeof(INTCDSP_PATH));
     RtlZeroMemory(Streams->PipelineInstance, (SIZE_T)Model->PipelineCount * 4 * sizeof(UINT32));
     RtlZeroMemory(Streams->WidgetInstance, (SIZE_T)Model->WidgetCount * 2);
     RtlZeroMemory(Streams->ModuleInstances, INTCDSP_STREAM_MODULES_MAX);
     Streams->NextPipelineInstance = 1;
+    IntcDspStreamLog(Streams, "release: %u streams let go, %u buffers held for their pins, %u tags back\n", LetGo, Held, Streams->Freed - Tags);
     return Pending;
+}
+
+/*
+ * The kind of a fault for its lines (E1): the transport's outcome that
+ * faulted the link, or the undo step's own when the link still carries
+ * requests and the release was forced (IntcDspStuck); the firmware's own
+ * status by name when it answered an error.
+ */
+static
+const char*
+IntcDspFaultKind(
+    _In_ const INTCDSP_STREAMS* Streams)
+{
+    const SOFIPC_CONTEXT* Ipc = Streams->Ipc;
+    SOFIPC_STATUS Outcome;
+
+    if (Ipc == NULL)
+        return "unknown";
+    Outcome = IntcDspLinkLost(Streams) ? Ipc->Failure : Ipc->Last.Outcome;
+    if (Outcome == SofIpcFwStatus)
+        return SofIpc4StatusName(Ipc->Last.Status);
+    return SofIpcStatusName(Outcome);
 }
 
 /*
  * A request faulted the link: the firmware's objects are gone once the
  * driver powers the DSP down, so every stream gives back what the bus gave
  * it, the paths forget what they built, and the driver is told. The manager
- * refuses every transition until the next boot initializes it.
+ * refuses every transition until a boot initializes it again, at the next
+ * open that finds a Boot operation (E1) or at the next D0 entry.
  */
 static
 VOID
 IntcDspStreamsFault(
     _Inout_ PINTCDSP_STREAMS Streams)
 {
-    UINT32 Pending;
+    UINT32 Pending, Ms = 0;
 
     if (Streams->Faulted)
         return;
     Streams->Faulted = TRUE;
     Streams->Faults++;
-    Pending = IntcDspStreamsLetGo(Streams);
-    IntcDspStreamLog(Streams, "streams: released after the fault; nothing is sent until the DSP is booted again\n");
+    /* the driver powers the DSP down for this fault: the next open boots it */
+    Streams->NeedsBoot = TRUE;
+    if (Streams->Ipc != NULL)
+        Ms = (UINT32)((Streams->Ipc->Last.ElapsedUs + 500) / 1000);
+    Pending = IntcDspStreamsLetGo(Streams, IntcDspFaultKind(Streams), Ms);
+    IntcDspStreamLog(Streams, "streams: released after the fault; nothing is sent until the next stream open or D0 entry\n");
     if (Pending != 0)
         IntcDspStreamLog(Streams, "streams: %u teardowns were pending at the release; their buffers are returned\n", Pending);
     if (Streams->Ops != NULL && Streams->Ops->Fault != NULL)
@@ -817,8 +906,10 @@ IntcDspStreamsRelease(
     /* only a manager that was started holds anything: its streams were opened while it was ready */
     if (Streams->Ready)
     {
-        Pending = IntcDspStreamsLetGo(Streams);
-        IntcDspStreamLog(Streams, "streams: released for the power-down; nothing is sent until the DSP is booted again\n");
+        /* the DSP goes off with the model kept: the next open boots it (E1) */
+        Streams->NeedsBoot = TRUE;
+        Pending = IntcDspStreamsLetGo(Streams, NULL, 0);
+        IntcDspStreamLog(Streams, "streams: released for the power-down; nothing is sent until the next stream open or D0 entry\n");
         if (Pending != 0)
             IntcDspStreamLog(Streams, "streams: %u teardowns were pending at the release; their buffers are returned\n", Pending);
     }
@@ -976,6 +1067,38 @@ IntcDspStreamOf(
     return Stream;
 }
 
+BOOLEAN
+IntcDspStreamStale(
+    _In_ const INTCDSP_STREAMS* Streams,
+    HANDLE Handle)
+{
+    UINT_PTR Word = (UINT_PTR)Handle;
+    UINT32 Index = (UINT32)(Word & INTCDSP_STREAM_INDEX_MASK);
+
+    /* the index is one-based, as IntcDspStreamOf reads it: a word without an object's index is no handle, stale or not */
+    return Index != 0 && Index <= INTCDSP_STREAMS_MAX && (Word >> INTCDSP_STREAM_INDEX_BITS) != Streams->Generation;
+}
+
+/*
+ * The pin's answer for a stream the device let go (E1, D4): a handle of
+ * an older generation (IntcDspStreamStale), or a stream of this generation
+ * the fault's or the power-down's release let go (Lost). Every call of the
+ * pin on such a stream is STATUS_DEVICE_REMOVED, asked before anything of
+ * the manager's readiness, but two: its buffer's free, answered as the Fix
+ * F contract says, and its close, answered STATUS_SUCCESS. A stream
+ * Released by its own free (the drain of a pending teardown, N7-01) is not
+ * Lost, and the pin's calls on it are answered as before.
+ */
+static
+BOOLEAN
+IntcDspStreamRemoved(
+    _In_ const INTCDSP_STREAMS* Streams,
+    _In_opt_ const INTCDSP_STREAM* Stream,
+    HANDLE Handle)
+{
+    return IntcDspStreamStale(Streams, Handle) || (Stream != NULL && Stream->Lost);
+}
+
 UINT32
 IntcDspStreamPcm(
     _In_ const INTCDSP_STREAMS* Streams,
@@ -1119,6 +1242,8 @@ IntcDspStreamOpenLocked(
     Found->Events = 0;
     Found->State = IntcDspStreamStateOpen;
     Found->Generation = Streams->Generation;
+    /* the object is the new stream's: whatever the device did to its user before (E1, the Lost marker) is forgotten */
+    Found->Lost = FALSE;
     Streams->Path[Pcm].Open++;
     IntcDspTrace(Streams, Found, INTCDSP_TRACE_OPEN, 0, 0, SampleRate);
     *Stream = IntcDspStreamHandle(Streams, Found);
@@ -1136,14 +1261,55 @@ IntcDspStreamOpen(
     ULONG ContainerBits,
     _Out_ PHANDLE Stream)
 {
-    NTSTATUS Status;
+    NTSTATUS Status, Boot = STATUS_SUCCESS;
+    UINT64 Start = 0;
+    BOOLEAN Booted = FALSE, Clocked = FALSE, Recovering = FALSE;
 
     *Stream = NULL;
     if (KeGetCurrentIrql() != PASSIVE_LEVEL)
         return STATUS_INVALID_DEVICE_STATE;
     IntcDspStreamsLock(Streams);
+    /*
+     * The boot at the open (E1): the manager is not ready, or a request
+     * faulted it. The Boot operation boots the DSP and starts the manager
+     * again on it, inside this lock (the mutex is recursive); a second open
+     * while the first boots waits here and then finds the manager ready. No
+     * operation: the open is refused as it always was. After the operation
+     * the manager is asked again, never the operation's status: not ready
+     * still, the open is refused and the next one boots again.
+     */
+    if (!Streams->Ready || Streams->Faulted)
+    {
+        if (Streams->Ops == NULL || Streams->Ops->Boot == NULL)
+        {
+            IntcDspStreamsUnlock(Streams);
+            return STATUS_DEVICE_NOT_READY;
+        }
+        Recovering = Streams->NeedsBoot;
+        Clocked = IntcDspHasClock(Streams);
+        Start = IntcDspNow(Streams);
+        Boot = Streams->Ops->Boot(Streams->Ops->Context);
+        Booted = TRUE;
+        if (!Streams->Ready || Streams->Faulted)
+        {
+            Streams->NeedsBoot = TRUE;
+            IntcDspStreamLog(Streams, "boot at stream open failed: the DSP is not ready after the boot (0x%08x); no stream is taken\n", (UINT32)Boot);
+            IntcDspStreamsUnlock(Streams);
+            return STATUS_DEVICE_NOT_READY;
+        }
+    }
     IntcDspStreamsDrain(Streams);
     Status = IntcDspStreamOpenLocked(Streams, Pcm, Capture, SampleRate, Channels, ValidBits, ContainerBits, Stream);
+    if (Booted && NT_SUCCESS(Status))
+    {
+        /* the boot's wall time at this open (E1): a recovery after a fault or a power-down, or a first boot at an open (E2) */
+        const char* Line = Recovering ? "recovered: open ok" : "boot at stream open: ok";
+
+        if (Clocked)
+            IntcDspStreamLog(Streams, "%s after %u ms\n", Line, (UINT32)((IntcDspNow(Streams) - Start + 500) / 1000));
+        else
+            IntcDspStreamLog(Streams, "%s\n", Line);
+    }
     IntcDspStreamsUnlock(Streams);
     return Status;
 }
@@ -1198,7 +1364,7 @@ IntcDspStreamBuffer(
     /* a fault on the way released the tag of every stream and forgot the path (the build's own undo may have forced it, R1-04): nothing is left to undo; the buffer this allocate did not hand to its pin is held for nobody, so its pages go back here (R5-01) */
     if (Streams->Faulted)
     {
-        IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream));
+        IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream), FALSE);
         return Status;
     }
     Path->Held--;
@@ -1206,7 +1372,7 @@ IntcDspStreamBuffer(
     {
         /* the fault released the tag of every stream */
         Status = IntcDspFailed(Streams, Status);
-        IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream));
+        IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream), FALSE);
         return Status;
     }
     if (Path->Held == 0 && Path->Built)
@@ -1227,7 +1393,7 @@ IntcDspStreamBuffer(
             IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be deleted after the failed build (0x%08x); released as after a fault\n",
                              Stream->Tag, (UINT32)Step);
             Status = IntcDspStuck(Streams, Step);
-            IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream));
+            IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream), FALSE);
             return Status;
         }
     }
@@ -1248,6 +1414,8 @@ IntcDspStreamAllocateLocked(
     PINTCDSP_STREAM Stream = IntcDspStreamOf(Streams, Handle);
     ULONG FrameBytes;
 
+    if (IntcDspStreamRemoved(Streams, Stream, Handle))
+        return STATUS_DEVICE_REMOVED;
     if (Stream == NULL)
         return STATUS_INVALID_HANDLE;
     if (!Streams->Ready || Streams->Faulted)
@@ -1320,6 +1488,8 @@ IntcDspStreamRunLocked(
     UINT8 Order[INTCDSP_PCM_PIPELINES_MAX];
     UINT32 Count, I, P, Started = 0;
 
+    if (IntcDspStreamRemoved(Streams, Stream, Handle))
+        return STATUS_DEVICE_REMOVED;
     if (Stream == NULL)
         return STATUS_INVALID_HANDLE;
     if (!Streams->Ready || Streams->Faulted)
@@ -1411,6 +1581,8 @@ IntcDspStreamPauseLocked(
     UINT8 Order[INTCDSP_PCM_PIPELINES_MAX];
     UINT32 Count, I, P;
 
+    if (IntcDspStreamRemoved(Streams, Stream, Handle))
+        return STATUS_DEVICE_REMOVED;
     if (Stream == NULL)
         return STATUS_INVALID_HANDLE;
     if (!Streams->Ready || Streams->Faulted)
@@ -1592,7 +1764,7 @@ IntcDspStreamTeardownDrain(
     Status = IntcDspStreamReleaseFirmware(Streams, Stream, NULL);
     if (!NT_SUCCESS(Status))
         return Status;
-    IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream));
+    IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream), FALSE);
     Streams->Path[Stream->Pcm].Open--;
     IntcDspStreamLetGo(Streams, Stream);
     Stream->State = Stream->Orphaned ? IntcDspStreamStateFree : IntcDspStreamStateReleased;
@@ -1633,6 +1805,8 @@ IntcDspStreamFreeLocked(
     const char* Busy = NULL;
     BOOLEAN PauseBusy = FALSE;
 
+    if (IntcDspStreamRemoved(Streams, Stream, Handle))
+        return STATUS_DEVICE_REMOVED;
     if (Stream == NULL)
         return STATUS_INVALID_HANDLE;
     if (!Streams->Ready || Streams->Faulted)
@@ -1648,7 +1822,7 @@ IntcDspStreamFreeLocked(
         if (!NT_SUCCESS(Status) && Status != STATUS_RETRY)
         {
             /* a fault's release held the buffer for a pin that forgets it with this answer (N7-01): the manager returns it */
-            IntcDspHeldGiveBack(Streams, Handle);
+            IntcDspHeldGiveBack(Streams, Handle, TRUE);
             return Status;
         }
         /* a busy pause stopped the bus's stream, and the release goes on: a busy answer again below makes the teardown pending */
@@ -1662,7 +1836,7 @@ IntcDspStreamFreeLocked(
     if (!NT_SUCCESS(Status))
     {
         /* the pin's own free asked for the buffer to go and forgets the MDL whatever the answer: the forced release held it, and it is returned here (R5-01) */
-        IntcDspHeldGiveBack(Streams, Handle);
+        IntcDspHeldGiveBack(Streams, Handle, TRUE);
         return Status;
     }
     IntcDspStreamReleaseBuffer(Streams, Stream);
@@ -1686,7 +1860,7 @@ IntcDspStreamFree(
     Held = IntcDspHeldOf(Streams, Handle);
     if (Held != NULL)
     {
-        IntcDspHeldRelease(Streams, Held);
+        IntcDspHeldRelease(Streams, Held, TRUE);
         IntcDspStreamsUnlock(Streams);
         return STATUS_SUCCESS;
     }
@@ -1703,6 +1877,9 @@ IntcDspStreamCloseLocked(
 {
     PINTCDSP_STREAM Stream = IntcDspStreamOf(Streams, Handle);
 
+    /* a handle of an older generation (E1, D4): the pin closes what it held of a device that let it go, and is answered as the close of a released stream, nothing of the object its index names now being touched */
+    if (IntcDspStreamStale(Streams, Handle))
+        return STATUS_SUCCESS;
     if (Stream == NULL || Stream->State == IntcDspStreamStateFree)
         return STATUS_INVALID_HANDLE;
     /* a close while the teardown is pending is accepted (N7-01): the prologue sent the release again and the transport answered busy; the pin is gone, and the next drain frees the object */
@@ -1747,6 +1924,8 @@ IntcDspStreamPositionRegister(
     PINTCDSP_STREAM Stream = IntcDspStreamOf(Streams, Handle);
 
     *Position = NULL;
+    if (IntcDspStreamRemoved(Streams, Stream, Handle))
+        return STATUS_DEVICE_REMOVED;
     if (Stream == NULL || Stream->Handle == NULL)
         return STATUS_INVALID_HANDLE;
     if (!INTCDSP_BUS_HAS(Streams->Bus, GetPositionRegister))
@@ -1763,6 +1942,8 @@ IntcDspStreamLinkPositionRegister(
     PINTCDSP_STREAM Stream = IntcDspStreamOf(Streams, Handle);
 
     *Position = NULL;
+    if (IntcDspStreamRemoved(Streams, Stream, Handle))
+        return STATUS_DEVICE_REMOVED;
     if (Stream == NULL || Stream->Handle == NULL)
         return STATUS_INVALID_HANDLE;
     if (!INTCDSP_BUS_HAS(Streams->Bus, GetLinkPositionRegister))
@@ -1792,6 +1973,21 @@ IntcDspStreamPosition(
     if (Stream == NULL || Stream->Handle == NULL)
         return 0;
     return Streams->Bus->StreamPosition(Streams->Bus->Context, Stream->Handle);
+}
+
+NTSTATUS
+IntcDspStreamPositionQuery(
+    _In_ const INTCDSP_STREAMS* Streams,
+    HANDLE Handle,
+    _Out_ PULONG Position)
+{
+    PINTCDSP_STREAM Stream = IntcDspStreamOf(Streams, Handle);
+
+    *Position = 0;
+    if (IntcDspStreamRemoved(Streams, Stream, Handle))
+        return STATUS_DEVICE_REMOVED;
+    *Position = IntcDspStreamPosition(Streams, Handle);
+    return STATUS_SUCCESS;
 }
 
 static
@@ -2131,10 +2327,21 @@ IntcDspStreamCompare(
 }
 
 static
+BOOLEAN
+IntcDspHasClock(
+    _In_ const INTCDSP_STREAMS* Streams)
+{
+    return Streams->Ipc != NULL && Streams->Ipc->Fw != NULL && Streams->Ipc->Fw->Ops != NULL &&
+        Streams->Ipc->Fw->Ops->NowUs != NULL;
+}
+
+static
 UINT64
 IntcDspNow(
     _In_ const INTCDSP_STREAMS* Streams)
 {
+    if (!IntcDspHasClock(Streams))
+        return 0;
     return Streams->Ipc->Fw->Ops->NowUs(Streams->Ipc->Fw->OpsContext);
 }
 

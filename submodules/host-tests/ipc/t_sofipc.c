@@ -1514,6 +1514,7 @@ static const INTCDSP_STREAMS_OPS StreamOpsTemplate =
     NULL,
     StreamLog,
     StreamFault,
+    NULL,
     StreamUnmap
 };
 
@@ -1769,18 +1770,26 @@ StreamPinClose(
     Pin->Mdl = NULL;
 }
 
-/* A second close of a pin's handle: nothing is held under the word, so nothing is freed and the free is refused; after a fault in the same boot the stream's object still answers for the word with the manager's not-ready, after a power-down the word names nothing */
+/* A second close of a pin's handle whose stream its own free released (the drain of its pending teardown): nothing is held under the word, so nothing is freed and the free is refused */
 static
 void
 StreamPinCloseAgain(
     STREAM_HARNESS* S,
     HANDLE Handle)
 {
-    NTSTATUS Status;
-
     CHECK(StreamPinOf(S, Handle) == NULL);
-    Status = IntcDspStreamFree(&S->Streams, Handle);
-    CHECK(Status == STATUS_INVALID_HANDLE || Status == STATUS_DEVICE_NOT_READY);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Handle), STATUS_INVALID_HANDLE);
+}
+
+/* A second close of a pin's handle on a stream the device let go (E1, D4): the fault's or the power-down's release made it Lost, or a later boot made its word stale; nothing is held under the word, and the pin is told the device is gone */
+static
+void
+StreamPinCloseAgainRemoved(
+    STREAM_HARNESS* S,
+    HANDLE Handle)
+{
+    CHECK(StreamPinOf(S, Handle) == NULL);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Handle), STATUS_DEVICE_REMOVED);
 }
 
 /* The pin forgets its MDL, as the wave pin does when its free is answered, with a failure or with the teardown pending (pin_wavert.cpp): the pin unmapped before its free, so the fake's count of the pin goes with the mapping; no probe, no free from the pin again */
@@ -2433,18 +2442,18 @@ CheckStreamTimeouts(
         CHECK(S->Streams.Path[Pcm].Held == 0 && S->Streams.Path[Pcm].Built == FALSE);
         CHECK_EQ(S->Streams.PipelineInstance[0], 0);
         CHECK(StreamLogCount(S, "the link is faulted\n") == 1);
-        CHECK(StreamLogCount(S, "streams: released after the fault; nothing is sent until the DSP is booted again\n") == 1);
-        /* nothing more is sent: the transitions refuse, and the fault is reported once */
+        CHECK(StreamLogCount(S, "streams: released after the fault; nothing is sent until the next stream open or D0 entry\n") == 1);
+        /* nothing more is sent: the transitions refuse, the capture's run with the device removed (E1, D4: the fault let it go), and the fault is reported once */
         CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_DEVICE_NOT_READY);
         CHECK(Fresh == NULL);
-        CHECK_EQ(IntcDspStreamRun(&S->Streams, Capture), STATUS_DEVICE_NOT_READY);
+        CHECK_EQ(IntcDspStreamRun(&S->Streams, Capture), STATUS_DEVICE_REMOVED);
         /* the pins' frees return their held buffers after the fault, whatever the manager's state; a second free of a word is refused */
         if (K >= IPC4_STREAM_TRACE_ALLOCATE_REQUESTS + 1)
         {
             StreamPinClose(S, Render);
-            StreamPinCloseAgain(S, Render);
+            StreamPinCloseAgainRemoved(S, Render);
             StreamPinClose(S, Capture);
-            StreamPinCloseAgain(S, Capture);
+            StreamPinCloseAgainRemoved(S, Capture);
         }
         StreamPinHeld(S, 0, K >= IPC4_STREAM_TRACE_ALLOCATE_REQUESTS + 1 ? 2 : 1);
         CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
@@ -2963,19 +2972,19 @@ CheckStreamGeneration(
     CHECK(Fresh != NULL);
     CHECK(IntcDspStreamOf(&S->Streams, Fresh) == &S->Streams.Stream[0]);
     Requests = S->H.Dsp->TransportRequests;
-    /* the stale handle names nothing: every entry refuses it before it reads, nothing is sent, and the new stream is as its open left it */
+    /* the stale handle names nothing: the pin that holds it is told so (E1, D4), STATUS_DEVICE_REMOVED at every entry of the design's table before it reads, its close answered, nothing is sent, and the new stream is as its open left it; the event entries refuse the word as before */
     CHECK(IntcDspStreamOf(&S->Streams, Stale) == NULL);
-    CHECK_EQ(IntcDspStreamRun(&S->Streams, Stale), STATUS_INVALID_HANDLE);
-    CHECK_EQ(IntcDspStreamPause(&S->Streams, Stale), STATUS_INVALID_HANDLE);
-    CHECK_EQ(IntcDspStreamFree(&S->Streams, Stale), STATUS_INVALID_HANDLE);
-    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Stale, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_INVALID_HANDLE);
-    CHECK_EQ(IntcDspStreamPositionRegister(&S->Streams, Stale, &Register), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Stale), STATUS_DEVICE_REMOVED);
+    CHECK_EQ(IntcDspStreamPause(&S->Streams, Stale), STATUS_DEVICE_REMOVED);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Stale), STATUS_DEVICE_REMOVED);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Stale, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_DEVICE_REMOVED);
+    CHECK_EQ(IntcDspStreamPositionRegister(&S->Streams, Stale, &Register), STATUS_DEVICE_REMOVED);
     CHECK(Register == NULL);
-    CHECK_EQ(IntcDspStreamLinkPositionRegister(&S->Streams, Stale, &Register), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamLinkPositionRegister(&S->Streams, Stale, &Register), STATUS_DEVICE_REMOVED);
     CHECK_EQ(IntcDspStreamPosition(&S->Streams, Stale), 0);
     CHECK_EQ(IntcDspStreamRegisterEvent(&S->Streams, Stale, &S->Event), STATUS_INVALID_HANDLE);
     CHECK_EQ(IntcDspStreamUnregisterEvent(&S->Streams, Stale, &S->Event), STATUS_INVALID_HANDLE);
-    CHECK_EQ(IntcDspStreamClose(&S->Streams, Stale), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Stale), STATUS_SUCCESS);
     CHECK_EQ(S->H.Dsp->TransportRequests, Requests);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 0);
     Stream = IntcDspStreamOf(&S->Streams, Fresh);
@@ -3056,14 +3065,14 @@ CheckStreamPowerDown(
     CHECK_EQ(S->Streams.PipelineInstance[0], 0);
     for (I = 0; I < INTCDSP_STREAMS_MAX; I++)
         CHECK(S->Streams.Stream[I].State == IntcDspStreamStateFree || S->Streams.Stream[I].State == IntcDspStreamStateReleased);
-    CHECK(StreamLogCount(S, "streams: released for the power-down; nothing is sent until the DSP is booted again\n") == 1);
+    CHECK(StreamLogCount(S, "streams: released for the power-down; nothing is sent until the next stream open or D0 entry\n") == 1);
     CHECK_EQ(S->Streams.Generation, 2);
-    /* between the power-down and the next D0 entry the handles are refused, and an open fails fast: no request pays the budget; the capture pin's free is the exception, the held buffer returned under its stale word (R5-01) */
-    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_INVALID_HANDLE);
+    /* between the power-down and the next D0 entry the handles are answered STATUS_DEVICE_REMOVED (E1, D4: the device let their streams go), their closes are answered, and an open fails fast: no request pays the budget; the capture pin's free is the exception, the held buffer returned under its stale word (R5-01) */
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_DEVICE_REMOVED);
     StreamPinClose(S, Capture);
-    StreamPinCloseAgain(S, Capture);
+    StreamPinCloseAgainRemoved(S, Capture);
     StreamPinHeld(S, 1, 1);
-    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
     CHECK_EQ(IntcDspStreamPosition(&S->Streams, Render), 0);
     CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_DEVICE_NOT_READY);
     CHECK(Fresh == NULL);
@@ -3071,7 +3080,7 @@ CheckStreamPowerDown(
     /* a manager that holds nothing is released without a line, and its generation moves on */
     IntcDspStreamsRelease(&S->Streams);
     CHECK_EQ(S->Streams.Generation, 3);
-    CHECK(StreamLogCount(S, "streams: released for the power-down; nothing is sent until the DSP is booted again\n") == 1);
+    CHECK(StreamLogCount(S, "streams: released for the power-down; nothing is sent until the next stream open or D0 entry\n") == 1);
     /* the next D0 entry boots the DSP and initializes the manager: a new pin takes the object the render pin had */
     StreamBoot(S, NULL);
     IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
@@ -3083,15 +3092,15 @@ CheckStreamPowerDown(
     CHECK(IntcDspStreamOf(&S->Streams, Fresh) == &S->Streams.Stream[0]);
     CHECK_EQ((UINT_PTR)Fresh & INTCDSP_STREAM_INDEX_MASK, 1);
     CHECK_EQ((UINT_PTR)Fresh >> INTCDSP_STREAM_INDEX_BITS, 4);
-    /* the stale render handle: refused at every entry but its buffer's free, the new stream untouched and nothing sent; the render pin frees its held buffer after the D0 entry */
+    /* the stale render handle: STATUS_DEVICE_REMOVED at every entry but its buffer's free and its close (E1, D4), the new stream untouched and nothing sent; the render pin frees its held buffer after the D0 entry */
     CHECK(IntcDspStreamOf(&S->Streams, Render) == NULL);
-    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_INVALID_HANDLE);
-    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_DEVICE_REMOVED);
     StreamPinClose(S, Render);
-    StreamPinCloseAgain(S, Render);
+    StreamPinCloseAgainRemoved(S, Render);
     StreamPinHeld(S, 0, 2);
-    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_INVALID_HANDLE);
-    CHECK_EQ(IntcDspStreamPositionRegister(&S->Streams, Render, &Register), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_DEVICE_REMOVED);
+    CHECK_EQ(IntcDspStreamPositionRegister(&S->Streams, Render, &Register), STATUS_DEVICE_REMOVED);
     CHECK_EQ(IntcDspStreamRegisterEvent(&S->Streams, Render, &S->Event), STATUS_INVALID_HANDLE);
     Stream = IntcDspStreamOf(&S->Streams, Fresh);
     CHECK(Stream != NULL);
@@ -3327,10 +3336,10 @@ CheckStreamHeldBuffer(
     StreamPinHeld(S, 0, 1);
     CHECK_EQ(S->Unmaps, 1);
     CHECK(IntcDspStreamOf(&S->Streams, Render) != NULL && IntcDspStreamOf(&S->Streams, Render)->State == IntcDspStreamStateReleased);
-    CHECK(StreamLogCount(S, "released after the fault; nothing is sent until the DSP is booted again\n") == 1);
+    CHECK(StreamLogCount(S, "released after the fault; nothing is sent until the next stream open or D0 entry\n") == 1);
     CHECK(S->H.Dsp->TransportRequests > Requests);
-    /* the pin's free of a word nothing is held under: refused, nothing freed */
-    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_DEVICE_NOT_READY);
+    /* the pin's free of a word nothing is held under: refused, the device removed (E1, D4: the fault let the stream go), nothing freed */
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_DEVICE_REMOVED);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 1);
     StreamStop(S);
     free(S);
@@ -3362,7 +3371,7 @@ CheckStreamHeldBuffer(
     CHECK_EQ(S->Unmaps, 1);
     CHECK(IntcDspStreamOf(&S->Streams, Render) != NULL && IntcDspStreamOf(&S->Streams, Render)->State == IntcDspStreamStateReleased);
     CHECK(StreamLogCount(S, "could not be deleted again (0xc00000b5); released as after a fault\n") == 1);
-    CHECK(StreamLogCount(S, "released after the fault; nothing is sent until the DSP is booted again\n") == 1);
+    CHECK(StreamLogCount(S, "released after the fault; nothing is sent until the next stream open or D0 entry\n") == 1);
     /* the deletion's own line says the link ready, as the build's busy request's does: the failures were the exchanges' alone, never the link's */
     CHECK(StreamLogCount(S, "the link is ready\n") == 2);
     StreamStop(S);
@@ -3395,7 +3404,7 @@ CheckStreamHeldBuffer(
     StreamPinHeld(S, 1, 1);
     CHECK_EQ(S->Unmaps, 2);
     CHECK(StreamLogCount(S, "released as after a fault\n") == 1);
-    CHECK(StreamLogCount(S, "released after the fault; nothing is sent until the DSP is booted again\n") == 1);
+    CHECK(StreamLogCount(S, "released after the fault; nothing is sent until the next stream open or D0 entry\n") == 1);
     /* the D0 entry boots the DSP and initializes the manager: the held buffer outlives the generation */
     StreamBoot(S, NULL);
     IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
@@ -3403,11 +3412,11 @@ CheckStreamHeldBuffer(
     StreamPinHeld(S, 1, 1);
     /* the capture pin's close: the probe through its MDL, the free that returns the pages once, a second free refused */
     StreamPinClose(S, Capture);
-    StreamPinCloseAgain(S, Capture);
+    StreamPinCloseAgainRemoved(S, Capture);
     StreamPinHeld(S, 0, 2);
     /* the render pin's word: its buffer went back on the way out of its free and the pin forgot the MDL, so nothing is held; a free of the word again is refused */
     StreamPinForget(S, Render);
-    StreamPinCloseAgain(S, Render);
+    StreamPinCloseAgainRemoved(S, Render);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 2);
     for (Sx = 0; Sx < INTCDSP_STREAMS_MAX; Sx++)
         CHECK_EQ(S->Streams.Stream[Sx].State, IntcDspStreamStateFree);
@@ -3454,7 +3463,7 @@ CheckStreamHeldBuffer(
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 0);
     CHECK_EQ(FakeBusMdlCount(&S->Bus), INTCDSP_HELD_MAX + 1);
     CHECK(StreamLogCount(S, "held for nobody, the manager's table of held buffers being full; left allocated\n") == 1);
-    /* the pins' frees after the fifth boot: the held ones return their pages; the one held for nobody is refused its stale word, and its pages stay allocated */
+    /* the pins' frees after the fifth boot: the held ones return their pages; the one held for nobody is refused its stale word, the device removed, and its pages stay allocated */
     for (I = 0; I < INTCDSP_HELD_MAX; I++)
         StreamPinClose(S, S->Pins[I].Handle);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), INTCDSP_HELD_MAX);
@@ -3462,7 +3471,7 @@ CheckStreamHeldBuffer(
     Stream = IntcDspStreamOf(&S->Streams, S->Pins[INTCDSP_HELD_MAX].Handle);
     CHECK(Stream == NULL);
     FakeBusPinClose(&S->Bus, S->Pins[INTCDSP_HELD_MAX].Mdl);
-    CHECK_EQ(IntcDspStreamFree(&S->Streams, S->Pins[INTCDSP_HELD_MAX].Handle), STATUS_INVALID_HANDLE);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, S->Pins[INTCDSP_HELD_MAX].Handle), STATUS_DEVICE_REMOVED);
     CHECK(FakeBusMdlMemory(&S->Bus, S->Pins[INTCDSP_HELD_MAX].Mdl) != NULL);
     CHECK_EQ(FakeBusMdlCount(&S->Bus), 1);
     CHECK_EQ(FakeBusLockDepth, 0);
@@ -3920,9 +3929,9 @@ CheckStreamPendingTeardown(
     S->H.LockBusyFromRequest = 0;
     S->H.Dsp->Faults.IpcStatusForType = SofIpc4ModLargeConfigSet;
     S->H.Dsp->Faults.IpcStatusValue = SofIpc4InvalidResourceState;
-    /* the render's run drains the capture first, and the drain faults the link: the transition finds the manager faulted */
+    /* the render's run drains the capture first, and the drain faults the link: the transition finds the manager faulted, which let the render stream go too (E1, D4) */
     Status = IntcDspStreamRun(&S->Streams, Render);
-    CHECK_EQ(Status, STATUS_DEVICE_NOT_READY);
+    CHECK_EQ(Status, STATUS_DEVICE_REMOVED);
     CHECK_EQ(S->H.Ipc.Link, SofIpcLinkFaulted);
     CHECK_EQ(S->Streams.Faulted, TRUE);
     CHECK_EQ(S->Faults, 1);
@@ -3938,8 +3947,8 @@ CheckStreamPendingTeardown(
     CHECK(StreamLogCount(S, "its pending teardown is done") == 0);
     /* the pins after the fault: the render pin's free returns its held buffer, the capture's word holds nothing; both close */
     StreamPinClose(S, Render);
-    StreamPinCloseAgain(S, Render);
-    StreamPinCloseAgain(S, Capture);
+    StreamPinCloseAgainRemoved(S, Render);
+    StreamPinCloseAgainRemoved(S, Capture);
     StreamPinHeld(S, 0, 2);
     CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
     CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
