@@ -112,12 +112,8 @@ static inline void udelay(LONG usec) {
 }
 #endif
 
-#if DBG
+/* A line that carries data the session's log is read for (the NHLT summary, the machine's DMI strings and quirk, the NHLT parse status): printed in every build, as intcdsp's IntcDspLog is (R5-03); the lines that only narrate stay SklHdAudBusPrint's, gated by level and category in the checked build */
 #define SklHdAudBusReport(fmt, ...) {            \
     DbgPrintEx(DPFLTR_IHVAUDIO_ID, DPFLTR_ERROR_LEVEL, DRIVERNAME fmt, ##__VA_ARGS__);               \
     }
-#else
-#define SklHdAudBusReport(fmt, ...) {           \
-}
-#endif
 #endif
