@@ -22,7 +22,9 @@ enum GpuShape
     GpuStrokeArc,
     GpuLine,
     GpuMask,
-    GpuImage
+    GpuImage,
+    GpuShadow,
+    GpuGradient
 };
 
 struct GpuDrawConstants
@@ -91,6 +93,8 @@ public:
     void Clear(Argb color);
     void FillRect(const RectF &rc, Argb color);
     void FillRoundRect(const RectF &rc, float radius, Argb color);
+    void FillGradient(const RectF &rc, float radius, PointF from, PointF to, Argb fromColor, Argb toColor);
+    void FillShadow(const RectF &rc, float radius, float blur, Argb color);
     void StrokeRoundRect(const RectF &rc, float radius, Argb color, float width);
     void FillEllipse(const RectF &rc, Argb color);
     void StrokeArc(const RectF &rc, float startDegrees, float sweepDegrees, Argb color, float width);
@@ -115,7 +119,8 @@ private:
     void Mask(UINT kind, LPCWSTR name, LPCWSTR text, LIBER_TYPE style, UINT flags, HICON icon, const RectF &rc,
               Argb color);
     void Draw(GpuShape shape, const float quad[4], const float rect[4], float radius, float width, Argb color,
-              const float arc[2], ID3D11ShaderResourceView *view, const float uv[4], BOOL copy);
+              const float arc[2], ID3D11ShaderResourceView *view, const float uv[4], BOOL copy,
+              const float *gradient = NULL);
     ID3D11ShaderResourceView *Raster(LPCWSTR key, UINT width, UINT height, UINT kind, LPCWSTR text, LIBER_TYPE style,
                                      UINT flags, HICON icon, const RectF &local);
 

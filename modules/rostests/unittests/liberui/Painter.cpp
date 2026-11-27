@@ -269,6 +269,16 @@ static void ScriptOffsetText(IPainter &p)
 {
     p.Text(L"Liber", R(0.5f, 0.25f, 64, 64), LIBER_TYPE_BODY_STRONG, 0xFF000000, TextCenter | TextMiddle);
 }
+static void ScriptGradient(IPainter &p)
+{
+    p.FillGradient(R(0, 0, 64, 64), 0.0f, PointF{ 0, 0 }, PointF{ 64, 0 }, 0xFFFF0000, 0xFF0000FF);
+}
+static void ScriptRoundGradient(IPainter &p)
+{
+    p.FillGradient(R(0, 0, 64, 64), 16.0f, PointF{ 0, 0 }, PointF{ 64, 64 }, 0xFF1A8FE8, 0xFF0A4FB4);
+}
+static void ScriptShadow(IPainter &p) { p.FillShadow(R(16, 16, 32, 32), 8.0f, 8.0f, 0xFF000000); }
+static void ScriptSharpShadow(IPainter &p) { p.FillShadow(R(16, 16, 32, 32), 0.0f, 0.0f, 0xFF000000); }
 
 static UINT CountInk(const DWORD *px, UINT count)
 {
@@ -307,6 +317,9 @@ static void TestGpuParity()
         { ScriptClip, "clip", 0 },            { ScriptNestedClip, "nested clip", 16 },
         { ScriptEmptyClip, "empty clip", 0 }, { ScriptText, "text", 24 },         { ScriptOffsetText, "offset text", 24 },
         { ScriptIcon, "icon", 24 },
+        { ScriptGradient, "gradient", 0 },
+        { ScriptRoundGradient, "rounded gradient", 0 },
+        { ScriptShadow, "shadow", 0 },
     };
     static DWORD gpuPx[64 * 64], cpuPx[64 * 64];
     BOOL gpu = FALSE, cpu = TRUE;
@@ -396,6 +409,30 @@ static void TestGpuPainter()
     ok(RenderScript(ScriptIcon, 96, px, &gpu), "icon rendered\n");
     inked = CountInk(px, 64 * 64);
     ok(inked > 50, "icon drew %u pixels\n", inked);
+
+    ok(RenderScript(ScriptGradient, 96, px, &gpu), "gradient rendered\n");
+    DWORD left = px[32 * 64 + 0], middle = px[32 * 64 + 32], right = px[32 * 64 + 63];
+    ok(ArgbR(left) > 240 && ArgbB(left) < 16, "gradient starts red: %08lX\n", left);
+    ok(ArgbB(right) > 240 && ArgbR(right) < 16, "gradient ends blue: %08lX\n", right);
+    ok(ArgbR(middle) > 100 && ArgbR(middle) < 155 && ArgbB(middle) > 100 && ArgbB(middle) < 155 &&
+       ArgbA(middle) == 255, "gradient midpoint mixes both: %08lX\n", middle);
+    ok(px[0 * 64 + 10] == px[63 * 64 + 10], "a horizontal gradient is constant down a column\n");
+
+    ok(RenderScript(ScriptRoundGradient, 96, px, &gpu), "rounded gradient rendered\n");
+    ok(px[0] == 0 && ArgbA(px[32 * 64 + 32]) == 255, "a rounded gradient keeps its corners clear: %08lX\n", px[0]);
+
+    ok(RenderScript(ScriptShadow, 96, px, &gpu), "shadow rendered\n");
+    ok(ArgbA(px[32 * 64 + 32]) > 240, "shadow is solid in the middle: %08lX\n", px[32 * 64 + 32]);
+    ok(ArgbA(px[32 * 64 + 16]) > 96 && ArgbA(px[32 * 64 + 16]) < 160, "shadow is about half at the edge: %08lX\n",
+       px[32 * 64 + 16]);
+    ok(ArgbA(px[32 * 64 + 10]) > 0 && ArgbA(px[32 * 64 + 10]) < ArgbA(px[32 * 64 + 16]),
+       "shadow fades outside the shape: %08lX\n", px[32 * 64 + 10]);
+    ok(px[32 * 64 + 1] == 0 && px[0] == 0, "shadow ends past the blur: %08lX\n", px[32 * 64 + 1]);
+    ok(ArgbA(px[32 * 64 + 20]) == ArgbA(px[32 * 64 + 43]) && ArgbA(px[20 * 64 + 32]) == ArgbA(px[43 * 64 + 32]),
+       "shadow is symmetric\n");
+
+    ok(RenderScript(ScriptSharpShadow, 96, px, &gpu), "sharp shadow rendered\n");
+    ok(px[20 * 64 + 20] == 0xFF000000 && px[10 * 64 + 10] == 0, "a zero blur shadow is the plain shape\n");
 }
 
 static void Pump(DWORD ms)

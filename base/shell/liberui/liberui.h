@@ -247,6 +247,8 @@ public:
     virtual void Clear(Argb color) = 0;
     virtual void FillRect(const RectF &rc, Argb color) = 0;
     virtual void FillRoundRect(const RectF &rc, float radius, Argb color) = 0;
+    virtual void FillGradient(const RectF &rc, float radius, PointF from, PointF to, Argb fromColor, Argb toColor) = 0;
+    virtual void FillShadow(const RectF &rc, float radius, float blur, Argb color) = 0;
     virtual void StrokeRoundRect(const RectF &rc, float radius, Argb color, float width) = 0;
     virtual void FillEllipse(const RectF &rc, Argb color) = 0;
     virtual void StrokeArc(const RectF &rc, float startDegrees, float sweepDegrees, Argb color, float width) = 0;
@@ -293,6 +295,8 @@ public:
     void Clear(Argb color);
     void FillRect(const RectF &rc, Argb color);
     void FillRoundRect(const RectF &rc, float radius, Argb color);
+    void FillGradient(const RectF &rc, float radius, PointF from, PointF to, Argb fromColor, Argb toColor);
+    void FillShadow(const RectF &rc, float radius, float blur, Argb color);
     void StrokeRoundRect(const RectF &rc, float radius, Argb color, float width);
     void FillEllipse(const RectF &rc, Argb color);
     void StrokeArc(const RectF &rc, float startDegrees, float sweepDegrees, Argb color, float width);
