@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT Liber UI - Unit-tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     Test the GDI+ painter and the layered surface pixels
+ * PURPOSE:     Test the Direct3D painter, its text and icon rasterizers and the surface pixels
  * COPYRIGHT:   Copyright 2026 Eitan Hadar <eitanhadar4@gmail.com>
  */
 
@@ -31,73 +31,6 @@ static RectF R(float x, float y, float w, float h)
     return rc;
 }
 
-static void TestShapes()
-{
-    const int size = 64;
-    DWORD *bits = (DWORD *)calloc(size * size, sizeof(DWORD));
-    FontSet fonts;
-
-    {
-        GdiplusPainter painter(bits, size, size, size * 4, 96, &fonts);
-        ok(painter.IsValid(), "painter created\n");
-        painter.FillRoundRect(R(0, 0, 64, 64), 16.0f, 0xFFFF0000);
-    }
-    ok(bits[32 * size + 32] == 0xFFFF0000, "center is opaque red: %08lX\n", bits[32 * size + 32]);
-    ok(bits[0] == 0, "rounded corner stays transparent: %08lX\n", bits[0]);
-    ok(bits[32 * size] == 0xFFFF0000, "straight edge is filled: %08lX\n", bits[32 * size]);
-
-    {
-        GdiplusPainter painter(bits, size, size, size * 4, 96, &fonts);
-        painter.Clear(0);
-        painter.FillRect(R(0, 0, 64, 64), 0x80FFFFFF);
-    }
-    ok(Near(bits[10 * size + 10], 0x80808080, 1), "translucent fill is premultiplied: %08lX\n", bits[10 * size + 10]);
-
-    {
-        GdiplusPainter painter(bits, size, size, size * 4, 192, &fonts);
-        painter.Clear(0);
-        painter.FillRect(R(0, 0, 10, 10), 0xFF00FF00);
-    }
-    ok(bits[19 * size + 19] == 0xFF00FF00 && bits[21 * size + 21] == 0, "DIPs scale with DPI: %08lX %08lX\n",
-       bits[19 * size + 19], bits[21 * size + 21]);
-
-    {
-        GdiplusPainter painter(bits, size, size, size * 4, 96, &fonts);
-        painter.Clear(0xFF000000);
-        painter.PushClip(R(0, 0, 32, 64), 0.0f);
-        painter.Clear(0);
-        painter.FillRect(R(0, 0, 64, 64), 0xFF0000FF);
-        painter.PopClip();
-    }
-    ok(bits[10 * size + 10] == 0xFF0000FF && bits[10 * size + 50] == 0xFF000000, "clip limits drawing: %08lX %08lX\n",
-       bits[10 * size + 10], bits[10 * size + 50]);
-
-    {
-        GdiplusPainter painter(bits, size, size, size * 4, 96, &fonts);
-        painter.Clear(0);
-        painter.StrokeRoundRect(R(0, 0, 64, 64), 8.0f, 0xFFFFFFFF, 1.0f);
-    }
-    ok(bits[32 * size] != 0 && bits[32 * size + 32] == 0, "stroke draws the edge only: %08lX %08lX\n", bits[32 * size],
-       bits[32 * size + 32]);
-
-    {
-        GdiplusPainter painter(bits, size, size, size * 4, 96, &fonts);
-        painter.Clear(0);
-        painter.Text(L"Liber", R(0, 0, 64, 64), LIBER_TYPE_BODY_STRONG, 0xFF000000, TextCenter | TextMiddle);
-        SIZE measured = painter.MeasureText(L"Liber", LIBER_TYPE_BODY, 0.0f);
-        ok(measured.cx > 10 && measured.cx < 64 && measured.cy == LiberTypeRamp[LIBER_TYPE_BODY].LineHeight,
-           "text measures %ld x %ld\n", measured.cx, measured.cy);
-        SIZE empty = painter.MeasureText(L"", LIBER_TYPE_CAPTION, 0.0f);
-        ok(empty.cx == 0 && empty.cy == 16, "empty text measures %ld x %ld\n", empty.cx, empty.cy);
-    }
-    UINT inked = 0;
-    for (int i = 0; i < size * size; i++)
-        inked += bits[i] != 0;
-    ok(inked > 20, "text drew %u pixels\n", inked);
-
-    free(bits);
-}
-
 static void TestFonts()
 {
     FontSet fonts;
@@ -105,8 +38,11 @@ static void TestFonts()
     ok(!wcscmp(fonts.Family(), LIBER_FONT_UI), "default family %ls\n", fonts.Family());
     ok(!fonts.SetFamily(L"No Such Font Family 1234") && fonts.UsesFallback() && !wcscmp(fonts.Family(), LIBER_FONT_UI),
        "missing family falls back to %ls\n", fonts.Family());
-    ok(fonts.Font(LIBER_TYPE_BODY) != NULL, "body font\n");
-    ok(fonts.Font(LIBER_TYPE_BODY) == fonts.Font(LIBER_TYPE_BODY), "fonts are cached\n");
+    ok(fonts.Format(LIBER_TYPE_BODY) != NULL, "body text format\n");
+    ok(fonts.Format(LIBER_TYPE_BODY) == fonts.Format(LIBER_TYPE_BODY), "text formats are cached\n");
+    ok(fonts.LoadedCount() == 1, "only the used style is created: %u\n", fonts.LoadedCount());
+    fonts.Reset();
+    ok(fonts.LoadedCount() == 0, "reset frees the formats\n");
     ok(fonts.Tracking(LIBER_TYPE_DISPLAY) == 68 * -20 / 1000.0f && fonts.Tracking(LIBER_TYPE_BODY) == 0.0f,
        "tracking %f\n", fonts.Tracking(LIBER_TYPE_DISPLAY));
 }
@@ -145,40 +81,13 @@ static HICON MakeIcon(DWORD pixel)
     return icon;
 }
 
-static void TestImage()
-{
-    const int size = 32;
-    DWORD *bits = (DWORD *)calloc(size * size, sizeof(DWORD));
-    FontSet fonts;
-    HICON alpha = MakeIcon(0x80FF0000);
-    HICON opaque = MakeIcon(0x000000FF);
-
-    ok(alpha && opaque, "icons created\n");
-    {
-        GdiplusPainter painter(bits, size, size, size * 4, 96, &fonts);
-        painter.Image(alpha, R(0, 0, 16, 16));
-        painter.Image(opaque, R(16, 16, 16, 16));
-        painter.Image(NULL, R(0, 16, 16, 16));
-    }
-    ok(Near(bits[8 * size + 8], 0x80800000, 2), "alpha icon is drawn premultiplied: %08lX\n", bits[8 * size + 8]);
-    ok(bits[24 * size + 24] == 0xFF0000FF, "an icon without alpha is opaque: %08lX\n", bits[24 * size + 24]);
-    ok(bits[24 * size + 8] == 0, "a NULL icon draws nothing\n");
-    DestroyIcon(alpha);
-    DestroyIcon(opaque);
-    free(bits);
-}
-
 static void TestInvalidStyles()
 {
     FontSet fonts;
-    LPCWSTR face = NULL;
-    INT style = -1;
     LONG failures = AssertionFailures();
 
     ok(fonts.Tracking(LIBER_TYPE_COUNT) == 0.0f, "out-of-range tracking is 0\n");
-    ok(fonts.Font(LIBER_TYPE_COUNT) == fonts.Font(LIBER_TYPE_BODY), "out-of-range font falls back to body\n");
-    fonts.Face((LIBER_TYPE)-1, &face, &style);
-    ok(face != NULL && style >= 0, "out-of-range face falls back to body\n");
+    ok(fonts.Format(LIBER_TYPE_COUNT) == fonts.Format(LIBER_TYPE_BODY), "out-of-range format falls back to body\n");
     ok(AssertionFailures() > failures, "out-of-range styles assert\n");
 }
 
@@ -194,7 +103,7 @@ protected:
     void PaintOverride(PaintContext &context) { Script(context.Painter); }
 };
 
-static BOOL RenderScript(PAINT_SCRIPT script, UINT dpi, DWORD *pixels, BOOL *gpu, DWORD flags = 0)
+static BOOL RenderScript(PAINT_SCRIPT script, UINT dpi, DWORD *pixels, BOOL *gpu)
 {
     Surface surface;
     StackPanel *root = new StackPanel(Orientation::Horizontal, 0);
@@ -205,7 +114,7 @@ static BOOL RenderScript(PAINT_SCRIPT script, UINT dpi, DWORD *pixels, BOOL *gpu
     ZeroMemory(pixels, (SIZE_T)ScaleToDpi(64, dpi) * ScaleToDpi(64, dpi) * sizeof(DWORD));
     widget->SetSize(64, 64);
     root->AddChild(widget);
-    if (!surface.Create(NULL, L"LiberUI GPU painter test", WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, flags))
+    if (!surface.Create(NULL, L"LiberUI GPU painter test", WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE))
     {
         delete root;
         return FALSE;
@@ -265,10 +174,29 @@ static void ScriptEmptyClip(IPainter &p)
     p.PopClip();
 }
 static void ScriptShortLine(IPainter &p) { p.Line(PointF{ 16, 32 }, PointF{ 48, 32 }, 0xFF0000FF, 8.0f); }
-static void ScriptOffsetText(IPainter &p)
+static void ScriptImage(IPainter &p)
 {
-    p.Text(L"Liber", R(0.5f, 0.25f, 64, 64), LIBER_TYPE_BODY_STRONG, 0xFF000000, TextCenter | TextMiddle);
+    HICON alpha = MakeIcon(0x80FF0000), opaque = MakeIcon(0x000000FF);
+    p.Image(alpha, R(0, 0, 16, 16));
+    p.Image(opaque, R(32, 32, 16, 16));
+    p.Image(NULL, R(0, 32, 16, 16));
+    DestroyIcon(alpha);
+    DestroyIcon(opaque);
 }
+
+static SIZE g_Measured, g_Empty, g_Wrapped;
+static void ScriptMeasure(IPainter &p)
+{
+    g_Measured = p.MeasureText(L"Liber", LIBER_TYPE_BODY, 0.0f);
+    g_Empty = p.MeasureText(L"", LIBER_TYPE_CAPTION, 0.0f);
+    g_Wrapped = p.MeasureText(L"Light and clear, content first", LIBER_TYPE_BODY, 60.0f);
+}
+
+static void ScriptTextColor(IPainter &p)
+{
+    p.Text(L"Liber", R(0, 0, 64, 64), LIBER_TYPE_BODY_STRONG, 0xFFFF0000, TextLeft | TextTop);
+}
+
 static void ScriptGradient(IPainter &p)
 {
     p.FillGradient(R(0, 0, 64, 64), 0.0f, PointF{ 0, 0 }, PointF{ 64, 0 }, 0xFFFF0000, 0xFF0000FF);
@@ -286,59 +214,6 @@ static UINT CountInk(const DWORD *px, UINT count)
     for (UINT i = 0; i < count; i++)
         inked += ArgbA(px[i]) != 0;
     return inked;
-}
-
-static UINT AlphaMismatches(const DWORD *a, const DWORD *b, UINT count, int tolerance)
-{
-    UINT mismatches = 0;
-    for (UINT i = 0; i < count; i++)
-        mismatches += abs((int)ArgbA(a[i]) - (int)ArgbA(b[i])) > tolerance;
-    return mismatches;
-}
-
-static ULONG Coverage(const DWORD *px, UINT count)
-{
-    ULONG sum = 0;
-    for (UINT i = 0; i < count; i++)
-        sum += ArgbA(px[i]);
-    return sum;
-}
-
-static void TestGpuParity()
-{
-    static const struct
-    {
-        PAINT_SCRIPT Script;
-        const char *Name;
-        UINT Allowed;
-    } Cases[] = {
-        { ScriptRound, "round rect", 0 },     { ScriptStroke, "stroke", 0 },      { ScriptEllipse, "ellipse", 0 },
-        { ScriptArc, "arc", 0 },              { ScriptLine, "line", 0 },          { ScriptShortLine, "short line", 0 },
-        { ScriptClip, "clip", 0 },            { ScriptNestedClip, "nested clip", 16 },
-        { ScriptEmptyClip, "empty clip", 0 }, { ScriptText, "text", 24 },         { ScriptOffsetText, "offset text", 24 },
-        { ScriptIcon, "icon", 24 },
-        { ScriptGradient, "gradient", 0 },
-        { ScriptRoundGradient, "rounded gradient", 0 },
-        { ScriptShadow, "shadow", 0 },
-    };
-    static DWORD gpuPx[64 * 64], cpuPx[64 * 64];
-    BOOL gpu = FALSE, cpu = TRUE;
-
-    for (UINT i = 0; i < _countof(Cases); i++)
-    {
-        ok(RenderScript(Cases[i].Script, 96, gpuPx, &gpu), "%s rendered on the GPU\n", Cases[i].Name);
-        ok(RenderScript(Cases[i].Script, 96, cpuPx, &cpu, SurfaceNoGpu), "%s rendered on the CPU\n", Cases[i].Name);
-        ok(!cpu, "%s CPU surface is not on the GPU\n", Cases[i].Name);
-        if (!gpu)
-            continue;
-        UINT mismatches = AlphaMismatches(gpuPx, cpuPx, 64 * 64, 128);
-        ok(mismatches <= Cases[i].Allowed, "%s: %u pixels disagree between Direct3D and GDI+\n", Cases[i].Name,
-           mismatches);
-        ULONG gpuCover = Coverage(gpuPx, 64 * 64), cpuCover = Coverage(cpuPx, 64 * 64);
-        ULONG delta = gpuCover > cpuCover ? gpuCover - cpuCover : cpuCover - gpuCover;
-        ok(delta * 10 <= max(cpuCover, 255UL), "%s: coverage %lu on Direct3D, %lu on GDI+\n", Cases[i].Name, gpuCover,
-           cpuCover);
-    }
 }
 
 static void TestGpuPainter()
@@ -409,6 +284,31 @@ static void TestGpuPainter()
     ok(RenderScript(ScriptIcon, 96, px, &gpu), "icon rendered\n");
     inked = CountInk(px, 64 * 64);
     ok(inked > 50, "icon drew %u pixels\n", inked);
+
+    ok(RenderScript(ScriptImage, 96, px, &gpu), "app icons rendered\n");
+    ok(Near(px[8 * 64 + 8], 0x80800000, 3), "an alpha icon is drawn premultiplied: %08lX\n", px[8 * 64 + 8]);
+    ok(Near(px[40 * 64 + 40], 0xFF0000FF, 2), "an icon without alpha is opaque: %08lX\n", px[40 * 64 + 40]);
+    ok(px[40 * 64 + 8] == 0, "a NULL icon draws nothing\n");
+
+    ok(RenderScript(ScriptMeasure, 96, px, &gpu), "text measured\n");
+    ok(g_Measured.cx > 10 && g_Measured.cx < 64 && g_Measured.cy == LiberTypeRamp[LIBER_TYPE_BODY].LineHeight,
+       "text measures %ld x %ld\n", g_Measured.cx, g_Measured.cy);
+    ok(g_Empty.cx == 0 && g_Empty.cy == 16, "empty text measures %ld x %ld\n", g_Empty.cx, g_Empty.cy);
+    ok(g_Wrapped.cy >= 2 * LiberTypeRamp[LIBER_TYPE_BODY].LineHeight, "a narrow width wraps text: %ld\n",
+       g_Wrapped.cy);
+
+    ok(RenderScript(ScriptTextColor, 96, px, &gpu), "coloured text rendered\n");
+    UINT red = 0, other = 0;
+    for (int i = 0; i < 64 * 64; i++)
+    {
+        if (ArgbA(px[i]) > 200)
+        {
+            red += ArgbR(px[i]) > 200 && ArgbG(px[i]) < 40 && ArgbB(px[i]) < 40;
+            other += !(ArgbR(px[i]) > 200 && ArgbG(px[i]) < 40 && ArgbB(px[i]) < 40);
+        }
+    }
+    ok(red > 10 && other == 0, "text takes the brush colour: %u red, %u other\n", red, other);
+    ok(CountInk(px, 64 * 32) > 0 && CountInk(px + 64 * 32, 64 * 32) == 0, "top-aligned text stays at the top\n");
 
     ok(RenderScript(ScriptGradient, 96, px, &gpu), "gradient rendered\n");
     DWORD left = px[32 * 64 + 0], middle = px[32 * 64 + 32], right = px[32 * 64 + 63];
@@ -576,7 +476,7 @@ public:
     POINT MenuAt;
 };
 
-static void TestSurfaceInput(DWORD flags)
+static void TestSurfaceInput()
 {
     Surface surface;
     StackPanel *root = new StackPanel(Orientation::Horizontal, 0);
@@ -585,7 +485,7 @@ static void TestSurfaceInput(DWORD flags)
 
     button->SetSize(40, 40);
     root->AddChild(button);
-    ok(surface.Create(NULL, L"LiberUI input test", WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, flags),
+    ok(surface.Create(NULL, L"LiberUI input test", WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE),
        "surface created\n");
     surface.SetDpi(96);
     surface.SetTokens(&tokens);
@@ -621,7 +521,7 @@ static void TestSurfaceInput(DWORD flags)
     delete root;
 }
 
-static void TestTransitions(DWORD flags)
+static void TestTransitions()
 {
     typedef HANDLE (WINAPI *PFN_SETTHREADDPIAWARENESSCONTEXT)(HANDLE);
     PFN_SETTHREADDPIAWARENESSCONTEXT setAwareness = (PFN_SETTHREADDPIAWARENESSCONTEXT)GetProcAddress(
@@ -635,7 +535,7 @@ static void TestTransitions(DWORD flags)
 
     fill->SetSize(80, 80);
     root->AddChild(fill);
-    ok(surface.Create(NULL, L"LiberUI transition test", WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, flags),
+    ok(surface.Create(NULL, L"LiberUI transition test", WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE),
        "surface created\n");
     surface.SetDpi(96);
     surface.SetTokens(&tokens);
@@ -717,8 +617,10 @@ static void TestShadow()
         GetWindowRect(shadow->Window(), &rc);
         ok(rc.left == -1500 - 48 && rc.top == -1500 - 30 && rc.right == -1400 + 48 && rc.bottom == -1440 + 66,
            "shadow window covers the margins: (%ld,%ld,%ld,%ld)\n", rc.left, rc.top, rc.right, rc.bottom);
-        ok((ex & WS_EX_TRANSPARENT) && (ex & WS_EX_LAYERED) && (ex & WS_EX_TOPMOST),
-           "the shadow is a click-through topmost layered window\n");
+        ok((ex & WS_EX_TRANSPARENT) && (ex & WS_EX_LAYERED) && (ex & WS_EX_TOPMOST) && shadow->IsGpu(),
+           "the shadow is a click-through topmost Direct3D window\n");
+        POINT probe = { -1500 - 40, -1500 + 30 };
+        ok(WindowFromPoint(probe) != shadow->Window(), "the shadow does not take the pointer\n");
         ok(IsWindowVisible(shadow->Window()), "the shadow shows with the surface\n");
         ok(GetWindow(surface.Window(), GW_HWNDNEXT) == shadow->Window(), "the shadow sits right below the surface\n");
 
@@ -743,7 +645,7 @@ static void TestShadow()
     delete root;
 }
 
-static void TestSurface(DWORD flags)
+static void TestSurface()
 {
     Surface surface;
     StackPanel *root = new StackPanel(Orientation::Horizontal, 0);
@@ -756,12 +658,8 @@ static void TestSurface(DWORD flags)
     root->AddChild(left);
     root->AddChild(right);
 
-    ok(surface.Create(NULL, L"LiberUI test", WS_EX_TOOLWINDOW, flags), "surface created\n");
-    if (flags & SurfaceNoGpu)
-    {
-        ok(!surface.IsGpu(), "the CPU surface does not use Direct3D\n");
-        ok((GetWindowLongPtrW(surface.Window(), GWL_EXSTYLE) & WS_EX_LAYERED) != 0, "the CPU surface is layered\n");
-    }
+    ok(surface.Create(NULL, L"LiberUI test", WS_EX_TOOLWINDOW), "surface created\n");
+    ok(surface.IsGpu(), "every surface draws with Direct3D\n");
     surface.SetDpi(96);
     surface.SetTokens(&tokens);
     surface.SetRoot(root);
@@ -798,10 +696,10 @@ static void TestSurface(DWORD flags)
     surface.Input().PointerMove(dip);
     surface.SetRoot(NULL);
     ok(surface.Input().Root() == NULL && root->Host() == NULL, "root detached\n");
-    ok(surface.Fonts().Font(LIBER_TYPE_BODY) != NULL && surface.Fonts().LoadedCount() > 0, "a font is loaded\n");
+    ok(surface.Fonts().Format(LIBER_TYPE_BODY) != NULL && surface.Fonts().LoadedCount() > 0, "a text format is loaded\n");
     surface.Destroy();
     ok(surface.Window() == NULL, "window destroyed\n");
-    ok(surface.Fonts().LoadedCount() == 0, "destroying the surface frees its GDI+ fonts\n");
+    ok(surface.Fonts().LoadedCount() == 0, "destroying the surface frees its text formats\n");
     delete root;
 }
 
@@ -811,22 +709,16 @@ START_TEST(Painter)
 
     if (!Startup())
     {
-        skip("GDI+ is not available\n");
+        skip("DirectWrite is not available\n");
         return;
     }
-    TestShapes();
     TestFonts();
-    TestImage();
-    TestSurface(0);
-    TestSurface(SurfaceNoGpu);
+    TestSurface();
     TestGpuSurface();
     TestGpuPainter();
-    TestGpuParity();
     TestShadow();
-    TestTransitions(0);
-    TestTransitions(SurfaceNoGpu);
-    TestSurfaceInput(0);
-    TestSurfaceInput(SurfaceNoGpu);
+    TestTransitions();
+    TestSurfaceInput();
     ok(AssertionFailures() == failures, "%ld assertions failed\n", AssertionFailures() - failures);
     TestInvalidStyles();
     Shutdown();

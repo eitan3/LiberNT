@@ -7,6 +7,9 @@
 
 #include "precomp.h"
 #include "gpu.h"
+#include "raster.h"
+
+#include <iconsource.h>
 
 #include <strsafe.h>
 
@@ -250,19 +253,28 @@ ID3D11ShaderResourceView *D3DPainter::Raster(LPCWSTR key, UINT width, UINT heigh
     DWORD *bits = (DWORD *)LocalAlloc(LPTR, (SIZE_T)width * height * sizeof(DWORD));
     if (!bits)
         return NULL;
+    BOOL drawn;
+    if (kind == RasterImage)
     {
-        GdiplusPainter raster(bits, (int)width, (int)height, (int)width * 4, m_Dpi, m_Fonts);
-        if (!raster.IsValid())
-        {
-            LocalFree(bits);
-            return NULL;
-        }
+        drawn = RasterIconImage(icon, local, m_Scale, bits, width, height);
+    }
+    else
+    {
+        BYTE *coverage = (BYTE *)bits;
         if (kind == RasterText)
-            raster.Text(text, local, style, 0xFFFFFFFF, flags);
-        else if (kind == RasterIcon)
-            raster.Icon(text, local, 0xFFFFFFFF);
+            drawn = RasterTextCoverage(m_Fonts, text, style, flags, local, m_Scale, coverage, width, height);
         else
-            raster.Image(icon, local);
+            drawn = RasterSvgCoverage(ShellFrame::IconSvg(text), local, m_Scale, coverage, width, height);
+        for (SIZE_T i = (SIZE_T)width * height; drawn && i-- > 0;)
+        {
+            DWORD a = coverage[i];
+            bits[i] = (a << 24) | (a << 16) | (a << 8) | a;
+        }
+    }
+    if (!drawn)
+    {
+        LocalFree(bits);
+        return NULL;
     }
 
     D3D11_TEXTURE2D_DESC desc;
@@ -352,9 +364,7 @@ void D3DPainter::Text(LPCWSTR text, const RectF &rc, LIBER_TYPE style, Argb colo
 
 SIZE D3DPainter::MeasureText(LPCWSTR text, LIBER_TYPE style, float maxWidth)
 {
-    DWORD pixel = 0;
-    GdiplusPainter measure(&pixel, 1, 1, 4, 96, m_Fonts);
-    return measure.MeasureText(text, style, maxWidth);
+    return MeasureTextDip(m_Fonts, text, style, maxWidth);
 }
 
 void D3DPainter::Icon(LPCWSTR name, const RectF &rc, Argb color)

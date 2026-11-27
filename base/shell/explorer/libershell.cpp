@@ -10,7 +10,7 @@
 #include <shlwapi.h>
 #include <strsafe.h>
 #include <math.h>
-#include <gdiplus.h>
+#include <wincodec.h>
 
 #include "experience.h"
 #include "libershell.h"
@@ -65,12 +65,59 @@ double LiberShell_Luminance(DWORD argb)
            0.0722 * LinearChannel((BYTE)argb);
 }
 
+static BOOL LoadWallpaperPixels(LPCWSTR pszPath, DWORD **ppPixels, UINT *pWidth, UINT *pHeight)
+{
+    IWICImagingFactory *factory = NULL;
+    IWICBitmapDecoder *decoder = NULL;
+    IWICBitmapFrameDecode *frame = NULL;
+    IWICFormatConverter *converter = NULL;
+    DWORD *pixels = NULL;
+    HRESULT hr;
+
+    *ppPixels = NULL;
+    hr = CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, IID_IWICImagingFactory,
+                          (void **)&factory);
+    if (SUCCEEDED(hr))
+        hr = factory->CreateDecoderFromFilename(pszPath, NULL, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
+    if (SUCCEEDED(hr))
+        hr = decoder->GetFrame(0, &frame);
+    if (SUCCEEDED(hr))
+        hr = factory->CreateFormatConverter(&converter);
+    if (SUCCEEDED(hr))
+        hr = converter->Initialize(frame, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, NULL, 0.0,
+                                   WICBitmapPaletteTypeCustom);
+    if (SUCCEEDED(hr))
+        hr = converter->GetSize(pWidth, pHeight);
+    if (SUCCEEDED(hr) && (!*pWidth || !*pHeight || *pWidth > 16384 || *pHeight > 16384))
+        hr = E_FAIL;
+    if (SUCCEEDED(hr))
+    {
+        pixels = (DWORD *)LocalAlloc(LMEM_FIXED, (SIZE_T)*pWidth * *pHeight * sizeof(DWORD));
+        hr = pixels ? converter->CopyPixels(NULL, *pWidth * sizeof(DWORD), *pWidth * *pHeight * sizeof(DWORD),
+                                            (BYTE *)pixels)
+                    : E_OUTOFMEMORY;
+    }
+    if (SUCCEEDED(hr))
+        *ppPixels = pixels;
+    else if (pixels)
+        LocalFree(pixels);
+    if (converter)
+        converter->Release();
+    if (frame)
+        frame->Release();
+    if (decoder)
+        decoder->Release();
+    if (factory)
+        factory->Release();
+    return SUCCEEDED(hr);
+}
+
 BOOL LiberShell_WallpaperLuma(const RECT *prcScreen, double *pLuma)
 {
     WCHAR szPath[MAX_PATH], szStyle[8];
     DWORD cb = sizeof(szStyle);
     UINT style = LIBER_WALLPAPER_FILL;
-    Gdiplus::GpBitmap *bitmap = NULL;
+    DWORD *pixels = NULL;
     UINT width = 0, height = 0;
     double sum = 0.0;
     UINT samples = 0;
@@ -83,10 +130,8 @@ BOOL LiberShell_WallpaperLuma(const RECT *prcScreen, double *pLuma)
     {
         style = (UINT)_wtoi(szStyle);
     }
-    if (Gdiplus::DllExports::GdipCreateBitmapFromFile(szPath, &bitmap) != Gdiplus::Ok)
+    if (!LoadWallpaperPixels(szPath, &pixels, &width, &height))
         return FALSE;
-    Gdiplus::DllExports::GdipGetImageWidth(bitmap, &width);
-    Gdiplus::DllExports::GdipGetImageHeight(bitmap, &height);
     SIZE screen = { GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) }, image = { (LONG)width, (LONG)height };
     RECT area;
     LiberShell_MapToWallpaper(prcScreen, screen, image, style, &area);
@@ -94,17 +139,16 @@ BOOL LiberShell_WallpaperLuma(const RECT *prcScreen, double *pLuma)
     {
         for (UINT x = 0; x < 10; x++)
         {
-            Gdiplus::ARGB pixel;
             INT px = area.left + (INT)((area.right - area.left) * (x * 2 + 1) / 20);
             INT py = area.top + (INT)((area.bottom - area.top) * (y * 2 + 1) / 20);
-            if (Gdiplus::DllExports::GdipBitmapGetPixel(bitmap, px, py, &pixel) == Gdiplus::Ok)
+            if (px >= 0 && py >= 0 && (UINT)px < width && (UINT)py < height)
             {
-                sum += LiberShell_Luminance(pixel);
+                sum += LiberShell_Luminance(pixels[(SIZE_T)py * width + px]);
                 samples++;
             }
         }
     }
-    Gdiplus::DllExports::GdipDisposeImage(bitmap);
+    LocalFree(pixels);
     if (!samples)
         return FALSE;
     *pLuma = sum / samples;

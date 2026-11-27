@@ -37,8 +37,7 @@ static BOOL RegisterSurfaceClass(HINSTANCE instance, WNDPROC proc)
 }
 
 Surface::Surface()
-    : m_hwnd(NULL), m_Dpi(96), m_Tokens(NULL), m_Root(NULL), m_Dc(NULL), m_Bitmap(NULL), m_OldBitmap(NULL),
-      m_Bits(NULL), m_LayoutPending(TRUE), m_Tracking(FALSE), m_Gpu(NULL), m_Presents(0), m_Owner(NULL), m_ExStyle(0),
+    : m_hwnd(NULL), m_Dpi(96), m_Tokens(NULL), m_Root(NULL), m_LayoutPending(TRUE), m_Tracking(FALSE), m_Gpu(NULL), m_Presents(0), m_Owner(NULL), m_ExStyle(0),
       m_InputRadius(0.0f), m_Opacity(1.0f), m_OffsetY(0.0f), m_Transition(FALSE), m_HideAtEnd(FALSE), m_Shadow(NULL), m_ShadowWidget(NULL), m_Elevation(-1), m_ShadowRadius(0.0f),
       m_Recovering(FALSE)
 {
@@ -57,37 +56,26 @@ Surface::~Surface()
     FreeBuffer();
 }
 
-BOOL Surface::CreateWindowFor(BOOL gpu)
+BOOL Surface::CreateGpuWindow()
 {
-    HINSTANCE instance = GetModuleHandleW(NULL);
-
     LUI_ASSERT(m_hwnd == NULL && m_Gpu == NULL);
-    if (gpu)
-    {
-        m_Gpu = GpuCreate();
-        if (m_Gpu)
-        {
-            CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | m_ExStyle, SurfaceClass, m_Title, WS_POPUP, 0, 0, 0, 0,
-                            m_Owner, NULL, instance, this);
-            if (m_hwnd && !GpuAttach(m_Gpu, m_hwnd))
-                DestroyWindow(m_hwnd);
-            if (!m_hwnd)
-            {
-                GpuDestroy(m_Gpu);
-                m_Gpu = NULL;
-            }
-        }
-    }
+    m_Gpu = GpuCreate();
+    if (!m_Gpu)
+        return FALSE;
+    CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | m_ExStyle, SurfaceClass, m_Title, WS_POPUP, 0, 0, 0, 0, m_Owner, NULL,
+                    GetModuleHandleW(NULL), this);
+    if (m_hwnd && !GpuAttach(m_Gpu, m_hwnd))
+        DestroyWindow(m_hwnd);
     if (!m_hwnd)
     {
-        CreateWindowExW(WS_EX_LAYERED | m_ExStyle, SurfaceClass, m_Title, WS_POPUP, 0, 0, 0, 0, m_Owner, NULL,
-                        instance, this);
+        GpuDestroy(m_Gpu);
+        m_Gpu = NULL;
+        return FALSE;
     }
-    LUI_ASSERT(!m_Gpu || m_hwnd);
-    return m_hwnd != NULL;
+    return TRUE;
 }
 
-BOOL Surface::Create(HWND owner, LPCWSTR title, DWORD exStyle, DWORD flags)
+BOOL Surface::Create(HWND owner, LPCWSTR title, DWORD exStyle)
 {
     LUI_ASSERT(m_hwnd == NULL);
     if (m_hwnd || !RegisterSurfaceClass(GetModuleHandleW(NULL), WndProc))
@@ -96,7 +84,7 @@ BOOL Surface::Create(HWND owner, LPCWSTR title, DWORD exStyle, DWORD flags)
     m_Owner = owner;
     m_ExStyle = exStyle;
     StringCchCopyW(m_Title, _countof(m_Title), title ? title : L"");
-    if (!CreateWindowFor(!(flags & SurfaceNoGpu)))
+    if (!CreateGpuWindow())
         return FALSE;
 
     HDC screen = GetDC(NULL);
@@ -180,8 +168,8 @@ void Surface::UpdateShadow(BOOL show)
         m_Shadow = new Surface();
         m_ShadowWidget = new ShadowWidget();
         if (!m_Shadow || !m_ShadowWidget ||
-            !m_Shadow->Create(NULL, L"", WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
-                                             (m_ExStyle & WS_EX_TOPMOST), SurfaceNoGpu))
+            !m_Shadow->Create(NULL, L"", WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
+                                             (m_ExStyle & WS_EX_TOPMOST)))
         {
             delete m_Shadow;
             delete m_ShadowWidget;
@@ -451,18 +439,6 @@ void Surface::OnWidgetRemoved(Widget *widget)
 
 void Surface::FreeBuffer()
 {
-    if (m_Dc)
-    {
-        if (m_OldBitmap)
-            SelectObject(m_Dc, m_OldBitmap);
-        DeleteDC(m_Dc);
-    }
-    if (m_Bitmap)
-        DeleteObject(m_Bitmap);
-    m_Dc = NULL;
-    m_Bitmap = NULL;
-    m_OldBitmap = NULL;
-    m_Bits = NULL;
     m_SizePx.cx = m_SizePx.cy = 0;
 }
 
@@ -475,45 +451,17 @@ BOOL Surface::EnsureBuffer()
         FreeBuffer();
         return FALSE;
     }
-    if (m_Gpu)
-    {
-        BOOL recreated;
-        if (!GpuEnsureCanvas(m_Gpu, (UINT)px.cx, (UINT)px.cy, &recreated))
-            return FALSE;
-        if (recreated || px.cx != m_SizePx.cx || px.cy != m_SizePx.cy)
-        {
-            m_SizePx = px;
-            SetRect(&m_Dirty, 0, 0, m_SizeDip.cx, m_SizeDip.cy);
-        }
-        return TRUE;
-    }
-    if (m_Bits && px.cx == m_SizePx.cx && px.cy == m_SizePx.cy)
-        return TRUE;
-
-    FreeBuffer();
-
-    BITMAPINFO info;
-    ZeroMemory(&info, sizeof(info));
-    info.bmiHeader.biSize = sizeof(info.bmiHeader);
-    info.bmiHeader.biWidth = px.cx;
-    info.bmiHeader.biHeight = -px.cy;
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    info.bmiHeader.biCompression = BI_RGB;
-
-    m_Dc = CreateCompatibleDC(NULL);
-    if (!m_Dc)
+    if (!m_Gpu)
         return FALSE;
-    m_Bitmap = CreateDIBSection(m_Dc, &info, DIB_RGB_COLORS, (void **)&m_Bits, NULL, 0);
-    if (!m_Bitmap || !m_Bits)
-    {
-        FreeBuffer();
+
+    BOOL recreated;
+    if (!GpuEnsureCanvas(m_Gpu, (UINT)px.cx, (UINT)px.cy, &recreated))
         return FALSE;
+    if (recreated || px.cx != m_SizePx.cx || px.cy != m_SizePx.cy)
+    {
+        m_SizePx = px;
+        SetRect(&m_Dirty, 0, 0, m_SizeDip.cx, m_SizeDip.cy);
     }
-    m_OldBitmap = SelectObject(m_Dc, m_Bitmap);
-    m_SizePx = px;
-    ZeroMemory(m_Bits, (SIZE_T)px.cx * px.cy * sizeof(DWORD));
-    SetRect(&m_Dirty, 0, 0, m_SizeDip.cx, m_SizeDip.cy);
     return TRUE;
 }
 
@@ -557,14 +505,11 @@ BOOL Surface::RenderPass(ULONGLONG now, BOOL *lost)
         tokens = &fallback;
 
     RECT dirty = m_Dirty;
-
-    if (m_Gpu)
+    RECT px = { MulDiv(dirty.left, (int)m_Dpi, 96) - 1, MulDiv(dirty.top, (int)m_Dpi, 96) - 1,
+                MulDiv(dirty.right, (int)m_Dpi, 96) + 1, MulDiv(dirty.bottom, (int)m_Dpi, 96) + 1 };
+    RECT all = { 0, 0, m_SizePx.cx, m_SizePx.cy };
+    IntersectRect(&px, &px, &all);
     {
-        RECT px = { MulDiv(dirty.left, (int)m_Dpi, 96) - 1, MulDiv(dirty.top, (int)m_Dpi, 96) - 1,
-                    MulDiv(dirty.right, (int)m_Dpi, 96) + 1, MulDiv(dirty.bottom, (int)m_Dpi, 96) + 1 };
-        RECT all = { 0, 0, m_SizePx.cx, m_SizePx.cy };
-        IntersectRect(&px, &px, &all);
-
         D3DPainter painter(m_Gpu, m_Dpi, &m_Fonts, px);
         if (!painter.IsValid())
         {
@@ -578,23 +523,6 @@ BOOL Surface::RenderPass(ULONGLONG now, BOOL *lost)
             PaintContext context = { painter, *tokens, now };
             m_Root->Paint(context);
         }
-    }
-    else
-    {
-        GdiplusPainter painter(m_Bits, m_SizePx.cx, m_SizePx.cy, m_SizePx.cx * 4, m_Dpi, &m_Fonts);
-        if (!painter.IsValid())
-            return FALSE;
-        SetRectEmpty(&m_Dirty);
-
-        RectF clip = ToRectF(dirty);
-        painter.PushClip(clip, 0.0f);
-        painter.Clear(0);
-        if (m_Root)
-        {
-            PaintContext context = { painter, *tokens, now };
-            m_Root->Paint(context);
-        }
-        painter.PopClip();
     }
 
     if (GpuDeviceLost(m_Gpu) || (!Present() && GpuDeviceLost(m_Gpu)))
@@ -630,65 +558,38 @@ BOOL Surface::RecreateGpu()
         GpuDestroy(m_Gpu);
         m_Gpu = NULL;
     }
-    if (!m_Gpu)
-    {
-        BOOL visible = IsWindowVisible(m_hwnd);
-        HWND old = m_hwnd;
-        DestroyWindow(old);
-        LUI_ASSERT(m_hwnd == NULL);
-        m_hwnd = NULL;
-        m_Tracking = FALSE;
-        if (CreateWindowFor(FALSE) && visible)
-            ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
-    }
     m_SizePx.cx = m_SizePx.cy = 0;
     SetRectEmpty(&m_Placed);
     SetRect(&m_Dirty, 0, 0, m_SizeDip.cx, m_SizeDip.cy);
     m_Recovering = FALSE;
-    return m_hwnd != NULL;
+    return m_Gpu != NULL;
 }
 
 BOOL Surface::ReadPixels(DWORD *pixels, UINT stride) const
 {
     if (!pixels || m_SizePx.cx <= 0 || stride < (UINT)m_SizePx.cx * sizeof(DWORD))
         return FALSE;
-    if (m_Gpu)
-        return GpuReadCanvas(m_Gpu, pixels, stride);
-    if (!m_Bits)
-        return FALSE;
-    for (LONG y = 0; y < m_SizePx.cy; y++)
-        CopyMemory((BYTE *)pixels + (SIZE_T)y * stride, m_Bits + (SIZE_T)y * m_SizePx.cx, m_SizePx.cx * sizeof(DWORD));
-    return TRUE;
+    return m_Gpu && GpuReadCanvas(m_Gpu, pixels, stride);
 }
 
 BOOL Surface::Present()
 {
-    if (!m_hwnd || (m_Gpu ? !GpuHasCanvas(m_Gpu) : !m_Dc))
+    if (!m_hwnd || !GpuHasCanvas(m_Gpu))
         return FALSE;
 
-    POINT source = { 0, 0 };
     POINT position = { m_Position.x, m_Position.y + OffsetPx() };
     SIZE size = m_SizePx;
-    BLENDFUNCTION blend = { AC_SRC_OVER, 0, (BYTE)(m_Opacity * 255.0f + 0.5f), AC_SRC_ALPHA };
     RECT placed = { position.x, position.y, position.x + size.cx, position.y + size.cy };
     BOOL reshaped = m_Placed.right - m_Placed.left != size.cx || m_Placed.bottom - m_Placed.top != size.cy ||
                     IsRectEmpty(&m_Placed);
 
-    if (!m_Gpu)
+    if (!EqualRect(&placed, &m_Placed))
     {
-        if (!UpdateLayeredWindow(m_hwnd, NULL, &position, &size, m_Dc, &source, 0, &blend, ULW_ALPHA))
-            return FALSE;
+        SetWindowPos(m_hwnd, NULL, placed.left, placed.top, size.cx, size.cy,
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     }
-    else
-    {
-        if (!EqualRect(&placed, &m_Placed))
-        {
-            SetWindowPos(m_hwnd, NULL, placed.left, placed.top, size.cx, size.cy,
-                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-        }
-        if (!GpuPresentCanvas(m_Gpu, m_Opacity))
-            return FALSE;
-    }
+    if (!GpuPresentCanvas(m_Gpu, m_Opacity))
+        return FALSE;
     if (reshaped)
         ApplyInputShape();
     if (m_Elevation >= 0 && !EqualRect(&placed, &m_Placed))
