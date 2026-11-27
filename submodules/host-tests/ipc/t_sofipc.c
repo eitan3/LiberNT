@@ -971,7 +971,7 @@ CheckInterruptMode(
 {
     SOFIPC_REQUEST Request;
     FAKE_DSP_FAULTS Faults;
-    UINT32 Index, Writes, WriteCount;
+    UINT32 Index, Writes, WriteCount, LockAttempts;
 
     HarnessStart(H, Image, NULL);
     HarnessAttach(H, NULL, TRUE);
@@ -1057,6 +1057,67 @@ CheckInterruptMode(
     CHECK_EQ(H->Ipc.Notifications, SOFIPC_NOTIFICATION_RING + 2);
     CHECK(H->Ipc.Last.ElapsedUs <= 2 * SOFIPC_FAST_POLL_US);
     H->InterruptsPerDelay = 0;
+
+    /*
+     * The poll after a message the service routine masked (N11-03): a
+     * notification that is not a crash, posted with no request outstanding.
+     * The service masks the three enables and only a request's end set them
+     * again; the poll, which reads the message, sets them again too, under
+     * the request lock, so the next message's interrupt is not lost. A
+     * crash read by the poll leaves them masked: the link is faulted and the
+     * driver powers the DSP down. The polled mode has nothing to set.
+     */
+    HarnessStart(H, Image, NULL);
+    HarnessAttach(H, NULL, TRUE);
+    Writes = H->Dsp->InterruptWritesLocked;
+    H->Dsp->IpcTarget = FWLOAD_IPC_BUSY | (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
+        (SOFIPC4_NOTIFY_LOG_BUFFER_STATUS << SOFIPC4_NOTIFICATION_TYPE_SHIFT);
+    H->Dsp->IpcTargetAck |= FWLOAD_IPC_BUSY;
+    H->Dsp->NotificationPending = TRUE;
+    CHECK(HarnessInterrupt(H));
+    CHECK_EQ(H->Dsp->InterruptEnable, 0);
+    CHECK_EQ(H->Dsp->HostIpcEnable, 0);
+    CHECK_EQ(H->Dsp->IpcControl, 0);
+    CHECK_EQ(H->Ipc.RingCount, 0);
+    LockAttempts = H->LockAttempts;
+    CHECK(SofIpcPollNotifications(&H->Ipc));
+    CHECK_EQ(H->Ipc.RingCount, 1);
+    CHECK_EQ(H->Ipc.Link, SofIpcLinkReady);
+    CHECK_EQ(H->Dsp->InterruptEnable, 1);
+    CHECK_EQ(H->Dsp->HostIpcEnable, 1);
+    CHECK_EQ(H->Dsp->IpcControl, 3);
+    /* the service's three to mask, the poll's three to set, the lock taken and given back once */
+    CHECK_EQ(H->Dsp->InterruptWritesLocked, Writes + 6);
+    CHECK_EQ(H->Dsp->InterruptWritesUnlocked, 0);
+    CHECK_EQ(H->LockAttempts, LockAttempts + 1);
+    CHECK_EQ(H->LockAcquires, LockAttempts + 1);
+    CHECK(!H->LockHeld);
+    CHECK((H->Dsp->IpcTarget & FWLOAD_IPC_BUSY) == 0);
+    CHECK_EQ(FakeDspIpcErrors(H->Dsp), 0);
+    /* the exception with no request outstanding: read by the poll, the link faulted, the enables left as the service left them */
+    H->Dsp->IpcTarget = FWLOAD_IPC_BUSY | (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
+        (SOFIPC4_NOTIFY_EXCEPTION_CAUGHT << SOFIPC4_NOTIFICATION_TYPE_SHIFT);
+    H->Dsp->IpcTargetAck |= FWLOAD_IPC_BUSY;
+    H->Dsp->NotificationPending = TRUE;
+    CHECK(HarnessInterrupt(H));
+    CHECK_EQ(H->Dsp->HostIpcEnable, 0);
+    CHECK(!SofIpcPollNotifications(&H->Ipc));
+    CHECK_EQ(H->Ipc.Link, SofIpcLinkFaulted);
+    CHECK_EQ(H->Ipc.Failure, SofIpcCrash);
+    CHECK_EQ(H->Dsp->HostIpcEnable, 0);
+    CHECK_EQ(H->Dsp->InterruptWritesLocked, Writes + 9);
+    /* the polled mode: the service routine never runs, the poll sets nothing */
+    HarnessStart(H, Image, NULL);
+    HarnessAttach(H, NULL, FALSE);
+    Writes = H->Dsp->InterruptWritesLocked;
+    H->Dsp->IpcTarget = FWLOAD_IPC_BUSY | (SofIpc4GlbNotification << SOFIPC4_TYPE_SHIFT) |
+        (SOFIPC4_NOTIFY_LOG_BUFFER_STATUS << SOFIPC4_NOTIFICATION_TYPE_SHIFT);
+    H->Dsp->IpcTargetAck |= FWLOAD_IPC_BUSY;
+    H->Dsp->NotificationPending = TRUE;
+    CHECK(SofIpcPollNotifications(&H->Ipc));
+    CHECK_EQ(H->Ipc.RingCount, 1);
+    CHECK_EQ(H->Dsp->InterruptWritesLocked, Writes);
+    CHECK_EQ(FakeDspIpcErrors(H->Dsp), 0);
 }
 
 /* (g) Two callers: the second waits for the first's request up to its own budget, then fails busy; nothing is sent and the link stays ready */

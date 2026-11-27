@@ -458,6 +458,9 @@ SofIpcPollNotifications(
         return FALSE;
     }
     Result = SofIpcDrain(Ipc);
+    /* the service routine masked the enables on the message this poll read, as on a reply: in interrupt mode they are set again here, as a request's end sets them, so the next message's interrupt is not lost (N11-03); under the request lock, where the request's own set is */
+    if (Result == SofIpcOk && Ipc->UseInterrupts && FwloadInterruptsEnable(Ipc->Fw, TRUE) != FwloadOk)
+        Result = SofIpcHardwareFault;
     if (Held && Ipc->Ops->RequestUnlock != NULL)
         Ipc->Ops->RequestUnlock(Ipc->OpsContext);
     if (Result == SofIpcOk)
