@@ -5522,6 +5522,17 @@ struct TFYMENU_GUARD
     BOOL Alive;
 };
 
+/* The guard's release as each flyout's OnDestroy makes it: for a flyout whose Create failed, whose OnDestroy never runs (R7-05) */
+static VOID TfyMenuGuardRelease(TFYMENU_GUARD **ppGuard)
+{
+    if (!*ppGuard)
+        return;
+    (*ppGuard)->Alive = FALSE;
+    if (!InterlockedDecrement(&(*ppGuard)->References))
+        delete *ppGuard;
+    *ppGuard = NULL;
+}
+
 class CTrayVolumeWnd :
     public CWindowImpl<CTrayVolumeWnd, CWindow, CTrayFlyoutTraits>,
     public CTrayFlyoutAnimation
@@ -6348,6 +6359,7 @@ VOID TrayVolume_Toggle(IN HWND hwndOwner, IN const RECT *prcAnchor)
 
     if (!pVolume->Create(hwndOwner, CWindow::rcDefault, NULL))
     {
+        TfyMenuGuardRelease(&pVolume->m_pMenuGuard);
         delete pVolume;
         return;
     }
@@ -7394,6 +7406,7 @@ VOID TrayMixer_Open(const RECT *prcAnchor)
 
     if (!pMixer->Create(NULL, CWindow::rcDefault, NULL))
     {
+        TfyMenuGuardRelease(&pMixer->m_pMenuGuard);
         delete pMixer;
         return;
     }
@@ -12886,6 +12899,7 @@ VOID TrayQuickSettings_Toggle(IN HWND hwndOwner, IN const RECT *prcAnchor)
         return;
     if (!pQuickSettings->Create(hwndOwner, CWindow::rcDefault, NULL))
     {
+        TfyMenuGuardRelease(&pQuickSettings->m_pMenuGuard);
         delete pQuickSettings;
         return;
     }
