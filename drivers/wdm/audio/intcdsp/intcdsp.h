@@ -71,6 +71,25 @@ DEFINE_GUID(GUID_ADSP_BUS_INTERFACE,
 #define INTCDSP_SELFTEST_MAPPINGS      2
 #define INTCDSP_STREAM_LINE_BYTES      384
 
+/*
+ * The state of the DSP's software for the device (E1, p5-e1-design.md §1):
+ * set by the driver alone. Booted stays the hardware's word, and the
+ * manager's Ready and Faulted stay the open's (stream.h); this is the
+ * device's own word, set after every boot sequence, fault and power
+ * transition.
+ */
+typedef enum _INTCDSP_DSP_STATE
+{
+    /* probe only, or no topology the firmware can run: an open answers STATUS_DEVICE_NOT_READY as it always did */
+    IntcDspNoDsp = 0,
+    /* booted, the manager started, no fault */
+    IntcDspReady,
+    /* one thread is inside the boot sequence at an open, under the manager's mutex */
+    IntcDspBooting,
+    /* powered down with the topology model kept, after a fault or a D0 exit: the next open boots */
+    IntcDspNeedsBoot
+} INTCDSP_DSP_STATE;
+
 typedef struct _INTCDSP_DEVICE
 {
     WDFDEVICE Device;
@@ -112,6 +131,8 @@ typedef struct _INTCDSP_DEVICE
     BOOLEAN StreamPrepared;
     BOOLEAN Booted;
     BOOLEAN IdleHeld;
+    /* the state after the last boot sequence, fault or power transition (E1) */
+    INTCDSP_DSP_STATE DspState;
     /* the topology the device's boot runs: its model in one nonpaged buffer, kept for the device and rebuilt at the next boot only when none is resident (R6) */
     PUCHAR Topology;
     SIZE_T TopologyBytes;
@@ -217,12 +238,26 @@ IntcDspProbe(
 
 NTSTATUS
 IntcDspBoot(
-    _Inout_ PINTCDSP_DEVICE Dev);
+    _Inout_ PINTCDSP_DEVICE Dev,
+    BOOLEAN AtOpen);
 
-/* The stream manager of a booted device with a topology, and the loopback self-test (SelfTest = 2) over it */
+/*
+ * The boot sequence the D0 entry, a boot at an open and a recovery share
+ * (E1): the boot, then the topology (resident after the first boot of the
+ * device) or a power-down, then the stream manager. The self-tests run at a
+ * D0 entry alone. The status is the manager's after it all and
+ * Dev->DspState says which of the four the device is in.
+ */
+NTSTATUS
+IntcDspBootSequence(
+    _Inout_ PINTCDSP_DEVICE Dev,
+    BOOLEAN AtOpen);
+
+/* The stream manager of a booted device with a topology, and the loopback self-test (SelfTest = 2) over it, at a D0 entry alone */
 NTSTATUS
 IntcDspStreamsStart(
-    _Inout_ PINTCDSP_DEVICE Dev);
+    _Inout_ PINTCDSP_DEVICE Dev,
+    BOOLEAN AtOpen);
 
 /* The audio children of the device (audioif.c): the child list at its creation, and the report of one child per PCM of the topology after the streams start, none without one */
 VOID

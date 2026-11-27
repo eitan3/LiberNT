@@ -20,6 +20,10 @@ static
 VOID
 IntcDspPowerOff(
     _Inout_ PINTCDSP_DEVICE Dev);
+static
+NTSTATUS
+IntcDspStreamBoot(
+    _In_opt_ PVOID Context);
 
 /* The code-loader stream carries 48 kHz, 32 bits, one channel: Linux hda.h HDA_CL_STREAM_FORMAT (the stream descriptor format register value 0x40) */
 #define INTCDSP_CL_SAMPLE_RATE       48000
@@ -235,9 +239,11 @@ IntcDspStreamLog(
 
 /*
  * A request faulted the link: as every faulted link ends, the DSP is powered
- * down and booted again at the next D0 entry. The manager released every
- * stream itself before it called here, under its own lock (stream.c
- * IntcDspStreamsFault), so only the hardware goes off: nothing is released twice.
+ * down; it is booted again at the next stream open (E1) or at the next D0
+ * entry. The manager released every stream itself before it called here,
+ * under its own lock (stream.c IntcDspStreamsFault), so only the hardware
+ * goes off: nothing is released twice. The topology model stays, so the
+ * device is in need of a boot, not without a DSP.
  */
 static
 VOID
@@ -248,6 +254,7 @@ IntcDspStreamFault(
 
     IntcDspPowerOff(Dev);
     Dev->Booted = FALSE;
+    Dev->DspState = IntcDspNeedsBoot;
 }
 
 /* A buffer goes back to the bus: the self-test's mapping of it is gone first */
@@ -321,7 +328,8 @@ IntcDspSelfTestWait(
 
 NTSTATUS
 IntcDspStreamsStart(
-    _Inout_ PINTCDSP_DEVICE Dev)
+    _Inout_ PINTCDSP_DEVICE Dev,
+    BOOLEAN AtOpen)
 {
     SIZE_T Bytes = IntcDspStreamsBytes(Dev->TopologyModel);
     NTSTATUS Status;
@@ -343,6 +351,7 @@ IntcDspStreamsStart(
     Dev->StreamOps.Context = Dev;
     Dev->StreamOps.Log = IntcDspStreamLog;
     Dev->StreamOps.Fault = IntcDspStreamFault;
+    Dev->StreamOps.Boot = IntcDspStreamBoot;
     Dev->StreamOps.Unmap = IntcDspStreamUnmap;
     Dev->SelfTestOps.Context = Dev;
     Dev->SelfTestOps.Map = IntcDspSelfTestMap;
@@ -352,7 +361,8 @@ IntcDspStreamsStart(
     /* a bus without the stream members, or a link that is not ready: the DSP stays as the earlier checkpoints left it, with no stream and no self-test */
     if (!Dev->Streams.Ready)
         return STATUS_SUCCESS;
-    if (Dev->SelfTest == INTCDSP_SELFTEST_LOOPBACK)
+    /* the loopback self-test is the opt-in check of the plan at a D0 entry; a boot at an open runs none (E1) */
+    if (!AtOpen && Dev->SelfTest == INTCDSP_SELFTEST_LOOPBACK)
     {
         Status = IntcDspLoopbackSelfTest(&Dev->Streams, &Dev->SelfTestOps, INTCDSP_SELFTEST_FRAMES);
         /* the manager logged the lines; a fault powered the DSP down, a capture that does not match leaves it up, as the plan's stop rule says */
@@ -360,6 +370,54 @@ IntcDspStreamsStart(
                    Dev->Booted ? "left running" : "powered down");
     }
     return STATUS_SUCCESS;
+}
+
+/*
+ * The boot sequence the D0 entry and the boot at an open share (E1,
+ * p5-e1-design.md §2): one place for the three calls, so that a recovery
+ * boots as a D0 entry does, the self-tests aside. The status is the
+ * manager's after it all, and the device's state follows: no topology
+ * model, there is nothing to give a stream (NoDsp); the DSP booted and the
+ * manager ready and not faulted, Ready; otherwise the model is kept for the
+ * next open's boot (NeedsBoot). Booting marks the way in at an open.
+ */
+NTSTATUS
+IntcDspBootSequence(
+    _Inout_ PINTCDSP_DEVICE Dev,
+    BOOLEAN AtOpen)
+{
+    NTSTATUS Status = STATUS_SUCCESS;
+
+    if (AtOpen)
+        Dev->DspState = IntcDspBooting;
+    IntcDspBoot(Dev, AtOpen);
+    /* the plan's fail-safe: a booted DSP with no topology the firmware can run is powered down again and gets no endpoint */
+    if (Dev->Booted && !IntcDspTopologyLoad(Dev))
+        IntcDspPowerDown(Dev);
+    /* the streams hang off the booted loader and its topology from here; the self-test is the opt-in check of the plan, and a fault of it powers the DSP down itself */
+    if (Dev->Booted)
+        Status = IntcDspStreamsStart(Dev, AtOpen);
+    if (Dev->TopologyModel == NULL)
+        Dev->DspState = IntcDspNoDsp;
+    else if (Dev->Booted && Dev->Streams.Ready && !Dev->Streams.Faulted)
+        Dev->DspState = IntcDspReady;
+    else
+        Dev->DspState = IntcDspNeedsBoot;
+    /* the open asks the manager again and refuses on its word (stream.c IntcDspStreamOpen); the status is for its line */
+    if (Dev->DspState != IntcDspReady && NT_SUCCESS(Status))
+        Status = STATUS_DEVICE_NOT_READY;
+    return Status;
+}
+
+/* The manager's Boot operation (stream.h INTCDSP_STREAMS_OPS.Boot): the sequence at an open, under the manager's lock */
+static
+NTSTATUS
+IntcDspStreamBoot(
+    _In_opt_ PVOID Context)
+{
+    PINTCDSP_DEVICE Dev = (PINTCDSP_DEVICE)Context;
+
+    return IntcDspBootSequence(Dev, TRUE);
 }
 
 VOID
@@ -468,7 +526,8 @@ IntcDspDmaBufferAllocate(
 
 NTSTATUS
 IntcDspBoot(
-    _Inout_ PINTCDSP_DEVICE Dev)
+    _Inout_ PINTCDSP_DEVICE Dev,
+    BOOLEAN AtOpen)
 {
     const FWLOAD_PLATFORM* Platform = Dev->Platform;
     FWLOAD_TIMEOUTS Timeouts;
@@ -604,9 +663,9 @@ IntcDspBoot(
                    Registers->RomFuseValues, Dev->Fw.FwConfig.DownlinkMailboxBytes, Dev->Fw.FwConfig.UplinkMailboxBytes,
                    Dev->Fw.FwConfig.TraceLogBytes, Dev->Fw.FwConfig.MaxPipelines, Dev->Fw.FwConfig.MaxLibraries,
                    Dev->Fw.FwConfig.ContextSave, Dev->Fw.FwConfig.TupleCount);
-        /* the transport hangs off the booted loader from here; the self-test is the opt-in check of the plan */
+        /* the transport hangs off the booted loader from here; the self-test is the opt-in check of the plan, at a D0 entry and never at an open (E1) */
         IntcDspIpcAttach(Dev);
-        if (Dev->SelfTest == INTCDSP_SELFTEST_IPC)
+        if (!AtOpen && Dev->SelfTest == INTCDSP_SELFTEST_IPC)
             IntcDspIpcSelfTest(Dev);
     }
     else
@@ -739,6 +798,7 @@ IntcDspEvtDeviceReleaseHardware(
     Dev->TopologyBytes = 0;
     Dev->TopologyModel = NULL;
     Dev->TopologyName[0] = 0;
+    Dev->DspState = IntcDspNoDsp;
     if (Dev->StreamsState)
         ExFreePoolWithTag(Dev->StreamsState, INTCDSP_POOL_TAG);
     Dev->StreamsState = NULL;
@@ -772,17 +832,10 @@ IntcDspEvtDeviceD0Entry(
         return STATUS_SUCCESS;
     IntcDspReadSetting(INTCDSP_SETTINGS_VALUE, &Dev->BootDsp);
     IntcDspReadIpcSettings(Dev);
+    /* BootDsp = 1 boots at every D0 entry (E2 changes the rule): the sequence the boot at an open shares, with the self-tests */
     if (Dev->BootDsp)
-    {
-        IntcDspBoot(Dev);
-        /* the plan's fail-safe: a booted DSP with no topology the firmware can run is powered down again and gets no endpoint */
-        if (Dev->Booted && !IntcDspTopologyLoad(Dev))
-            IntcDspPowerDown(Dev);
-        /* the streams hang off the booted loader and its topology from here; the self-test is the opt-in check of the plan, and a fault of it powers the DSP down itself */
-        if (Dev->Booted)
-            IntcDspStreamsStart(Dev);
-    }
-    /* the audio children follow the topology the device holds: one per PCM when its streams are open for them, none otherwise */
+        IntcDspBootSequence(Dev, FALSE);
+    /* the audio children follow the topology the device holds: one per PCM of its model while the model is resident (audioif.c) */
     IntcDspAudioUpdate(Dev);
     return STATUS_SUCCESS;
 }
@@ -797,7 +850,12 @@ IntcDspEvtDeviceD0Exit(
 
     UNREFERENCED_PARAMETER(TargetState);
     if (Dev->BusValid)
+    {
         IntcDspPowerDown(Dev);
+        /* the topology model outlives the power-down (R6): the next open boots (E1); a device without a model stays as it was */
+        if (Dev->DspState != IntcDspNoDsp)
+            Dev->DspState = IntcDspNeedsBoot;
+    }
     return STATUS_SUCCESS;
 }
 
