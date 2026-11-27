@@ -344,6 +344,14 @@ HDA_FreeDmaEngine(
 	}
 
 	stream->PdoContext = NULL;
+	/* the stream goes back to the pool and forgets the events its owner registered on it, as a
+	 * stream of the DSP child does (ADSPFreeStream, N10-01): the codec's client (portcls) unregisters
+	 * its pin's notification event at the pin's close, before the stream is freed, so no freed event is
+	 * left on the record today, but that is the client's doing and not the bus's; a record that holds
+	 * no event whatever its owner did is the bus's own rule, set under the interrupt lock the DPC
+	 * reads the events under (hdac_controller.cpp hda_dpc) */
+	RtlZeroMemory(stream->registeredEvents, sizeof(stream->registeredEvents));
+	InterlockedExchange(&stream->notificationPending, FALSE);
 	WdfInterruptReleaseLock(devData->FdoContext->Interrupt);
 
 	WdfDeviceResumeIdle(devData->FdoContext->WdfDevice);
