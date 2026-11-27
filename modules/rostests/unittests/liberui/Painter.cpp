@@ -605,6 +605,69 @@ static void TestSurfaceInput(DWORD flags)
     delete root;
 }
 
+static void TestTransitions(DWORD flags)
+{
+    typedef HANDLE (WINAPI *PFN_SETTHREADDPIAWARENESSCONTEXT)(HANDLE);
+    PFN_SETTHREADDPIAWARENESSCONTEXT setAwareness = (PFN_SETTHREADDPIAWARENESSCONTEXT)GetProcAddress(
+        GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext");
+    HANDLE previous = setAwareness ? setAwareness((HANDLE)-4) : NULL;
+    Surface surface;
+    StackPanel *root = new StackPanel(Orientation::Horizontal, 0);
+    FillWidget *fill = new FillWidget(0xFFFF0000);
+    ThemeTokens tokens;
+    RECT rc;
+
+    fill->SetSize(80, 80);
+    root->AddChild(fill);
+    ok(surface.Create(NULL, L"LiberUI transition test", WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, flags),
+       "surface created\n");
+    surface.SetDpi(96);
+    surface.SetTokens(&tokens);
+    surface.SetRoot(root);
+    surface.SetPosition(300, 300, 80, 80);
+    surface.Render(0);
+    ShowWindow(surface.Window(), SW_SHOWNOACTIVATE);
+    Pump(200);
+
+    surface.SetOpacity(0.5f);
+    Pump(200);
+    COLORREF half = ScreenPixel(340, 340);
+    ok(GetRValue(half) > 60 && GetRValue(half) < 255 && half != RGB(255, 0, 0), "half opacity blends with the desktop: %06lX\n",
+       half);
+    surface.SetOpacity(1.0f);
+    Pump(200);
+    ok(ScreenPixel(340, 340) == RGB(255, 0, 0), "full opacity is opaque again\n");
+
+    if (!AnimationsEnabled())
+    {
+        skip("client area animations are off\n");
+    }
+    else
+    {
+        surface.TransitionIn(32.0f, 300);
+        ok(surface.IsTransitioning() && surface.OffsetY() > 24.0f && surface.Opacity() < 0.3f,
+           "a rise starts low and faint: %f %f\n", surface.OffsetY(), surface.Opacity());
+        GetWindowRect(surface.Window(), &rc);
+        ok(rc.top > 300 + 24, "the window starts below its place: %ld\n", rc.top);
+        Pump(450);
+        GetWindowRect(surface.Window(), &rc);
+        ok(!surface.IsTransitioning() && surface.OffsetY() == 0.0f && surface.Opacity() == 1.0f && rc.top == 300,
+           "the rise settles in place: %f %f %ld\n", surface.OffsetY(), surface.Opacity(), rc.top);
+
+        surface.TransitionOut(24.0f, 150);
+        ok(surface.IsTransitioning() && IsWindowVisible(surface.Window()), "an exit starts visible\n");
+        Pump(300);
+        ok(!surface.IsTransitioning() && !IsWindowVisible(surface.Window()), "an exit ends hidden\n");
+        ok(surface.OffsetY() == 0.0f && surface.Opacity() == 1.0f, "an exit resets for the next open\n");
+    }
+
+    surface.SetRoot(NULL);
+    surface.Destroy();
+    delete root;
+    if (setAwareness && previous)
+        setAwareness(previous);
+}
+
 static void TestShadow()
 {
     Surface surface;
@@ -744,6 +807,8 @@ START_TEST(Painter)
     TestGpuPainter();
     TestGpuParity();
     TestShadow();
+    TestTransitions(0);
+    TestTransitions(SurfaceNoGpu);
     TestSurfaceInput(0);
     TestSurfaceInput(SurfaceNoGpu);
     ok(AssertionFailures() == failures, "%ld assertions failed\n", AssertionFailures() - failures);

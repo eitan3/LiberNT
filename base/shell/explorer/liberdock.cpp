@@ -57,7 +57,7 @@ struct LIBER_DOCK_ENTRY
 
 class CLiberDock;
 
-class CDockCell : public Widget
+class CDockCell : public Widget, public IAnimationClient
 {
 public:
     CDockCell(CLiberDock *dock, int index) : m_Dock(dock), m_Index(index), m_Icon(NULL), m_Running(FALSE),
@@ -67,6 +67,21 @@ public:
         SetHitTestable(TRUE);
         SetFocusable(TRUE);
     }
+
+    ~CDockCell()
+    {
+        AnimationClock::Instance().Remove(this);
+    }
+
+    void Hop()
+    {
+        if (!AnimationsEnabled())
+            return;
+        m_Hop.Start(0.0, 1.0, LIBER_DUR_SPRING, Easing::Out, AnimationClock::Now());
+        AnimationClock::Instance().Add(this);
+    }
+
+    BOOL OnAnimationFrame(ULONGLONG now);
 
     void Set(HICON icon, BOOL running, BOOL active)
     {
@@ -90,12 +105,13 @@ protected:
             context.Painter.FillEllipse(rc, tokens.Color(LIBER_COLOR_FILL_PLATE_HOVER));
 
         float scale = HasState(StatePressed) ? 0.84f : 1.0f;
+        float lift = (float)LiberDock_HopOffset(m_Hop.Value(context.Now));
         if (m_Index == LIBER_CELL_START)
             PaintLogo(context, rc, 30.0f * scale);
         else
         {
             float size = (m_Index == LIBER_CELL_SEARCH ? 24.0f : (float)LIBER_DOCK_ICON) * scale;
-            RectF icon = { rc.X + (rc.Width - size) / 2, rc.Y + (rc.Height - size) / 2, size, size };
+            RectF icon = { rc.X + (rc.Width - size) / 2, rc.Y + (rc.Height - size) / 2 - lift, size, size };
             if (m_Index == LIBER_CELL_SEARCH)
                 context.Painter.Icon(L"search_24_regular", icon, tokens.Color(LIBER_COLOR_TEXT1));
             else if (m_Icon)
@@ -129,6 +145,7 @@ protected:
     }
 
 private:
+    Animation m_Hop;
     CLiberDock *m_Dock;
     int m_Index;
     HICON m_Icon;
@@ -293,6 +310,7 @@ public:
     void OnClockClick(const RECT &bounds);
     void OnPillClick();
     void OpenStart();
+    void RenderDock(ULONGLONG now) { m_DockSurface.Render(now); }
     UINT Dpi() const { return m_Dpi; }
     void OnChevronClick();
 
@@ -333,6 +351,15 @@ static CLiberDock *g_pLiberDock;
 void CDockCell::OnClick()
 {
     m_Dock->OnCellClick(m_Index, Bounds());
+}
+
+BOOL CDockCell::OnAnimationFrame(ULONGLONG now)
+{
+    BOOL running = m_Hop.IsRunning(now);
+
+    Invalidate();
+    m_Dock->RenderDock(now);
+    return running;
 }
 
 void CTrayClock::OnClick()
@@ -570,6 +597,8 @@ void CLiberDock::OnCellClick(int index, const RECT &bounds)
     if (entry.bPinned)
     {
         HANDLE process = NULL;
+        if ((UINT)index + LIBER_DOCK_FIXED_CELLS < _countof(m_Cells) && m_Cells[index + LIBER_DOCK_FIXED_CELLS])
+            m_Cells[index + LIBER_DOCK_FIXED_CELLS]->Hop();
         HRESULT hr = TaskbarPin_Launch(entry.szSource, &process);
         if (process)
             CloseHandle(process);

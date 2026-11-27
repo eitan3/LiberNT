@@ -7,6 +7,7 @@
 
 #include <windows.h>
 #include <atlbase.h>
+#include <math.h>
 #include <liberui.h>
 
 #include "liberdock.h"
@@ -47,6 +48,13 @@ int LiberDock_Width(UINT cells)
 {
     ATLASSERT(cells > 0);
     return (int)cells * LIBER_DOCK_CELL + ((int)cells - 1) * LIBER_DOCK_CELL_GAP + 2 * LIBER_DOCK_PAD_X;
+}
+
+double LiberDock_HopOffset(double progress)
+{
+    if (progress <= 0.0 || progress >= 1.0)
+        return 0.0;
+    return LIBER_DOCK_HOP * sin(3.14159265358979 * progress);
 }
 
 int LiberDock_SystemPillWidth(BOOL bBattery)

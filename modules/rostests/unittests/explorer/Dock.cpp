@@ -28,6 +28,10 @@ static void TestLayout()
 
     ok(LiberDock_Width(10) == 514, "ten cells make the spec's 514 px dock: %d\n", LiberDock_Width(10));
     ok(LiberDock_Width(1) == 64, "one cell: %d\n", LiberDock_Width(1));
+    ok(LiberDock_HopOffset(0.0) == 0.0 && LiberDock_HopOffset(1.0) == 0.0 && LiberDock_HopOffset(1.5) == 0.0,
+       "the launch hop rests at both ends\n");
+    ok(fabs(LiberDock_HopOffset(0.5) - LIBER_DOCK_HOP) < 0.001 && LiberDock_HopOffset(0.25) > 0.0 &&
+       fabs(LiberDock_HopOffset(0.25) - LiberDock_HopOffset(0.75)) < 0.001, "the hop peaks halfway\n");
     ok(LiberDock_SystemPillWidth(TRUE) == 100 && LiberDock_SystemPillWidth(FALSE) == 70,
        "system group is %d px with a battery and %d px without\n", LiberDock_SystemPillWidth(TRUE),
        LiberDock_SystemPillWidth(FALSE));

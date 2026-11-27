@@ -672,7 +672,7 @@ enum SurfaceFlags
 
 Thickness ShadowMargin(const LIBER_SHADOW &shadow);
 
-class Surface : public IWidgetHost
+class Surface : public IWidgetHost, public IAnimationClient
 {
 public:
     Surface();
@@ -692,6 +692,14 @@ public:
     void SetPosition(int x, int y, int widthDip, int heightDip);
     void SetInputShape(float radiusDip);
     void SetElevation(int elevation, float radiusDip);
+    void SetOpacity(float opacity);
+    float Opacity() const { return m_Opacity; }
+    float OffsetY() const { return m_OffsetY; }
+    void TransitionIn(float riseDip, UINT durationMs);
+    void TransitionOut(float dropDip, UINT durationMs);
+    BOOL IsTransitioning() const { return m_Transition; }
+    BOOL IsClosing() const { return m_Transition && m_HideAtEnd; }
+    BOOL OnAnimationFrame(ULONGLONG now);
     Surface *ShadowSurface() const { return m_Shadow; }
     SIZE SizeDip() const { return m_SizeDip; }
     BOOL Render(ULONGLONG now);
@@ -724,6 +732,7 @@ private:
     BOOL RenderPass(ULONGLONG now, BOOL *lost);
     void ApplyInputShape();
     void UpdateShadow(BOOL show);
+    LONG OffsetPx() const;
 
     HWND m_hwnd;
     UINT m_Dpi;
@@ -748,6 +757,12 @@ private:
     WCHAR m_Title[64];
     DWORD m_ExStyle;
     float m_InputRadius;
+    float m_Opacity;
+    float m_OffsetY;
+    Animation m_FadeAnimation;
+    Animation m_MoveAnimation;
+    BOOL m_Transition;
+    BOOL m_HideAtEnd;
     Surface *m_Shadow;
     class ShadowWidget *m_ShadowWidget;
     int m_Elevation;

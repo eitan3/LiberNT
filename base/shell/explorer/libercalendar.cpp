@@ -226,9 +226,9 @@ public:
     ULONGLONG m_HiddenAt;
     void Hide()
     {
-        if (Window() && IsWindowVisible(Window()))
+        if (Window() && IsWindowVisible(Window()) && !IsClosing())
         {
-            ShowWindow(Window(), SW_HIDE);
+            TransitionOut(24.0f, 150);
             m_HiddenAt = GetTickCount64();
         }
     }
@@ -253,7 +253,7 @@ public:
 
     BOOL Open(const RECT *prcAnchor);
     void Close() { m_Surface.Hide(); }
-    BOOL IsOpen() const { return m_Surface.Window() && IsWindowVisible(m_Surface.Window()); }
+    BOOL IsOpen() const { return m_Surface.Window() && IsWindowVisible(m_Surface.Window()) && !m_Surface.IsClosing(); }
     BOOL JustClosed() const { return m_Surface.m_HiddenAt && GetTickCount64() - m_Surface.m_HiddenAt < 250; }
     void OnControlEvent(Widget *source, ControlEvent event);
 
@@ -464,6 +464,7 @@ BOOL CLiberCalendar::Open(const RECT *prcAnchor)
     Place();
     m_Surface.Render(AnimationClock::Now());
     ShowWindow(m_Surface.Window(), SW_SHOW);
+    m_Surface.TransitionIn(32.0f, 300);
     SetForegroundWindow(m_Surface.Window());
     return TRUE;
 }

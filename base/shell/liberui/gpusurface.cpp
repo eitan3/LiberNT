@@ -80,7 +80,7 @@ static const char LiberShaderSource[] =
     "    float2 g = arc.zw - arc.xy; float t = saturate(dot(p - arc.xy, g) / max(dot(g, g), 0.000001));\n"
     "    result = lerp(color, uvRect, t) * c;\n"
     "  }\n"
-    "  else if (kind > 5.5 && kind < 6.5) result = tex.Sample(samp, v.uv) * c; else result = color * c;\n"
+    "  else if (kind > 5.5 && kind < 6.5) result = tex.Sample(samp, v.uv) * c * color.a; else result = color * c;\n"
     "  return result;\n"
     "}\n";
 
@@ -96,6 +96,7 @@ static void ReleaseCom(T *&p)
 
 static void ReleaseCanvas(SurfaceGpu *gpu)
 {
+    ReleaseCom(gpu->CanvasSource);
     ReleaseCom(gpu->CanvasView);
     ReleaseCom(gpu->Canvas);
 }
@@ -350,17 +351,74 @@ BOOL GpuEnsureCanvas(SurfaceGpu *gpu, UINT width, UINT height, BOOL *recreated)
     return TRUE;
 }
 
-BOOL GpuPresentCanvas(SurfaceGpu *gpu)
+static BOOL DrawCanvasFaded(SurfaceGpu *gpu, ID3D11Texture2D *buffer, float opacity)
+{
+    ID3D11RenderTargetView *target = NULL;
+    D3D11_MAPPED_SUBRESOURCE mapped;
+    GpuDrawConstants constants;
+    const float clear[4] = { 0, 0, 0, 0 }, factor[4] = { 0, 0, 0, 0 };
+    ID3D11ShaderResourceView *none = NULL;
+
+    if (!gpu->CanvasSource && FAILED(gpu->Device->CreateShaderResourceView(gpu->Canvas, NULL, &gpu->CanvasSource)))
+        return FALSE;
+    if (FAILED(gpu->Device->CreateRenderTargetView(buffer, NULL, &target)))
+        return FALSE;
+    ZeroMemory(&constants, sizeof(constants));
+    constants.Rect[2] = constants.Shape[2] = (float)gpu->Width;
+    constants.Rect[3] = constants.Shape[3] = (float)gpu->Height;
+    constants.Params[2] = (float)GpuImage;
+    constants.Color[0] = constants.Color[1] = constants.Color[2] = constants.Color[3] = opacity;
+    constants.Target[0] = (float)gpu->Width;
+    constants.Target[1] = (float)gpu->Height;
+    constants.UvRect[2] = constants.UvRect[3] = 1.0f;
+    if (FAILED(gpu->Context->Map(gpu->Constants, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+    {
+        target->Release();
+        return FALSE;
+    }
+    CopyMemory(mapped.pData, &constants, sizeof(constants));
+    gpu->Context->Unmap(gpu->Constants, 0);
+
+    D3D11_VIEWPORT viewport = { 0.0f, 0.0f, (float)gpu->Width, (float)gpu->Height, 0.0f, 1.0f };
+    D3D11_RECT scissor = { 0, 0, (LONG)gpu->Width, (LONG)gpu->Height };
+    ID3D11DeviceContext *context = gpu->Context;
+    context->OMSetRenderTargets(1, &target, NULL);
+    context->ClearRenderTargetView(target, clear);
+    context->RSSetViewports(1, &viewport);
+    context->RSSetState(gpu->Rasterizer);
+    context->RSSetScissorRects(1, &scissor);
+    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+    context->IASetInputLayout(NULL);
+    context->VSSetShader(gpu->VertexShader, NULL, 0);
+    context->PSSetShader(gpu->PixelShader, NULL, 0);
+    context->VSSetConstantBuffers(0, 1, &gpu->Constants);
+    context->PSSetConstantBuffers(0, 1, &gpu->Constants);
+    context->PSSetSamplers(0, 1, &gpu->Sampler);
+    context->PSSetShaderResources(0, 1, &gpu->CanvasSource);
+    context->OMSetBlendState(gpu->BlendCopy, factor, 0xFFFFFFFF);
+    context->Draw(4, 0);
+    context->PSSetShaderResources(0, 1, &none);
+    context->OMSetRenderTargets(0, NULL, NULL);
+    target->Release();
+    return TRUE;
+}
+
+BOOL GpuPresentCanvas(SurfaceGpu *gpu, float opacity)
 {
     ID3D11Texture2D *buffer = NULL;
+    BOOL drawn = TRUE;
 
+    LUI_ASSERT(opacity >= 0.0f && opacity <= 1.0f);
     if (!gpu || !gpu->Canvas || !gpu->SwapChain)
         return FALSE;
     if (FAILED(gpu->SwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void **)&buffer)))
         return FALSE;
-    gpu->Context->CopyResource(buffer, gpu->Canvas);
+    if (opacity >= 1.0f)
+        gpu->Context->CopyResource(buffer, gpu->Canvas);
+    else
+        drawn = DrawCanvasFaded(gpu, buffer, opacity < 0.0f ? 0.0f : opacity);
     buffer->Release();
-    return SUCCEEDED(gpu->SwapChain->Present(0, 0));
+    return drawn && SUCCEEDED(gpu->SwapChain->Present(0, 0));
 }
 
 BOOL GpuReadCanvas(SurfaceGpu *gpu, DWORD *pixels, UINT stride)

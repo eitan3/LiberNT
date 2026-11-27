@@ -70,6 +70,7 @@ struct SurfaceGpu
     IDXGISwapChain1 *SwapChain;
     ID3D11Texture2D *Canvas;
     ID3D11RenderTargetView *CanvasView;
+    ID3D11ShaderResourceView *CanvasSource;
     ID3D11VertexShader *VertexShader;
     ID3D11PixelShader *PixelShader;
     ID3D11Buffer *Constants;
@@ -136,7 +137,7 @@ private:
 BOOL GpuEnsureCanvas(SurfaceGpu *gpu, UINT width, UINT height, BOOL *recreated);
 BOOL GpuHasCanvas(const SurfaceGpu *gpu);
 BOOL GpuDeviceLost(SurfaceGpu *gpu);
-BOOL GpuPresentCanvas(SurfaceGpu *gpu);
+BOOL GpuPresentCanvas(SurfaceGpu *gpu, float opacity);
 BOOL GpuReadCanvas(SurfaceGpu *gpu, DWORD *pixels, UINT stride);
 
 }
