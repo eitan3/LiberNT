@@ -31,9 +31,11 @@ double LiberDock_HopOffset(double progress);
 BOOL LiberDock_LanguageLabel(LANGID langId, LPWSTR pszLabel, UINT cchLabel);
 int LiberDock_SystemPillWidth(BOOL bBattery);
 VOID LiberDock_WorkArea(const RECT *prcMonitor, UINT dpi, RECT *prcWork);
+VOID LiberDock_CellRect(const RECT *prcDock, UINT dpi, UINT cell, RECT *prcCell);
 
 struct ITrayWindow;
 HRESULT LiberDock_Start(ITrayWindow *Tray);
 VOID LiberDock_Stop(VOID);
+VOID LiberDock_EndSession(VOID);
 BOOL LiberDock_OpenStart(VOID);
 BOOL LiberDock_ReservedWorkArea(HMONITOR hMonitor, RECT *prcWork);

@@ -34,7 +34,10 @@ public:
 protected:
     SIZE MeasureOverride(SIZE available)
     {
-        SIZE size = { min(available.cx, (LONG)(12 + lstrlenW(m_Text) * 6 + 4 + 12 + 10)), 24 };
+        LONG text = LiberUI::MeasureText(m_Text, LIBER_TYPE_CAPTION, 0.0f).cx;
+        if (text <= 0)
+            text = (LONG)lstrlenW(m_Text) * LiberTypeRamp[LIBER_TYPE_CAPTION].Size * 55 / 100;
+        SIZE size = { min(available.cx, (LONG)(12 + text + 1 + 4 + 12 + 10)), 24 };
         return size;
     }
 
@@ -193,10 +196,14 @@ typedef struct _LIBER_MENU_ITEM
 
 UINT LiberMenu_Track(const LIBER_MENU_ITEM *pItems, UINT cItems, POINT anchor);
 VOID LiberMenu_Origin(const RECT *prcWork, POINT anchor, int widthPx, int heightPx, POINT *pptTopLeft);
+BOOL LiberMenu_DismissesOn(UINT msg, POINT pt, const RECT *prcMenu);
+BOOL LiberMenu_DismissedOutside(POINT *ppt);
 
 BOOL LiberStart_LoadPins(LPWSTR pszPins, DWORD cchPins, UINT *pcPins);
 BOOL LiberStart_IsPinned(LPCWSTR pszPins, LPCWSTR pszPath);
 BOOL LiberStart_SetPinned(LPCWSTR pszPins, LPCWSTR pszPath, BOOL bPinned);
+UINT LiberStart_DefaultPinRank(LPCWSTR pszTarget);
+BOOL LiberStart_SystemApp(UINT index, LPWSTR pszPath, UINT cchPath, LPCWSTR *ppszName);
 
 UINT LiberStart_LoadRecentFiles(LIBER_RECENT_FILE *pFiles, UINT cMax);
 VOID LiberStart_FormatWhen(const SYSTEMTIME *pNow, const SYSTEMTIME *pThen, LPWSTR pszText, UINT cchText);

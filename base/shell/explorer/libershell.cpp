@@ -6,6 +6,7 @@
  */
 
 #include <windows.h>
+#include <atlbase.h>
 #include <shlobj.h>
 #include <shlwapi.h>
 #include <strsafe.h>
@@ -149,6 +150,17 @@ static BOOL LoadWallpaperPixels(LPCWSTR pszPath, DWORD **ppPixels, UINT *pWidth,
     return SUCCEEDED(hr);
 }
 
+static struct
+{
+    WCHAR Path[MAX_PATH];
+    UINT Style;
+    FILETIME Written;
+    RECT Screen;
+    SIZE Size;
+    BOOL Valid;
+    double Luma;
+} g_WallpaperLuma;
+
 BOOL LiberShell_WallpaperLuma(const RECT *prcScreen, double *pLuma)
 {
     WCHAR szPath[MAX_PATH], szStyle[8];
@@ -167,9 +179,28 @@ BOOL LiberShell_WallpaperLuma(const RECT *prcScreen, double *pLuma)
     {
         style = (UINT)_wtoi(szStyle);
     }
+    SIZE screen = { GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (!GetFileAttributesExW(szPath, GetFileExInfoStandard, &info))
+        return FALSE;
+    if (g_WallpaperLuma.Path[0] && !lstrcmpiW(g_WallpaperLuma.Path, szPath) && g_WallpaperLuma.Style == style &&
+        !CompareFileTime(&g_WallpaperLuma.Written, &info.ftLastWriteTime) &&
+        EqualRect(&g_WallpaperLuma.Screen, prcScreen) && g_WallpaperLuma.Size.cx == screen.cx &&
+        g_WallpaperLuma.Size.cy == screen.cy)
+    {
+        *pLuma = g_WallpaperLuma.Luma;
+        return g_WallpaperLuma.Valid;
+    }
+    StringCchCopyW(g_WallpaperLuma.Path, _countof(g_WallpaperLuma.Path), szPath);
+    g_WallpaperLuma.Style = style;
+    g_WallpaperLuma.Written = info.ftLastWriteTime;
+    g_WallpaperLuma.Screen = *prcScreen;
+    g_WallpaperLuma.Size = screen;
+    g_WallpaperLuma.Valid = FALSE;
+    g_WallpaperLuma.Luma = 0.0;
     if (!LoadWallpaperPixels(szPath, &pixels, &width, &height))
         return FALSE;
-    SIZE screen = { GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) }, image = { (LONG)width, (LONG)height };
+    SIZE image = { (LONG)width, (LONG)height };
     RECT area;
     LiberShell_MapToWallpaper(prcScreen, screen, image, style, &area);
     for (UINT y = 0; y < 10 && !IsRectEmpty(&area); y++)
@@ -189,6 +220,8 @@ BOOL LiberShell_WallpaperLuma(const RECT *prcScreen, double *pLuma)
     if (!samples)
         return FALSE;
     *pLuma = sum / samples;
+    g_WallpaperLuma.Luma = *pLuma;
+    g_WallpaperLuma.Valid = TRUE;
     return TRUE;
 }
 
@@ -461,6 +494,23 @@ VOID LiberMenu_Origin(const RECT *prcWork, POINT anchor, int widthPx, int height
         pptTopLeft->y = prcWork->bottom - heightPx;
 }
 
+BOOL LiberMenu_DismissesOn(UINT msg, POINT pt, const RECT *prcMenu)
+{
+    switch (msg)
+    {
+        case WM_LBUTTONDOWN:
+        case WM_RBUTTONDOWN:
+        case WM_MBUTTONDOWN:
+        case WM_XBUTTONDOWN:
+        case WM_NCLBUTTONDOWN:
+        case WM_NCRBUTTONDOWN:
+        case WM_NCMBUTTONDOWN:
+        case WM_NCXBUTTONDOWN:
+            return !prcMenu || !PtInRect(prcMenu, pt);
+    }
+    return FALSE;
+}
+
 #define LIBER_START_KEY L"Software\\LiberNT\\Shell\\Start"
 #define LIBER_START_PINS 64
 
@@ -474,16 +524,58 @@ BOOL LiberStart_LoadPins(LPWSTR pszPins, DWORD cchPins, UINT *pcPins)
     if (!pszPins || cchPins < 2)
         return FALSE;
     pszPins[0] = pszPins[1] = 0;
+    cb = (cchPins - 2) * sizeof(WCHAR);
     if (RegGetValueW(HKEY_CURRENT_USER, LIBER_START_KEY, L"Pins", RRF_RT_REG_MULTI_SZ, NULL, pszPins, &cb) !=
         ERROR_SUCCESS)
     {
         pszPins[0] = pszPins[1] = 0;
         return FALSE;
     }
+    ATLASSERT(cb <= (cchPins - 2) * sizeof(WCHAR));
+    pszPins[cb / sizeof(WCHAR)] = pszPins[cb / sizeof(WCHAR) + 1] = 0;
     for (LPCWSTR p = pszPins; *p; p += lstrlenW(p) + 1)
         count++;
     if (pcPins)
         *pcPins = count;
+    return TRUE;
+}
+
+static const LPCWSTR LiberStartDefaultPins[] = {
+    L"explorer.exe", L"systemsettings.exe", L"control.exe", L"lntget.exe", L"terminal.exe", L"notepad.exe",
+    L"calc.exe",     L"mspaint.exe",        L"wordpad.exe", L"taskmgr.exe", L"cmd.exe",     L"camera.exe",
+};
+
+UINT LiberStart_DefaultPinRank(LPCWSTR pszTarget)
+{
+    LPCWSTR name = pszTarget && *pszTarget ? PathFindFileNameW(pszTarget) : NULL;
+
+    for (UINT i = 0; name && i < _countof(LiberStartDefaultPins); i++)
+    {
+        if (!lstrcmpiW(name, LiberStartDefaultPins[i]))
+            return i;
+    }
+    return UINT_MAX;
+}
+
+BOOL LiberStart_SystemApp(UINT index, LPWSTR pszPath, UINT cchPath, LPCWSTR *ppszName)
+{
+    static const struct
+    {
+        LPCWSTR Path;
+        LPCWSTR Name;
+    } Apps[] = {
+        { L"%SystemRoot%\\ImmersiveControlPanel\\systemsettings.exe", L"Settings" },
+        { L"%SystemRoot%\\system32\\control.exe", L"Control Panel" },
+    };
+    DWORD cch;
+
+    if (index >= _countof(Apps) || !pszPath || !cchPath)
+        return FALSE;
+    cch = ExpandEnvironmentStringsW(Apps[index].Path, pszPath, cchPath);
+    if (!cch || cch > cchPath)
+        pszPath[0] = 0;
+    if (ppszName)
+        *ppszName = Apps[index].Name;
     return TRUE;
 }
 

@@ -44,6 +44,35 @@ enum
     LST_RECENT = 200
 };
 
+static HICON LoadAppIcon(SM2ITEM *item)
+{
+    if (!lstrcmpiW(PathFindExtensionW(item->szPath), L".lnk"))
+    {
+        CComPtr<IShellLinkW> link;
+        CComPtr<IPersistFile> persist;
+        WCHAR location[MAX_PATH] = L"", expanded[MAX_PATH];
+        int index = 0;
+        HICON icon = NULL;
+
+        if (SUCCEEDED(link.CoCreateInstance(CLSID_ShellLink, IID_IShellLinkW)) &&
+            SUCCEEDED(link->QueryInterface(IID_PPV_ARG(IPersistFile, &persist))) &&
+            SUCCEEDED(persist->Load(item->szPath, STGM_READ)) &&
+            SUCCEEDED(link->GetIconLocation(location, _countof(location), &index)) && location[0])
+        {
+            DWORD cch = ExpandEnvironmentStringsW(location, expanded, _countof(expanded));
+            if (cch && cch <= _countof(expanded) && ExtractIconExW(expanded, index, &icon, NULL, 1) && icon)
+                return icon;
+        }
+        if (SM2GetTargetPath(item))
+        {
+            icon = SM2LoadShellIcon(item->szTargetPath, TRUE);
+            if (icon)
+                return icon;
+        }
+    }
+    return SM2LoadShellIcon(item->szPath, TRUE);
+}
+
 class CAppTile : public Control
 {
 public:
@@ -84,7 +113,7 @@ protected:
         if (!m_Item->bSmallTried)
         {
             m_Item->bSmallTried = TRUE;
-            m_Item->hLargeIcon = SM2LoadShellIcon(m_Item->szPath, TRUE);
+            m_Item->hLargeIcon = LoadAppIcon(m_Item);
         }
         RectF icon = { rc.X + (rc.Width - 40.0f) / 2, rc.Y + 12.0f, 40.0f, 40.0f };
         if (m_Item->hLargeIcon)
@@ -231,10 +260,10 @@ private:
     WCHAR m_Query[64];
 };
 
-class CStartFooter : public StackPanel
+class CStartFooter : public Panel
 {
 public:
-    CStartFooter() : StackPanel(Orientation::Horizontal, 0)
+    CStartFooter()
     {
         Thickness pad = { 40, (LIBER_START_FOOTER_H - 44) / 2, 40, (LIBER_START_FOOTER_H - 44) / 2 };
         SetPadding(pad);
@@ -269,7 +298,10 @@ public:
 protected:
     SIZE MeasureOverride(SIZE available)
     {
-        SIZE size = { min(available.cx, (LONG)(6 + 32 + 12 + lstrlenW(m_Name) * 8 + 16)), 44 };
+        LONG text = MeasureText(m_Name, LIBER_TYPE_BODY, 0.0f).cx;
+        if (text <= 0)
+            text = (LONG)lstrlenW(m_Name) * 8;
+        SIZE size = { min(available.cx, (LONG)(6 + 32 + 12 + text + 1 + 16)), 44 };
         return size;
     }
 
@@ -335,6 +367,8 @@ private:
     void Build();
     void Filter();
     void LoadRecent();
+    void AddSystemApps();
+    UINT FillDefaultPins();
     void ShowPowerMenu(BOOL user);
 
     CStartSurface m_Surface;
@@ -482,6 +516,56 @@ void CLiberStart::LoadRecent()
         m_Recent[i]->Set(i < count ? &files[i] : NULL, &now);
 }
 
+void CLiberStart::AddSystemApps()
+{
+    WCHAR path[MAX_PATH];
+    LPCWSTR name = NULL;
+
+    for (UINT i = 0; LiberStart_SystemApp(i, path, _countof(path), &name); i++)
+    {
+        BOOL present = FALSE;
+
+        if (!path[0] || GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES)
+            continue;
+        for (SIZE_T j = 0; !present && j < m_Apps.GetCount(); j++)
+        {
+            present = !lstrcmpiW(m_Apps[j]->szPath, path) ||
+                      (SM2GetTargetPath(m_Apps[j]) && !lstrcmpiW(m_Apps[j]->szTargetPath, path));
+        }
+        if (present)
+            continue;
+        SM2ITEM *item = new SM2ITEM();
+        if (!item)
+            continue;
+        item->szName = name;
+        item->szPath = path;
+        m_Tree.Children.Add(item);
+        m_Apps.Add(item);
+    }
+}
+
+UINT CLiberStart::FillDefaultPins()
+{
+    UINT shown = 0;
+
+    for (UINT rank = 0; shown < LIBER_START_TILES; rank++)
+    {
+        BOOL more = FALSE;
+        for (SIZE_T i = 0; i < m_Apps.GetCount() && shown < LIBER_START_TILES; i++)
+        {
+            LPCWSTR target = SM2GetTargetPath(m_Apps[i]) ? (LPCWSTR)m_Apps[i]->szTargetPath : (LPCWSTR)m_Apps[i]->szPath;
+            UINT appRank = LiberStart_DefaultPinRank(target);
+            if (appRank == rank)
+                m_Tiles[shown++]->SetItem(m_Apps[i]);
+            else if (appRank != UINT_MAX && appRank > rank)
+                more = TRUE;
+        }
+        if (!more)
+            break;
+    }
+    return shown;
+}
+
 void CLiberStart::Filter()
 {
     UINT shown = 0, matched = 0, pinCount = 0;
@@ -504,7 +588,9 @@ void CLiberStart::Filter()
             }
         }
     }
-    for (SIZE_T i = 0; !pinned && i < m_Apps.GetCount() && shown < LIBER_START_TILES; i++)
+    if (!pinned && !searching && !m_AllApps)
+        shown = FillDefaultPins();
+    for (SIZE_T i = 0; !pinned && (searching || m_AllApps) && i < m_Apps.GetCount() && shown < LIBER_START_TILES; i++)
     {
         if (!LiberStart_Matches(m_Apps[i]->szName, query))
             continue;
@@ -602,6 +688,7 @@ BOOL CLiberStart::Open(const RECT *prcAnchor)
         SM2BuildTree(&m_Tree);
         m_Apps.SetCount(0);
         SM2FlattenTree(&m_Tree, m_Apps);
+        AddSystemApps();
         LiberStart_SortApps(m_Apps.GetData(), m_Apps.GetCount());
         m_Loaded = TRUE;
     }
@@ -640,7 +727,19 @@ UINT CLiberStart::TrackMenu(const LIBER_MENU_ITEM *items, UINT count, POINT scre
     cmd = LiberMenu_Track(items, count, screen);
     m_Surface.m_InMenu = FALSE;
     if (IsOpen())
-        SetForegroundWindow(m_Surface.Window());
+    {
+        POINT outside;
+        RECT rc;
+        if (!cmd && LiberMenu_DismissedOutside(&outside) && GetWindowRect(m_Surface.Window(), &rc) &&
+            !PtInRect(&rc, outside))
+        {
+            Close();
+        }
+        else
+        {
+            SetForegroundWindow(m_Surface.Window());
+        }
+    }
     return cmd;
 }
 

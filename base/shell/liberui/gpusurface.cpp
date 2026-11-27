@@ -148,7 +148,8 @@ static HRESULT CreatePipeline(SurfaceGpu *gpu)
     ID3DBlob *vs = NULL, *ps = NULL, *errors = NULL;
     HRESULT hr;
 
-    gpu->Compiler = LoadLibraryW(L"d3dcompiler_47.dll");
+    if (!gpu->Compiler)
+        gpu->Compiler = LoadLibraryW(L"d3dcompiler_47.dll");
     compile = gpu->Compiler ? (PFN_LIBER_D3DCOMPILE)GetProcAddress(gpu->Compiler, "D3DCompile") : NULL;
     if (!compile)
         return E_NOINTERFACE;

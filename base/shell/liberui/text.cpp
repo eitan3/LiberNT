@@ -25,6 +25,7 @@ typedef HRESULT(WINAPI *PFN_LIBER_DWRITECREATEFACTORY)(DWRITE_FACTORY_TYPE, REFI
 static LONG g_StartupCount;
 static HMODULE g_DWriteModule;
 static IDWriteFactory *g_DWrite;
+static FontSet *g_MeasureFonts;
 
 BOOL Startup()
 {
@@ -52,6 +53,8 @@ void Shutdown()
     LUI_ASSERT(count >= 0);
     if (count == 0)
     {
+        delete g_MeasureFonts;
+        g_MeasureFonts = NULL;
         if (g_DWrite)
             g_DWrite->Release();
         g_DWrite = NULL;
@@ -220,6 +223,14 @@ SIZE MeasureTextDip(FontSet *fonts, LPCWSTR text, LIBER_TYPE style, float maxWid
     }
     layout->Release();
     return size;
+}
+
+SIZE MeasureText(LPCWSTR text, LIBER_TYPE style, float maxWidth)
+{
+    LUI_ASSERT(g_StartupCount > 0 || !g_MeasureFonts);
+    if (!g_MeasureFonts && g_DWrite)
+        g_MeasureFonts = new FontSet();
+    return MeasureTextDip(g_MeasureFonts, text, style, maxWidth);
 }
 
 class GlyphRasterizer : public IDWriteTextRenderer

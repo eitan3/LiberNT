@@ -99,6 +99,31 @@ protected:
     }
 };
 
+static CLiberMenuSurface *g_pTrackedMenu;
+static BOOL g_LiberMenuOutside;
+static POINT g_LiberMenuOutsidePt;
+
+static LRESULT CALLBACK LiberMenuMouseHook(int code, WPARAM wParam, LPARAM lParam)
+{
+    if (code == HC_ACTION && g_pTrackedMenu && !g_pTrackedMenu->m_Done && g_pTrackedMenu->Window())
+    {
+        const MSLLHOOKSTRUCT *info = (const MSLLHOOKSTRUCT *)lParam;
+        RECT rc;
+
+        if (GetWindowRect(g_pTrackedMenu->Window(), &rc) && LiberMenu_DismissesOn((UINT)wParam, info->pt, &rc))
+        {
+            HWND hit = WindowFromPoint(info->pt);
+            g_pTrackedMenu->m_Done = TRUE;
+            g_LiberMenuOutside = TRUE;
+            g_LiberMenuOutsidePt = info->pt;
+            PostMessageW(g_pTrackedMenu->Window(), WM_NULL, 0, 0);
+            if (hit && GetWindowThreadProcessId(hit, NULL) == GetCurrentThreadId())
+                return 1;
+        }
+    }
+    return CallNextHookEx(NULL, code, wParam, lParam);
+}
+
 class CLiberMenu final : public IControlListener
 {
 public:
@@ -154,17 +179,34 @@ UINT CLiberMenu::Track(const LIBER_MENU_ITEM *items, UINT count, POINT anchor)
     m_Surface.TransitionIn(4.0f, LIBER_DUR_NORMAL);
     SetForegroundWindow(m_Surface.Window());
 
+    ATLASSERT(g_pTrackedMenu == NULL);
+    g_pTrackedMenu = &m_Surface;
+    g_LiberMenuOutside = FALSE;
+    HHOOK hook = SetWindowsHookExW(WH_MOUSE_LL, LiberMenuMouseHook, GetModuleHandleW(NULL), 0);
+    if (!hook)
+        ERR("Liber menu mouse hook failed: %lu\n", GetLastError());
     while (!m_Surface.m_Done && IsWindow(m_Surface.Window()) && GetMessageW(&msg, NULL, 0, 0) > 0)
     {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    if (hook)
+        UnhookWindowsHookEx(hook);
+    ATLASSERT(g_pTrackedMenu == &m_Surface);
+    g_pTrackedMenu = NULL;
     if (msg.message == WM_QUIT)
         PostQuitMessage((int)msg.wParam);
     m_Surface.SetRoot(NULL);
     m_Surface.Destroy();
     delete root;
     return m_Result;
+}
+
+BOOL LiberMenu_DismissedOutside(POINT *ppt)
+{
+    if (ppt)
+        *ppt = g_LiberMenuOutsidePt;
+    return g_LiberMenuOutside;
 }
 
 UINT LiberMenu_Track(const LIBER_MENU_ITEM *pItems, UINT cItems, POINT anchor)
