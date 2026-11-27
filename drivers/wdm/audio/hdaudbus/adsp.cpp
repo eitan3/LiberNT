@@ -204,8 +204,8 @@ NTSTATUS ADSPFreeStream(
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -244,8 +244,8 @@ NTSTATUS ADSPPrepareDSP(
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -281,8 +281,8 @@ NTSTATUS ADSPCleanupDSP(_In_ PVOID _context, _In_ HANDLE Handle) {
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -303,8 +303,8 @@ void ADSPStartStopDSP(_In_ PVOID _context, _In_ HANDLE Handle, BOOL startStop) {
 		return;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return;
 	}
 
@@ -320,8 +320,8 @@ void ADSPEnableSPIB(_In_ PVOID _context, _In_ HANDLE Handle, UINT32 value) {
 		return;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return;
 	}
 
@@ -341,8 +341,8 @@ void ADSPDisableSPIB(_In_ PVOID _context, _In_ HANDLE Handle) {
 		return;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return;
 	}
 
@@ -362,8 +362,8 @@ UINT32 ADSPStreamPosition(_In_ PVOID _context, _In_ HANDLE Handle) {
 		return 0;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return 0;
 	}
 
@@ -440,8 +440,8 @@ NTSTATUS ADSPAllocateDmaBuffer(_In_ PVOID _context, _In_ HANDLE Handle, _In_ ULO
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -458,8 +458,8 @@ NTSTATUS ADSPFreeDmaBuffer(_In_ PVOID _context, _In_ HANDLE Handle, _In_ PMDL Bu
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -473,8 +473,8 @@ NTSTATUS ADSPDetachDmaBuffer(_In_ PVOID _context, _In_ HANDLE Handle, _Out_ PMDL
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -487,8 +487,8 @@ NTSTATUS ADSPSetDmaEngineState(_In_ PVOID _context, _In_ HANDLE Handle, _In_ HDA
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -506,8 +506,8 @@ NTSTATUS ADSPGetLinkPositionRegister(_In_ PVOID _context, _In_ HANDLE Handle, _O
 		return STATUS_DEVICE_NOT_READY;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -526,8 +526,8 @@ NTSTATUS ADSPGetPositionRegister(_In_ PVOID _context, _In_ HANDLE Handle, _Out_ 
 		return STATUS_DEVICE_NOT_READY;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -556,8 +556,8 @@ NTSTATUS ADSPRegisterNotificationEvent(_In_ PVOID _context, _In_ HANDLE Handle, 
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -570,8 +570,8 @@ NTSTATUS ADSPUnregisterNotificationEvent(_In_ PVOID _context, _In_ HANDLE Handle
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (!stream || stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 

@@ -292,8 +292,8 @@ HDA_ChangeBandwidthAllocation(
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -331,8 +331,8 @@ HDA_FreeDmaEngine(
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -365,8 +365,8 @@ HDA_SetDmaEngineState(
 	}
 
 	for (ULONG i = 0; i < NumberOfHandles; i++) {
-		PHDAC_STREAM stream = (PHDAC_STREAM)Handles[i];
-		if (stream->PdoContext != devData) {
+		PHDAC_STREAM stream = HdaStreamOf(devData, Handles[i]);
+		if (stream == NULL) {
 			return STATUS_INVALID_HANDLE;
 		}
 
@@ -407,8 +407,8 @@ HDA_GetLinkPositionRegister(
 		return STATUS_DEVICE_NOT_READY;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -555,8 +555,8 @@ HDA_AllocateDmaBufferWithNotification(
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -580,8 +580,8 @@ HDA_FreeDmaBufferWithNotification(
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -614,8 +614,8 @@ HDA_FreeDmaBuffer(
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -634,8 +634,8 @@ HDA_RegisterNotificationEvent(
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -654,8 +654,8 @@ HDA_UnregisterNotificationEvent(
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -676,8 +676,8 @@ HDA_RegisterNotificationCallback(
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -713,8 +713,8 @@ HDA_UnregisterNotificationCallback(
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -758,8 +758,8 @@ HDA_SetupDmaEngineWithBdl(
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -811,8 +811,8 @@ HDA_FreeContiguousDmaBuffer(
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 
@@ -864,8 +864,8 @@ HDA_AllocateContiguousDmaBuffer(
 		return STATUS_NO_SUCH_DEVICE;
 	}
 
-	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
-	if (stream->PdoContext != devData) {
+	PHDAC_STREAM stream = HdaStreamOf(devData, Handle);
+	if (stream == NULL) {
 		return STATUS_INVALID_HANDLE;
 	}
 

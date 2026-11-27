@@ -16,6 +16,7 @@ NTSTATUS GetHDACapabilities(PFDO_CONTEXT fdoCtx);
 NTSTATUS StartHDAController(PFDO_CONTEXT fdoCtx);
 NTSTATUS StopHDAController(PFDO_CONTEXT fdoCtx);
 BOOLEAN HdaControllerStarted(PFDO_CONTEXT fdoCtx);
+PHDAC_STREAM HdaStreamOf(PPDO_DEVICE_DATA devData, HANDLE Handle);
 NTSTATUS SendHDACmds(PFDO_CONTEXT fdoCtx, ULONG count, PHDAUDIO_CODEC_TRANSFER CodecTransfer);
 NTSTATUS RunSingleHDACmd(PFDO_CONTEXT fdoCtx, ULONG val, ULONG* res);
 void HDAAcquireCodecVerbs(PFDO_CONTEXT fdoCtx, UINT16 addr);

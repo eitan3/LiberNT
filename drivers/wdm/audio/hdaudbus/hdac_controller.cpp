@@ -208,6 +208,20 @@ BOOLEAN HdaControllerStarted(PFDO_CONTEXT fdoCtx) {
 	return fdoCtx != NULL && fdoCtx->ControllerEnabled && fdoCtx->m_BAR0.Base.Base != NULL;
 }
 
+/* The stream a handle names (N7-05): the controller is started, the word lies inside the controller's current table of stream records, on a record's boundary, and the record is the PDO's own. The handle is the record's address (the HD Audio bus's contract), and a stop and start frees the table and allocates it again, so a handle from before the cycle may point into memory that is no longer the table's: the range refuses it before anything is read through it. Read without a lock, as the getters are (R5-02) */
+PHDAC_STREAM HdaStreamOf(PPDO_DEVICE_DATA devData, HANDLE Handle) {
+	PFDO_CONTEXT fdoCtx = devData->FdoContext;
+	UINT_PTR Word = (UINT_PTR)Handle, Base;
+
+	if (!HdaControllerStarted(fdoCtx))
+		return NULL;
+	Base = (UINT_PTR)fdoCtx->streams;
+	if (Word < Base || Word - Base >= (UINT_PTR)fdoCtx->numStreams * sizeof(HDAC_STREAM) || (Word - Base) % sizeof(HDAC_STREAM) != 0)
+		return NULL;
+	PHDAC_STREAM stream = (PHDAC_STREAM)Word;
+	return stream->PdoContext == devData ? stream : NULL;
+}
+
 static UINT16 HDACommandAddr(UINT32 cmd) {
 	return (cmd >> 28) & 0xF;
 }
