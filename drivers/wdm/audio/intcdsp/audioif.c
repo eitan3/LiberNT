@@ -375,8 +375,8 @@ IntcDspAudioSetState(
 
     if (Managed == NULL)
         return STATUS_INVALID_HANDLE;
-    /* a stream without a buffer is stopped already: the pin's acquire and stop before its allocation are answered */
-    if (State != KSSTATE_RUN && Managed->State == IntcDspStreamStateOpen)
+    /* a stream without a buffer is stopped already: the pin's acquire and stop before its allocation are answered, and so are those of a stream whose free was answered while its teardown is pending (N7-01) */
+    if (State != KSSTATE_RUN && (Managed->State == IntcDspStreamStateOpen || Managed->State == IntcDspStreamStateTeardown))
         return STATUS_SUCCESS;
     if (State == KSSTATE_RUN)
         return IntcDspStreamRun(Streams, Stream);

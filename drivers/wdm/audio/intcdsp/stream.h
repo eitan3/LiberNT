@@ -90,7 +90,22 @@ typedef enum _INTCDSP_STREAM_STATE
     IntcDspStreamStateRunning,
     /* stopped, the buffer and the pipeline kept */
     IntcDspStreamStatePaused,
-    /* a faulted request cost the firmware its objects and the bus its streams; the object waits for its close */
+    /*
+     * The stream's teardown is pending (N7-01): its pin's free was answered
+     * while the transport was busy, so the firmware-side release could not
+     * complete. The buffer is detached from the bus's stream and held for
+     * nobody under the handle's word (INTCDSP_HELD), to be returned at the
+     * drain; the tag, the hold on the PCM and the copier's naming stay as the
+     * state records them. The drain (IntcDspStreamsDrain, at the next
+     * transition, or IntcDspStreamsLetGo at a release) finishes it.
+     */
+    IntcDspStreamStateTeardown,
+    /*
+     * The object holds nothing, no tag and no buffer, and waits for its
+     * close: after a fault cost the firmware its objects and the bus its
+     * streams, or after a pending teardown was drained while its pin still
+     * lives (N7-01).
+     */
     IntcDspStreamStateReleased
 } INTCDSP_STREAM_STATE;
 
@@ -114,6 +129,8 @@ typedef struct _INTCDSP_STREAM
     SIZE_T OffsetFromFirstPage;
     /* the period events the driver registered through the manager */
     UINT32 Events;
+    /* its pin closed it while its teardown was still pending (N7-01): the drain frees the object instead of leaving it for the close */
+    BOOLEAN Orphaned;
 } INTCDSP_STREAM, *PINTCDSP_STREAM;
 
 /*
@@ -328,7 +345,14 @@ IntcDspStreamPcm(
  * then the stream. Pause: the stream, then the pipelines when no stream of
  * the PCM runs. Free: a copier that named the stream told so while another
  * stream holds the PCM, else the pipeline reset, the instances and the
- * pipeline deleted; the buffer. Close: the tag.
+ * pipeline deleted; the buffer. Close: the tag. Every transition first
+ * drains the teardowns a busy transport left pending (N7-01,
+ * IntcDspStreamStateTeardown): a free whose release met a busy transport
+ * answers the pin with STATUS_SUCCESS, holds the buffer for the manager and
+ * keeps the stream's tag and hold for the drain, which sends the release
+ * again at the next transition, returns the buffer and the tag and closes
+ * the stream; its pin's Close is accepted meanwhile, and a stream whose
+ * pin closed it is freed by the drain.
  */
 NTSTATUS
 IntcDspStreamOpen(

@@ -1512,6 +1512,22 @@ StreamLogCount(
     return Count;
 }
 
+/* The index of the Skip-th event of a kind in the fake bus's log, FAKE_BUS_EVENTS_LOG when there is none: the order of the bus calls is read from it */
+static
+UINT32
+StreamBusEventIndex(
+    const STREAM_HARNESS* S,
+    UINT32 Kind,
+    UINT32 Skip)
+{
+    UINT32 I;
+
+    for (I = 0; I < S->Bus.LogCount; I++)
+        if (S->Bus.Log[I].Kind == Kind && Skip-- == 0)
+            return I;
+    return FAKE_BUS_EVENTS_LOG;
+}
+
 /* The module id of a UUID: its index in the real firmware image's module table, as the driver resolves it */
 static
 UINT32
@@ -1744,7 +1760,7 @@ StreamPinCloseAgain(
     CHECK(Status == STATUS_INVALID_HANDLE || Status == STATUS_DEVICE_NOT_READY);
 }
 
-/* The pin forgets its MDL, as the wave pin does when its free is answered with a failure (pin_wavert.cpp): no probe, no free from the pin again */
+/* The pin forgets its MDL, as the wave pin does when its free is answered, with a failure or with the teardown pending (pin_wavert.cpp): the pin unmapped before its free, so the fake's count of the pin goes with the mapping; no probe, no free from the pin again */
 static
 void
 StreamPinForget(
@@ -1756,6 +1772,7 @@ StreamPinForget(
     CHECK(Pin != NULL);
     if (Pin == NULL)
         return;
+    FakeBusPinClose(&S->Bus, Pin->Mdl);
     Pin->Open = FALSE;
     Pin->Mdl = NULL;
 }
@@ -3074,6 +3091,51 @@ CheckStreamPowerDown(
     StreamQuiescent(S, Pcm);
     StreamStop(S);
     free(S);
+
+    /* a free answered while its teardown is pending (N7-01): the pin forgot the buffer, so the power-down release returns it with every tag, and the D0 entry finds no held record of it */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    StreamPinOpen(S, Render);
+    StreamPinOpen(S, Capture);
+    /* the capture's free: its copier's renaming busy to every try, answered with the teardown pending; the wave pin forgets its MDL as the portcls pin does whatever the answer */
+    S->H.LockBusyFromRequest = S->H.LockAttempts + 1;
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
+    StreamPinForget(S, Capture);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 1);
+    S->H.LockBusyFromRequest = 0;
+    /* the power-down: every tag back, the pending buffer returned since its pin forgot it, the render pin's buffer held for it */
+    IntcDspStreamsRelease(&S->Streams);
+    CHECK(!S->Streams.Ready);
+    CHECK_EQ(S->Faults, 0);
+    CHECK_EQ(S->Streams.Freed, 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 2);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 1);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 1);
+    StreamPinHeld(S, 1, 1);
+    CHECK(StreamLogCount(S, "streams: 1 teardowns were pending at the release; their buffers are returned\n") == 1);
+    /* every bus stream is back in the pool before the entry, the pending one with the others */
+    for (Requests = 0; Requests < 2; Requests++)
+        for (I = 0; I < FAKE_BUS_STREAMS; I++)
+            CHECK(!S->Bus.Stream[Requests][I].Used);
+    /* the D0 entry: no held record of the pending buffer, its pages gone; the render pin's held buffer is the only one, returned by its free */
+    StreamBoot(S, NULL);
+    IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
+    CHECK(S->Streams.Ready && !S->Streams.Faulted);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 1);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 1);
+    StreamPinClose(S, Render);
+    StreamPinHeld(S, 0, 2);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 0);
+    StreamStop(S);
+    free(S);
 }
 
 /* (i12) The lock of the transitions (R1-02): every public entry takes it at PASSIVE_LEVEL before anything of a stream is read and gives it back on every way out, a call above PASSIVE_LEVEL is refused before it takes anything, and every request the transitions send is sent under it, the transport's request lock taken inside it; the register reads take none */
@@ -3296,7 +3358,7 @@ CheckStreamHeldBuffer(
     free(S);
 }
 
-/* (i13) An undo that fails while the link still carries requests (R1-04, FA-03): the build's teardown, the free's copier and the free's teardown. A busy transport (STATUS_RETRY) is not a fault: the undo is sent again a bounded number of times, the driver is not told, no tag goes back and the DSP is not powered down. Still busy after the tries, the transition fails with STATUS_RETRY, the state records what the firmware holds and the next transition of the PCM finishes the undo. A failure that is not busy still forces the uniform release, as after a lost link */
+/* (i13) An undo that fails while the link still carries requests (R1-04, FA-03): the build's teardown, the free's copier and the free's teardown. A busy transport (STATUS_RETRY) is not a fault: the undo is sent again a bounded number of times, the driver is not told, no tag goes back and the DSP is not powered down. Still busy after the tries, the allocate fails with STATUS_RETRY, the state records what the firmware holds and the next transition of the PCM finishes the undo; the free answers STATUS_SUCCESS with its teardown pending (N7-01, (i16)). A failure that is not busy still forces the uniform release, as after a lost link */
 static
 void
 CheckStreamStuckUndo(
@@ -3304,6 +3366,7 @@ CheckStreamStuckUndo(
 {
     STREAM_HARNESS* S;
     HANDLE Render = NULL, Capture = NULL;
+    PINTCDSP_STREAM Stream;
     NTSTATUS Status;
     UINT32 Pcm, Requests, I, Used;
 
@@ -3428,7 +3491,7 @@ CheckStreamStuckUndo(
     StreamStop(S);
     free(S);
 
-    /* still busy after the tries, at the free's copier: a stream that goes while another holds the PCM, and its copier is busy to every try. The free fails with STATUS_RETRY and the stream keeps its hold and its buffer, the copier still naming it; asked again with the transport free, the free tells the copier */
+    /* still busy after the tries, at the free's copier: a stream that goes while another holds the PCM, and its copier is busy to every try. The free answers STATUS_SUCCESS with the buffer held for the manager and the teardown pending (N7-01): the copier still names the stream, the PCM's hold is as it was and the tag is kept; the next transition with the transport free, the other stream's free, drains it first: the copier told, the held buffer returned and the tag back, the stream released for its close */
     S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
     CHECK(S != NULL);
     if (S == NULL)
@@ -3442,7 +3505,7 @@ CheckStreamStuckUndo(
     S->H.LockBusyFromRequest = S->H.LockAttempts + 1;
     Requests = S->H.LockAttempts;
     Status = IntcDspStreamFree(&S->Streams, Capture);
-    CHECK_EQ(Status, STATUS_RETRY);
+    CHECK_EQ(Status, STATUS_SUCCESS);
     CHECK_EQ(S->H.Ipc.Link, SofIpcLinkReady);
     CHECK_EQ(S->Streams.Faulted, FALSE);
     CHECK_EQ(S->Faults, 0);
@@ -3450,27 +3513,41 @@ CheckStreamStuckUndo(
     CHECK_EQ(S->H.LockAttempts, Requests + 3);
     CHECK_EQ(S->H.LockWaits, 3);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_DETACH), 1);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 0);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 1);
+    Stream = IntcDspStreamOf(&S->Streams, Capture);
+    CHECK(Stream != NULL && Stream->State == IntcDspStreamStateTeardown && Stream->Mdl == NULL && Stream->Handle != NULL);
     CHECK_EQ(S->Streams.Path[Pcm].Held, 2);
     CHECK(S->Streams.Path[Pcm].Built == TRUE);
     CHECK(S->Streams.Path[Pcm].Undo == FALSE);
-    CHECK((S->Streams.WidgetFlags[IntcDspStreamOf(&S->Streams, Capture)->Copier] & INTCDSP_WIDGET_NAMED) == INTCDSP_WIDGET_NAMED);
-    CHECK_EQ(IntcDspStreamOf(&S->Streams, Capture)->State, IntcDspStreamStatePrepared);
-    CHECK(IntcDspStreamOf(&S->Streams, Capture)->Mdl != NULL);
-    CHECK(StreamLogCount(S, "its copier could not be told the stream is going (0xc0000227): the transport answered busy") == 1);
+    CHECK((S->Streams.WidgetFlags[Stream->Copier] & INTCDSP_WIDGET_NAMED) == INTCDSP_WIDGET_NAMED);
+    CHECK_EQ(S->Streams.Freed, 0);
+    CHECK(StreamLogCount(S, "its free met a busy transport at the copier's renaming; the buffer is held for the manager and the teardown is pending\n") == 1);
     CHECK(StreamLogCount(S, "released as after a fault\n") == 0);
-    /* the transport free: the free tells the copier, and the stream is as a free leaves it */
+    /* the transport free: the render's free drains the capture in its prologue, the copier told once, then frees the render and the path; the capture is released, waiting for its close */
     S->H.LockBusyFromRequest = 0;
-    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
-    CHECK_EQ(S->H.LockAttempts, Requests + 4);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(S->H.LockAttempts, Requests + 9);
     CHECK_EQ(S->Faults, 0);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 1);
-    CHECK_EQ(S->Streams.Path[Pcm].Held, 1);
-    CHECK((S->Streams.WidgetFlags[IntcDspStreamOf(&S->Streams, Capture)->Copier] & INTCDSP_WIDGET_NAMED) == 0);
-    CHECK_EQ(IntcDspStreamOf(&S->Streams, Capture)->State, IntcDspStreamStateOpen);
-    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 1);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 0);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 0);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 0);
+    CHECK(S->Streams.Path[Pcm].Built == FALSE);
+    CHECK((S->Streams.WidgetFlags[Stream->Copier] & INTCDSP_WIDGET_NAMED) == 0);
+    CHECK_EQ(Stream->State, IntcDspStreamStateReleased);
+    CHECK_EQ(S->Streams.Freed, 1);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStateOpen);
+    CHECK(StreamLogCount(S, "its pending teardown is done; the buffer is returned and the tag is back, the stream left for its pin's close\n") == 1);
+    /* the pins' closes: the released stream is freed, the open one as a free left it */
     CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
     CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 2);
+    CHECK_EQ(S->Streams.Freed, 2);
+    StreamQuiescent(S, Pcm);
     CHECK_EQ(FakeBusLockDepth, 0);
     StreamStop(S);
     free(S);
@@ -3525,7 +3602,7 @@ CheckStreamStuckUndo(
     StreamStop(S);
     free(S);
 
-    /* still busy after the tries, at the free: the last holder's teardown meets busy from its instance's deletion on. The free fails with STATUS_RETRY and the stream keeps its hold and its buffer; the path is the firmware's, its undo owed; the stream does not start on it; asked again with the transport free, the free finishes the undo */
+    /* still busy after the tries, at the free: the last holder's teardown meets busy from its instance's deletion on. The free answers STATUS_SUCCESS with the buffer held for the manager and the teardown pending (N7-01); the path is the firmware's, its undo owed; the stream does not start or take a buffer while pending (STATUS_RETRY, the drain meeting busy again), is answered stopped, and its close is accepted and orphans it; the next transition with the transport free drains it and the object is freed */
     S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
     CHECK(S != NULL);
     if (S == NULL)
@@ -3537,7 +3614,7 @@ CheckStreamStuckUndo(
     S->H.LockBusyFromRequest = S->H.LockAttempts + 2;
     Requests = S->H.LockAttempts;
     Status = IntcDspStreamFree(&S->Streams, Render);
-    CHECK_EQ(Status, STATUS_RETRY);
+    CHECK_EQ(Status, STATUS_SUCCESS);
     CHECK_EQ(S->H.Ipc.Link, SofIpcLinkReady);
     CHECK_EQ(S->Streams.Faulted, FALSE);
     CHECK_EQ(S->Faults, 0);
@@ -3545,30 +3622,322 @@ CheckStreamStuckUndo(
     CHECK_EQ(S->H.LockAttempts, Requests + 4);
     CHECK_EQ(S->H.LockWaits, 3);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_DETACH), 1);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 0);
-    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStatePrepared);
-    CHECK(IntcDspStreamOf(&S->Streams, Render)->Mdl != NULL);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 1);
+    Stream = IntcDspStreamOf(&S->Streams, Render);
+    CHECK(Stream != NULL && Stream->State == IntcDspStreamStateTeardown && Stream->Mdl == NULL && Stream->Handle != NULL);
     CHECK_EQ(S->Streams.Path[Pcm].Held, 1);
     CHECK(S->Streams.Path[Pcm].Built == TRUE);
     CHECK(S->Streams.Path[Pcm].Undo == TRUE);
     CHECK_EQ(S->Streams.PipelineInstance[0], 1);
     CHECK_EQ(S->Streams.PipelineState[0], SOFIPC4_PIPELINE_STATE_RESET);
-    CHECK(StreamLogCount(S, "the PCM's pipelines could not be deleted (0xc0000227): the transport answered busy") == 1);
+    CHECK(StreamLogCount(S, "its free met a busy transport at the pipelines' teardown; the buffer is held for the manager and the teardown is pending\n") == 1);
     CHECK(StreamLogCount(S, "released as after a fault\n") == 0);
-    /* the stream does not start on the path being undone: refused, nothing sent */
+    /* while pending the stream does not start or take a buffer, the drain meeting the busy transport again at each; stopped, it is answered; nothing else of it changes */
     CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_RETRY);
-    CHECK_EQ(S->H.LockAttempts, Requests + 4);
-    /* the transport free: the free finishes the undo and the stream is as a free leaves it */
-    S->H.LockBusyFromRequest = 0;
-    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_RETRY);
+    CHECK_EQ(IntcDspStreamPause(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(S->H.LockAttempts, Requests + 13);
     CHECK_EQ(S->Faults, 0);
-    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 1);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 1);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 1);
+    /* the pin's close while the transport is still busy: accepted, the stream orphaned, its teardown still owed */
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(S->H.LockAttempts, Requests + 16);
+    Stream = IntcDspStreamOf(&S->Streams, Render);
+    CHECK(Stream != NULL && Stream->State == IntcDspStreamStateTeardown && Stream->Orphaned);
+    CHECK(StreamLogCount(S, "its pending teardown is done") == 0);
+    /* the transport free: the next transition drains it, and the object is freed: the instances and the pipeline deleted, the buffer returned, the tag back; the transition's own work then finds the handle naming nothing */
+    S->H.LockBusyFromRequest = 0;
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_INVALID_HANDLE);
+    CHECK_EQ(S->H.LockAttempts, Requests + 20);
+    CHECK_EQ(S->Faults, 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 1);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 0);
     CHECK_EQ(S->Streams.Path[Pcm].Held, 0);
     CHECK(S->Streams.Path[Pcm].Built == FALSE);
     CHECK(S->Streams.Path[Pcm].Undo == FALSE);
     CHECK_EQ(S->Streams.PipelineInstance[0], 0);
-    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStateOpen);
+    CHECK(IntcDspStreamOf(&S->Streams, Render) == NULL);
+    CHECK(StreamLogCount(S, "its pending teardown is done; the buffer is returned and the tag is back, its pin having closed it\n") == 1);
+    /* the object is the pool's again: the next open takes it */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    CHECK(IntcDspStreamOf(&S->Streams, Capture) == &S->Streams.Stream[0]);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+    StreamQuiescent(S, Pcm);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+}
+
+/* (i16) A free that meets a busy transport (N7-01): the pin is answered STATUS_SUCCESS and forgets its buffer, so the manager takes it. The stream's bus stream is stopped and its buffer detached and held for the manager, the tag and the pipeline hold kept, the teardown pending; the pin's Close is accepted meanwhile, freeing the stream when the drain runs and orphaning it when the drain is still busy, the next transition finishing it; the drain sends the release again, returns the held buffer, gives the tag back and closes the stream. A fault inside the free returns the buffer on the way out, as the other forced releases of the free do. The bus's stream is stopped before its buffer is detached */
+static
+void
+CheckStreamPendingTeardown(
+    void)
+{
+    STREAM_HARNESS* S;
+    HANDLE Render = NULL, Capture = NULL;
+    PINTCDSP_STREAM Stream;
+    NTSTATUS Status;
+    UINT32 Pcm, Requests;
+
+    /* the pin's close while the transport is still busy: accepted, the stream orphaned; a second free of the word returns the held buffer; the other stream's free drains the orphan and frees the object */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    StreamPinOpen(S, Render);
+    StreamPinOpen(S, Capture);
+    S->H.LockBusyFromRequest = S->H.LockAttempts + 1;
+    Requests = S->H.LockAttempts;
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(S->H.LockAttempts, Requests + 3);
+    /* the wave pin forgets its MDL whatever the answer (pin_wavert.cpp) */
+    StreamPinForget(S, Capture);
+    StreamPinHeld(S, 1, 0);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 2);
+    Stream = IntcDspStreamOf(&S->Streams, Capture);
+    CHECK(Stream != NULL && Stream->State == IntcDspStreamStateTeardown && !Stream->Orphaned);
+    /* a second free of the word: answered, and it returns the held buffer as the free of a pin's held buffer does (R5-01); the teardown is still pending */
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(S->H.LockAttempts, Requests + 6);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 1);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 0);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 1);
+    Stream = IntcDspStreamOf(&S->Streams, Capture);
+    CHECK(Stream != NULL && Stream->State == IntcDspStreamStateTeardown);
+    /* the pin's close while the transport is still busy: accepted, the stream orphaned, its teardown still owed */
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(S->H.LockAttempts, Requests + 9);
+    Stream = IntcDspStreamOf(&S->Streams, Capture);
+    CHECK(Stream != NULL && Stream->State == IntcDspStreamStateTeardown && Stream->Orphaned);
+    CHECK(StreamLogCount(S, "its pending teardown is done") == 0);
+    /* the transport free: the render pin's close frees its stream, whose prologue drains the orphan: the copier told, the tag back, the object freed; the render's own free follows */
+    S->H.LockBusyFromRequest = 0;
+    StreamPinClose(S, Render);
+    CHECK_EQ(S->H.LockAttempts, Requests + 15);
+    CHECK_EQ(S->Faults, 0);
+    CHECK(IntcDspStreamOf(&S->Streams, Capture) == NULL);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 1);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 0);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 0);
+    CHECK(StreamLogCount(S, "its pending teardown is done; the buffer is returned and the tag is back, its pin having closed it\n") == 1);
+    /* the freed word names nothing; the render's close frees its tag */
+    StreamPinCloseAgain(S, Capture);
     CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 2);
+    CHECK_EQ(S->Streams.Freed, 2);
+    StreamQuiescent(S, Pcm);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+
+    /* the pin's close with the transport free: the prologue drains the pending teardown and the close frees the stream at once */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    StreamPinOpen(S, Render);
+    StreamPinOpen(S, Capture);
+    S->H.LockBusyFromRequest = S->H.LockAttempts + 1;
+    Requests = S->H.LockAttempts;
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
+    StreamPinForget(S, Capture);
+    S->H.LockBusyFromRequest = 0;
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+    /* the copier told once, the tag back, the object freed by the close */
+    CHECK_EQ(S->H.LockAttempts, Requests + 4);
+    CHECK_EQ(S->Faults, 0);
+    CHECK(IntcDspStreamOf(&S->Streams, Capture) == NULL);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 1);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 0);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 1);
+    CHECK(StreamLogCount(S, "its pending teardown is done; the buffer is returned and the tag is back, the stream left for its pin's close\n") == 1);
+    StreamPinClose(S, Render);
+    StreamPinCloseAgain(S, Capture);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 2);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 0);
+    StreamQuiescent(S, Pcm);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+
+    /* the drain's renaming answered with a firmware error: the link faults, the forced release lets both streams go and returns the pending buffer on the way out, the render pin's buffer held for it */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    StreamPinOpen(S, Render);
+    StreamPinOpen(S, Capture);
+    S->H.LockBusyFromRequest = S->H.LockAttempts + 1;
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
+    StreamPinForget(S, Capture);
+    S->H.LockBusyFromRequest = 0;
+    S->H.Dsp->Faults.IpcStatusForType = SofIpc4ModLargeConfigSet;
+    S->H.Dsp->Faults.IpcStatusValue = SofIpc4InvalidResourceState;
+    /* the render's run drains the capture first, and the drain faults the link: the transition finds the manager faulted */
+    Status = IntcDspStreamRun(&S->Streams, Render);
+    CHECK_EQ(Status, STATUS_DEVICE_NOT_READY);
+    CHECK_EQ(S->H.Ipc.Link, SofIpcLinkFaulted);
+    CHECK_EQ(S->Streams.Faulted, TRUE);
+    CHECK_EQ(S->Faults, 1);
+    CHECK_EQ(S->FaultDepth, 1);
+    /* both tags went back, the pending buffer whose pin forgot it is returned, the render pin's is held */
+    CHECK_EQ(S->Streams.Freed, 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 2);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 1);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 1);
+    StreamPinHeld(S, 1, 1);
+    CHECK(StreamLogCount(S, "released as after a fault\n") == 1);
+    CHECK(StreamLogCount(S, "streams: 1 teardowns were pending at the release; their buffers are returned\n") == 1);
+    CHECK(StreamLogCount(S, "its pending teardown is done") == 0);
+    /* the pins after the fault: the render pin's free returns its held buffer, the capture's word holds nothing; both close */
+    StreamPinClose(S, Render);
+    StreamPinCloseAgain(S, Render);
+    StreamPinCloseAgain(S, Capture);
+    StreamPinHeld(S, 0, 2);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+    for (Requests = 0; Requests < INTCDSP_STREAMS_MAX; Requests++)
+        CHECK_EQ(S->Streams.Stream[Requests].State, IntcDspStreamStateFree);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 0);
+    StreamStop(S);
+    free(S);
+
+    /* a pause that faults inside the free (N7-01's fifth way): the fault's release holds the buffer for a pin that forgets it with the answer, so the free returns it on the way out and the status is the fault's */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    StreamPinOpen(S, Render);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_SUCCESS);
+    S->H.Dsp->Faults.IpcStatusForType = SofIpc4GlbSetPipelineState;
+    S->H.Dsp->Faults.IpcStatusValue = SofIpc4InvalidResourceState;
+    Status = IntcDspStreamFree(&S->Streams, Render);
+    CHECK_EQ(Status, STATUS_DEVICE_PROTOCOL_ERROR);
+    CHECK_EQ(S->H.Ipc.Link, SofIpcLinkFaulted);
+    CHECK_EQ(S->Streams.Faulted, TRUE);
+    CHECK_EQ(S->Faults, 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE_UNDER_PIN), 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 1);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 0);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 0);
+    Stream = IntcDspStreamOf(&S->Streams, Render);
+    CHECK(Stream != NULL && Stream->State == IntcDspStreamStateReleased);
+    CHECK(StreamLogCount(S, "teardowns were pending at the release") == 0);
+    StreamPinForget(S, Render);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+
+    /* a pause that is busy inside the free, and the teardown after it busy to every try: the bus's stream is stopped before its buffer is detached, and the free is answered with the teardown pending; the close's prologue drains it with the transport free */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    StreamPinOpen(S, Render);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_SUCCESS);
+    S->H.LockBusyFromRequest = S->H.LockAttempts + 1;
+    Requests = S->H.LockAttempts;
+    Status = IntcDspStreamFree(&S->Streams, Render);
+    CHECK_EQ(Status, STATUS_SUCCESS);
+    /* the pause's request, then the teardown's pause in each of the three tries */
+    CHECK_EQ(S->H.LockAttempts, Requests + 4);
+    CHECK_EQ(S->H.Ipc.Link, SofIpcLinkReady);
+    CHECK_EQ(S->Streams.Faulted, FALSE);
+    CHECK_EQ(S->Faults, 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_STOP), 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_DETACH), 1);
+    /* the order: the bus's stream stopped before the buffer left it, a detach under a running stream being what the bus refuses */
+    CHECK(StreamBusEventIndex(S, FAKE_BUS_EVENT_STOP, 0) < StreamBusEventIndex(S, FAKE_BUS_EVENT_BUFFER_DETACH, 0));
+    Stream = IntcDspStreamOf(&S->Streams, Render);
+    CHECK(Stream != NULL && Stream->State == IntcDspStreamStateTeardown && Stream->Mdl == NULL && Stream->Handle != NULL);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 1);
+    CHECK(S->Streams.Path[Pcm].Built == TRUE);
+    CHECK(S->Streams.Path[Pcm].Undo == TRUE);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 1);
+    CHECK(StreamLogCount(S, "its free met a busy transport at the pause of its pipelines and at the pipelines' teardown; the buffer is held for the manager and the teardown is pending\n") == 1);
+    StreamPinForget(S, Render);
+    S->H.LockBusyFromRequest = 0;
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(S->Faults, 0);
+    /* the pipeline paused, reset, its instances and it deleted; the buffer returned, the tag back, the object freed by the close */
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 1);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 0);
+    CHECK_EQ(S->Streams.PipelineInstance[0], 0);
+    CHECK_EQ(S->Streams.Path[Pcm].Held, 0);
+    CHECK(IntcDspStreamOf(&S->Streams, Render) == NULL);
+    StreamQuiescent(S, Pcm);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+
+    /* a pause that is busy inside the free and a release that goes through: the stream is as a free leaves it, its buffer freed by the bus, nothing pending */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    StreamPinOpen(S, Render);
+    CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_SUCCESS);
+    /* the pin unmaps before its free (pin_wavert.cpp): the fake's count of the pin goes with the mapping, so the bus's free is not refused under it */
+    FakeBusPinClose(&S->Bus, StreamPinOf(S, Render)->Mdl);
+    S->H.LockBusyAtRequest = S->H.LockAttempts + 1;
+    Requests = S->H.LockAttempts;
+    Status = IntcDspStreamFree(&S->Streams, Render);
+    CHECK_EQ(Status, STATUS_SUCCESS);
+    /* the busy pause, then the teardown's pause, reset, three instances and the pipeline */
+    CHECK_EQ(S->H.LockAttempts, Requests + 7);
+    CHECK_EQ(S->Faults, 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_STOP), 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_DETACH), 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 1);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 0);
+    CHECK_EQ(IntcDspStreamOf(&S->Streams, Render)->State, IntcDspStreamStateOpen);
+    CHECK(StreamLogCount(S, "teardown is pending") == 0);
+    StreamPinForget(S, Render);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    StreamQuiescent(S, Pcm);
     CHECK_EQ(FakeBusLockDepth, 0);
     StreamStop(S);
     free(S);
@@ -3707,6 +4076,7 @@ main(
     CheckStreamLock();
     CheckStreamStuckUndo();
     CheckStreamHeldBuffer();
+    CheckStreamPendingTeardown();
     CheckStreamModuleStart();
     CheckStreamModuleRange();
 

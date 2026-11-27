@@ -66,6 +66,12 @@ IntcDspStreamsUnlock(
     KeReleaseMutex(&Streams->Lock, FALSE);
 }
 
+/* The teardowns pending, drained before each transition's own work (N7-01); defined with the free */
+static
+VOID
+IntcDspStreamsDrain(
+    _Inout_ PINTCDSP_STREAMS Streams);
+
 /* The status the driver answers for a transport outcome */
 static
 NTSTATUS
@@ -738,16 +744,19 @@ IntcDspStreamLetGo(
  * Everything the streams hold, given back: each stream what the bus gave
  * it, its buffer detached and held for its pin (R5-01), the paths what they
  * built, the instance ids; a stream object in use is Released from here and
- * waits for its close. The fault and the power-down's release end here, the
- * caller holding the lock.
+ * waits for its close. A stream whose teardown was pending holds its buffer
+ * for nobody, its pin's free having been answered, so the buffer is returned
+ * here, after its tag (N7-01). The fault and the power-down's release end
+ * here, the caller holding the lock. The count of the teardowns that were
+ * pending is returned.
  */
 static
-VOID
+UINT32
 IntcDspStreamsLetGo(
     _Inout_ PINTCDSP_STREAMS Streams)
 {
     const SOFTPLG_IPC4_MODEL* Model = Streams->Model;
-    UINT32 S;
+    UINT32 Pending = 0, S;
 
     for (S = 0; S < INTCDSP_STREAMS_MAX; S++)
     {
@@ -756,6 +765,11 @@ IntcDspStreamsLetGo(
         if (Stream->State == IntcDspStreamStateFree || Stream->State == IntcDspStreamStateReleased)
             continue;
         IntcDspStreamLetGo(Streams, Stream);
+        if (Stream->State == IntcDspStreamStateTeardown)
+        {
+            IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream));
+            Pending++;
+        }
         Stream->State = IntcDspStreamStateReleased;
         Stream->Events = 0;
     }
@@ -764,6 +778,7 @@ IntcDspStreamsLetGo(
     RtlZeroMemory(Streams->WidgetInstance, (SIZE_T)Model->WidgetCount * 2);
     RtlZeroMemory(Streams->ModuleInstances, INTCDSP_STREAM_MODULES_MAX);
     Streams->NextPipelineInstance = 1;
+    return Pending;
 }
 
 /*
@@ -777,12 +792,16 @@ VOID
 IntcDspStreamsFault(
     _Inout_ PINTCDSP_STREAMS Streams)
 {
+    UINT32 Pending;
+
     if (Streams->Faulted)
         return;
     Streams->Faulted = TRUE;
     Streams->Faults++;
-    IntcDspStreamsLetGo(Streams);
+    Pending = IntcDspStreamsLetGo(Streams);
     IntcDspStreamLog(Streams, "streams: released after the fault; nothing is sent until the DSP is booted again\n");
+    if (Pending != 0)
+        IntcDspStreamLog(Streams, "streams: %u teardowns were pending at the release; their buffers are returned\n", Pending);
     if (Streams->Ops != NULL && Streams->Ops->Fault != NULL)
         Streams->Ops->Fault(Streams->Ops->Context);
 }
@@ -791,12 +810,16 @@ VOID
 IntcDspStreamsRelease(
     _Inout_ PINTCDSP_STREAMS Streams)
 {
+    UINT32 Pending;
+
     IntcDspStreamsLock(Streams);
     /* only a manager that was started holds anything: its streams were opened while it was ready */
     if (Streams->Ready)
     {
-        IntcDspStreamsLetGo(Streams);
+        Pending = IntcDspStreamsLetGo(Streams);
         IntcDspStreamLog(Streams, "streams: released for the power-down; nothing is sent until the DSP is booted again\n");
+        if (Pending != 0)
+            IntcDspStreamLog(Streams, "streams: %u teardowns were pending at the release; their buffers are returned\n", Pending);
     }
     Streams->Ready = FALSE;
     Streams->Generation++;
@@ -1118,6 +1141,7 @@ IntcDspStreamOpen(
     if (KeGetCurrentIrql() != PASSIVE_LEVEL)
         return STATUS_INVALID_DEVICE_STATE;
     IntcDspStreamsLock(Streams);
+    IntcDspStreamsDrain(Streams);
     Status = IntcDspStreamOpenLocked(Streams, Pcm, Capture, SampleRate, Channels, ValidBits, ContainerBits, Stream);
     IntcDspStreamsUnlock(Streams);
     return Status;
@@ -1227,6 +1251,9 @@ IntcDspStreamAllocateLocked(
         return STATUS_INVALID_HANDLE;
     if (!Streams->Ready || Streams->Faulted)
         return STATUS_DEVICE_NOT_READY;
+    /* its free was answered while the transport was busy and the drain met it busy again (N7-01): the buffer is gone, and a new one is not taken until the teardown is done */
+    if (Stream->State == IntcDspStreamStateTeardown)
+        return STATUS_RETRY;
     if (Stream->State != IntcDspStreamStateOpen)
         return STATUS_INVALID_DEVICE_REQUEST;
     FrameBytes = IntcDspStreamFrameBytes(Stream->StreamFormat.NumberOfChannels, Stream->StreamFormat.ContainerSize);
@@ -1247,6 +1274,7 @@ IntcDspStreamAllocate(
     if (KeGetCurrentIrql() != PASSIVE_LEVEL)
         return STATUS_INVALID_DEVICE_STATE;
     IntcDspStreamsLock(Streams);
+    IntcDspStreamsDrain(Streams);
     Status = IntcDspStreamAllocateLocked(Streams, Handle, Bytes, NotificationCount);
     IntcDspStreamsUnlock(Streams);
     return Status;
@@ -1297,6 +1325,9 @@ IntcDspStreamRunLocked(
         return STATUS_DEVICE_NOT_READY;
     if (Stream->State == IntcDspStreamStateRunning)
         return STATUS_SUCCESS;
+    /* its teardown is still pending after the drain (N7-01): it does not start until the drain is done */
+    if (Stream->State == IntcDspStreamStateTeardown)
+        return STATUS_RETRY;
     if (Stream->State != IntcDspStreamStatePrepared && Stream->State != IntcDspStreamStatePaused)
         return STATUS_INVALID_DEVICE_REQUEST;
     Path = &Streams->Path[Stream->Pcm];
@@ -1360,6 +1391,7 @@ IntcDspStreamRun(
     if (KeGetCurrentIrql() != PASSIVE_LEVEL)
         return STATUS_INVALID_DEVICE_STATE;
     IntcDspStreamsLock(Streams);
+    IntcDspStreamsDrain(Streams);
     Status = IntcDspStreamRunLocked(Streams, Handle);
     IntcDspStreamsUnlock(Streams);
     return Status;
@@ -1382,7 +1414,8 @@ IntcDspStreamPauseLocked(
         return STATUS_INVALID_HANDLE;
     if (!Streams->Ready || Streams->Faulted)
         return STATUS_DEVICE_NOT_READY;
-    if (Stream->State == IntcDspStreamStatePrepared || Stream->State == IntcDspStreamStatePaused)
+    /* a stream whose teardown is pending is stopped already, the bus's stream having stopped at its free (N7-01) */
+    if (Stream->State == IntcDspStreamStatePrepared || Stream->State == IntcDspStreamStatePaused || Stream->State == IntcDspStreamStateTeardown)
         return STATUS_SUCCESS;
     if (Stream->State != IntcDspStreamStateRunning)
         return STATUS_INVALID_DEVICE_REQUEST;
@@ -1421,9 +1454,171 @@ IntcDspStreamPause(
     if (KeGetCurrentIrql() != PASSIVE_LEVEL)
         return STATUS_INVALID_DEVICE_STATE;
     IntcDspStreamsLock(Streams);
+    IntcDspStreamsDrain(Streams);
     Status = IntcDspStreamPauseLocked(Streams, Handle);
     IntcDspStreamsUnlock(Streams);
     return Status;
+}
+
+/*
+ * The firmware-side release of a stream that lets go of its buffer (the
+ * free, and the drain of a pending teardown, N7-01): the undo a path still
+ * owes is finished first, then, while another stream holds the PCM, the
+ * copier's gateway is told the stream is going, and the stream lets go of
+ * its hold; the last holder's pipelines are reset, the instances and the
+ * pipeline deleted (the plan's §5.10). The stream's hold is released only
+ * once the copier step passed, so a busy answer leaves the PCM as it was.
+ * Busy names the step that met it. STATUS_RETRY: the transport answered
+ * busy and what the firmware holds stays recorded; any other failure: the
+ * undo's own (the forced release may have run, IntcDspStuck) or the
+ * copier's and the teardown's.
+ */
+static
+NTSTATUS
+IntcDspStreamReleaseFirmware(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    _Inout_ PINTCDSP_STREAM Stream,
+    _Out_opt_ const char** Busy)
+{
+    PINTCDSP_PATH Path = &Streams->Path[Stream->Pcm];
+    NTSTATUS Status;
+    UINT8 Order[INTCDSP_PCM_PIPELINES_MAX];
+    UINT32 Count, Try;
+
+    if (Busy != NULL)
+        *Busy = NULL;
+    /* a path whose undo a busy transport cut short is finished before the stream lets go of its hold (FA-03) */
+    Status = IntcDspPathUndoFinish(Streams, Stream);
+    if (!NT_SUCCESS(Status))
+    {
+        if (Busy != NULL && Status == STATUS_RETRY)
+            *Busy = "the undo of the PCM's pipelines";
+        return Status;
+    }
+    Count = IntcDspPipelineOrder(Streams, Stream->Pcm, FALSE, Order);
+    /* while another stream holds the PCM, the copier's gateway must not keep naming a stream that goes back to the pool */
+    if (Path->Held > 1 && (Streams->WidgetFlags[Stream->Copier] & INTCDSP_WIDGET_NAMED) != 0)
+    {
+        Status = IntcDspNameStream(Streams, Stream, Stream->Copier, SOFTPLG_STREAM_TAG_NONE);
+        for (Try = 1; Try < INTCDSP_UNDO_TRIES && Status == STATUS_RETRY; Try++)
+            Status = IntcDspNameStream(Streams, Stream, Stream->Copier, SOFTPLG_STREAM_TAG_NONE);
+        if (!NT_SUCCESS(Status))
+        {
+            if (Status == STATUS_RETRY)
+            {
+                /* a busy transport is not a fault (FA-03): the copier still names the stream, and the PCM is as it was */
+                if (Busy != NULL)
+                    *Busy = "the copier's renaming";
+                return Status;
+            }
+            /* the copier still names a stream that goes back to the pool: nothing is kept */
+            IntcDspStreamLog(Streams, "stream %u: its copier could not be told the stream is going (0x%08x); released as after a fault\n",
+                             Stream->Tag, (UINT32)Status);
+            return IntcDspStuck(Streams, Status);
+        }
+        Streams->WidgetFlags[Stream->Copier] &= (UINT8)~INTCDSP_WIDGET_NAMED;
+    }
+    Path->Held--;
+    /* the last holder: the pipeline is reset, the instances and the pipeline deleted (the plan's §5.10) */
+    if (Path->Held == 0 && Path->Built)
+    {
+        Status = Count != 0xFFFFFFFF ? IntcDspPathTearDownRetried(Streams, Stream, Order, Count) : STATUS_NOT_SUPPORTED;
+        if (!NT_SUCCESS(Status))
+        {
+            Path->Held++;
+            if (Status == STATUS_RETRY)
+            {
+                /* a busy transport is not a fault (FA-03): what the firmware holds stays recorded, and the stream keeps its hold */
+                if (Busy != NULL)
+                    *Busy = "the pipelines' teardown";
+                return Status;
+            }
+            IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be deleted (0x%08x); released as after a fault\n", Stream->Tag,
+                             (UINT32)Status);
+            return IntcDspStuck(Streams, Status);
+        }
+    }
+    return STATUS_SUCCESS;
+}
+
+/*
+ * A free whose firmware-side release met a busy transport (N7-01): the pin
+ * is answered STATUS_SUCCESS and forgets its buffer, so the manager takes
+ * it. Everything that needs no request is done now: the mapping dropped,
+ * the software bound off, the buffer detached from the bus's stream and kept
+ * under the handle's word for the manager, which returns it at the drain (a
+ * full held table leaves it allocated, the safe side, as for a pin). The
+ * tag, the hold on the PCM and the copier's naming stay as recorded until
+ * the drain sends the release again. PauseBusy: the pause before the
+ * release met the busy transport too.
+ */
+static
+NTSTATUS
+IntcDspStreamTeardownPending(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    _Inout_ PINTCDSP_STREAM Stream,
+    _In_z_ const char* Busy,
+    BOOLEAN PauseBusy)
+{
+    IntcDspStreamHoldBuffer(Streams, Stream);
+    Stream->State = IntcDspStreamStateTeardown;
+    Stream->Orphaned = FALSE;
+    if (PauseBusy)
+        IntcDspStreamLog(Streams, "stream %u: its free met a busy transport at the pause of its pipelines and at %s; the buffer is held for the manager and the teardown is pending\n",
+                         Stream->Tag, Busy);
+    else
+        IntcDspStreamLog(Streams, "stream %u: its free met a busy transport at %s; the buffer is held for the manager and the teardown is pending\n",
+                         Stream->Tag, Busy);
+    return STATUS_SUCCESS;
+}
+
+/*
+ * The pending teardown of a stream, finished (N7-01): the firmware-side
+ * release is sent again. Busy, it is left pending, as it was; a fault's
+ * release let the stream go and returned its buffer (IntcDspStreamsLetGo);
+ * done, the held buffer is returned, the tag goes back to the pool, the PCM
+ * forgets the stream, and the object is freed when its pin closed it, or
+ * left for its close as a released stream when its pin still lives.
+ */
+static
+NTSTATUS
+IntcDspStreamTeardownDrain(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    _Inout_ PINTCDSP_STREAM Stream)
+{
+    NTSTATUS Status;
+
+    Status = IntcDspStreamReleaseFirmware(Streams, Stream, NULL);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream));
+    Streams->Path[Stream->Pcm].Open--;
+    IntcDspStreamLetGo(Streams, Stream);
+    Stream->State = Stream->Orphaned ? IntcDspStreamStateFree : IntcDspStreamStateReleased;
+    IntcDspStreamLog(Streams, "stream %u: its pending teardown is done; the buffer is returned and the tag is back, %s\n",
+                     Stream->Tag, Stream->Orphaned ? "its pin having closed it" : "the stream left for its pin's close");
+    return STATUS_SUCCESS;
+}
+
+/*
+ * The teardowns pending, finished before a transition's own work (N7-01),
+ * under the lock the transition holds: the prologue of every public
+ * transition. One that meets a busy transport again is left pending; one
+ * whose release faults the link ends in the release, and the transition then
+ * finds the manager faulted and refuses.
+ */
+static
+VOID
+IntcDspStreamsDrain(
+    _Inout_ PINTCDSP_STREAMS Streams)
+{
+    UINT32 S;
+
+    if (!Streams->Ready || Streams->Faulted)
+        return;
+    for (S = 0; S < INTCDSP_STREAMS_MAX; S++)
+        if (Streams->Stream[S].State == IntcDspStreamStateTeardown)
+            IntcDspStreamTeardownDrain(Streams, &Streams->Stream[S]);
 }
 
 static
@@ -1433,10 +1628,9 @@ IntcDspStreamFreeLocked(
     HANDLE Handle)
 {
     PINTCDSP_STREAM Stream = IntcDspStreamOf(Streams, Handle);
-    PINTCDSP_PATH Path;
-    NTSTATUS Status = STATUS_SUCCESS;
-    UINT8 Order[INTCDSP_PCM_PIPELINES_MAX];
-    UINT32 Count, Try;
+    NTSTATUS Status;
+    const char* Busy = NULL;
+    BOOLEAN PauseBusy = FALSE;
 
     if (Stream == NULL)
         return STATUS_INVALID_HANDLE;
@@ -1444,73 +1638,31 @@ IntcDspStreamFreeLocked(
         return STATUS_DEVICE_NOT_READY;
     if (Stream->State == IntcDspStreamStateOpen)
         return STATUS_SUCCESS;
+    /* asked again while the teardown is pending (N7-01): answered again, the prologue having sent the release */
+    if (Stream->State == IntcDspStreamStateTeardown)
+        return STATUS_SUCCESS;
     if (Stream->State == IntcDspStreamStateRunning)
     {
         Status = IntcDspStreamPauseLocked(Streams, Handle);
-        if (!NT_SUCCESS(Status))
+        if (!NT_SUCCESS(Status) && Status != STATUS_RETRY)
+        {
+            /* a fault's release held the buffer for a pin that forgets it with this answer (N7-01): the manager returns it */
+            IntcDspHeldGiveBack(Streams, Handle);
             return Status;
+        }
+        /* a busy pause stopped the bus's stream, and the release goes on: a busy answer again below makes the teardown pending */
+        PauseBusy = Status == STATUS_RETRY;
     }
     if (Stream->State != IntcDspStreamStatePrepared && Stream->State != IntcDspStreamStatePaused)
         return STATUS_INVALID_DEVICE_REQUEST;
-    Path = &Streams->Path[Stream->Pcm];
-    /* a path whose undo a busy transport cut short is finished before the stream lets go of its hold (FA-03) */
-    Status = IntcDspPathUndoFinish(Streams, Stream);
+    Status = IntcDspStreamReleaseFirmware(Streams, Stream, &Busy);
+    if (Status == STATUS_RETRY)
+        return IntcDspStreamTeardownPending(Streams, Stream, Busy != NULL ? Busy : "the release", PauseBusy);
     if (!NT_SUCCESS(Status))
+    {
+        /* the pin's own free asked for the buffer to go and forgets the MDL whatever the answer: the forced release held it, and it is returned here (R5-01) */
+        IntcDspHeldGiveBack(Streams, Handle);
         return Status;
-    Count = IntcDspPipelineOrder(Streams, Stream->Pcm, FALSE, Order);
-    Path->Held--;
-    /* while another stream holds the PCM, the copier's gateway must not keep naming a stream that goes back to the pool */
-    if (Path->Held != 0 && (Streams->WidgetFlags[Stream->Copier] & INTCDSP_WIDGET_NAMED) != 0)
-    {
-        Status = IntcDspNameStream(Streams, Stream, Stream->Copier, SOFTPLG_STREAM_TAG_NONE);
-        for (Try = 1; Try < INTCDSP_UNDO_TRIES && Status == STATUS_RETRY; Try++)
-            Status = IntcDspNameStream(Streams, Stream, Stream->Copier, SOFTPLG_STREAM_TAG_NONE);
-        if (NT_SUCCESS(Status))
-            Streams->WidgetFlags[Stream->Copier] &= (UINT8)~INTCDSP_WIDGET_NAMED;
-        else
-        {
-            if (Status == STATUS_RETRY)
-            {
-                /* a busy transport is not a fault (FA-03): the copier still names the stream, so the stream keeps its hold on the PCM and its buffer for the free that is asked again */
-                Path->Held++;
-                IntcDspStreamLog(Streams, "stream %u: its copier could not be told the stream is going (0x%08x): the transport answered busy; the firmware keeps what the state records and the stream is kept for the next free\n",
-                                 Stream->Tag, (UINT32)Status);
-            }
-            else
-            {
-                /* the copier still names a stream that goes back to the pool: nothing is kept */
-                IntcDspStreamLog(Streams, "stream %u: its copier could not be told the stream is going (0x%08x); released as after a fault\n",
-                                 Stream->Tag, (UINT32)Status);
-            }
-            /* the pin's own free asked for the buffer to go and forgets the MDL whatever the answer: the forced release held it, and it is returned here (R5-01) */
-            Status = IntcDspStuck(Streams, Status);
-            IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream));
-            return Status;
-        }
-    }
-    /* the last holder: the pipeline is reset, the instances and the pipeline deleted (the plan's §5.10) */
-    if (Path->Held == 0 && Path->Built)
-    {
-        Status = Count != 0xFFFFFFFF ? IntcDspPathTearDownRetried(Streams, Stream, Order, Count) : STATUS_NOT_SUPPORTED;
-        if (!NT_SUCCESS(Status))
-        {
-            if (Status == STATUS_RETRY)
-            {
-                /* a busy transport is not a fault (FA-03): what the firmware holds stays recorded and the stream keeps its hold and its buffer for the free that is asked again */
-                Path->Held++;
-                IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be deleted (0x%08x): the transport answered busy; the firmware keeps what the state records and the stream is kept for the next free\n",
-                                 Stream->Tag, (UINT32)Status);
-            }
-            else
-            {
-                IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be deleted (0x%08x); released as after a fault\n", Stream->Tag,
-                                 (UINT32)Status);
-            }
-            /* the pin's own free asked for the buffer to go and forgets the MDL whatever the answer: the forced release held it, and it is returned here (R5-01) */
-            Status = IntcDspStuck(Streams, Status);
-            IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream));
-            return Status;
-        }
     }
     IntcDspStreamReleaseBuffer(Streams, Stream);
     Stream->State = IntcDspStreamStateOpen;
@@ -1528,6 +1680,7 @@ IntcDspStreamFree(
     if (KeGetCurrentIrql() != PASSIVE_LEVEL)
         return STATUS_INVALID_DEVICE_STATE;
     IntcDspStreamsLock(Streams);
+    IntcDspStreamsDrain(Streams);
     /* the free of a buffer held for its pin (R5-01): answered before anything of the manager's state is asked, so it works after a power-down, after a fault and after the release of the hardware; a second free of the word finds nothing */
     Held = IntcDspHeldOf(Streams, Handle);
     if (Held != NULL)
@@ -1551,6 +1704,12 @@ IntcDspStreamCloseLocked(
 
     if (Stream == NULL || Stream->State == IntcDspStreamStateFree)
         return STATUS_INVALID_HANDLE;
+    /* a close while the teardown is pending is accepted (N7-01): the prologue sent the release again and the transport answered busy; the pin is gone, and the next drain frees the object */
+    if (Stream->State == IntcDspStreamStateTeardown)
+    {
+        Stream->Orphaned = TRUE;
+        return STATUS_SUCCESS;
+    }
     if (Stream->State != IntcDspStreamStateOpen && Stream->State != IntcDspStreamStateReleased)
         return STATUS_INVALID_DEVICE_REQUEST;
     if (Stream->State == IntcDspStreamStateOpen)
@@ -1572,6 +1731,7 @@ IntcDspStreamClose(
     if (KeGetCurrentIrql() != PASSIVE_LEVEL)
         return STATUS_INVALID_DEVICE_STATE;
     IntcDspStreamsLock(Streams);
+    IntcDspStreamsDrain(Streams);
     Status = IntcDspStreamCloseLocked(Streams, Handle);
     IntcDspStreamsUnlock(Streams);
     return Status;
