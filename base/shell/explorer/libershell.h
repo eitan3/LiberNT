@@ -128,7 +128,16 @@ private:
 };
 
 VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens);
-VOID LiberShell_BuildWallpaperInkTokens(LiberUI::ThemeTokens *pTokens);
+#define LIBER_WALLPAPER_CENTER  0
+#define LIBER_WALLPAPER_STRETCH 2
+#define LIBER_WALLPAPER_FIT     6
+#define LIBER_WALLPAPER_FILL    10
+#define LIBER_WALLPAPER_INK_LUMA 0.4
+
+VOID LiberShell_MapToWallpaper(const RECT *prcScreen, SIZE screen, SIZE image, UINT style, RECT *prcImage);
+double LiberShell_Luminance(DWORD argb);
+BOOL LiberShell_WallpaperLuma(const RECT *prcScreen, double *pLuma);
+VOID LiberShell_BuildWallpaperInkTokens(LiberUI::ThemeTokens *pTokens, const RECT *prcScreen);
 VOID LiberShell_ApplyFont(LiberUI::Surface *pSurface);
 BOOL LiberShell_SetDarkMode(BOOL bDark);
 VOID LiberShell_FlyoutOrigin(const RECT *prcMonitor, UINT dpi, const RECT *prcAnchor, int widthPx, int heightPx,

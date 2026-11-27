@@ -8,6 +8,7 @@
 #include <apitest.h>
 
 #include <windows.h>
+#include <math.h>
 #include <liberui.h>
 
 #include "experience.h"
@@ -178,6 +179,34 @@ static void TestCalendarGrid()
        days[5].wDay == 1, "January 2027 reaches back into December 2026\n");
 }
 
+static void TestWallpaperMapping()
+{
+    RECT tray = { 1600 - 12 - 232, 900 - 62, 1600 - 12, 900 - 14 }, out;
+    SIZE screen = { 1600, 900 }, wide = { 3200, 1800 }, tall = { 900, 1600 };
+
+    LiberShell_MapToWallpaper(&tray, screen, wide, LIBER_WALLPAPER_FILL, &out);
+    ok(out.left == 2 * tray.left && out.top == 2 * tray.top && out.right == 2 * tray.right && out.bottom == 2 * tray.bottom,
+       "fill at the same aspect scales the rect: (%ld,%ld,%ld,%ld)\n", out.left, out.top, out.right, out.bottom);
+    LiberShell_MapToWallpaper(&tray, screen, tall, LIBER_WALLPAPER_FILL, &out);
+    ok(out.right <= 900 && out.left >= 0 && out.bottom > out.top, "fill crops a tall image: (%ld,%ld,%ld,%ld)\n",
+       out.left, out.top, out.right, out.bottom);
+    LiberShell_MapToWallpaper(&tray, screen, tall, LIBER_WALLPAPER_FIT, &out);
+    ok(IsRectEmpty(&out), "fit leaves the bottom right corner outside a tall image\n");
+    LiberShell_MapToWallpaper(&tray, screen, tall, LIBER_WALLPAPER_STRETCH, &out);
+    ok(out.right == 894 && out.bottom == 1576, "stretch maps each axis: (%ld,%ld)\n",
+       out.right, out.bottom);
+    RECT center = { 790, 440, 810, 460 };
+    SIZE image = { 100, 100 };
+    LiberShell_MapToWallpaper(&center, screen, image, LIBER_WALLPAPER_CENTER, &out);
+    ok(out.left == 40 && out.top == 40 && out.right == 60 && out.bottom == 60, "center keeps pixels 1:1\n");
+
+    ok(LiberShell_Luminance(0xFF000000) == 0.0 && LiberShell_Luminance(0xFFFFFFFF) > 0.999, "black and white\n");
+    ok(fabs(LiberShell_Luminance(0xFF808080) - 0.2159) < 0.001, "mid grey is linearised: %f\n",
+       LiberShell_Luminance(0xFF808080));
+    ok(LiberShell_Luminance(0xFF00FF00) > LiberShell_Luminance(0xFFFF0000) &&
+       LiberShell_Luminance(0xFFFF0000) > LiberShell_Luminance(0xFF0000FF), "green is brightest, blue darkest\n");
+}
+
 static void TestRecentHelpers()
 {
     SYSTEMTIME now = { 2026, 11, 5, 27, 11, 20, 0, 0 }, then = now;
@@ -287,6 +316,7 @@ START_TEST(Dock)
     TestFlyoutOrigin();
     TestRecentHelpers();
     TestCalendarGrid();
+    TestWallpaperMapping();
     TestTaskWindows();
     TestExperience();
 }

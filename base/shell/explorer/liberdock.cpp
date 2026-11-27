@@ -279,6 +279,7 @@ public:
     {
         ZeroMemory(m_Entries, sizeof(m_Entries));
         ZeroMemory(m_Cells, sizeof(m_Cells));
+        ZeroMemory(&m_Layout, sizeof(m_Layout));
     }
 
     ~CLiberDock()
@@ -352,7 +353,7 @@ void CTrayChevron::OnClick()
 void CLiberDock::BuildTheme()
 {
     LiberShell_BuildTokens(&m_Tokens);
-    LiberShell_BuildWallpaperInkTokens(&m_TrayTokens);
+    LiberShell_BuildWallpaperInkTokens(&m_TrayTokens, IsRectEmpty(&m_Layout.Tray) ? NULL : &m_Layout.Tray);
 }
 
 BOOL CALLBACK CLiberDock::PinProc(PCWSTR pszShortcut, PCWSTR pszTarget, PCWSTR pszAppId, const FILETIME *pCreationTime,
@@ -714,6 +715,9 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
 
     g_pLiberDock = this;
     Refresh();
+    BuildTheme();
+    m_TraySurface.SetTokens(&m_TrayTokens);
+    m_TraySurface.Render(AnimationClock::Now());
     ShowWindow(m_DockSurface.Window(), SW_SHOWNOACTIVATE);
     ShowWindow(m_TraySurface.Window(), SW_SHOWNOACTIVATE);
 

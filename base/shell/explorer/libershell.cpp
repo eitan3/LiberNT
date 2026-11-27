@@ -9,6 +9,8 @@
 #include <shlobj.h>
 #include <shlwapi.h>
 #include <strsafe.h>
+#include <math.h>
+#include <gdiplus.h>
 
 #include "experience.h"
 #include "libershell.h"
@@ -23,10 +25,98 @@ VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens)
     pTokens->Build(params);
 }
 
-VOID LiberShell_BuildWallpaperInkTokens(LiberUI::ThemeTokens *pTokens)
+VOID LiberShell_MapToWallpaper(const RECT *prcScreen, SIZE screen, SIZE image, UINT style, RECT *prcImage)
 {
-    /* TODO: pick the ink from the wallpaper luminance behind the tray instead of always using dark-theme ink */
-    LiberUI::ThemeParams params = { LiberUI::ThemeMode::Dark, LiberUI::AccentPreset(LIBER_ACCENT_AZURE),
+    double scaleX = 1.0, scaleY = 1.0, offsetX = 0.0, offsetY = 0.0;
+
+    SetRectEmpty(prcImage);
+    if (screen.cx <= 0 || screen.cy <= 0 || image.cx <= 0 || image.cy <= 0)
+        return;
+    if (style == LIBER_WALLPAPER_STRETCH)
+    {
+        scaleX = (double)screen.cx / image.cx;
+        scaleY = (double)screen.cy / image.cy;
+    }
+    else if (style == LIBER_WALLPAPER_FILL || style == LIBER_WALLPAPER_FIT)
+    {
+        double sx = (double)screen.cx / image.cx, sy = (double)screen.cy / image.cy;
+        scaleX = scaleY = style == LIBER_WALLPAPER_FILL ? max(sx, sy) : min(sx, sy);
+    }
+    offsetX = (screen.cx - image.cx * scaleX) / 2.0;
+    offsetY = (screen.cy - image.cy * scaleY) / 2.0;
+    prcImage->left = (LONG)floor((prcScreen->left - offsetX) / scaleX);
+    prcImage->top = (LONG)floor((prcScreen->top - offsetY) / scaleY);
+    prcImage->right = (LONG)ceil((prcScreen->right - offsetX) / scaleX);
+    prcImage->bottom = (LONG)ceil((prcScreen->bottom - offsetY) / scaleY);
+    RECT bounds = { 0, 0, image.cx, image.cy };
+    if (!IntersectRect(prcImage, prcImage, &bounds))
+        SetRectEmpty(prcImage);
+}
+
+static double LinearChannel(BYTE value)
+{
+    double c = value / 255.0;
+    return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+
+double LiberShell_Luminance(DWORD argb)
+{
+    return 0.2126 * LinearChannel((BYTE)(argb >> 16)) + 0.7152 * LinearChannel((BYTE)(argb >> 8)) +
+           0.0722 * LinearChannel((BYTE)argb);
+}
+
+BOOL LiberShell_WallpaperLuma(const RECT *prcScreen, double *pLuma)
+{
+    WCHAR szPath[MAX_PATH], szStyle[8];
+    DWORD cb = sizeof(szStyle);
+    UINT style = LIBER_WALLPAPER_FILL;
+    Gdiplus::GpBitmap *bitmap = NULL;
+    UINT width = 0, height = 0;
+    double sum = 0.0;
+    UINT samples = 0;
+
+    *pLuma = 0.0;
+    if (!SystemParametersInfoW(SPI_GETDESKWALLPAPER, _countof(szPath), szPath, 0) || !szPath[0])
+        return FALSE;
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"WallpaperStyle", RRF_RT_REG_SZ, NULL, szStyle,
+                     &cb) == ERROR_SUCCESS)
+    {
+        style = (UINT)_wtoi(szStyle);
+    }
+    if (Gdiplus::DllExports::GdipCreateBitmapFromFile(szPath, &bitmap) != Gdiplus::Ok)
+        return FALSE;
+    Gdiplus::DllExports::GdipGetImageWidth(bitmap, &width);
+    Gdiplus::DllExports::GdipGetImageHeight(bitmap, &height);
+    SIZE screen = { GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) }, image = { (LONG)width, (LONG)height };
+    RECT area;
+    LiberShell_MapToWallpaper(prcScreen, screen, image, style, &area);
+    for (UINT y = 0; y < 10 && !IsRectEmpty(&area); y++)
+    {
+        for (UINT x = 0; x < 10; x++)
+        {
+            Gdiplus::ARGB pixel;
+            INT px = area.left + (INT)((area.right - area.left) * (x * 2 + 1) / 20);
+            INT py = area.top + (INT)((area.bottom - area.top) * (y * 2 + 1) / 20);
+            if (Gdiplus::DllExports::GdipBitmapGetPixel(bitmap, px, py, &pixel) == Gdiplus::Ok)
+            {
+                sum += LiberShell_Luminance(pixel);
+                samples++;
+            }
+        }
+    }
+    Gdiplus::DllExports::GdipDisposeImage(bitmap);
+    if (!samples)
+        return FALSE;
+    *pLuma = sum / samples;
+    return TRUE;
+}
+
+VOID LiberShell_BuildWallpaperInkTokens(LiberUI::ThemeTokens *pTokens, const RECT *prcScreen)
+{
+    double luma = 0.0;
+    BOOL dark = !prcScreen || !LiberShell_WallpaperLuma(prcScreen, &luma) || luma < LIBER_WALLPAPER_INK_LUMA;
+    LiberUI::ThemeParams params = { dark ? LiberUI::ThemeMode::Dark : LiberUI::ThemeMode::Light,
+                                    LiberUI::AccentPreset(LIBER_ACCENT_AZURE),
                                     (LiberUI::SurfaceTint)LiberExperience_SurfaceTint() };
     pTokens->Build(params);
 }
