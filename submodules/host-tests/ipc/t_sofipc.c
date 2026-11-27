@@ -4510,9 +4510,10 @@ CheckStreamBootAtOpen(
 /*
  * (i19) The pin told (E1, D4): a stream the device let go, by a fault or
  * by the power-down, and a handle of an older generation are answered
- * STATUS_DEVICE_REMOVED at Run, Pause, Allocate, the two position
- * registers and the position property's query, before anything of the
- * manager is asked and with nothing sent; the free returns the held buffer
+ * STATUS_DEVICE_REMOVED at Run, Pause, Allocate and the two position
+ * registers (the position property's path: dsppcm's GetPosition reads the
+ * register getter), before anything of the manager is asked and with
+ * nothing sent; the free returns the held buffer
  * once, a line saying so, and is answered the device removed after; the
  * close is answered STATUS_SUCCESS. A stream Released by its own free (a
  * teardown the drain finished while its pin lives) is not Lost and answers
@@ -4528,7 +4529,6 @@ CheckStreamPinTold(
     HANDLE Render = NULL, Capture = NULL, Fresh = NULL, Told;
     PINTCDSP_STREAM Stream;
     PULONG Register;
-    ULONG Position;
     UINT32 Pcm, Requests, D;
 
     /* lost by the fault: the table on each stream, nothing sent */
@@ -4562,9 +4562,6 @@ CheckStreamPinTold(
         Register = (PULONG)(UINT_PTR)1;
         CHECK_EQ(IntcDspStreamLinkPositionRegister(&S->Streams, Told, &Register), STATUS_DEVICE_REMOVED);
         CHECK(Register == NULL);
-        Position = 99;
-        CHECK_EQ(IntcDspStreamPositionQuery(&S->Streams, Told, &Position), STATUS_DEVICE_REMOVED);
-        CHECK_EQ(Position, 0);
         CHECK_EQ(IntcDspStreamPosition(&S->Streams, Told), 0);
     }
     CHECK_EQ(S->H.Dsp->TransportRequests, Requests);
@@ -4596,9 +4593,10 @@ CheckStreamPinTold(
     CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_DEVICE_REMOVED);
     CHECK_EQ(IntcDspStreamPause(&S->Streams, Render), STATUS_DEVICE_REMOVED);
     CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_DEVICE_REMOVED);
-    Position = 99;
-    CHECK_EQ(IntcDspStreamPositionQuery(&S->Streams, Render, &Position), STATUS_DEVICE_REMOVED);
-    CHECK_EQ(Position, 0);
+    /* the position property's path: the register getter (dsppcm's GetPosition through GetPositionRegister) */
+    Register = (PULONG)(UINT_PTR)1;
+    CHECK_EQ(IntcDspStreamPositionRegister(&S->Streams, Render, &Register), STATUS_DEVICE_REMOVED);
+    CHECK(Register == NULL);
     StreamPinClose(S, Render);
     StreamPinCloseAgainRemoved(S, Render);
     CHECK(StreamLogCount(S, "its pin's free returned the buffer (") == 1);
@@ -4631,9 +4629,6 @@ CheckStreamPinTold(
     Register = (PULONG)(UINT_PTR)1;
     CHECK_EQ(IntcDspStreamLinkPositionRegister(&S->Streams, Render, &Register), STATUS_DEVICE_REMOVED);
     CHECK(Register == NULL);
-    Position = 99;
-    CHECK_EQ(IntcDspStreamPositionQuery(&S->Streams, Render, &Position), STATUS_DEVICE_REMOVED);
-    CHECK_EQ(Position, 0);
     CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_DEVICE_REMOVED);
     /* the event entries are not of the design's table: they refuse the word as before */
     CHECK_EQ(IntcDspStreamRegisterEvent(&S->Streams, Render, &S->Event), STATUS_INVALID_HANDLE);
@@ -4668,9 +4663,7 @@ CheckStreamPinTold(
     CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_SUCCESS);
     Stream = IntcDspStreamOf(&S->Streams, Capture);
     CHECK(Stream != NULL && Stream->State == IntcDspStreamStateReleased && !Stream->Lost);
-    Position = 99;
-    CHECK_EQ(IntcDspStreamPositionQuery(&S->Streams, Capture, &Position), STATUS_SUCCESS);
-    CHECK_EQ(Position, 0);
+    CHECK_EQ(IntcDspStreamPosition(&S->Streams, Capture), 0);
     CHECK_EQ(IntcDspStreamRun(&S->Streams, Capture), STATUS_INVALID_DEVICE_REQUEST);
     CHECK_EQ(IntcDspStreamPause(&S->Streams, Capture), STATUS_INVALID_DEVICE_REQUEST);
     CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_INVALID_DEVICE_REQUEST);

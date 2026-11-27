@@ -452,18 +452,6 @@ IntcDspStreamPosition(
     _In_ const INTCDSP_STREAMS* Streams,
     HANDLE Stream);
 
-/*
- * The position property's query (E1, D4): STATUS_DEVICE_REMOVED for a
- * stream the device let go or a handle of an older generation, before
- * anything is read, so that the pin's handler returns it; otherwise
- * STATUS_SUCCESS and the position IntcDspStreamPosition gives.
- */
-NTSTATUS
-IntcDspStreamPositionQuery(
-    _In_ const INTCDSP_STREAMS* Streams,
-    HANDLE Stream,
-    _Out_ PULONG Position);
-
 NTSTATUS
 IntcDspStreamRegisterEvent(
     _Inout_ PINTCDSP_STREAMS Streams,

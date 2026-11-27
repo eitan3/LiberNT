@@ -1974,21 +1974,6 @@ IntcDspStreamPosition(
     return Streams->Bus->StreamPosition(Streams->Bus->Context, Stream->Handle);
 }
 
-NTSTATUS
-IntcDspStreamPositionQuery(
-    _In_ const INTCDSP_STREAMS* Streams,
-    HANDLE Handle,
-    _Out_ PULONG Position)
-{
-    PINTCDSP_STREAM Stream = IntcDspStreamOf(Streams, Handle);
-
-    *Position = 0;
-    if (IntcDspStreamRemoved(Streams, Stream, Handle))
-        return STATUS_DEVICE_REMOVED;
-    *Position = IntcDspStreamPosition(Streams, Handle);
-    return STATUS_SUCCESS;
-}
-
 static
 NTSTATUS
 IntcDspStreamRegisterEventLocked(
