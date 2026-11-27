@@ -2555,7 +2555,7 @@ CheckPlatforms(
     static const UINT32 Map[] =
     {
         0x1000, 0x178D04, 0x1108, 0x00000001, 0x00000040, 0x1140, 0x73210, 0x73380, 0x73214, 0x73228,
-        0x73200, 0x73204, 0x73300, 0x163200, 0x163204, 0x180000, 0x8000, 0x181000, 0x188000, 0x1000
+        0x73200, 0x73204, 0x73300, 0x163200, 0x163204, 0x180000, 0x8000, 0x181000, 0x188000
     };
     static const size_t Fields[] =
     {
@@ -2564,7 +2564,7 @@ CheckPlatforms(
         offsetof(FWLOAD_PLATFORM, IpcRequest), offsetof(FWLOAD_PLATFORM, IpcRequestData), offsetof(FWLOAD_PLATFORM, IpcReply), offsetof(FWLOAD_PLATFORM, IpcControl),
         offsetof(FWLOAD_PLATFORM, IpcTarget), offsetof(FWLOAD_PLATFORM, IpcTargetAck), offsetof(FWLOAD_PLATFORM, IpcTargetData), offsetof(FWLOAD_PLATFORM, RomStatus),
         offsetof(FWLOAD_PLATFORM, RomError), offsetof(FWLOAD_PLATFORM, Window0Offset), offsetof(FWLOAD_PLATFORM, WindowStride), offsetof(FWLOAD_PLATFORM, UplinkOffset),
-        offsetof(FWLOAD_PLATFORM, DownlinkOffset), offsetof(FWLOAD_PLATFORM, MailboxBytes)
+        offsetof(FWLOAD_PLATFORM, DownlinkOffset)
     };
     /* controllers of the same family the INF lists as probe-only, and ids that are none */
     static const UINT32 Unnamed[] = { 0x7728, 0xA828, 0xE328, 0xE428, 0, 0xFFFFFFFF };

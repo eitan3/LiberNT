@@ -871,8 +871,7 @@ FwloadDefaultTimeouts(
     0x180000,   /* MTL_SRAM_WINDOW_OFFSET(0) */ \
     0x8000, \
     0x181000,   /* MTL_DSP_MBOX_UPLINK_OFFSET */ \
-    0x188000,   /* MTL_DSP_MBOX_DOWNLINK_OFFSET */ \
-    0x1000
+    0x188000    /* MTL_DSP_MBOX_DOWNLINK_OFFSET */
 
 static const FWLOAD_PLATFORM Ace1Platforms[] =
 {

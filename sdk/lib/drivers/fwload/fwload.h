@@ -454,7 +454,6 @@ typedef struct _FWLOAD_PLATFORM
     UINT32 WindowStride;
     UINT32 UplinkOffset;
     UINT32 DownlinkOffset;
-    UINT32 MailboxBytes;
 } FWLOAD_PLATFORM, *PFWLOAD_PLATFORM;
 
 /* Why a controller's DSP is booted, or is not: the driver's boot policy as one decision over its three conditions */
