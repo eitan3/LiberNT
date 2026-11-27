@@ -42,6 +42,7 @@
 #include "spatialaudioclient.h"
 
 #include "mmdevapi_private.h"
+#include "devenum_notif.h"
 #include "devpkey.h"
 #ifdef __REACTOS__
 #include <libernt/mmdevdefault.h>
@@ -1665,12 +1666,8 @@ static HRESULT WINAPI MMDevEnum_GetDevice(IMMDeviceEnumerator *iface, const WCHA
     return E_INVALIDARG;
 }
 
-struct NotificationClientWrapper {
-    IMMNotificationClient *client;
-    struct list entry;
-};
-
-static struct list g_notif_clients = LIST_INIT(g_notif_clients);
+/* The registered clients and their walks: devenum_notif.h's bookkeeping, every entry under g_notif_lock */
+static struct notif_clients g_notif_clients = NOTIF_CLIENTS_INIT(g_notif_clients);
 static HANDLE g_notif_thread;
 
 static CRITICAL_SECTION g_notif_lock;
@@ -1682,13 +1679,55 @@ static CRITICAL_SECTION_DEBUG g_notif_lock_debug =
 };
 static CRITICAL_SECTION g_notif_lock = { &g_notif_lock_debug, -1, 0, 0, 0, 0 };
 
+/* What a walk tells a client: the default device's change, or a device's one of the three notifications */
+enum notif_change
+{
+    NOTIF_DEFAULT,
+    NOTIF_REMOVED,
+    NOTIF_ADDED,
+    NOTIF_STATE
+};
+
+/* One change told to a client: the default's (flow, role and id), or a device's (which of the three, its id and its state) */
+struct notif_change_args
+{
+    EDataFlow flow;
+    ERole role;
+    enum notif_change change;
+    const WCHAR *id;
+    DWORD state;
+};
+
+static void call_client(void *client, void *context)
+{
+    struct notif_change_args *args = context;
+    IMMNotificationClient *iface = client;
+
+    switch (args->change)
+    {
+        case NOTIF_ADDED:
+            IMMNotificationClient_OnDeviceAdded(iface, args->id);
+            break;
+        case NOTIF_REMOVED:
+            IMMNotificationClient_OnDeviceRemoved(iface, args->id);
+            break;
+        case NOTIF_STATE:
+            IMMNotificationClient_OnDeviceStateChanged(iface, args->id, args->state);
+            break;
+        default:
+            IMMNotificationClient_OnDefaultDeviceChanged(iface, args->flow, args->role, args->id);
+    }
+}
+
 static void notify_clients(EDataFlow flow, ERole role, const WCHAR *id)
 {
-    struct NotificationClientWrapper *wrapper;
-    LIST_FOR_EACH_ENTRY(wrapper, &g_notif_clients,
-            struct NotificationClientWrapper, entry)
-        IMMNotificationClient_OnDefaultDeviceChanged(wrapper->client, flow,
-                role, id);
+    struct notif_change_args args;
+
+    args.change = NOTIF_DEFAULT;
+    args.flow = flow;
+    args.role = role;
+    args.id = id;
+    notif_clients_walk(&g_notif_clients, call_client, &args);
 
     /* Windows 7 treats changes to eConsole as changes to eMultimedia */
     if(role == eConsole)
@@ -1698,32 +1737,38 @@ static void notify_clients(EDataFlow flow, ERole role, const WCHAR *id)
 /* The three device notifications, to every registered client as the default's goes (R7-01); the caller holds g_notif_lock */
 static void notify_device_added(const MMDevice *device)
 {
-    struct NotificationClientWrapper *wrapper;
+    struct notif_change_args args;
     WCHAR id[56];
 
     MMDevice_FormatId(device, id);
-    LIST_FOR_EACH_ENTRY(wrapper, &g_notif_clients, struct NotificationClientWrapper, entry)
-        IMMNotificationClient_OnDeviceAdded(wrapper->client, id);
+    args.change = NOTIF_ADDED;
+    args.id = id;
+    args.state = 0;
+    notif_clients_walk(&g_notif_clients, call_client, &args);
 }
 
 static void notify_device_removed(const MMDevice *device)
 {
-    struct NotificationClientWrapper *wrapper;
+    struct notif_change_args args;
     WCHAR id[56];
 
     MMDevice_FormatId(device, id);
-    LIST_FOR_EACH_ENTRY(wrapper, &g_notif_clients, struct NotificationClientWrapper, entry)
-        IMMNotificationClient_OnDeviceRemoved(wrapper->client, id);
+    args.change = NOTIF_REMOVED;
+    args.id = id;
+    args.state = 0;
+    notif_clients_walk(&g_notif_clients, call_client, &args);
 }
 
 static void notify_device_state(const MMDevice *device)
 {
-    struct NotificationClientWrapper *wrapper;
+    struct notif_change_args args;
     WCHAR id[56];
 
     MMDevice_FormatId(device, id);
-    LIST_FOR_EACH_ENTRY(wrapper, &g_notif_clients, struct NotificationClientWrapper, entry)
-        IMMNotificationClient_OnDeviceStateChanged(wrapper->client, id, device->state);
+    args.change = NOTIF_STATE;
+    args.id = id;
+    args.state = device->state;
+    notif_clients_walk(&g_notif_clients, call_client, &args);
 }
 
 static BOOL notify_if_changed(EDataFlow flow, ERole role, HKEY key,
@@ -1856,38 +1901,36 @@ static DWORD WINAPI notif_thread_proc(void *user)
 static HRESULT WINAPI MMDevEnum_RegisterEndpointNotificationCallback(IMMDeviceEnumerator *iface, IMMNotificationClient *client)
 {
     MMDevEnumImpl *This = impl_from_IMMDeviceEnumerator(iface);
-    struct NotificationClientWrapper *wrapper;
 
     TRACE("(%p)->(%p)\n", This, client);
 
     if(!client)
         return E_POINTER;
 
-    wrapper = malloc(sizeof(*wrapper));
-    if(!wrapper)
-        return E_OUTOFMEMORY;
-
-    wrapper->client = client;
-
     EnterCriticalSection(&g_notif_lock);
 
-    list_add_tail(&g_notif_clients, &wrapper->entry);
+    if (notif_clients_register(&g_notif_clients, client))
+    {
+        if(!g_notif_thread){
+            g_notif_thread = CreateThread(NULL, 0, notif_thread_proc, NULL, 0, NULL);
+            if(!g_notif_thread)
+                ERR("CreateThread failed: %lu\n", GetLastError());
+        }
 
-    if(!g_notif_thread){
-        g_notif_thread = CreateThread(NULL, 0, notif_thread_proc, NULL, 0, NULL);
-        if(!g_notif_thread)
-            ERR("CreateThread failed: %lu\n", GetLastError());
+        LeaveCriticalSection(&g_notif_lock);
+
+        return S_OK;
     }
 
     LeaveCriticalSection(&g_notif_lock);
 
-    return S_OK;
+    return E_OUTOFMEMORY;
 }
 
 static HRESULT WINAPI MMDevEnum_UnregisterEndpointNotificationCallback(IMMDeviceEnumerator *iface, IMMNotificationClient *client)
 {
     MMDevEnumImpl *This = impl_from_IMMDeviceEnumerator(iface);
-    struct NotificationClientWrapper *wrapper;
+    BOOLEAN found;
 
     TRACE("(%p)->(%p)\n", This, client);
 
@@ -1896,18 +1939,11 @@ static HRESULT WINAPI MMDevEnum_UnregisterEndpointNotificationCallback(IMMDevice
 
     EnterCriticalSection(&g_notif_lock);
 
-    LIST_FOR_EACH_ENTRY(wrapper, &g_notif_clients, struct NotificationClientWrapper, entry){
-        if(wrapper->client == client){
-            list_remove(&wrapper->entry);
-            free(wrapper);
-            LeaveCriticalSection(&g_notif_lock);
-            return S_OK;
-        }
-    }
+    found = notif_clients_unregister(&g_notif_clients, client);
 
     LeaveCriticalSection(&g_notif_lock);
 
-    return E_NOTFOUND;
+    return found ? S_OK : E_NOTFOUND;
 }
 
 static const IMMDeviceEnumeratorVtbl MMDevEnumVtbl =
