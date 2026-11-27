@@ -127,6 +127,14 @@ static inline IPropertyBagImpl *impl_from_IPropertyBag(IPropertyBag *iface)
     return CONTAINING_RECORD(iface, IPropertyBagImpl, IPropertyBag_iface);
 }
 
+#ifdef __REACTOS__
+/* The three device notifications of IMMNotificationClient, sent to the registered clients as notify_clients sends the default's (R7-01) */
+static void notify_device_added(const MMDevice *device);
+static void notify_device_removed(const MMDevice *device);
+static void notify_device_state(const MMDevice *device);
+static CRITICAL_SECTION g_notif_lock;
+#endif
+
 #ifndef __REACTOS__
 static HRESULT DeviceTopology_Create(IMMDevice *device, IDeviceTopology **ppv);
 
@@ -543,6 +551,17 @@ static const WCHAR *find_product_name_override(const WCHAR *device_id)
  * If GUID is null, a random guid will be assigned
  * and the device will be created
  */
+/* The endpoint's id as IMMDevice_GetId hands it out */
+static void MMDevice_FormatId(const MMDevice *This, WCHAR *str)
+{
+    const GUID *id = &This->devguid;
+
+    wsprintfW(str, L"{0.0.%u.00000000}.{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+              This->flow, id->Data1, id->Data2, id->Data3,
+              id->Data4[0], id->Data4[1], id->Data4[2], id->Data4[3],
+              id->Data4[4], id->Data4[5], id->Data4[6], id->Data4[7]);
+}
+
 static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DWORD state, BOOL setdefault)
 {
     HKEY key, root;
@@ -584,6 +603,7 @@ static MMDevice *MMDevice_Create(const WCHAR *name, GUID *id, EDataFlow flow, DW
     cur->flow = flow;
     cur->state = state;
     cur->devguid = *id;
+    cur->named = TRUE;
 
     StringFromGUID2(&cur->devguid, guidstr, ARRAY_SIZE(guidstr));
 
@@ -944,19 +964,111 @@ end:
 }
 
 #ifdef __REACTOS__
+/* One device of the list as the refresh found it before the driver was asked again */
+struct refresh_before
+{
+    GUID id;
+    DWORD state;
+};
+
+/* The state a device had before the refresh: ABSENT when the list did not hold it */
+#define REFRESH_ABSENT   ((DWORD)-1)
+
+static DWORD refresh_before_state(const struct refresh_before *before, UINT count, const GUID *id)
+{
+    UINT i;
+
+    for (i = 0; i < count; i++)
+        if (IsEqualGUID(&before[i].id, id))
+            return before[i].state;
+    return REFRESH_ABSENT;
+}
+
+/*
+ * The driver asked again for a flow's endpoints, and what its answer changed
+ * told to the registered clients (R7-01): the list as it was is taken down
+ * first and no device is named; load_driver_devices names what the answer
+ * holds, with its state. A device the answer no longer names is not present
+ * and was removed; one it names that was not there, or was not present, was
+ * added; one whose state changed has the new state. An unchanged answer tells
+ * nothing. The clients are told under g_notif_lock, as the default's change is.
+ */
 static void reactos_refresh_devices(EDataFlow flow)
 {
+    struct refresh_before *before;
+    MMDevice *device;
+    EDataFlow first, last;
+    UINT count = 0, i;
+
     if (!drvs.module && !reactos_ensure_driver())
         return;
 
     if (flow == eRender || flow == eCapture)
     {
-        load_driver_devices(flow);
-        return;
+        first = last = flow;
+    }
+    else
+    {
+        first = eRender;
+        last = eCapture;
     }
 
-    load_driver_devices(eRender);
-    load_driver_devices(eCapture);
+    LIST_FOR_EACH_ENTRY(device, &device_list, MMDevice, entry)
+    {
+        if (device->flow < first || device->flow > last)
+            continue;
+        count++;
+        device->named = FALSE;
+    }
+    before = malloc(count * sizeof(*before));
+    i = 0;
+    LIST_FOR_EACH_ENTRY(device, &device_list, MMDevice, entry)
+    {
+        if (device->flow < first || device->flow > last)
+            continue;
+        if (before)
+        {
+            before[i].id = device->devguid;
+            before[i].state = device->state;
+        }
+        i++;
+    }
+
+    load_driver_devices(first);
+    if (last != first)
+        load_driver_devices(last);
+
+    /* without the list as it was, nothing can be told to have changed */
+    if (!before)
+        return;
+
+    EnterCriticalSection(&g_notif_lock);
+
+    LIST_FOR_EACH_ENTRY(device, &device_list, MMDevice, entry)
+    {
+        DWORD old;
+
+        if (device->flow < first || device->flow > last)
+            continue;
+        old = refresh_before_state(before, count, &device->devguid);
+        if (!device->named)
+        {
+            if (old == REFRESH_ABSENT || old == DEVICE_STATE_NOTPRESENT)
+                continue;
+            device->state = DEVICE_STATE_NOTPRESENT;
+            notify_device_removed(device);
+            continue;
+        }
+        if (device->state == DEVICE_STATE_NOTPRESENT)
+            continue;
+        if (old == REFRESH_ABSENT || old == DEVICE_STATE_NOTPRESENT)
+            notify_device_added(device);
+        else if (old != device->state)
+            notify_device_state(device);
+    }
+
+    LeaveCriticalSection(&g_notif_lock);
+    free(before);
 }
 #endif
 
@@ -1139,7 +1251,6 @@ static HRESULT WINAPI MMDevice_GetId(IMMDevice *iface, WCHAR **itemid)
 {
     MMDevice *This = impl_from_IMMDevice(iface);
     WCHAR *str;
-    GUID *id = &This->devguid;
 
     TRACE("(%p)->(%p)\n", This, itemid);
     if (!itemid)
@@ -1147,10 +1258,7 @@ static HRESULT WINAPI MMDevice_GetId(IMMDevice *iface, WCHAR **itemid)
     *itemid = str = CoTaskMemAlloc(56 * sizeof(WCHAR));
     if (!str)
         return E_OUTOFMEMORY;
-    wsprintfW(str, L"{0.0.%u.00000000}.{%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
-              This->flow, id->Data1, id->Data2, id->Data3,
-              id->Data4[0], id->Data4[1], id->Data4[2], id->Data4[3],
-              id->Data4[4], id->Data4[5], id->Data4[6], id->Data4[7]);
+    MMDevice_FormatId(This, str);
     TRACE("returning %s\n", wine_dbgstr_w(str));
     return S_OK;
 }
@@ -1585,6 +1693,37 @@ static void notify_clients(EDataFlow flow, ERole role, const WCHAR *id)
     /* Windows 7 treats changes to eConsole as changes to eMultimedia */
     if(role == eConsole)
         notify_clients(flow, eMultimedia, id);
+}
+
+/* The three device notifications, to every registered client as the default's goes (R7-01); the caller holds g_notif_lock */
+static void notify_device_added(const MMDevice *device)
+{
+    struct NotificationClientWrapper *wrapper;
+    WCHAR id[56];
+
+    MMDevice_FormatId(device, id);
+    LIST_FOR_EACH_ENTRY(wrapper, &g_notif_clients, struct NotificationClientWrapper, entry)
+        IMMNotificationClient_OnDeviceAdded(wrapper->client, id);
+}
+
+static void notify_device_removed(const MMDevice *device)
+{
+    struct NotificationClientWrapper *wrapper;
+    WCHAR id[56];
+
+    MMDevice_FormatId(device, id);
+    LIST_FOR_EACH_ENTRY(wrapper, &g_notif_clients, struct NotificationClientWrapper, entry)
+        IMMNotificationClient_OnDeviceRemoved(wrapper->client, id);
+}
+
+static void notify_device_state(const MMDevice *device)
+{
+    struct NotificationClientWrapper *wrapper;
+    WCHAR id[56];
+
+    MMDevice_FormatId(device, id);
+    LIST_FOR_EACH_ENTRY(wrapper, &g_notif_clients, struct NotificationClientWrapper, entry)
+        IMMNotificationClient_OnDeviceStateChanged(wrapper->client, id, device->state);
 }
 
 static BOOL notify_if_changed(EDataFlow flow, ERole role, HKEY key,

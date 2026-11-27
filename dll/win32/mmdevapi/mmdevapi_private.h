@@ -167,6 +167,8 @@ typedef struct MMDevice {
     DWORD state;
     GUID devguid;
     WCHAR *drv_id;
+    /* whether the driver's last answer named this device: the enumeration's refresh reads it to learn what the driver's set lost (devenum.c reactos_refresh_devices) */
+    BOOL named;
 
     struct list entry;
 } MMDevice;
