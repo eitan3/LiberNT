@@ -570,7 +570,8 @@ IntcDspPathBuild(
         }
         IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be built (0x%08x) and what was built could not be deleted again (0x%08x); released as after a fault\n",
                          Stream->Tag, (UINT32)Status, (UINT32)Step);
-        return IntcDspStuck(Streams, Status);
+        /* the status is the undo's, the one that lost the link (N7-03): the build's busy status beside a faulted link said nothing of what came */
+        return IntcDspStuck(Streams, Step);
     }
     IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be built (0x%08x); what was built is deleted again\n",
                      Stream->Tag, (UINT32)Status);

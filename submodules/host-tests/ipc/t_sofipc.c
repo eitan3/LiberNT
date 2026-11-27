@@ -3288,8 +3288,8 @@ CheckStreamHeldBuffer(
     S->H.Dsp->Faults.IpcStatusValue = SofIpc4InvalidResourceState;
     Requests = S->H.Dsp->TransportRequests;
     Status = IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2);
-    /* the build's status is answered, busy, though its undo lost the link: the link's state, not the status, says what came */
-    CHECK_EQ(Status, STATUS_RETRY);
+    /* the undo's status, the one that lost the link (N7-03): the firmware's error on the deletion, not the build's busy status */
+    CHECK_EQ(Status, STATUS_DEVICE_PROTOCOL_ERROR);
     CHECK_EQ(S->H.Ipc.Link, SofIpcLinkFaulted);
     CHECK_EQ(S->H.Ipc.Faults, 1);
     CHECK_EQ(S->Streams.Faulted, TRUE);
