@@ -661,7 +661,7 @@ IntcDspEvtDevicePrepareHardware(
     if (!NT_SUCCESS(Status))
     {
         IntcDspLog("GetResources: 0x%08lx\n", Status);
-        /* the reference the interface was given with goes back on this way out too (R1-08); the release of the hardware is not reached after a failed preparation */
+        /* the reference the interface was given with goes back on this way out too (R1-08); the release of the hardware that follows a failed preparation (N5-01) finds BusValid clear, and its own end touches the bus only while it is set */
         if (Dev->Bus.InterfaceDereference)
             Dev->Bus.InterfaceDereference(Dev->Bus.Context);
         Dev->BusValid = FALSE;
