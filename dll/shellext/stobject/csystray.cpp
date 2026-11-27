@@ -109,10 +109,11 @@ void CSysTray::ConfigurePollTimer()
     // FIXME: VOLUME_SERVICE_FLAG should use mixerOpen(CALLBACK_WINDOW)
     // FIXME: POWER_SERVICE_FLAG should use WM_DEVICECHANGE, WM_POWERBROADCAST
 
-    /* The poll runs while a service that polls is enabled, or the microphone has something to watch: no
+    /* The poll runs while a service that polls is enabled, or the microphone icon is enabled and has something to watch: no
        enumerator or no notification client yet, or a capture endpoint; its client asks again when they change */
     DWORD fNeedsTimer = VOLUME_SERVICE_FLAG | POWER_SERVICE_FLAG;
-    if ((this->dwServicesEnabled & fNeedsTimer) || Microphone_NeedsPoll())
+    if ((this->dwServicesEnabled & fNeedsTimer) ||
+        ((this->dwServicesEnabled & MICROPHONE_SERVICE_FLAG) && Microphone_NeedsPoll()))
         SetTimer(POLL_TIMER_ID, 2000, NULL);
     else
         KillTimer(POLL_TIMER_ID);
@@ -388,7 +389,8 @@ BOOL CSysTray::ProcessWindowMessage(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
         if (wParam == POLL_TIMER_ID)
         {
             UpdateIcons();
-            Microphone_Update(this);
+            if (this->dwServicesEnabled & MICROPHONE_SERVICE_FLAG)
+                Microphone_Update(this);
         }
         else
             ProcessIconMessage(uMsg, wParam, lParam, lResult);
