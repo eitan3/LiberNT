@@ -68,6 +68,7 @@ public:
 
     const TRAYICONITEM &Item() const { return m_Item; }
     void OnClick() { Raise(ControlClicked); }
+    BOOL OnContextMenu(POINT screen);
 
 protected:
     void PaintOverride(PaintContext &context)
@@ -160,6 +161,26 @@ private:
 };
 
 static CLiberOverflow *g_pLiberOverflow;
+
+static HWND FindPager(VOID);
+
+BOOL CMenuItem::OnContextMenu(POINT screen)
+{
+    static const UINT Messages[] = { WM_RBUTTONDOWN, WM_RBUTTONUP, WM_CONTEXTMENU };
+    HWND pager = FindPager();
+
+    UNREFERENCED_PARAMETER(screen);
+    if (!pager || !m_Item.hWnd)
+        return FALSE;
+    if (g_pLiberOverflow)
+        g_pLiberOverflow->Close();
+    for (UINT i = 0; i < _countof(Messages); i++)
+    {
+        TRAYICONEVENT tie = { m_Item.hWnd, m_Item.uID, Messages[i] };
+        SendMessageW(pager, TNWM_TRAYICONEVENT, 0, (LPARAM)&tie);
+    }
+    return TRUE;
+}
 
 static HWND FindPager(VOID)
 {

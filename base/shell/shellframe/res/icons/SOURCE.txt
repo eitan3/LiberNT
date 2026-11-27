@@ -14,6 +14,7 @@ Files used, copied unmodified and drawn from their path data at run time:
 - assets/Apps Add In/SVG/ic_fluent_apps_add_in_20_regular.svg
 - assets/Apps List/SVG/ic_fluent_apps_list_20_regular.svg
 - assets/Arrow Clockwise/SVG/ic_fluent_arrow_clockwise_16_regular.svg
+- assets/Arrow Counterclockwise/SVG/ic_fluent_arrow_counterclockwise_16_regular.svg
 - assets/Arrow Counterclockwise/SVG/ic_fluent_arrow_counterclockwise_20_regular.svg
 - assets/Arrow Download/SVG/ic_fluent_arrow_download_20_regular.svg
 - assets/Arrow Left/SVG/ic_fluent_arrow_left_16_regular.svg
@@ -58,6 +59,7 @@ Files used, copied unmodified and drawn from their path data at run time:
 - assets/Eye/SVG/ic_fluent_eye_20_regular.svg
 - assets/Filter/SVG/ic_fluent_filter_20_regular.svg
 - assets/Folder/SVG/ic_fluent_folder_20_regular.svg
+- assets/Folder Open/SVG/ic_fluent_folder_open_16_regular.svg
 - assets/Folder Open/SVG/ic_fluent_folder_open_20_regular.svg
 - assets/Games/SVG/ic_fluent_games_20_regular.svg
 - assets/Globe/SVG/ic_fluent_globe_20_regular.svg
@@ -68,6 +70,7 @@ Files used, copied unmodified and drawn from their path data at run time:
 - assets/Hard Drive/SVG/ic_fluent_hard_drive_16_regular.svg
 - assets/Hard Drive/SVG/ic_fluent_hard_drive_20_regular.svg
 - assets/Headphones/SVG/ic_fluent_headphones_20_regular.svg
+- assets/History/SVG/ic_fluent_history_16_regular.svg
 - assets/History/SVG/ic_fluent_history_20_regular.svg
 - assets/Home/SVG/ic_fluent_home_20_regular.svg
 - assets/Image/SVG/ic_fluent_image_20_regular.svg
@@ -82,6 +85,7 @@ Files used, copied unmodified and drawn from their path data at run time:
 - assets/List/SVG/ic_fluent_list_20_regular.svg
 - assets/Local Language/SVG/ic_fluent_local_language_20_regular.svg
 - assets/Location/SVG/ic_fluent_location_20_regular.svg
+- assets/Lock Closed/SVG/ic_fluent_lock_closed_16_regular.svg
 - assets/Lock Closed/SVG/ic_fluent_lock_closed_20_regular.svg
 - assets/Mic/SVG/ic_fluent_mic_20_regular.svg
 - assets/Mic Off/SVG/ic_fluent_mic_off_20_regular.svg
@@ -96,6 +100,7 @@ Files used, copied unmodified and drawn from their path data at run time:
 - assets/Panel Right/SVG/ic_fluent_panel_right_20_regular.svg
 - assets/Pause/SVG/ic_fluent_pause_20_filled.svg
 - assets/People/SVG/ic_fluent_people_20_regular.svg
+- assets/Person/SVG/ic_fluent_person_16_regular.svg
 - assets/Person/SVG/ic_fluent_person_20_regular.svg
 - assets/Person Add/SVG/ic_fluent_person_add_20_regular.svg
 - assets/Phone Laptop/SVG/ic_fluent_phone_laptop_20_regular.svg
@@ -134,6 +139,7 @@ Files used, copied unmodified and drawn from their path data at run time:
 - assets/Text Font/SVG/ic_fluent_text_font_20_regular.svg
 - assets/Toggle Multiple/SVG/ic_fluent_toggle_multiple_20_regular.svg
 - assets/Video/SVG/ic_fluent_video_20_regular.svg
+- assets/Weather Moon/SVG/ic_fluent_weather_moon_16_regular.svg
 - assets/Weather Moon/SVG/ic_fluent_weather_moon_20_regular.svg
 - assets/WiFi 1/SVG/ic_fluent_wifi_1_20_regular.svg
 - assets/WiFi Off/SVG/ic_fluent_wifi_off_20_regular.svg

@@ -754,6 +754,17 @@ LRESULT Surface::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
             Render(AnimationClock::Now());
             return 0;
 
+        case WM_RBUTTONUP:
+        {
+            POINT screen = pt;
+            Widget *target = m_Root ? m_Root->HitTest(PixelToDip(pt)) : NULL;
+            ClientToScreen(m_hwnd, &screen);
+            while (target && !target->OnContextMenu(screen))
+                target = target->Parent();
+            Render(AnimationClock::Now());
+            return 0;
+        }
+
         case WM_LBUTTONUP:
             m_Input.PointerUp(PixelToDip(pt));
             if (GetCapture() == m_hwnd)

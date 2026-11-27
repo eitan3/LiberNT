@@ -366,6 +366,96 @@ VOID LiberCalendar_MonthGrid(UINT year, UINT month, UINT firstDayOfWeek, LIBER_C
     }
 }
 
+VOID LiberMenu_Origin(const RECT *prcWork, POINT anchor, int widthPx, int heightPx, POINT *pptTopLeft)
+{
+    pptTopLeft->x = anchor.x;
+    pptTopLeft->y = anchor.y - heightPx;
+    if (pptTopLeft->x + widthPx > prcWork->right)
+        pptTopLeft->x = anchor.x - widthPx;
+    if (pptTopLeft->x < prcWork->left)
+        pptTopLeft->x = prcWork->left;
+    if (pptTopLeft->y < prcWork->top)
+        pptTopLeft->y = anchor.y;
+    if (pptTopLeft->y + heightPx > prcWork->bottom)
+        pptTopLeft->y = prcWork->bottom - heightPx;
+}
+
+#define LIBER_START_KEY L"Software\\LiberNT\\Shell\\Start"
+#define LIBER_START_PINS 64
+
+BOOL LiberStart_LoadPins(LPWSTR pszPins, DWORD cchPins, UINT *pcPins)
+{
+    DWORD cb = cchPins * sizeof(WCHAR);
+    UINT count = 0;
+
+    if (pcPins)
+        *pcPins = 0;
+    if (!pszPins || cchPins < 2)
+        return FALSE;
+    pszPins[0] = pszPins[1] = 0;
+    if (RegGetValueW(HKEY_CURRENT_USER, LIBER_START_KEY, L"Pins", RRF_RT_REG_MULTI_SZ, NULL, pszPins, &cb) !=
+        ERROR_SUCCESS)
+    {
+        pszPins[0] = pszPins[1] = 0;
+        return FALSE;
+    }
+    for (LPCWSTR p = pszPins; *p; p += lstrlenW(p) + 1)
+        count++;
+    if (pcPins)
+        *pcPins = count;
+    return TRUE;
+}
+
+BOOL LiberStart_IsPinned(LPCWSTR pszPins, LPCWSTR pszPath)
+{
+    for (LPCWSTR p = pszPins; p && *p; p += lstrlenW(p) + 1)
+    {
+        if (!lstrcmpiW(p, pszPath))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+BOOL LiberStart_SetPinned(LPCWSTR pszPins, LPCWSTR pszPath, BOOL bPinned)
+{
+    WCHAR szOut[LIBER_START_PINS * MAX_PATH + 1];
+    LPWSTR out = szOut;
+    SIZE_T room = _countof(szOut) - 1;
+    UINT count = 0;
+    HKEY key;
+    LSTATUS status;
+
+    if (!pszPath || !*pszPath)
+        return FALSE;
+    for (LPCWSTR p = pszPins; p && *p; p += lstrlenW(p) + 1)
+    {
+        SIZE_T len = (SIZE_T)lstrlenW(p) + 1;
+        if (!lstrcmpiW(p, pszPath) || len > room || count >= LIBER_START_PINS)
+            continue;
+        CopyMemory(out, p, len * sizeof(WCHAR));
+        out += len;
+        room -= len;
+        count++;
+    }
+    if (bPinned)
+    {
+        SIZE_T len = (SIZE_T)lstrlenW(pszPath) + 1;
+        if (len > room || count >= LIBER_START_PINS)
+            return FALSE;
+        CopyMemory(out, pszPath, len * sizeof(WCHAR));
+        out += len;
+    }
+    *out++ = 0;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, LIBER_START_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) !=
+        ERROR_SUCCESS)
+    {
+        return FALSE;
+    }
+    status = RegSetValueExW(key, L"Pins", 0, REG_MULTI_SZ, (const BYTE *)szOut, (DWORD)((out - szOut) * sizeof(WCHAR)));
+    RegCloseKey(key);
+    return status == ERROR_SUCCESS;
+}
+
 BOOL LiberStart_Matches(LPCWSTR pszName, LPCWSTR pszQuery)
 {
     if (!pszQuery || !*pszQuery)

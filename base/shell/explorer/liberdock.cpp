@@ -82,6 +82,7 @@ public:
     }
 
     BOOL OnAnimationFrame(ULONGLONG now);
+    BOOL OnContextMenu(POINT screen);
 
     void Set(HICON icon, BOOL running, BOOL active)
     {
@@ -350,6 +351,7 @@ public:
     void OnPillClick();
     void OpenStart();
     void RenderDock(ULONGLONG now) { m_DockSurface.Render(now); }
+    BOOL CellMenu(int index, POINT screen);
     UINT Dpi() const { return m_Dpi; }
     void OnChevronClick();
 
@@ -391,6 +393,11 @@ static CLiberDock *g_pLiberDock;
 void CDockCell::OnClick()
 {
     m_Dock->OnCellClick(m_Index, Bounds());
+}
+
+BOOL CDockCell::OnContextMenu(POINT screen)
+{
+    return m_Dock->CellMenu(m_Index, screen);
 }
 
 BOOL CDockCell::OnAnimationFrame(ULONGLONG now)
@@ -645,6 +652,48 @@ void CLiberDock::OnCellClick(int index, const RECT &bounds)
         if (FAILED(hr) && hr != HRESULT_FROM_WIN32(ERROR_CANCELLED))
             MessageBeep(MB_ICONERROR);
     }
+}
+
+BOOL CLiberDock::CellMenu(int index, POINT screen)
+{
+    enum { DOCK_MENU_OPEN = 1, DOCK_MENU_PIN, DOCK_MENU_UNPIN, DOCK_MENU_CLOSE };
+
+    if (index < 0 || (UINT)index >= m_Count)
+        return FALSE;
+    LIBER_DOCK_ENTRY entry = m_Entries[index];
+    BOOL canPin = !TaskbarPin_IsDisabled() && entry.szTarget[0] && TaskbarPin_IsPinnable(entry.szTarget);
+    LIBER_MENU_ITEM menu[] = {
+        { DOCK_MENU_OPEN, L"Open new window", L"open_16_regular", NULL, FALSE, !entry.szSource[0] && !entry.szTarget[0] },
+        { 0, NULL, NULL, NULL, TRUE, FALSE },
+        { entry.bPinned ? (UINT)DOCK_MENU_UNPIN : (UINT)DOCK_MENU_PIN,
+          entry.bPinned ? L"Unpin from taskbar" : L"Pin to taskbar", L"pin_16_regular", NULL, FALSE,
+          !entry.bPinned && !canPin },
+        { DOCK_MENU_CLOSE, L"Close window", L"dismiss_16_regular", NULL, FALSE, entry.hwnd == NULL },
+    };
+
+    switch (LiberMenu_Track(menu, _countof(menu), screen))
+    {
+        case DOCK_MENU_OPEN:
+        {
+            HANDLE process = NULL;
+            if (SUCCEEDED(TaskbarPin_Launch(entry.szSource[0] ? entry.szSource : entry.szTarget, &process)) && process)
+                CloseHandle(process);
+            break;
+        }
+        case DOCK_MENU_PIN:
+            TaskbarPin_Create(entry.szTarget);
+            SetTimer(m_hwndSink, LIBER_TIMER_REFRESH, LIBER_REFRESH_DELAY, NULL);
+            break;
+        case DOCK_MENU_UNPIN:
+            TaskbarPin_Remove(entry.szTarget);
+            SetTimer(m_hwndSink, LIBER_TIMER_REFRESH, LIBER_REFRESH_DELAY, NULL);
+            break;
+        case DOCK_MENU_CLOSE:
+            if (entry.hwnd && IsWindow(entry.hwnd))
+                PostMessageW(entry.hwnd, WM_SYSCOMMAND, SC_CLOSE, 0);
+            break;
+    }
+    return TRUE;
 }
 
 void CLiberDock::OpenStart()

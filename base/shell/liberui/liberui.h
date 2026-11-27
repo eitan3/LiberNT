@@ -433,6 +433,7 @@ public:
     virtual void OnPointerUp(POINT pt) { UNREFERENCED_PARAMETER(pt); }
     virtual void OnPointerMove(POINT pt) { UNREFERENCED_PARAMETER(pt); }
     virtual void OnClick() {}
+    virtual BOOL OnContextMenu(POINT screen) { UNREFERENCED_PARAMETER(screen); return FALSE; }
     virtual BOOL OnKeyDown(UINT vk) { UNREFERENCED_PARAMETER(vk); return FALSE; }
     virtual Widget *MoveFocus(Widget *from, FocusMove move);
 

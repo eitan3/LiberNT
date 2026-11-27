@@ -170,6 +170,23 @@ VOID LiberCalendar_Destroy(VOID);
 VOID LiberOverflow_Toggle(IN const RECT *prcAnchor);
 VOID LiberOverflow_Destroy(VOID);
 
+typedef struct _LIBER_MENU_ITEM
+{
+    UINT Id;
+    LPCWSTR Text;
+    LPCWSTR Icon;
+    LPCWSTR Hint;
+    BOOL Separator;
+    BOOL Disabled;
+} LIBER_MENU_ITEM;
+
+UINT LiberMenu_Track(const LIBER_MENU_ITEM *pItems, UINT cItems, POINT anchor);
+VOID LiberMenu_Origin(const RECT *prcWork, POINT anchor, int widthPx, int heightPx, POINT *pptTopLeft);
+
+BOOL LiberStart_LoadPins(LPWSTR pszPins, DWORD cchPins, UINT *pcPins);
+BOOL LiberStart_IsPinned(LPCWSTR pszPins, LPCWSTR pszPath);
+BOOL LiberStart_SetPinned(LPCWSTR pszPins, LPCWSTR pszPath, BOOL bPinned);
+
 UINT LiberStart_LoadRecentFiles(LIBER_RECENT_FILE *pFiles, UINT cMax);
 VOID LiberStart_FormatWhen(const SYSTEMTIME *pNow, const SYSTEMTIME *pThen, LPWSTR pszText, UINT cchText);
 UINT LiberStart_ScrollOffset(UINT offset, UINT count, UINT columns, UINT visible, int rows);

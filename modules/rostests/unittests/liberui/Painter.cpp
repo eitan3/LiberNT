@@ -558,13 +558,22 @@ static void TestGpuSurface()
 class ClickWidget : public Widget
 {
 public:
-    ClickWidget() : Clicks(0)
+    ClickWidget() : Clicks(0), Menus(0)
     {
         SetHitTestable(TRUE);
         SetFocusable(TRUE);
+        MenuAt.x = MenuAt.y = 0;
     }
     void OnClick() { Clicks++; }
+    BOOL OnContextMenu(POINT screen)
+    {
+        Menus++;
+        MenuAt = screen;
+        return TRUE;
+    }
     UINT Clicks;
+    UINT Menus;
+    POINT MenuAt;
 };
 
 static void TestSurfaceInput(DWORD flags)
@@ -594,6 +603,13 @@ static void TestSurfaceInput(DWORD flags)
     ok(GetCapture() == surface.Window(), "a press captures the mouse\n");
     ReleaseCapture();
     ok(!button->HasState(StatePressed) && button->Clicks == 1, "losing capture cancels the press\n");
+
+    POINT expected = { 12, 14 };
+    ClientToScreen(surface.Window(), &expected);
+    SendMessageW(surface.Window(), WM_RBUTTONUP, 0, MAKELPARAM(12, 14));
+    ok(button->Menus == 1 && button->MenuAt.x == expected.x && button->MenuAt.y == expected.y && button->Clicks == 1,
+       "a right click asks the widget for its menu at the screen point (%ld,%ld)\n", button->MenuAt.x,
+       button->MenuAt.y);
 
     UINT presents = surface.PresentCount();
     ShowWindow(surface.Window(), SW_SHOWNOACTIVATE);

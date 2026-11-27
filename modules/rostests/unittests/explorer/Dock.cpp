@@ -217,6 +217,71 @@ static void TestWallpaperMapping()
        LiberShell_Luminance(0xFFFF0000) > LiberShell_Luminance(0xFF0000FF), "green is brightest, blue darkest\n");
 }
 
+static void TestMenuOrigin()
+{
+    RECT work = { 0, 0, 1600, 824 };
+    POINT pt, anchor = { 800, 600 };
+
+    LiberMenu_Origin(&work, anchor, 200, 100, &pt);
+    ok(pt.x == 800 && pt.y == 500, "a menu opens above and right of the pointer: %ld,%ld\n", pt.x, pt.y);
+    anchor.x = 1550;
+    LiberMenu_Origin(&work, anchor, 200, 100, &pt);
+    ok(pt.x == 1350, "a menu near the right edge opens to the left: %ld\n", pt.x);
+    anchor.x = 10;
+    anchor.y = 50;
+    LiberMenu_Origin(&work, anchor, 200, 100, &pt);
+    ok(pt.x == 10 && pt.y == 50, "a menu near the top opens below the pointer: %ld,%ld\n", pt.x, pt.y);
+    anchor.y = 820;
+    LiberMenu_Origin(&work, anchor, 200, 900, &pt);
+    ok(pt.y == 824 - 900, "a menu taller than the work area is pinned to its bottom: %ld\n", pt.y);
+}
+
+static void TestStartPins()
+{
+    static WCHAR saved[64 * MAX_PATH + 1], pins[64 * MAX_PATH + 1];
+    UINT count = 0;
+    BOOL had = LiberStart_LoadPins(saved, _countof(saved), &count);
+    HKEY key;
+
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\LiberNT\\Shell\\Start", 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS)
+    {
+        RegDeleteValueW(key, L"Pins");
+        RegCloseKey(key);
+    }
+    ok(!LiberStart_LoadPins(pins, _countof(pins), &count) && count == 0 && pins[0] == 0, "no pins by default\n");
+    ok(LiberStart_SetPinned(pins, L"C:\\Apps\\One.lnk", TRUE), "pin one\n");
+    ok(LiberStart_LoadPins(pins, _countof(pins), &count) && count == 1 && !wcscmp(pins, L"C:\\Apps\\One.lnk"),
+       "one pin stored\n");
+    ok(LiberStart_SetPinned(pins, L"C:\\Apps\\Two.lnk", TRUE) && LiberStart_LoadPins(pins, _countof(pins), &count) &&
+       count == 2, "pins append\n");
+    ok(LiberStart_IsPinned(pins, L"c:\\apps\\two.LNK") && !LiberStart_IsPinned(pins, L"C:\\Apps\\Three.lnk"),
+       "pins compare without case\n");
+    ok(LiberStart_SetPinned(pins, L"C:\\APPS\\ONE.LNK", FALSE) && LiberStart_LoadPins(pins, _countof(pins), &count) &&
+       count == 1 && !wcscmp(pins, L"C:\\Apps\\Two.lnk"), "unpin removes regardless of case\n");
+    ok(LiberStart_SetPinned(pins, L"C:\\Apps\\Two.lnk", TRUE) && LiberStart_LoadPins(pins, _countof(pins), &count) &&
+       count == 1, "pinning twice keeps one entry\n");
+    ok(LiberStart_SetPinned(pins, L"C:\\Apps\\Two.lnk", FALSE) && LiberStart_LoadPins(pins, _countof(pins), &count) &&
+       count == 0, "an empty pin list is kept as empty, not as the default\n");
+    ok(!LiberStart_SetPinned(pins, L"", TRUE), "an empty path is refused\n");
+    ok(!LiberStart_LoadPins(pins, 1, &count), "a tiny buffer is refused\n");
+
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\LiberNT\\Shell\\Start", 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS)
+    {
+        if (had)
+        {
+            DWORD chars = 0;
+            for (LPCWSTR p = saved; *p; p += lstrlenW(p) + 1)
+                chars = (DWORD)(p - saved) + lstrlenW(p) + 1;
+            RegSetValueExW(key, L"Pins", 0, REG_MULTI_SZ, (const BYTE *)saved, (chars + 1) * sizeof(WCHAR));
+        }
+        else
+        {
+            RegDeleteValueW(key, L"Pins");
+        }
+        RegCloseKey(key);
+    }
+}
+
 static void TestRecentHelpers()
 {
     SYSTEMTIME now = { 2026, 11, 5, 27, 11, 20, 0, 0 }, then = now;
@@ -327,6 +392,8 @@ START_TEST(Dock)
     TestRecentHelpers();
     TestCalendarGrid();
     TestWallpaperMapping();
+    TestMenuOrigin();
+    TestStartPins();
     TestTaskWindows();
     TestExperience();
 }
