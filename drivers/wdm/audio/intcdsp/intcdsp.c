@@ -97,7 +97,20 @@ IntcDspReadIpcSettings(
     }
     if (NT_SUCCESS(IntcDspReadSetting(INTCDSP_SETTINGS_IPCTIMEOUTMS, &Value)) && Value != 0 && Value <= INTCDSP_IPC_TIMEOUT_MS_MAX)
         Dev->IpcTimeoutMs = Value;
-    IntcDspLog("SelfTest = %lu, UseInterrupts = %lu, IpcTimeoutMs = %lu ms\n", Dev->SelfTest, Dev->UseInterrupts, Dev->IpcTimeoutMs);
+    /* the D0 rule and the idle power-down (E2): BootAtStart a choice like UseInterrupts; DspIdleSec any number of seconds, 0 off */
+    Dev->BootAtStart = 0;
+    Dev->DspIdleSec = 0;
+    if (NT_SUCCESS(IntcDspReadSetting(INTCDSP_SETTINGS_BOOTATSTART, &Value)))
+    {
+        if (Value <= 1)
+            Dev->BootAtStart = Value;
+        else
+            IntcDspLog("BootAtStart = %lu is not 0 or 1: 0\n", Value);
+    }
+    if (NT_SUCCESS(IntcDspReadSetting(INTCDSP_SETTINGS_DSPIDLESEC, &Value)))
+        Dev->DspIdleSec = Value;
+    IntcDspLog("SelfTest = %lu, UseInterrupts = %lu, IpcTimeoutMs = %lu ms, BootAtStart = %lu, DspIdleSec = %lu s\n", Dev->SelfTest, Dev->UseInterrupts,
+               Dev->IpcTimeoutMs, Dev->BootAtStart, Dev->DspIdleSec);
 }
 
 /* The line of an exchange that did not end well, the plan's one line per failure: the request in words and in registers, the outcome and the time */

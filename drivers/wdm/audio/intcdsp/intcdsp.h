@@ -31,6 +31,10 @@
 #define INTCDSP_SETTINGS_SELFTEST L"SelfTest"
 #define INTCDSP_SETTINGS_USEINTERRUPTS L"UseInterrupts"
 #define INTCDSP_SETTINGS_IPCTIMEOUTMS  L"IpcTimeoutMs"
+/* BootAtStart (REG_DWORD, E2): 1 boots the DSP at every D0 entry as before; 0, the default, at the first stream open alone */
+#define INTCDSP_SETTINGS_BOOTATSTART   L"BootAtStart"
+/* DspIdleSec (REG_DWORD, E2): seconds without a stream before the DSP powers down, 0 = off */
+#define INTCDSP_SETTINGS_DSPIDLESEC    L"DspIdleSec"
 /* The topology file name, REG_SZ: the first source of the topology selection */
 #define INTCDSP_SETTINGS_TOPOLOGY L"Topology"
 /* The budget of every IPC message class when the value is absent, zero or past a minute: the plan's default */
@@ -145,6 +149,9 @@ typedef struct _INTCDSP_DEVICE
     ULONG SelfTest;
     ULONG UseInterrupts;
     ULONG IpcTimeoutMs;
+    /* the D0 rule and the idle power-down (E2): read at every D0 entry with the transport's settings */
+    ULONG BootAtStart;
+    ULONG DspIdleSec;
     INTCDSP_REQUEST_LOCK RequestLock;
     SOFIPC_CONTEXT Ipc;
     BOOLEAN IpcArmed;
