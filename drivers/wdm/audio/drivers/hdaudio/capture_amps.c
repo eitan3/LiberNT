@@ -27,7 +27,10 @@ HdaWidgetIndex(
  * Whether the pin is reached from a widget by following the connection
  * lists, a pin of the given domain: each widget is entered once, by the
  * marks the caller cleared for the walk. The pending widgets are a stack of
- * indexes, at most one a widget, so the walk recurses by nothing.
+ * indexes that holds a widget once: a widget is marked when it is queued
+ * (Queued, cleared for each walk), not only when it is entered, so a widget
+ * many predecessors name is pushed by the first of them alone and the stack
+ * never holds more than the widgets (R5-06); the walk recurses by nothing.
  */
 static
 BOOLEAN
@@ -40,11 +43,14 @@ HdaWidgetReachesPin(
     _Inout_ UCHAR* Visited)
 {
     UCHAR Stack[HDA_WIDGETS_MAX];
+    UCHAR Queued[HDA_WIDGETS_MAX];
     ULONG Top = 0, Index, Connection, Next;
 
     if (From >= WidgetCount)
         return FALSE;
+    RtlZeroMemory(Queued, WidgetCount);
     Stack[Top++] = From;
+    Queued[From] = 1;
     while (Top != 0)
     {
         Index = Stack[--Top];
@@ -56,8 +62,11 @@ HdaWidgetReachesPin(
         for (Connection = 0; Connection < Widgets[Index].ConnectionCount; Connection++)
         {
             Next = HdaWidgetIndex(Widgets, WidgetCount, (UCHAR)Widgets[Index].Connections[Connection]);
-            if (Next < WidgetCount && !Visited[Next] && Top < HDA_WIDGETS_MAX)
+            if (Next < WidgetCount && !Queued[Next])
+            {
                 Stack[Top++] = (UCHAR)Next;
+                Queued[Next] = 1;
+            }
         }
     }
     return FALSE;
