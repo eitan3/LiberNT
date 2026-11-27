@@ -37,7 +37,10 @@ enum
     CC_BRIGHTNESS,
     CC_VOLUME,
     CC_BATTERY,
-    CC_SETTINGS
+    CC_SETTINGS,
+    CC_MEDIA_PREVIOUS,
+    CC_MEDIA_PLAY,
+    CC_MEDIA_NEXT
 };
 
 static void PaintOrb(PaintContext &context, const RectF &orb, LPCWSTR icon, BOOL on)
@@ -105,7 +108,7 @@ protected:
         float top = rc.Y + (rc.Height - 34.0f) / 2;
         RectF title = { textX, top, textW, 18.0f };
         RectF caption = { textX, top + 18.0f, textW, 16.0f };
-        context.Painter.Text(m_Title, title, LIBER_TYPE_BODY_STRONG, tokens.Color(LIBER_COLOR_TEXT1),
+        context.Painter.Text(m_Title, title, LIBER_TYPE_CONTROL_TITLE, tokens.Color(LIBER_COLOR_TEXT1),
                              TextMiddle | TextEllipsis);
         context.Painter.Text(m_Caption, caption, LIBER_TYPE_CAPTION, tokens.Color(LIBER_COLOR_TEXT2),
                              TextMiddle | TextEllipsis);
@@ -181,8 +184,8 @@ protected:
                                                        : LIBER_COLOR_FILL_TILE));
         RectF orb = { rc.X + (rc.Width - LIBER_CC_ORB) / 2, rc.Y + 11.0f, (float)LIBER_CC_ORB, (float)LIBER_CC_ORB };
         PaintOrb(context, orb, m_Icon, m_On);
-        RectF label = { rc.X + 4.0f, orb.Y + LIBER_CC_ORB + 4.0f, rc.Width - 8.0f, 16.0f };
-        context.Painter.Text(m_Label, label, LIBER_TYPE_CAPTION, tokens.Color(LIBER_COLOR_TEXT1),
+        RectF label = { rc.X + 4.0f, orb.Y + LIBER_CC_ORB + 4.0f, rc.Width - 8.0f, 14.0f };
+        context.Painter.Text(m_Label, label, LIBER_TYPE_TILE_LABEL, tokens.Color(LIBER_COLOR_TEXT1),
                              TextCenter | TextMiddle | TextEllipsis);
     }
 
@@ -202,7 +205,7 @@ public:
 
         SetPadding(pad);
         SetSize(-1, LIBER_CC_SLIDER_H);
-        m_Title = new Label(title, LIBER_TYPE_BODY_STRONG, LIBER_COLOR_TEXT1, TextLeft | TextMiddle);
+        m_Title = new Label(title, LIBER_TYPE_CONTROL_TITLE, LIBER_COLOR_TEXT1, TextLeft | TextMiddle);
         m_Title->SetAlign(Align::Start, Align::Center);
         m_Value = new Label(L"", LIBER_TYPE_CAPTION, LIBER_COLOR_TEXT2, TextRight | TextMiddle);
         m_Value->SetAlign(Align::End, Align::Center);
@@ -279,6 +282,136 @@ private:
     WCHAR m_Text[16];
 };
 
+class CMediaButton : public Control
+{
+public:
+    CMediaButton(UINT id, LPCWSTR icon, BOOL accent) : m_Accent(accent)
+    {
+        SetId(id);
+        SetIcon(icon);
+        SetSize(LIBER_CONTROL_MD, LIBER_CONTROL_MD);
+    }
+
+    void SetIcon(LPCWSTR icon)
+    {
+        StringCchCopyW(m_Icon, _countof(m_Icon), icon);
+        Invalidate();
+    }
+
+    void OnClick() { Raise(ControlClicked); }
+
+protected:
+    void PaintOverride(PaintContext &context)
+    {
+        RectF rc = ToRectF(Bounds());
+        const ThemeTokens &tokens = context.Tokens;
+
+        if (m_Accent)
+            context.Painter.FillEllipse(rc, tokens.Color(HasState(StatePressed) ? LIBER_COLOR_ACCENT_PRESSED
+                                                         : HasState(StateHover)  ? LIBER_COLOR_ACCENT_HOVER
+                                                                                 : LIBER_COLOR_ACCENT));
+        else if (HasState(StateHover) || HasState(StatePressed))
+            context.Painter.FillEllipse(rc, tokens.Color(HasState(StatePressed) ? LIBER_COLOR_FILL_SUBTLE_PRESSED
+                                                                                : LIBER_COLOR_FILL_SUBTLE_HOVER));
+        RectF icon = { rc.X + (rc.Width - 20.0f) / 2, rc.Y + (rc.Height - 20.0f) / 2, 20.0f, 20.0f };
+        context.Painter.Icon(m_Icon, icon, tokens.Color(m_Accent ? LIBER_COLOR_ON_ACCENT : LIBER_COLOR_TEXT1));
+    }
+
+private:
+    WCHAR m_Icon[64];
+    BOOL m_Accent;
+};
+
+class CMediaCard : public Panel
+{
+public:
+    CMediaCard(IControlListener *listener) : m_Session(NULL), m_Art(NULL)
+    {
+        StackPanel *controls = new StackPanel(Orientation::Horizontal, 2);
+        Thickness margin = { 0, 0, 12, 0 };
+
+        m_Title[0] = m_Caption[0] = 0;
+        SetSize(-1, 76);
+        m_Previous = new CMediaButton(CC_MEDIA_PREVIOUS, L"previous_20_filled", FALSE);
+        m_Play = new CMediaButton(CC_MEDIA_PLAY, L"play_20_filled", TRUE);
+        m_Next = new CMediaButton(CC_MEDIA_NEXT, L"next_20_filled", FALSE);
+        m_Previous->SetListener(listener);
+        m_Play->SetListener(listener);
+        m_Next->SetListener(listener);
+        controls->AddChild(m_Previous);
+        controls->AddChild(m_Play);
+        controls->AddChild(m_Next);
+        controls->SetAlign(Align::End, Align::Center);
+        controls->SetMargin(margin);
+        AddChild(controls);
+    }
+
+    ~CMediaCard()
+    {
+        Reset();
+    }
+
+    void Set(const TRAY_MEDIA_INFO *info)
+    {
+        Reset();
+        if (info)
+        {
+            m_Session = info->hwndSession;
+            m_Art = info->hIcon;
+            StringCchCopyW(m_Title, _countof(m_Title), info->szTitle);
+            if (info->szArtist[0] && info->szApp[0])
+                StringCchPrintfW(m_Caption, _countof(m_Caption), L"%s \x00B7 %s", info->szArtist, info->szApp);
+            else
+                StringCchCopyW(m_Caption, _countof(m_Caption), info->szArtist[0] ? info->szArtist : info->szApp);
+            m_Play->SetIcon(info->bPlaying ? L"pause_20_filled" : L"play_20_filled");
+        }
+        SetVisible(info != NULL);
+        Invalidate();
+    }
+
+    HWND Session() const { return m_Session; }
+
+protected:
+    void PaintOverride(PaintContext &context)
+    {
+        RectF rc = ToRectF(Bounds());
+        const ThemeTokens &tokens = context.Tokens;
+
+        context.Painter.FillRoundRect(rc, (float)LIBER_RADIUS_TILE, tokens.Color(LIBER_COLOR_FILL_TILE));
+        RectF art = { rc.X + 12.0f, rc.Y + 12.0f, 52.0f, 52.0f };
+        context.Painter.FillRoundRect(art, (float)LIBER_RADIUS_CONTROL, tokens.Color(LIBER_COLOR_FILL_TILE_HOVER));
+        if (m_Art)
+        {
+            RectF icon = { art.X + 10.0f, art.Y + 10.0f, 32.0f, 32.0f };
+            context.Painter.Image(m_Art, icon);
+        }
+        float textX = art.X + art.Width + 12.0f, textW = rc.X + rc.Width - textX - 112.0f - 12.0f;
+        RectF title = { textX, rc.Y + 20.0f, textW, 20.0f };
+        RectF caption = { textX, rc.Y + 40.0f, textW, 16.0f };
+        context.Painter.Text(m_Title, title, LIBER_TYPE_BODY_STRONG, tokens.Color(LIBER_COLOR_TEXT1),
+                             TextMiddle | TextEllipsis);
+        context.Painter.Text(m_Caption, caption, LIBER_TYPE_CAPTION, tokens.Color(LIBER_COLOR_TEXT2),
+                             TextMiddle | TextEllipsis);
+    }
+
+private:
+    void Reset()
+    {
+        if (m_Art)
+            DestroyIcon(m_Art);
+        m_Art = NULL;
+        m_Session = NULL;
+    }
+
+    HWND m_Session;
+    HICON m_Art;
+    WCHAR m_Title[160];
+    WCHAR m_Caption[260];
+    CMediaButton *m_Previous;
+    CMediaButton *m_Play;
+    CMediaButton *m_Next;
+};
+
 class CFlyoutSurface : public Surface
 {
 public:
@@ -286,9 +419,9 @@ public:
     ULONGLONG m_HiddenAt;
     void Hide()
     {
-        if (Window() && IsWindowVisible(Window()))
+        if (Window() && IsWindowVisible(Window()) && !IsClosing())
         {
-            ShowWindow(Window(), SW_HIDE);
+            TransitionOut(24.0f, 150);
             m_HiddenAt = GetTickCount64();
         }
     }
@@ -305,7 +438,7 @@ public:
 
     BOOL Open(const RECT *prcAnchor);
     void Close();
-    BOOL IsOpen() const { return m_Surface.Window() != NULL && IsWindowVisible(m_Surface.Window()); }
+    BOOL IsOpen() const { return m_Surface.Window() && IsWindowVisible(m_Surface.Window()) && !m_Surface.IsClosing(); }
     BOOL JustClosed() const { return m_Surface.m_HiddenAt != 0 && GetTickCount64() - m_Surface.m_HiddenAt < 250; }
     void OnControlEvent(Widget *source, ControlEvent event);
 
@@ -327,6 +460,7 @@ private:
     CSliderCard *m_Display;
     CSliderCard *m_Sound;
     CBatteryButton *m_Battery;
+    CMediaCard *m_Media;
     CComPtr<IAudioEndpointVolume> m_pVolume;
 };
 
@@ -344,7 +478,7 @@ LRESULT CFlyoutSurface::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
 
 CLiberControlCenter::CLiberControlCenter()
     : m_Root(NULL), m_Wifi(NULL), m_Bluetooth(NULL), m_Airplane(NULL), m_Focus(NULL), m_Power(NULL), m_Dark(NULL),
-      m_Display(NULL), m_Sound(NULL), m_Battery(NULL)
+      m_Display(NULL), m_Sound(NULL), m_Battery(NULL), m_Media(NULL)
 {
 }
 
@@ -428,6 +562,8 @@ void CLiberControlCenter::Build()
     m_Root->AddChild(top);
     m_Root->AddChild(m_Display);
     m_Root->AddChild(m_Sound);
+    m_Media = new CMediaCard(this);
+    m_Root->AddChild(m_Media);
     m_Root->AddChild(footer);
 }
 
@@ -473,6 +609,8 @@ void CLiberControlCenter::Sync()
     if (GetSystemPowerStatus(&sps) && sps.BatteryFlag != 128 && sps.BatteryLifePercent <= 100)
         StringCchPrintfW(szText, _countof(szText), L"%u%%", sps.BatteryLifePercent);
     m_Battery->SetText(szText);
+    TRAY_MEDIA_INFO media;
+    m_Media->Set(TrayMedia_Query(&media) ? &media : NULL);
     UpdateValues();
 }
 
@@ -483,6 +621,7 @@ BOOL CLiberControlCenter::Open(const RECT *prcAnchor)
         if (!m_Surface.Create(NULL, L"Liber Control Center", WS_EX_TOPMOST | WS_EX_TOOLWINDOW))
             return FALSE;
         m_Surface.SetInputShape((float)LIBER_RADIUS_FLYOUT);
+        m_Surface.SetElevation(LIBER_ELEVATION_E32, (float)LIBER_RADIUS_FLYOUT);
         Build();
         m_Surface.SetRoot(m_Root);
     }
@@ -501,6 +640,7 @@ BOOL CLiberControlCenter::Open(const RECT *prcAnchor)
     m_Surface.RequestLayout();
     m_Surface.Render(AnimationClock::Now());
     ShowWindow(m_Surface.Window(), SW_SHOW);
+    m_Surface.TransitionIn(32.0f, 300);
     SetForegroundWindow(m_Surface.Window());
     return TRUE;
 }
@@ -561,6 +701,17 @@ void CLiberControlCenter::OnControlEvent(Widget *source, ControlEvent event)
             Close();
             TrayPower_Toggle(NULL, &rc);
             break;
+        case CC_MEDIA_PREVIOUS:
+        case CC_MEDIA_PLAY:
+        case CC_MEDIA_NEXT:
+        {
+            static const UINT Commands[] = { APPCOMMAND_MEDIA_PREVIOUSTRACK, APPCOMMAND_MEDIA_PLAY_PAUSE,
+                                             APPCOMMAND_MEDIA_NEXTTRACK };
+            TrayMedia_Command(m_Media->Session(), m_Surface.Window(), Commands[control->Id() - CC_MEDIA_PREVIOUS]);
+            TRAY_MEDIA_INFO media;
+            m_Media->Set(TrayMedia_Query(&media) ? &media : NULL);
+            break;
+        }
         case CC_SETTINGS:
             Close();
             ShellExecuteW(NULL, NULL, L"ms-settings:", NULL, NULL, SW_SHOWNORMAL);

@@ -12,6 +12,8 @@
 #define LIBER_DOCK_PAD_Y     ((LIBER_DOCK_HEIGHT - LIBER_DOCK_CELL) / 2)
 #define LIBER_DOCK_CELL_GAP  2
 #define LIBER_TRAY_INSET     12
+#define LIBER_DOCK_HOP       10
+#define LIBER_LANGUAGE_WIDTH 40
 #define LIBER_TRAY_BUTTON_PAD 10
 #define LIBER_TRAY_ICON_GAP  10
 
@@ -25,6 +27,8 @@ BOOL LiberDock_IsTaskWindow(HWND hwnd);
 VOID LiberDock_Layout(const RECT *prcMonitor, UINT dpi, UINT cells, int trayWidthDip, LIBER_DOCK_LAYOUT *pLayout);
 BOOL LiberDock_SameApp(LPCWSTR pszTarget, LPCWSTR pszImage);
 int LiberDock_Width(UINT cells);
+double LiberDock_HopOffset(double progress);
+BOOL LiberDock_LanguageLabel(LANGID langId, LPWSTR pszLabel, UINT cchLabel);
 int LiberDock_SystemPillWidth(BOOL bBattery);
 VOID LiberDock_WorkArea(const RECT *prcMonitor, UINT dpi, RECT *prcWork);
 

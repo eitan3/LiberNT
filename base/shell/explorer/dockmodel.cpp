@@ -7,6 +7,7 @@
 
 #include <windows.h>
 #include <atlbase.h>
+#include <math.h>
 #include <liberui.h>
 
 #include "liberdock.h"
@@ -47,6 +48,27 @@ int LiberDock_Width(UINT cells)
 {
     ATLASSERT(cells > 0);
     return (int)cells * LIBER_DOCK_CELL + ((int)cells - 1) * LIBER_DOCK_CELL_GAP + 2 * LIBER_DOCK_PAD_X;
+}
+
+BOOL LiberDock_LanguageLabel(LANGID langId, LPWSTR pszLabel, UINT cchLabel)
+{
+    WCHAR szIso[9];
+
+    if (!pszLabel || cchLabel < 4)
+        return FALSE;
+    pszLabel[0] = 0;
+    if (!GetLocaleInfoW(MAKELCID(langId, SORT_DEFAULT), LOCALE_SISO639LANGNAME2, szIso, _countof(szIso)) || !szIso[0])
+        return FALSE;
+    lstrcpynW(pszLabel, szIso, cchLabel);
+    CharUpperW(pszLabel);
+    return TRUE;
+}
+
+double LiberDock_HopOffset(double progress)
+{
+    if (progress <= 0.0 || progress >= 1.0)
+        return 0.0;
+    return LIBER_DOCK_HOP * sin(3.14159265358979 * progress);
 }
 
 int LiberDock_SystemPillWidth(BOOL bBattery)

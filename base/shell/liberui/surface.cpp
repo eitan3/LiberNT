@@ -39,7 +39,8 @@ static BOOL RegisterSurfaceClass(HINSTANCE instance, WNDPROC proc)
 Surface::Surface()
     : m_hwnd(NULL), m_Dpi(96), m_Tokens(NULL), m_Root(NULL), m_Dc(NULL), m_Bitmap(NULL), m_OldBitmap(NULL),
       m_Bits(NULL), m_LayoutPending(TRUE), m_Tracking(FALSE), m_Gpu(NULL), m_Presents(0), m_Owner(NULL), m_ExStyle(0),
-      m_InputRadius(0.0f), m_Recovering(FALSE)
+      m_InputRadius(0.0f), m_Opacity(1.0f), m_OffsetY(0.0f), m_Transition(FALSE), m_HideAtEnd(FALSE), m_Shadow(NULL), m_ShadowWidget(NULL), m_Elevation(-1), m_ShadowRadius(0.0f),
+      m_Recovering(FALSE)
 {
     m_Title[0] = L'\0';
     m_Position.x = m_Position.y = 0;
@@ -107,8 +108,211 @@ BOOL Surface::Create(HWND owner, LPCWSTR title, DWORD exStyle, DWORD flags)
     return TRUE;
 }
 
+Thickness ShadowMargin(const LIBER_SHADOW &shadow)
+{
+    const LIBER_SHADOW_LAYER *layers[] = { &shadow.Ambient, &shadow.Contact };
+    Thickness margin = { 0, 0, 0, 0 };
+
+    for (UINT i = 0; i < _countof(layers); i++)
+    {
+        const LIBER_SHADOW_LAYER &layer = *layers[i];
+        margin.Left = max(margin.Left, layer.Blur - layer.X);
+        margin.Top = max(margin.Top, layer.Blur - layer.Y);
+        margin.Right = max(margin.Right, layer.Blur + layer.X);
+        margin.Bottom = max(margin.Bottom, layer.Blur + layer.Y);
+    }
+    return margin;
+}
+
+class ShadowWidget : public Widget
+{
+public:
+    ShadowWidget() : Elevation(LIBER_ELEVATION_E2), Radius(0.0f) {}
+
+    LIBER_ELEVATION Elevation;
+    float Radius;
+
+protected:
+    void PaintOverride(PaintContext &context)
+    {
+        const LIBER_SHADOW &shadow = context.Tokens.Shadow(Elevation);
+        Thickness margin = ShadowMargin(shadow);
+        RECT bounds = Bounds();
+        RectF shape = { (float)(bounds.left + margin.Left), (float)(bounds.top + margin.Top),
+                        (float)(bounds.right - bounds.left - margin.Left - margin.Right),
+                        (float)(bounds.bottom - bounds.top - margin.Top - margin.Bottom) };
+        const LIBER_SHADOW_LAYER *layers[] = { &shadow.Ambient, &shadow.Contact };
+
+        for (UINT i = 0; i < _countof(layers); i++)
+        {
+            RectF layer = { shape.X + layers[i]->X, shape.Y + layers[i]->Y, shape.Width, shape.Height };
+            context.Painter.FillShadow(layer, Radius, (float)layers[i]->Blur, (Argb)layers[i]->Argb);
+        }
+    }
+};
+
+void Surface::SetElevation(int elevation, float radiusDip)
+{
+    LUI_ASSERT(elevation >= -1 && elevation < LIBER_ELEVATION_COUNT && radiusDip >= 0.0f);
+    if (elevation < -1 || elevation >= LIBER_ELEVATION_COUNT)
+        elevation = -1;
+    m_Elevation = elevation;
+    m_ShadowRadius = radiusDip;
+    if (m_ShadowWidget)
+    {
+        m_ShadowWidget->Elevation = elevation >= 0 ? (LIBER_ELEVATION)elevation : LIBER_ELEVATION_E2;
+        m_ShadowWidget->Radius = radiusDip;
+        m_ShadowWidget->Invalidate();
+    }
+    SetRectEmpty(&m_Placed);
+}
+
+void Surface::UpdateShadow(BOOL show)
+{
+    if (m_Elevation < 0 || !m_hwnd)
+    {
+        if (m_Shadow && m_Shadow->Window())
+            ShowWindow(m_Shadow->Window(), SW_HIDE);
+        return;
+    }
+    if (!m_Shadow)
+    {
+        m_Shadow = new Surface();
+        m_ShadowWidget = new ShadowWidget();
+        if (!m_Shadow || !m_ShadowWidget ||
+            !m_Shadow->Create(NULL, L"", WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE |
+                                             (m_ExStyle & WS_EX_TOPMOST), SurfaceNoGpu))
+        {
+            delete m_Shadow;
+            delete m_ShadowWidget;
+            m_Shadow = NULL;
+            m_ShadowWidget = NULL;
+            return;
+        }
+        m_ShadowWidget->Elevation = (LIBER_ELEVATION)m_Elevation;
+        m_ShadowWidget->Radius = m_ShadowRadius;
+        m_Shadow->SetRoot(m_ShadowWidget);
+    }
+
+    ThemeTokens fallback;
+    const ThemeTokens *tokens = m_Tokens ? m_Tokens : &fallback;
+    Thickness margin = ShadowMargin(tokens->Shadow((LIBER_ELEVATION)m_Elevation));
+    m_Shadow->SetDpi(m_Dpi);
+    m_Shadow->SetTokens(m_Tokens);
+    m_Shadow->SetPosition(m_Position.x - ScaleToDpi(margin.Left, m_Dpi), m_Position.y - ScaleToDpi(margin.Top, m_Dpi),
+                          m_SizeDip.cx + margin.Left + margin.Right, m_SizeDip.cy + margin.Top + margin.Bottom);
+    m_Shadow->Render(AnimationClock::Now());
+    if (show && IsWindowVisible(m_hwnd))
+    {
+        SetWindowPos(m_Shadow->Window(), m_hwnd, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOOWNERZORDER);
+    }
+}
+
+LONG Surface::OffsetPx() const
+{
+    float px = m_OffsetY * (float)m_Dpi / 96.0f;
+    return (LONG)(px < 0.0f ? px - 0.5f : px + 0.5f);
+}
+
+void Surface::SetOpacity(float opacity)
+{
+    LUI_ASSERT(opacity >= 0.0f && opacity <= 1.0f);
+    opacity = opacity < 0.0f ? 0.0f : opacity > 1.0f ? 1.0f : opacity;
+    if (opacity == m_Opacity)
+        return;
+    m_Opacity = opacity;
+    if (m_Shadow)
+        m_Shadow->SetOpacity(opacity);
+    Present();
+}
+
+void Surface::TransitionIn(float riseDip, UINT durationMs)
+{
+    ULONGLONG now = AnimationClock::Now();
+
+    m_HideAtEnd = FALSE;
+    if (!AnimationsEnabled() || !durationMs)
+    {
+        m_Transition = FALSE;
+        AnimationClock::Instance().Remove(this);
+        m_OffsetY = 0.0f;
+        SetOpacity(1.0f);
+        return;
+    }
+    m_MoveAnimation.Start(riseDip, 0.0, durationMs, Easing::Out, now);
+    m_FadeAnimation.Start(0.0, 1.0, durationMs, Easing::Out, now);
+    m_Transition = TRUE;
+    AnimationClock::Instance().Add(this);
+    OnAnimationFrame(now);
+}
+
+void Surface::TransitionOut(float dropDip, UINT durationMs)
+{
+    ULONGLONG now = AnimationClock::Now();
+
+    if (!m_hwnd || !IsWindowVisible(m_hwnd))
+        return;
+    if (!AnimationsEnabled() || !durationMs)
+    {
+        ShowWindow(m_hwnd, SW_HIDE);
+        return;
+    }
+    m_MoveAnimation.Start(m_OffsetY, dropDip, durationMs, Easing::In, now);
+    m_FadeAnimation.Start(m_Opacity, 0.0, durationMs, Easing::In, now);
+    m_Transition = TRUE;
+    m_HideAtEnd = TRUE;
+    AnimationClock::Instance().Add(this);
+    OnAnimationFrame(now);
+}
+
+BOOL Surface::OnAnimationFrame(ULONGLONG now)
+{
+    BOOL running = m_MoveAnimation.IsRunning(now) || m_FadeAnimation.IsRunning(now);
+
+    if (!m_Transition)
+        return FALSE;
+    m_OffsetY = (float)m_MoveAnimation.Value(now);
+    m_Opacity = (float)m_FadeAnimation.Value(now);
+    if (!running)
+    {
+        m_Transition = FALSE;
+        if (m_HideAtEnd && m_hwnd)
+        {
+            m_HideAtEnd = FALSE;
+            ShowWindow(m_hwnd, SW_HIDE);
+            m_OffsetY = 0.0f;
+            m_Opacity = 1.0f;
+            if (m_Shadow)
+                m_Shadow->SetOpacity(1.0f);
+            return FALSE;
+        }
+    }
+    if (m_Shadow)
+    {
+        m_Shadow->m_OffsetY = m_OffsetY;
+        m_Shadow->SetOpacity(m_Opacity);
+    }
+    Present();
+    return running;
+}
+
 void Surface::Destroy()
 {
+    AnimationClock::Instance().Remove(this);
+    m_Transition = FALSE;
+    m_HideAtEnd = FALSE;
+    m_OffsetY = 0.0f;
+    m_Opacity = 1.0f;
+    if (m_Shadow)
+    {
+        m_Shadow->SetRoot(NULL);
+        m_Shadow->Destroy();
+        delete m_Shadow;
+        delete m_ShadowWidget;
+        m_Shadow = NULL;
+        m_ShadowWidget = NULL;
+    }
     if (m_Gpu)
     {
         GpuDestroy(m_Gpu);
@@ -340,7 +544,8 @@ BOOL Surface::RenderPass(ULONGLONG now, BOOL *lost)
         Layout();
     if (IsRectEmpty(&m_Dirty))
     {
-        RECT placed = { m_Position.x, m_Position.y, m_Position.x + m_SizePx.cx, m_Position.y + m_SizePx.cy };
+        RECT placed = { m_Position.x, m_Position.y + OffsetPx(), m_Position.x + m_SizePx.cx,
+                        m_Position.y + OffsetPx() + m_SizePx.cy };
         if (!EqualRect(&placed, &m_Placed) && !Present())
             *lost = GpuDeviceLost(m_Gpu);
         return !*lost;
@@ -462,9 +667,9 @@ BOOL Surface::Present()
         return FALSE;
 
     POINT source = { 0, 0 };
-    POINT position = m_Position;
+    POINT position = { m_Position.x, m_Position.y + OffsetPx() };
     SIZE size = m_SizePx;
-    BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+    BLENDFUNCTION blend = { AC_SRC_OVER, 0, (BYTE)(m_Opacity * 255.0f + 0.5f), AC_SRC_ALPHA };
     RECT placed = { position.x, position.y, position.x + size.cx, position.y + size.cy };
     BOOL reshaped = m_Placed.right - m_Placed.left != size.cx || m_Placed.bottom - m_Placed.top != size.cy ||
                     IsRectEmpty(&m_Placed);
@@ -481,11 +686,13 @@ BOOL Surface::Present()
             SetWindowPos(m_hwnd, NULL, placed.left, placed.top, size.cx, size.cy,
                          SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         }
-        if (!GpuPresentCanvas(m_Gpu))
+        if (!GpuPresentCanvas(m_Gpu, m_Opacity))
             return FALSE;
     }
     if (reshaped)
         ApplyInputShape();
+    if (m_Elevation >= 0 && !EqualRect(&placed, &m_Placed))
+        UpdateShadow(TRUE);
     m_Placed = placed;
     m_Presents++;
     return TRUE;
@@ -547,6 +754,17 @@ LRESULT Surface::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
             Render(AnimationClock::Now());
             return 0;
 
+        case WM_RBUTTONUP:
+        {
+            POINT screen = pt;
+            Widget *target = m_Root ? m_Root->HitTest(PixelToDip(pt)) : NULL;
+            ClientToScreen(m_hwnd, &screen);
+            while (target && !target->OnContextMenu(screen))
+                target = target->Parent();
+            Render(AnimationClock::Now());
+            return 0;
+        }
+
         case WM_LBUTTONUP:
             m_Input.PointerUp(PixelToDip(pt));
             if (GetCapture() == m_hwnd)
@@ -555,9 +773,24 @@ LRESULT Surface::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
 
         case WM_WINDOWPOSCHANGED:
-            if (((const WINDOWPOS *)lParam)->flags & SWP_SHOWWINDOW)
+        {
+            const WINDOWPOS *pos = (const WINDOWPOS *)lParam;
+            if (pos->flags & SWP_SHOWWINDOW)
+            {
                 Present();
+                UpdateShadow(TRUE);
+            }
+            else if ((pos->flags & SWP_HIDEWINDOW) && m_Shadow && m_Shadow->Window())
+            {
+                ShowWindow(m_Shadow->Window(), SW_HIDE);
+            }
+            else if (!(pos->flags & SWP_NOZORDER) && m_Shadow && m_Shadow->Window() && IsWindowVisible(m_hwnd))
+            {
+                SetWindowPos(m_Shadow->Window(), m_hwnd, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            }
             break;
+        }
 
         case WM_CAPTURECHANGED:
             if ((HWND)lParam != m_hwnd && m_Input.Capture())

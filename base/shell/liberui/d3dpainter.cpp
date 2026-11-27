@@ -68,7 +68,8 @@ D3DPainter::~D3DPainter()
 }
 
 void D3DPainter::Draw(GpuShape shape, const float quad[4], const float rect[4], float radius, float width, Argb color,
-                      const float arc[2], ID3D11ShaderResourceView *view, const float uv[4], BOOL copy)
+                      const float arc[2], ID3D11ShaderResourceView *view, const float uv[4], BOOL copy,
+                      const float *gradient)
 {
     D3D11_MAPPED_SUBRESOURCE mapped;
     GpuDrawConstants constants;
@@ -99,6 +100,11 @@ void D3DPainter::Draw(GpuShape shape, const float quad[4], const float rect[4], 
     constants.Target[1] = (float)m_Gpu->Height;
     if (uv)
         CopyMemory(constants.UvRect, uv, sizeof(constants.UvRect));
+    if (gradient)
+    {
+        CopyMemory(constants.Arc, gradient, sizeof(constants.Arc));
+        CopyMemory(constants.UvRect, gradient + 4, sizeof(constants.UvRect));
+    }
 
     if (FAILED(m_Gpu->Context->Map(m_Gpu->Constants, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
         return;
@@ -133,6 +139,37 @@ void D3DPainter::FillRoundRect(const RectF &rc, float radius, Argb color)
     float shape[4] = { Px(rc.X), Px(rc.Y), Px(rc.X + rc.Width), Px(rc.Y + rc.Height) };
     float quad[4] = { shape[0] - 1, shape[1] - 1, shape[2] + 1, shape[3] + 1 };
     Draw(GpuFillRound, quad, shape, Px(radius), 0.0f, color, NULL, NULL, NULL, FALSE);
+}
+
+void D3DPainter::FillGradient(const RectF &rc, float radius, PointF from, PointF to, Argb fromColor, Argb toColor)
+{
+    float gradient[8];
+
+    if (rc.Width <= 0.0f || rc.Height <= 0.0f)
+        return;
+    float shape[4] = { Px(rc.X), Px(rc.Y), Px(rc.X + rc.Width), Px(rc.Y + rc.Height) };
+    float quad[4] = { shape[0] - 1, shape[1] - 1, shape[2] + 1, shape[3] + 1 };
+    gradient[0] = Px(from.X);
+    gradient[1] = Px(from.Y);
+    gradient[2] = Px(to.X);
+    gradient[3] = Px(to.Y);
+    ToPremultiplied(toColor, gradient + 4);
+    Draw(GpuGradient, quad, shape, Px(radius), 0.0f, fromColor, NULL, NULL, NULL, FALSE, gradient);
+}
+
+void D3DPainter::FillShadow(const RectF &rc, float radius, float blur, Argb color)
+{
+    if (rc.Width <= 0.0f || rc.Height <= 0.0f)
+        return;
+    if (blur <= 0.0f)
+    {
+        FillRoundRect(rc, radius, color);
+        return;
+    }
+    float reach = Px(blur) * 1.5f + 1.0f;
+    float shape[4] = { Px(rc.X), Px(rc.Y), Px(rc.X + rc.Width), Px(rc.Y + rc.Height) };
+    float quad[4] = { shape[0] - reach, shape[1] - reach, shape[2] + reach, shape[3] + reach };
+    Draw(GpuShadow, quad, shape, Px(radius), Px(blur) / 2.0f, color, NULL, NULL, NULL, FALSE);
 }
 
 void D3DPainter::StrokeRoundRect(const RectF &rc, float radius, Argb color, float width)

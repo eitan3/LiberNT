@@ -21,6 +21,19 @@ using namespace LiberUI;
 #define LIBER_START_ROW_H    56
 #define LIBER_START_FOOTER_H 68
 
+#define LIBER_START_PIN_CHARS (64 * MAX_PATH + 1)
+
+enum
+{
+    LSM_PIN_START = 1,
+    LSM_UNPIN_START,
+    LSM_PIN_TASKBAR,
+    LSM_OPEN_LOCATION
+};
+
+class CLiberStart;
+static void LiberStart_TileMenu(SM2ITEM *item, POINT screen);
+
 enum
 {
     LST_POWER = 1,
@@ -48,6 +61,13 @@ public:
 
     SM2ITEM *Item() const { return m_Item; }
     void OnClick() { Raise(ControlClicked); }
+    BOOL OnContextMenu(POINT screen)
+    {
+        if (!m_Item)
+            return FALSE;
+        LiberStart_TileMenu(m_Item, screen);
+        return TRUE;
+    }
 
 protected:
     void PaintOverride(PaintContext &context)
@@ -277,14 +297,15 @@ private:
 class CStartSurface : public Surface
 {
 public:
-    CStartSurface() : m_Owner(NULL), m_HiddenAt(0) {}
+    CStartSurface() : m_Owner(NULL), m_HiddenAt(0), m_InMenu(FALSE) {}
     class CLiberStart *m_Owner;
     ULONGLONG m_HiddenAt;
+    BOOL m_InMenu;
     void Hide()
     {
-        if (Window() && IsWindowVisible(Window()))
+        if (Window() && IsWindowVisible(Window()) && !IsClosing())
         {
-            ShowWindow(Window(), SW_HIDE);
+            TransitionOut(24.0f, 150);
             m_HiddenAt = GetTickCount64();
         }
     }
@@ -301,12 +322,14 @@ public:
 
     BOOL Open(const RECT *prcAnchor);
     void Close() { m_Surface.Hide(); }
-    BOOL IsOpen() const { return m_Surface.Window() && IsWindowVisible(m_Surface.Window()); }
+    BOOL IsOpen() const { return m_Surface.Window() && IsWindowVisible(m_Surface.Window()) && !m_Surface.IsClosing(); }
     BOOL JustClosed() const { return m_Surface.m_HiddenAt && GetTickCount64() - m_Surface.m_HiddenAt < 250; }
     void OnControlEvent(Widget *source, ControlEvent event);
     BOOL OnChar(WCHAR ch);
     BOOL OnKey(UINT vk);
     BOOL OnWheel(int delta);
+    void TileMenu(SM2ITEM *item, POINT screen);
+    UINT TrackMenu(const LIBER_MENU_ITEM *items, UINT count, POINT screen);
 
 private:
     void Build();
@@ -347,7 +370,8 @@ LRESULT CStartSurface::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (msg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE)
     {
-        Hide();
+        if (!m_InMenu)
+            Hide();
         return 0;
     }
     if (msg == WM_CHAR && m_Owner && m_Owner->OnChar((WCHAR)wParam))
@@ -460,11 +484,27 @@ void CLiberStart::LoadRecent()
 
 void CLiberStart::Filter()
 {
-    UINT shown = 0, matched = 0;
+    UINT shown = 0, matched = 0, pinCount = 0;
     LPCWSTR query = m_Search->Query();
     BOOL searching = query[0] != 0;
+    static WCHAR s_Pins[LIBER_START_PIN_CHARS];
+    BOOL pinned = !searching && !m_AllApps && LiberStart_LoadPins(s_Pins, _countof(s_Pins), &pinCount);
 
-    for (SIZE_T i = 0; i < m_Apps.GetCount() && shown < LIBER_START_TILES; i++)
+    if (pinned)
+    {
+        for (LPCWSTR pin = s_Pins; *pin && shown < LIBER_START_TILES; pin += lstrlenW(pin) + 1)
+        {
+            for (SIZE_T i = 0; i < m_Apps.GetCount(); i++)
+            {
+                if (!lstrcmpiW(m_Apps[i]->szPath, pin))
+                {
+                    m_Tiles[shown++]->SetItem(m_Apps[i]);
+                    break;
+                }
+            }
+        }
+    }
+    for (SIZE_T i = 0; !pinned && i < m_Apps.GetCount() && shown < LIBER_START_TILES; i++)
     {
         if (!LiberStart_Matches(m_Apps[i]->szName, query))
             continue;
@@ -553,6 +593,7 @@ BOOL CLiberStart::Open(const RECT *prcAnchor)
         if (!m_Surface.Create(NULL, L"Liber Start", WS_EX_TOPMOST | WS_EX_TOOLWINDOW))
             return FALSE;
         m_Surface.SetInputShape((float)LIBER_RADIUS_FLYOUT);
+        m_Surface.SetElevation(LIBER_ELEVATION_E32, (float)LIBER_RADIUS_FLYOUT);
         Build();
         m_Surface.SetRoot(m_Root);
     }
@@ -585,40 +626,110 @@ BOOL CLiberStart::Open(const RECT *prcAnchor)
     m_Surface.RequestLayout();
     m_Surface.Render(AnimationClock::Now());
     ShowWindow(m_Surface.Window(), SW_SHOW);
+    m_Surface.TransitionIn(32.0f, 300);
     SetForegroundWindow(m_Surface.Window());
     return TRUE;
 }
 
+UINT CLiberStart::TrackMenu(const LIBER_MENU_ITEM *items, UINT count, POINT screen)
+{
+    UINT cmd;
+
+    m_Surface.m_InMenu = TRUE;
+    cmd = LiberMenu_Track(items, count, screen);
+    m_Surface.m_InMenu = FALSE;
+    if (IsOpen())
+        SetForegroundWindow(m_Surface.Window());
+    return cmd;
+}
+
 void CLiberStart::ShowPowerMenu(BOOL user)
 {
-    static const struct { INT Cmd; LPCWSTR Text; BOOL User; } Items[] =
+    static const struct { INT Cmd; LPCWSTR Text; LPCWSTR Icon; BOOL User; } Items[] =
     {
-        { SM2F_LOCK, L"Lock", TRUE },
-        { SM2F_LOGOFF, L"Sign out", TRUE },
-        { SM2F_SLEEP, L"Sleep", FALSE },
-        { SM2F_HIBERNATE, L"Hibernate", FALSE },
-        { SM2F_RESTART, L"Restart", FALSE },
-        { SM2F_SHUTDOWN, L"Shut down", FALSE },
+        { SM2F_LOCK, L"Lock", L"lock_closed_16_regular", TRUE },
+        { SM2F_LOGOFF, L"Sign out", L"person_16_regular", TRUE },
+        { SM2F_SLEEP, L"Sleep", L"weather_moon_16_regular", FALSE },
+        { SM2F_HIBERNATE, L"Hibernate", L"history_16_regular", FALSE },
+        { SM2F_RESTART, L"Restart", L"arrow_counterclockwise_16_regular", FALSE },
+        { SM2F_SHUTDOWN, L"Shut down", L"power_20_regular", FALSE },
     };
-    HMENU menu = CreatePopupMenu();
+    LIBER_MENU_ITEM menu[_countof(Items)];
+    UINT count = 0;
     POINT pt;
 
-    if (!menu)
-        return;
+    ZeroMemory(menu, sizeof(menu));
     for (UINT i = 0; i < _countof(Items); i++)
     {
-        if (Items[i].User == user && StartMenu2_IsPowerCommandAllowed(Items[i].Cmd))
-            AppendMenuW(menu, MF_STRING, (UINT_PTR)Items[i].Cmd, Items[i].Text);
+        if (Items[i].User != user || !StartMenu2_IsPowerCommandAllowed(Items[i].Cmd))
+            continue;
+        menu[count].Id = (UINT)Items[i].Cmd;
+        menu[count].Text = Items[i].Text;
+        menu[count].Icon = Items[i].Icon;
+        count++;
     }
     GetCursorPos(&pt);
-    INT cmd = (INT)TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, 0,
-                                  m_Surface.Window(), NULL);
-    DestroyMenu(menu);
+    INT cmd = (INT)TrackMenu(menu, count, pt);
     if (cmd > 0)
     {
         Close();
         StartMenu2_DoPowerCommand(NULL, cmd);
     }
+}
+
+void CLiberStart::TileMenu(SM2ITEM *item, POINT screen)
+{
+    static WCHAR s_Pins[LIBER_START_PIN_CHARS];
+    UINT pinCount = 0;
+    BOOL hasPins = LiberStart_LoadPins(s_Pins, _countof(s_Pins), &pinCount);
+    BOOL isPinned;
+
+    if (!hasPins)
+    {
+        LPWSTR out = s_Pins;
+        for (UINT i = 0; i < LIBER_START_TILES && m_Tiles[i]->Item(); i++)
+        {
+            SIZE_T len = (SIZE_T)m_Tiles[i]->Item()->szPath.GetLength() + 1;
+            CopyMemory(out, (LPCWSTR)m_Tiles[i]->Item()->szPath, len * sizeof(WCHAR));
+            out += len;
+        }
+        *out = 0;
+    }
+    isPinned = LiberStart_IsPinned(s_Pins, item->szPath) && (hasPins || !m_AllApps);
+    LIBER_MENU_ITEM menu[] = {
+        { isPinned ? (UINT)LSM_UNPIN_START : (UINT)LSM_PIN_START, isPinned ? L"Unpin from Start" : L"Pin to Start",
+          L"pin_16_regular", NULL, FALSE, FALSE },
+        { LSM_PIN_TASKBAR, L"Pin to taskbar", L"panel_bottom_20_regular", NULL, FALSE,
+          TaskbarPin_IsDisabled() || !TaskbarPin_IsPinnable(item->szPath) },
+        { 0, NULL, NULL, NULL, TRUE, FALSE },
+        { LSM_OPEN_LOCATION, L"Open file location", L"folder_open_16_regular", NULL, FALSE, FALSE },
+    };
+    switch (TrackMenu(menu, _countof(menu), screen))
+    {
+        case LSM_PIN_START:
+        case LSM_UNPIN_START:
+            LiberStart_SetPinned(s_Pins, item->szPath, !isPinned);
+            Filter();
+            m_Surface.Render(AnimationClock::Now());
+            break;
+        case LSM_PIN_TASKBAR:
+            TaskbarPin_Create(item->szPath);
+            break;
+        case LSM_OPEN_LOCATION:
+        {
+            WCHAR szArgs[MAX_PATH + 16];
+            Close();
+            StringCchPrintfW(szArgs, _countof(szArgs), L"/select,\"%s\"", (LPCWSTR)item->szPath);
+            ShellExecuteW(NULL, NULL, L"explorer.exe", szArgs, NULL, SW_SHOWNORMAL);
+            break;
+        }
+    }
+}
+
+static void LiberStart_TileMenu(SM2ITEM *item, POINT screen)
+{
+    if (g_pLiberStart && item)
+        g_pLiberStart->TileMenu(item, screen);
 }
 
 void CLiberStart::OnControlEvent(Widget *source, ControlEvent event)

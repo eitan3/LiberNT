@@ -22,7 +22,9 @@ enum GpuShape
     GpuStrokeArc,
     GpuLine,
     GpuMask,
-    GpuImage
+    GpuImage,
+    GpuShadow,
+    GpuGradient
 };
 
 struct GpuDrawConstants
@@ -68,6 +70,7 @@ struct SurfaceGpu
     IDXGISwapChain1 *SwapChain;
     ID3D11Texture2D *Canvas;
     ID3D11RenderTargetView *CanvasView;
+    ID3D11ShaderResourceView *CanvasSource;
     ID3D11VertexShader *VertexShader;
     ID3D11PixelShader *PixelShader;
     ID3D11Buffer *Constants;
@@ -91,6 +94,8 @@ public:
     void Clear(Argb color);
     void FillRect(const RectF &rc, Argb color);
     void FillRoundRect(const RectF &rc, float radius, Argb color);
+    void FillGradient(const RectF &rc, float radius, PointF from, PointF to, Argb fromColor, Argb toColor);
+    void FillShadow(const RectF &rc, float radius, float blur, Argb color);
     void StrokeRoundRect(const RectF &rc, float radius, Argb color, float width);
     void FillEllipse(const RectF &rc, Argb color);
     void StrokeArc(const RectF &rc, float startDegrees, float sweepDegrees, Argb color, float width);
@@ -115,7 +120,8 @@ private:
     void Mask(UINT kind, LPCWSTR name, LPCWSTR text, LIBER_TYPE style, UINT flags, HICON icon, const RectF &rc,
               Argb color);
     void Draw(GpuShape shape, const float quad[4], const float rect[4], float radius, float width, Argb color,
-              const float arc[2], ID3D11ShaderResourceView *view, const float uv[4], BOOL copy);
+              const float arc[2], ID3D11ShaderResourceView *view, const float uv[4], BOOL copy,
+              const float *gradient = NULL);
     ID3D11ShaderResourceView *Raster(LPCWSTR key, UINT width, UINT height, UINT kind, LPCWSTR text, LIBER_TYPE style,
                                      UINT flags, HICON icon, const RectF &local);
 
@@ -131,7 +137,7 @@ private:
 BOOL GpuEnsureCanvas(SurfaceGpu *gpu, UINT width, UINT height, BOOL *recreated);
 BOOL GpuHasCanvas(const SurfaceGpu *gpu);
 BOOL GpuDeviceLost(SurfaceGpu *gpu);
-BOOL GpuPresentCanvas(SurfaceGpu *gpu);
+BOOL GpuPresentCanvas(SurfaceGpu *gpu, float opacity);
 BOOL GpuReadCanvas(SurfaceGpu *gpu, DWORD *pixels, UINT stride);
 
 }

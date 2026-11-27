@@ -247,6 +247,8 @@ public:
     virtual void Clear(Argb color) = 0;
     virtual void FillRect(const RectF &rc, Argb color) = 0;
     virtual void FillRoundRect(const RectF &rc, float radius, Argb color) = 0;
+    virtual void FillGradient(const RectF &rc, float radius, PointF from, PointF to, Argb fromColor, Argb toColor) = 0;
+    virtual void FillShadow(const RectF &rc, float radius, float blur, Argb color) = 0;
     virtual void StrokeRoundRect(const RectF &rc, float radius, Argb color, float width) = 0;
     virtual void FillEllipse(const RectF &rc, Argb color) = 0;
     virtual void StrokeArc(const RectF &rc, float startDegrees, float sweepDegrees, Argb color, float width) = 0;
@@ -293,6 +295,8 @@ public:
     void Clear(Argb color);
     void FillRect(const RectF &rc, Argb color);
     void FillRoundRect(const RectF &rc, float radius, Argb color);
+    void FillGradient(const RectF &rc, float radius, PointF from, PointF to, Argb fromColor, Argb toColor);
+    void FillShadow(const RectF &rc, float radius, float blur, Argb color);
     void StrokeRoundRect(const RectF &rc, float radius, Argb color, float width);
     void FillEllipse(const RectF &rc, Argb color);
     void StrokeArc(const RectF &rc, float startDegrees, float sweepDegrees, Argb color, float width);
@@ -429,6 +433,7 @@ public:
     virtual void OnPointerUp(POINT pt) { UNREFERENCED_PARAMETER(pt); }
     virtual void OnPointerMove(POINT pt) { UNREFERENCED_PARAMETER(pt); }
     virtual void OnClick() {}
+    virtual BOOL OnContextMenu(POINT screen) { UNREFERENCED_PARAMETER(screen); return FALSE; }
     virtual BOOL OnKeyDown(UINT vk) { UNREFERENCED_PARAMETER(vk); return FALSE; }
     virtual Widget *MoveFocus(Widget *from, FocusMove move);
 
@@ -666,7 +671,9 @@ enum SurfaceFlags
     SurfaceNoGpu = 0x1
 };
 
-class Surface : public IWidgetHost
+Thickness ShadowMargin(const LIBER_SHADOW &shadow);
+
+class Surface : public IWidgetHost, public IAnimationClient
 {
 public:
     Surface();
@@ -685,6 +692,16 @@ public:
 
     void SetPosition(int x, int y, int widthDip, int heightDip);
     void SetInputShape(float radiusDip);
+    void SetElevation(int elevation, float radiusDip);
+    void SetOpacity(float opacity);
+    float Opacity() const { return m_Opacity; }
+    float OffsetY() const { return m_OffsetY; }
+    void TransitionIn(float riseDip, UINT durationMs);
+    void TransitionOut(float dropDip, UINT durationMs);
+    BOOL IsTransitioning() const { return m_Transition; }
+    BOOL IsClosing() const { return m_Transition && m_HideAtEnd; }
+    BOOL OnAnimationFrame(ULONGLONG now);
+    Surface *ShadowSurface() const { return m_Shadow; }
     SIZE SizeDip() const { return m_SizeDip; }
     BOOL Render(ULONGLONG now);
     const DWORD *Pixels() const { return m_Bits; }
@@ -715,6 +732,8 @@ private:
     BOOL CreateWindowFor(BOOL gpu);
     BOOL RenderPass(ULONGLONG now, BOOL *lost);
     void ApplyInputShape();
+    void UpdateShadow(BOOL show);
+    LONG OffsetPx() const;
 
     HWND m_hwnd;
     UINT m_Dpi;
@@ -739,6 +758,16 @@ private:
     WCHAR m_Title[64];
     DWORD m_ExStyle;
     float m_InputRadius;
+    float m_Opacity;
+    float m_OffsetY;
+    Animation m_FadeAnimation;
+    Animation m_MoveAnimation;
+    BOOL m_Transition;
+    BOOL m_HideAtEnd;
+    Surface *m_Shadow;
+    class ShadowWidget *m_ShadowWidget;
+    int m_Elevation;
+    float m_ShadowRadius;
     BOOL m_Recovering;
 };
 

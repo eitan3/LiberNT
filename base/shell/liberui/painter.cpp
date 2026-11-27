@@ -174,6 +174,13 @@ void *FontSet::Font(LIBER_TYPE style)
         else
             fontStyle = Gdiplus::FontStyleBold;
     }
+    else if (ramp.Weight <= 300)
+    {
+        WCHAR light[LF_FACESIZE + 16];
+        wsprintfW(light, L"%s Light", m_Family);
+        if (FamilyAvailable(light))
+            lstrcpynW(face, light, LF_FACESIZE);
+    }
     if (!FamilyAvailable(face))
         lstrcpynW(face, L"Tahoma", LF_FACESIZE);
 
@@ -262,6 +269,47 @@ void GdiplusPainter::FillRoundRect(const RectF &rc, float radius, Argb color)
     Gdiplus::SolidBrush brush(ToColor(color));
     RoundPath(path, rc, radius);
     GRAPHICS->FillPath(&brush, &path);
+}
+
+void GdiplusPainter::FillGradient(const RectF &rc, float radius, PointF from, PointF to, Argb fromColor,
+                                  Argb toColor)
+{
+    if (!m_Graphics || rc.Width <= 0.0f || rc.Height <= 0.0f)
+        return;
+    Gdiplus::GraphicsPath path(Gdiplus::FillModeAlternate);
+    Gdiplus::PointF a(from.X, from.Y), b(to.X, to.Y);
+    if (a.X == b.X && a.Y == b.Y)
+        b.X += 0.001f;
+    Gdiplus::LinearGradientBrush brush(a, b, ToColor(fromColor), ToColor(toColor));
+    brush.SetWrapMode(Gdiplus::WrapModeTileFlipXY);
+    RoundPath(path, rc, radius);
+    GRAPHICS->FillPath(&brush, &path);
+}
+
+void GdiplusPainter::FillShadow(const RectF &rc, float radius, float blur, Argb color)
+{
+    const int steps = 8;
+
+    if (!m_Graphics || rc.Width <= 0.0f || rc.Height <= 0.0f)
+        return;
+    if (blur <= 0.0f)
+    {
+        FillRoundRect(rc, radius, color);
+        return;
+    }
+    float alpha = (float)(color >> 24) / 255.0f, painted = 0.0f;
+    for (int i = 0; i < steps; i++)
+    {
+        float grow = blur * (1.0f - (2.0f * i + 1.0f) / steps);
+        float target = alpha * (float)(i + 1) / steps;
+        float layerAlpha = painted < 1.0f ? (target - painted) / (1.0f - painted) : 0.0f;
+        RectF layer = { rc.X - grow, rc.Y - grow, rc.Width + 2 * grow, rc.Height + 2 * grow };
+        painted = target;
+        if (layer.Width <= 0.0f || layer.Height <= 0.0f || layerAlpha <= 0.0f)
+            continue;
+        BYTE a = (BYTE)(layerAlpha * 255.0f + 0.5f);
+        FillRoundRect(layer, radius + grow > 0.0f ? radius + grow : 0.0f, ((Argb)a << 24) | (color & 0x00FFFFFF));
+    }
 }
 
 void GdiplusPainter::StrokeRoundRect(const RectF &rc, float radius, Argb color, float width)

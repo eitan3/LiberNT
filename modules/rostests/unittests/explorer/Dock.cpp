@@ -8,6 +8,7 @@
 #include <apitest.h>
 
 #include <windows.h>
+#include <math.h>
 #include <liberui.h>
 
 #include "experience.h"
@@ -27,6 +28,16 @@ static void TestLayout()
 
     ok(LiberDock_Width(10) == 514, "ten cells make the spec's 514 px dock: %d\n", LiberDock_Width(10));
     ok(LiberDock_Width(1) == 64, "one cell: %d\n", LiberDock_Width(1));
+    WCHAR label[8];
+    ok(LiberDock_LanguageLabel(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), label, _countof(label)) &&
+       !wcscmp(label, L"ENG"), "English shows ENG: %S\n", label);
+    ok(LiberDock_LanguageLabel(MAKELANGID(LANG_FRENCH, SUBLANG_FRENCH), label, _countof(label)) &&
+       !wcscmp(label, L"FRA"), "French shows FRA: %S\n", label);
+    ok(!LiberDock_LanguageLabel(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), label, 3), "a short buffer fails\n");
+    ok(LiberDock_HopOffset(0.0) == 0.0 && LiberDock_HopOffset(1.0) == 0.0 && LiberDock_HopOffset(1.5) == 0.0,
+       "the launch hop rests at both ends\n");
+    ok(fabs(LiberDock_HopOffset(0.5) - LIBER_DOCK_HOP) < 0.001 && LiberDock_HopOffset(0.25) > 0.0 &&
+       fabs(LiberDock_HopOffset(0.25) - LiberDock_HopOffset(0.75)) < 0.001, "the hop peaks halfway\n");
     ok(LiberDock_SystemPillWidth(TRUE) == 100 && LiberDock_SystemPillWidth(FALSE) == 70,
        "system group is %d px with a battery and %d px without\n", LiberDock_SystemPillWidth(TRUE),
        LiberDock_SystemPillWidth(FALSE));
@@ -178,6 +189,99 @@ static void TestCalendarGrid()
        days[5].wDay == 1, "January 2027 reaches back into December 2026\n");
 }
 
+static void TestWallpaperMapping()
+{
+    RECT tray = { 1600 - 12 - 232, 900 - 62, 1600 - 12, 900 - 14 }, out;
+    SIZE screen = { 1600, 900 }, wide = { 3200, 1800 }, tall = { 900, 1600 };
+
+    LiberShell_MapToWallpaper(&tray, screen, wide, LIBER_WALLPAPER_FILL, &out);
+    ok(out.left == 2 * tray.left && out.top == 2 * tray.top && out.right == 2 * tray.right && out.bottom == 2 * tray.bottom,
+       "fill at the same aspect scales the rect: (%ld,%ld,%ld,%ld)\n", out.left, out.top, out.right, out.bottom);
+    LiberShell_MapToWallpaper(&tray, screen, tall, LIBER_WALLPAPER_FILL, &out);
+    ok(out.right <= 900 && out.left >= 0 && out.bottom > out.top, "fill crops a tall image: (%ld,%ld,%ld,%ld)\n",
+       out.left, out.top, out.right, out.bottom);
+    LiberShell_MapToWallpaper(&tray, screen, tall, LIBER_WALLPAPER_FIT, &out);
+    ok(IsRectEmpty(&out), "fit leaves the bottom right corner outside a tall image\n");
+    LiberShell_MapToWallpaper(&tray, screen, tall, LIBER_WALLPAPER_STRETCH, &out);
+    ok(out.right == 894 && out.bottom == 1576, "stretch maps each axis: (%ld,%ld)\n",
+       out.right, out.bottom);
+    RECT center = { 790, 440, 810, 460 };
+    SIZE image = { 100, 100 };
+    LiberShell_MapToWallpaper(&center, screen, image, LIBER_WALLPAPER_CENTER, &out);
+    ok(out.left == 40 && out.top == 40 && out.right == 60 && out.bottom == 60, "center keeps pixels 1:1\n");
+
+    ok(LiberShell_Luminance(0xFF000000) == 0.0 && LiberShell_Luminance(0xFFFFFFFF) > 0.999, "black and white\n");
+    ok(fabs(LiberShell_Luminance(0xFF808080) - 0.2159) < 0.001, "mid grey is linearised: %f\n",
+       LiberShell_Luminance(0xFF808080));
+    ok(LiberShell_Luminance(0xFF00FF00) > LiberShell_Luminance(0xFFFF0000) &&
+       LiberShell_Luminance(0xFFFF0000) > LiberShell_Luminance(0xFF0000FF), "green is brightest, blue darkest\n");
+}
+
+static void TestMenuOrigin()
+{
+    RECT work = { 0, 0, 1600, 824 };
+    POINT pt, anchor = { 800, 600 };
+
+    LiberMenu_Origin(&work, anchor, 200, 100, &pt);
+    ok(pt.x == 800 && pt.y == 500, "a menu opens above and right of the pointer: %ld,%ld\n", pt.x, pt.y);
+    anchor.x = 1550;
+    LiberMenu_Origin(&work, anchor, 200, 100, &pt);
+    ok(pt.x == 1350, "a menu near the right edge opens to the left: %ld\n", pt.x);
+    anchor.x = 10;
+    anchor.y = 50;
+    LiberMenu_Origin(&work, anchor, 200, 100, &pt);
+    ok(pt.x == 10 && pt.y == 50, "a menu near the top opens below the pointer: %ld,%ld\n", pt.x, pt.y);
+    anchor.y = 820;
+    LiberMenu_Origin(&work, anchor, 200, 900, &pt);
+    ok(pt.y == 824 - 900, "a menu taller than the work area is pinned to its bottom: %ld\n", pt.y);
+}
+
+static void TestStartPins()
+{
+    static WCHAR saved[64 * MAX_PATH + 1], pins[64 * MAX_PATH + 1];
+    UINT count = 0;
+    BOOL had = LiberStart_LoadPins(saved, _countof(saved), &count);
+    HKEY key;
+
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\LiberNT\\Shell\\Start", 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS)
+    {
+        RegDeleteValueW(key, L"Pins");
+        RegCloseKey(key);
+    }
+    ok(!LiberStart_LoadPins(pins, _countof(pins), &count) && count == 0 && pins[0] == 0, "no pins by default\n");
+    ok(LiberStart_SetPinned(pins, L"C:\\Apps\\One.lnk", TRUE), "pin one\n");
+    ok(LiberStart_LoadPins(pins, _countof(pins), &count) && count == 1 && !wcscmp(pins, L"C:\\Apps\\One.lnk"),
+       "one pin stored\n");
+    ok(LiberStart_SetPinned(pins, L"C:\\Apps\\Two.lnk", TRUE) && LiberStart_LoadPins(pins, _countof(pins), &count) &&
+       count == 2, "pins append\n");
+    ok(LiberStart_IsPinned(pins, L"c:\\apps\\two.LNK") && !LiberStart_IsPinned(pins, L"C:\\Apps\\Three.lnk"),
+       "pins compare without case\n");
+    ok(LiberStart_SetPinned(pins, L"C:\\APPS\\ONE.LNK", FALSE) && LiberStart_LoadPins(pins, _countof(pins), &count) &&
+       count == 1 && !wcscmp(pins, L"C:\\Apps\\Two.lnk"), "unpin removes regardless of case\n");
+    ok(LiberStart_SetPinned(pins, L"C:\\Apps\\Two.lnk", TRUE) && LiberStart_LoadPins(pins, _countof(pins), &count) &&
+       count == 1, "pinning twice keeps one entry\n");
+    ok(LiberStart_SetPinned(pins, L"C:\\Apps\\Two.lnk", FALSE) && LiberStart_LoadPins(pins, _countof(pins), &count) &&
+       count == 0, "an empty pin list is kept as empty, not as the default\n");
+    ok(!LiberStart_SetPinned(pins, L"", TRUE), "an empty path is refused\n");
+    ok(!LiberStart_LoadPins(pins, 1, &count), "a tiny buffer is refused\n");
+
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\LiberNT\\Shell\\Start", 0, KEY_SET_VALUE, &key) == ERROR_SUCCESS)
+    {
+        if (had)
+        {
+            DWORD chars = 0;
+            for (LPCWSTR p = saved; *p; p += lstrlenW(p) + 1)
+                chars = (DWORD)(p - saved) + lstrlenW(p) + 1;
+            RegSetValueExW(key, L"Pins", 0, REG_MULTI_SZ, (const BYTE *)saved, (chars + 1) * sizeof(WCHAR));
+        }
+        else
+        {
+            RegDeleteValueW(key, L"Pins");
+        }
+        RegCloseKey(key);
+    }
+}
+
 static void TestRecentHelpers()
 {
     SYSTEMTIME now = { 2026, 11, 5, 27, 11, 20, 0, 0 }, then = now;
@@ -287,6 +391,9 @@ START_TEST(Dock)
     TestFlyoutOrigin();
     TestRecentHelpers();
     TestCalendarGrid();
+    TestWallpaperMapping();
+    TestMenuOrigin();
+    TestStartPins();
     TestTaskWindows();
     TestExperience();
 }

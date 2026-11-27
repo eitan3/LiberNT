@@ -57,7 +57,7 @@ struct LIBER_DOCK_ENTRY
 
 class CLiberDock;
 
-class CDockCell : public Widget
+class CDockCell : public Widget, public IAnimationClient
 {
 public:
     CDockCell(CLiberDock *dock, int index) : m_Dock(dock), m_Index(index), m_Icon(NULL), m_Running(FALSE),
@@ -67,6 +67,22 @@ public:
         SetHitTestable(TRUE);
         SetFocusable(TRUE);
     }
+
+    ~CDockCell()
+    {
+        AnimationClock::Instance().Remove(this);
+    }
+
+    void Hop()
+    {
+        if (!AnimationsEnabled())
+            return;
+        m_Hop.Start(0.0, 1.0, LIBER_DUR_SPRING, Easing::Out, AnimationClock::Now());
+        AnimationClock::Instance().Add(this);
+    }
+
+    BOOL OnAnimationFrame(ULONGLONG now);
+    BOOL OnContextMenu(POINT screen);
 
     void Set(HICON icon, BOOL running, BOOL active)
     {
@@ -90,12 +106,13 @@ protected:
             context.Painter.FillEllipse(rc, tokens.Color(LIBER_COLOR_FILL_PLATE_HOVER));
 
         float scale = HasState(StatePressed) ? 0.84f : 1.0f;
+        float lift = (float)LiberDock_HopOffset(m_Hop.Value(context.Now));
         if (m_Index == LIBER_CELL_START)
             PaintLogo(context, rc, 30.0f * scale);
         else
         {
             float size = (m_Index == LIBER_CELL_SEARCH ? 24.0f : (float)LIBER_DOCK_ICON) * scale;
-            RectF icon = { rc.X + (rc.Width - size) / 2, rc.Y + (rc.Height - size) / 2, size, size };
+            RectF icon = { rc.X + (rc.Width - size) / 2, rc.Y + (rc.Height - size) / 2 - lift, size, size };
             if (m_Index == LIBER_CELL_SEARCH)
                 context.Painter.Icon(L"search_24_regular", icon, tokens.Color(LIBER_COLOR_TEXT1));
             else if (m_Icon)
@@ -117,18 +134,19 @@ protected:
                                           { 7.5833f, 1.75f, 28.0f, 7.5833f },
                                           { 22.1667f, 1.75f, 28.0f, 22.1667f } };
         float x = rc.X + (rc.Width - size) / 2, y = rc.Y + (rc.Height - size) / 2, unit = size / 28.0f;
-        /* FIXME: the spec fills the mark with a --logo-from to --logo-to gradient; it is drawn in the middle colour */
-        Argb color = context.Tokens.IsDark() ? 0xFF67C5FA : 0xFF126FCE;
+        PointF from = { x, y + 1.75f * unit }, to = { x + 28.0f * unit, y + 26.25f * unit };
+        Argb fromColor = context.Tokens.Color(LIBER_COLOR_LOGO_FROM), toColor = context.Tokens.Color(LIBER_COLOR_LOGO_TO);
 
         for (UINT i = 0; i < _countof(Bars); i++)
         {
             RectF bar = { x + Bars[i][0] * unit, y + Bars[i][1] * unit, (Bars[i][2] - Bars[i][0]) * unit,
                           (Bars[i][3] - Bars[i][1]) * unit };
-            context.Painter.FillRect(bar, color);
+            context.Painter.FillGradient(bar, 0.0f, from, to, fromColor, toColor);
         }
     }
 
 private:
+    Animation m_Hop;
     CLiberDock *m_Dock;
     int m_Index;
     HICON m_Icon;
@@ -200,6 +218,45 @@ protected:
         RectF icon = { rc.X + (rc.Width - 12.0f) / 2, rc.Y + (rc.Height - 12.0f) / 2, 12.0f, 12.0f };
         ShadowedIcon(context, L"chevron_up_12_regular", icon);
     }
+};
+
+class CTrayLanguage : public CTrayButton
+{
+public:
+    CTrayLanguage(CLiberDock *dock) : CTrayButton(dock, LIBER_LANGUAGE_WIDTH)
+    {
+        m_szLabel[0] = 0;
+    }
+
+    BOOL Update()
+    {
+        WCHAR szLabel[8] = L"";
+        HWND foreground = GetForegroundWindow();
+        HKL layout = GetKeyboardLayout(foreground ? GetWindowThreadProcessId(foreground, NULL) : 0);
+
+        LiberDock_LanguageLabel(LOWORD((ULONG_PTR)layout), szLabel, _countof(szLabel));
+        if (!wcscmp(szLabel, m_szLabel))
+            return FALSE;
+        StringCchCopyW(m_szLabel, _countof(m_szLabel), szLabel);
+        Invalidate();
+        return TRUE;
+    }
+
+    void OnClick()
+    {
+        HWND foreground = GetForegroundWindow();
+        if (foreground)
+            PostMessageW(foreground, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)HKL_NEXT);
+    }
+
+protected:
+    void PaintContent(PaintContext &context, const RectF &rc)
+    {
+        ShadowedText(context, m_szLabel, rc, TextCenter | TextMiddle);
+    }
+
+private:
+    WCHAR m_szLabel[8];
 };
 
 class CSystemPill : public CTrayButton
@@ -275,10 +332,11 @@ class CLiberDock
 {
 public:
     CLiberDock() : m_Tray(NULL), m_hwndSink(NULL), m_uShellHook(0), m_Count(0), m_DockRoot(NULL), m_TrayRoot(NULL),
-        m_Pill(NULL), m_Chevron(NULL), m_TrayWidth(0), m_Clock(NULL), m_Dpi(96)
+        m_Pill(NULL), m_Chevron(NULL), m_Language(NULL), m_TrayWidth(0), m_Clock(NULL), m_Dpi(96)
     {
         ZeroMemory(m_Entries, sizeof(m_Entries));
         ZeroMemory(m_Cells, sizeof(m_Cells));
+        ZeroMemory(&m_Layout, sizeof(m_Layout));
     }
 
     ~CLiberDock()
@@ -292,6 +350,8 @@ public:
     void OnClockClick(const RECT &bounds);
     void OnPillClick();
     void OpenStart();
+    void RenderDock(ULONGLONG now) { m_DockSurface.Render(now); }
+    BOOL CellMenu(int index, POINT screen);
     UINT Dpi() const { return m_Dpi; }
     void OnChevronClick();
 
@@ -319,6 +379,7 @@ private:
     StackPanel *m_TrayRoot;
     CSystemPill *m_Pill;
     CTrayChevron *m_Chevron;
+    CTrayLanguage *m_Language;
     ThemeTokens m_TrayTokens;
     int m_TrayWidth;
     CDockCell *m_Cells[LIBER_DOCK_MAX_ITEMS + LIBER_DOCK_FIXED_CELLS];
@@ -332,6 +393,20 @@ static CLiberDock *g_pLiberDock;
 void CDockCell::OnClick()
 {
     m_Dock->OnCellClick(m_Index, Bounds());
+}
+
+BOOL CDockCell::OnContextMenu(POINT screen)
+{
+    return m_Dock->CellMenu(m_Index, screen);
+}
+
+BOOL CDockCell::OnAnimationFrame(ULONGLONG now)
+{
+    BOOL running = m_Hop.IsRunning(now);
+
+    Invalidate();
+    m_Dock->RenderDock(now);
+    return running;
 }
 
 void CTrayClock::OnClick()
@@ -352,7 +427,7 @@ void CTrayChevron::OnClick()
 void CLiberDock::BuildTheme()
 {
     LiberShell_BuildTokens(&m_Tokens);
-    LiberShell_BuildWallpaperInkTokens(&m_TrayTokens);
+    LiberShell_BuildWallpaperInkTokens(&m_TrayTokens, IsRectEmpty(&m_Layout.Tray) ? NULL : &m_Layout.Tray);
 }
 
 BOOL CALLBACK CLiberDock::PinProc(PCWSTR pszShortcut, PCWSTR pszTarget, PCWSTR pszAppId, const FILETIME *pCreationTime,
@@ -569,12 +644,56 @@ void CLiberDock::OnCellClick(int index, const RECT &bounds)
     if (entry.bPinned)
     {
         HANDLE process = NULL;
+        if ((UINT)index + LIBER_DOCK_FIXED_CELLS < _countof(m_Cells) && m_Cells[index + LIBER_DOCK_FIXED_CELLS])
+            m_Cells[index + LIBER_DOCK_FIXED_CELLS]->Hop();
         HRESULT hr = TaskbarPin_Launch(entry.szSource, &process);
         if (process)
             CloseHandle(process);
         if (FAILED(hr) && hr != HRESULT_FROM_WIN32(ERROR_CANCELLED))
             MessageBeep(MB_ICONERROR);
     }
+}
+
+BOOL CLiberDock::CellMenu(int index, POINT screen)
+{
+    enum { DOCK_MENU_OPEN = 1, DOCK_MENU_PIN, DOCK_MENU_UNPIN, DOCK_MENU_CLOSE };
+
+    if (index < 0 || (UINT)index >= m_Count)
+        return FALSE;
+    LIBER_DOCK_ENTRY entry = m_Entries[index];
+    BOOL canPin = !TaskbarPin_IsDisabled() && entry.szTarget[0] && TaskbarPin_IsPinnable(entry.szTarget);
+    LIBER_MENU_ITEM menu[] = {
+        { DOCK_MENU_OPEN, L"Open new window", L"open_16_regular", NULL, FALSE, !entry.szSource[0] && !entry.szTarget[0] },
+        { 0, NULL, NULL, NULL, TRUE, FALSE },
+        { entry.bPinned ? (UINT)DOCK_MENU_UNPIN : (UINT)DOCK_MENU_PIN,
+          entry.bPinned ? L"Unpin from taskbar" : L"Pin to taskbar", L"pin_16_regular", NULL, FALSE,
+          !entry.bPinned && !canPin },
+        { DOCK_MENU_CLOSE, L"Close window", L"dismiss_16_regular", NULL, FALSE, entry.hwnd == NULL },
+    };
+
+    switch (LiberMenu_Track(menu, _countof(menu), screen))
+    {
+        case DOCK_MENU_OPEN:
+        {
+            HANDLE process = NULL;
+            if (SUCCEEDED(TaskbarPin_Launch(entry.szSource[0] ? entry.szSource : entry.szTarget, &process)) && process)
+                CloseHandle(process);
+            break;
+        }
+        case DOCK_MENU_PIN:
+            TaskbarPin_Create(entry.szTarget);
+            SetTimer(m_hwndSink, LIBER_TIMER_REFRESH, LIBER_REFRESH_DELAY, NULL);
+            break;
+        case DOCK_MENU_UNPIN:
+            TaskbarPin_Remove(entry.szTarget);
+            SetTimer(m_hwndSink, LIBER_TIMER_REFRESH, LIBER_REFRESH_DELAY, NULL);
+            break;
+        case DOCK_MENU_CLOSE:
+            if (entry.hwnd && IsWindow(entry.hwnd))
+                PostMessageW(entry.hwnd, WM_SYSCOMMAND, SC_CLOSE, 0);
+            break;
+    }
+    return TRUE;
 }
 
 void CLiberDock::OpenStart()
@@ -629,7 +748,8 @@ LRESULT CALLBACK CLiberDock::SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             KillTimer(hwnd, LIBER_TIMER_REFRESH);
             self->Refresh();
         }
-        else if (wParam == LIBER_TIMER_CLOCK && self->m_Clock && self->m_Clock->Update())
+        else if (wParam == LIBER_TIMER_CLOCK && self->m_Clock &&
+                 (self->m_Clock->Update() | (self->m_Language && self->m_Language->Update())))
         {
             self->m_TraySurface.Render(AnimationClock::Now());
         }
@@ -680,6 +800,7 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
     if (!m_DockSurface.Create(NULL, L"Liber Dock", exStyle) || !m_TraySurface.Create(NULL, L"Liber Tray", exStyle))
         return E_FAIL;
     m_DockSurface.SetInputShape((float)LIBER_DOCK_HEIGHT / 2.0f);
+    m_DockSurface.SetElevation(LIBER_ELEVATION_E16, (float)LIBER_DOCK_HEIGHT / 2.0f);
     m_TraySurface.SetInputShape((float)LIBER_TRAY_HEIGHT / 2.0f);
 
     m_DockRoot = new CLiberPanel(Orientation::Horizontal, LIBER_DOCK_CELL_GAP, (float)LIBER_DOCK_HEIGHT / 2.0f,
@@ -696,10 +817,17 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
     m_Chevron = new CTrayChevron(this);
     m_Pill = new CSystemPill(this, battery);
     m_TrayRoot->AddChild(m_Chevron);
-    m_TrayRoot->AddChild(m_Pill);
-    m_TrayRoot->AddChild(m_Clock);
     m_TrayWidth = 2 * LIBER_TRAY_PAD_X + LIBER_CHEVRON_WIDTH + LiberDock_SystemPillWidth(battery) + LIBER_CLOCK_WIDTH +
                   2 * LIBER_TRAY_GAP;
+    if (GetKeyboardLayoutList(0, NULL) > 1)
+    {
+        m_Language = new CTrayLanguage(this);
+        m_Language->Update();
+        m_TrayRoot->AddChild(m_Language);
+        m_TrayWidth += LIBER_LANGUAGE_WIDTH + LIBER_TRAY_GAP;
+    }
+    m_TrayRoot->AddChild(m_Pill);
+    m_TrayRoot->AddChild(m_Clock);
     m_Clock->Update();
 
     LiberShell_ApplyFont(&m_DockSurface);
@@ -713,6 +841,9 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
 
     g_pLiberDock = this;
     Refresh();
+    BuildTheme();
+    m_TraySurface.SetTokens(&m_TrayTokens);
+    m_TraySurface.Render(AnimationClock::Now());
     ShowWindow(m_DockSurface.Window(), SW_SHOWNOACTIVATE);
     ShowWindow(m_TraySurface.Window(), SW_SHOWNOACTIVATE);
 
@@ -749,6 +880,7 @@ void CLiberDock::Stop()
     m_TrayRoot = NULL;
     m_Pill = NULL;
     m_Chevron = NULL;
+    m_Language = NULL;
     m_Clock = NULL;
     ZeroMemory(m_Cells, sizeof(m_Cells));
     ClearEntries();

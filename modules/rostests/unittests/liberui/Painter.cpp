@@ -269,6 +269,16 @@ static void ScriptOffsetText(IPainter &p)
 {
     p.Text(L"Liber", R(0.5f, 0.25f, 64, 64), LIBER_TYPE_BODY_STRONG, 0xFF000000, TextCenter | TextMiddle);
 }
+static void ScriptGradient(IPainter &p)
+{
+    p.FillGradient(R(0, 0, 64, 64), 0.0f, PointF{ 0, 0 }, PointF{ 64, 0 }, 0xFFFF0000, 0xFF0000FF);
+}
+static void ScriptRoundGradient(IPainter &p)
+{
+    p.FillGradient(R(0, 0, 64, 64), 16.0f, PointF{ 0, 0 }, PointF{ 64, 64 }, 0xFF1A8FE8, 0xFF0A4FB4);
+}
+static void ScriptShadow(IPainter &p) { p.FillShadow(R(16, 16, 32, 32), 8.0f, 8.0f, 0xFF000000); }
+static void ScriptSharpShadow(IPainter &p) { p.FillShadow(R(16, 16, 32, 32), 0.0f, 0.0f, 0xFF000000); }
 
 static UINT CountInk(const DWORD *px, UINT count)
 {
@@ -307,6 +317,9 @@ static void TestGpuParity()
         { ScriptClip, "clip", 0 },            { ScriptNestedClip, "nested clip", 16 },
         { ScriptEmptyClip, "empty clip", 0 }, { ScriptText, "text", 24 },         { ScriptOffsetText, "offset text", 24 },
         { ScriptIcon, "icon", 24 },
+        { ScriptGradient, "gradient", 0 },
+        { ScriptRoundGradient, "rounded gradient", 0 },
+        { ScriptShadow, "shadow", 0 },
     };
     static DWORD gpuPx[64 * 64], cpuPx[64 * 64];
     BOOL gpu = FALSE, cpu = TRUE;
@@ -396,6 +409,30 @@ static void TestGpuPainter()
     ok(RenderScript(ScriptIcon, 96, px, &gpu), "icon rendered\n");
     inked = CountInk(px, 64 * 64);
     ok(inked > 50, "icon drew %u pixels\n", inked);
+
+    ok(RenderScript(ScriptGradient, 96, px, &gpu), "gradient rendered\n");
+    DWORD left = px[32 * 64 + 0], middle = px[32 * 64 + 32], right = px[32 * 64 + 63];
+    ok(ArgbR(left) > 240 && ArgbB(left) < 16, "gradient starts red: %08lX\n", left);
+    ok(ArgbB(right) > 240 && ArgbR(right) < 16, "gradient ends blue: %08lX\n", right);
+    ok(ArgbR(middle) > 100 && ArgbR(middle) < 155 && ArgbB(middle) > 100 && ArgbB(middle) < 155 &&
+       ArgbA(middle) == 255, "gradient midpoint mixes both: %08lX\n", middle);
+    ok(px[0 * 64 + 10] == px[63 * 64 + 10], "a horizontal gradient is constant down a column\n");
+
+    ok(RenderScript(ScriptRoundGradient, 96, px, &gpu), "rounded gradient rendered\n");
+    ok(px[0] == 0 && ArgbA(px[32 * 64 + 32]) == 255, "a rounded gradient keeps its corners clear: %08lX\n", px[0]);
+
+    ok(RenderScript(ScriptShadow, 96, px, &gpu), "shadow rendered\n");
+    ok(ArgbA(px[32 * 64 + 32]) > 240, "shadow is solid in the middle: %08lX\n", px[32 * 64 + 32]);
+    ok(ArgbA(px[32 * 64 + 16]) > 96 && ArgbA(px[32 * 64 + 16]) < 160, "shadow is about half at the edge: %08lX\n",
+       px[32 * 64 + 16]);
+    ok(ArgbA(px[32 * 64 + 10]) > 0 && ArgbA(px[32 * 64 + 10]) < ArgbA(px[32 * 64 + 16]),
+       "shadow fades outside the shape: %08lX\n", px[32 * 64 + 10]);
+    ok(px[32 * 64 + 1] == 0 && px[0] == 0, "shadow ends past the blur: %08lX\n", px[32 * 64 + 1]);
+    ok(ArgbA(px[32 * 64 + 20]) == ArgbA(px[32 * 64 + 43]) && ArgbA(px[20 * 64 + 32]) == ArgbA(px[43 * 64 + 32]),
+       "shadow is symmetric\n");
+
+    ok(RenderScript(ScriptSharpShadow, 96, px, &gpu), "sharp shadow rendered\n");
+    ok(px[20 * 64 + 20] == 0xFF000000 && px[10 * 64 + 10] == 0, "a zero blur shadow is the plain shape\n");
 }
 
 static void Pump(DWORD ms)
@@ -521,13 +558,22 @@ static void TestGpuSurface()
 class ClickWidget : public Widget
 {
 public:
-    ClickWidget() : Clicks(0)
+    ClickWidget() : Clicks(0), Menus(0)
     {
         SetHitTestable(TRUE);
         SetFocusable(TRUE);
+        MenuAt.x = MenuAt.y = 0;
     }
     void OnClick() { Clicks++; }
+    BOOL OnContextMenu(POINT screen)
+    {
+        Menus++;
+        MenuAt = screen;
+        return TRUE;
+    }
     UINT Clicks;
+    UINT Menus;
+    POINT MenuAt;
 };
 
 static void TestSurfaceInput(DWORD flags)
@@ -558,6 +604,13 @@ static void TestSurfaceInput(DWORD flags)
     ReleaseCapture();
     ok(!button->HasState(StatePressed) && button->Clicks == 1, "losing capture cancels the press\n");
 
+    POINT expected = { 12, 14 };
+    ClientToScreen(surface.Window(), &expected);
+    SendMessageW(surface.Window(), WM_RBUTTONUP, 0, MAKELPARAM(12, 14));
+    ok(button->Menus == 1 && button->MenuAt.x == expected.x && button->MenuAt.y == expected.y && button->Clicks == 1,
+       "a right click asks the widget for its menu at the screen point (%ld,%ld)\n", button->MenuAt.x,
+       button->MenuAt.y);
+
     UINT presents = surface.PresentCount();
     ShowWindow(surface.Window(), SW_SHOWNOACTIVATE);
     ok(surface.PresentCount() > presents, "showing the surface presents its pixels again\n");
@@ -565,6 +618,128 @@ static void TestSurfaceInput(DWORD flags)
 
     surface.SetRoot(NULL);
     surface.Destroy();
+    delete root;
+}
+
+static void TestTransitions(DWORD flags)
+{
+    typedef HANDLE (WINAPI *PFN_SETTHREADDPIAWARENESSCONTEXT)(HANDLE);
+    PFN_SETTHREADDPIAWARENESSCONTEXT setAwareness = (PFN_SETTHREADDPIAWARENESSCONTEXT)GetProcAddress(
+        GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext");
+    HANDLE previous = setAwareness ? setAwareness((HANDLE)-4) : NULL;
+    Surface surface;
+    StackPanel *root = new StackPanel(Orientation::Horizontal, 0);
+    FillWidget *fill = new FillWidget(0xFFFF0000);
+    ThemeTokens tokens;
+    RECT rc;
+
+    fill->SetSize(80, 80);
+    root->AddChild(fill);
+    ok(surface.Create(NULL, L"LiberUI transition test", WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, flags),
+       "surface created\n");
+    surface.SetDpi(96);
+    surface.SetTokens(&tokens);
+    surface.SetRoot(root);
+    surface.SetPosition(300, 300, 80, 80);
+    surface.Render(0);
+    ShowWindow(surface.Window(), SW_SHOWNOACTIVATE);
+    Pump(200);
+
+    surface.SetOpacity(0.5f);
+    Pump(200);
+    COLORREF half = ScreenPixel(340, 340);
+    ok(GetRValue(half) > 60 && GetRValue(half) < 255 && half != RGB(255, 0, 0), "half opacity blends with the desktop: %06lX\n",
+       half);
+    surface.SetOpacity(1.0f);
+    Pump(200);
+    ok(ScreenPixel(340, 340) == RGB(255, 0, 0), "full opacity is opaque again\n");
+
+    if (!AnimationsEnabled())
+    {
+        skip("client area animations are off\n");
+    }
+    else
+    {
+        surface.TransitionIn(32.0f, 300);
+        ok(surface.IsTransitioning() && surface.OffsetY() > 24.0f && surface.Opacity() < 0.3f,
+           "a rise starts low and faint: %f %f\n", surface.OffsetY(), surface.Opacity());
+        GetWindowRect(surface.Window(), &rc);
+        ok(rc.top > 300 + 24, "the window starts below its place: %ld\n", rc.top);
+        Pump(450);
+        GetWindowRect(surface.Window(), &rc);
+        ok(!surface.IsTransitioning() && surface.OffsetY() == 0.0f && surface.Opacity() == 1.0f && rc.top == 300,
+           "the rise settles in place: %f %f %ld\n", surface.OffsetY(), surface.Opacity(), rc.top);
+
+        surface.TransitionOut(24.0f, 150);
+        ok(surface.IsTransitioning() && IsWindowVisible(surface.Window()), "an exit starts visible\n");
+        Pump(300);
+        ok(!surface.IsTransitioning() && !IsWindowVisible(surface.Window()), "an exit ends hidden\n");
+        ok(surface.OffsetY() == 0.0f && surface.Opacity() == 1.0f, "an exit resets for the next open\n");
+    }
+
+    surface.SetRoot(NULL);
+    surface.Destroy();
+    delete root;
+    if (setAwareness && previous)
+        setAwareness(previous);
+}
+
+static void TestShadow()
+{
+    Surface surface;
+    StackPanel *root = new StackPanel(Orientation::Horizontal, 0);
+    FillWidget *fill = new FillWidget(0xFFFF0000);
+    ThemeTokens tokens;
+
+    Thickness margin = ShadowMargin(tokens.Shadow(LIBER_ELEVATION_E32));
+    ok(margin.Left == 48 && margin.Top == 30 && margin.Right == 48 && margin.Bottom == 66,
+       "shadow-32 needs %d,%d,%d,%d of margin\n", margin.Left, margin.Top, margin.Right, margin.Bottom);
+
+    fill->SetSize(100, 60);
+    root->AddChild(fill);
+    ok(surface.Create(NULL, L"LiberUI shadow test", WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE),
+       "surface created\n");
+    surface.SetDpi(96);
+    surface.SetTokens(&tokens);
+    surface.SetRoot(root);
+    surface.SetPosition(-1500, -1500, 100, 60);
+    ok(surface.Render(0) && surface.ShadowSurface() == NULL, "no shadow without an elevation\n");
+
+    surface.SetElevation(LIBER_ELEVATION_E32, 8.0f);
+    ShowWindow(surface.Window(), SW_SHOWNOACTIVATE);
+    surface.Render(0);
+    Surface *shadow = surface.ShadowSurface();
+    ok(shadow && shadow->Window(), "an elevation creates a shadow window\n");
+    if (shadow && shadow->Window())
+    {
+        RECT rc;
+        LONG_PTR ex = GetWindowLongPtrW(shadow->Window(), GWL_EXSTYLE);
+        GetWindowRect(shadow->Window(), &rc);
+        ok(rc.left == -1500 - 48 && rc.top == -1500 - 30 && rc.right == -1400 + 48 && rc.bottom == -1440 + 66,
+           "shadow window covers the margins: (%ld,%ld,%ld,%ld)\n", rc.left, rc.top, rc.right, rc.bottom);
+        ok((ex & WS_EX_TRANSPARENT) && (ex & WS_EX_LAYERED) && (ex & WS_EX_TOPMOST),
+           "the shadow is a click-through topmost layered window\n");
+        ok(IsWindowVisible(shadow->Window()), "the shadow shows with the surface\n");
+        ok(GetWindow(surface.Window(), GW_HWNDNEXT) == shadow->Window(), "the shadow sits right below the surface\n");
+
+        static DWORD px[196 * 156];
+        ok(shadow->ReadPixels(px, 196 * 4), "shadow pixels\n");
+        DWORD inside = px[(30 + 30) * 196 + 48 + 50], above = px[2 * 196 + 98], below = px[(30 + 60 + 20) * 196 + 98];
+        ok(ArgbA(inside) > 0x28, "the shadow is dense under the shape: %08lX\n", inside);
+        ok(ArgbA(below) > ArgbA(above), "the shadow falls below the shape: %08lX above %08lX\n", below, above);
+        ok(ArgbR(inside) == 0 && ArgbG(inside) == 0 && ArgbB(inside) == 0, "the shadow is black: %08lX\n", inside);
+
+        surface.SetPosition(-1400, -1500, 100, 60);
+        surface.Render(0);
+        GetWindowRect(shadow->Window(), &rc);
+        ok(rc.left == -1400 - 48, "the shadow follows a move: %ld\n", rc.left);
+
+        ShowWindow(surface.Window(), SW_HIDE);
+        ok(!IsWindowVisible(shadow->Window()), "the shadow hides with the surface\n");
+    }
+    surface.SetRoot(NULL);
+    surface.Destroy();
+    ok(surface.ShadowSurface() == NULL, "destroying the surface removes its shadow\n");
     delete root;
 }
 
@@ -647,6 +822,9 @@ START_TEST(Painter)
     TestGpuSurface();
     TestGpuPainter();
     TestGpuParity();
+    TestShadow();
+    TestTransitions(0);
+    TestTransitions(SurfaceNoGpu);
     TestSurfaceInput(0);
     TestSurfaceInput(SurfaceNoGpu);
     ok(AssertionFailures() == failures, "%ld assertions failed\n", AssertionFailures() - failures);
