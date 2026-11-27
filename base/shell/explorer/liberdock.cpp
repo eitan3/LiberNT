@@ -595,8 +595,8 @@ void CLiberDock::OnChevronClick()
 {
     RECT rc;
 
-    GetWindowRect(m_TraySurface.Window(), &rc);
-    TrayOverflow_ToggleAll(m_hwndSink, &rc);
+    rc = ScreenRect(m_TraySurface, m_Chevron->Bounds());
+    LiberOverflow_Toggle(&rc);
 }
 
 void CLiberDock::OnClockClick(const RECT &bounds)
@@ -729,6 +729,7 @@ void CLiberDock::Stop()
 {
     LiberControlCenter_Close();
     LiberCalendar_Destroy();
+    LiberOverflow_Destroy();
     LiberStart_Destroy();
     if (m_hwndSink)
     {

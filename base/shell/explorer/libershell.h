@@ -155,6 +155,8 @@ VOID LiberCalendar_MonthGrid(UINT year, UINT month, UINT firstDayOfWeek, LIBER_C
 VOID LiberCalendar_Toggle(IN const RECT *prcAnchor);
 BOOL LiberCalendar_IsOpen(VOID);
 VOID LiberCalendar_Destroy(VOID);
+VOID LiberOverflow_Toggle(IN const RECT *prcAnchor);
+VOID LiberOverflow_Destroy(VOID);
 
 UINT LiberStart_LoadRecentFiles(LIBER_RECENT_FILE *pFiles, UINT cMax);
 VOID LiberStart_FormatWhen(const SYSTEMTIME *pNow, const SYSTEMTIME *pThen, LPWSTR pszText, UINT cchText);
