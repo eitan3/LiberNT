@@ -37,7 +37,10 @@ enum
     CC_BRIGHTNESS,
     CC_VOLUME,
     CC_BATTERY,
-    CC_SETTINGS
+    CC_SETTINGS,
+    CC_MEDIA_PREVIOUS,
+    CC_MEDIA_PLAY,
+    CC_MEDIA_NEXT
 };
 
 static void PaintOrb(PaintContext &context, const RectF &orb, LPCWSTR icon, BOOL on)
@@ -279,6 +282,136 @@ private:
     WCHAR m_Text[16];
 };
 
+class CMediaButton : public Control
+{
+public:
+    CMediaButton(UINT id, LPCWSTR icon, BOOL accent) : m_Accent(accent)
+    {
+        SetId(id);
+        SetIcon(icon);
+        SetSize(LIBER_CONTROL_MD, LIBER_CONTROL_MD);
+    }
+
+    void SetIcon(LPCWSTR icon)
+    {
+        StringCchCopyW(m_Icon, _countof(m_Icon), icon);
+        Invalidate();
+    }
+
+    void OnClick() { Raise(ControlClicked); }
+
+protected:
+    void PaintOverride(PaintContext &context)
+    {
+        RectF rc = ToRectF(Bounds());
+        const ThemeTokens &tokens = context.Tokens;
+
+        if (m_Accent)
+            context.Painter.FillEllipse(rc, tokens.Color(HasState(StatePressed) ? LIBER_COLOR_ACCENT_PRESSED
+                                                         : HasState(StateHover)  ? LIBER_COLOR_ACCENT_HOVER
+                                                                                 : LIBER_COLOR_ACCENT));
+        else if (HasState(StateHover) || HasState(StatePressed))
+            context.Painter.FillEllipse(rc, tokens.Color(HasState(StatePressed) ? LIBER_COLOR_FILL_SUBTLE_PRESSED
+                                                                                : LIBER_COLOR_FILL_SUBTLE_HOVER));
+        RectF icon = { rc.X + (rc.Width - 20.0f) / 2, rc.Y + (rc.Height - 20.0f) / 2, 20.0f, 20.0f };
+        context.Painter.Icon(m_Icon, icon, tokens.Color(m_Accent ? LIBER_COLOR_ON_ACCENT : LIBER_COLOR_TEXT1));
+    }
+
+private:
+    WCHAR m_Icon[64];
+    BOOL m_Accent;
+};
+
+class CMediaCard : public Panel
+{
+public:
+    CMediaCard(IControlListener *listener) : m_Session(NULL), m_Art(NULL)
+    {
+        StackPanel *controls = new StackPanel(Orientation::Horizontal, 2);
+        Thickness margin = { 0, 0, 12, 0 };
+
+        m_Title[0] = m_Caption[0] = 0;
+        SetSize(-1, 76);
+        m_Previous = new CMediaButton(CC_MEDIA_PREVIOUS, L"previous_20_filled", FALSE);
+        m_Play = new CMediaButton(CC_MEDIA_PLAY, L"play_20_filled", TRUE);
+        m_Next = new CMediaButton(CC_MEDIA_NEXT, L"next_20_filled", FALSE);
+        m_Previous->SetListener(listener);
+        m_Play->SetListener(listener);
+        m_Next->SetListener(listener);
+        controls->AddChild(m_Previous);
+        controls->AddChild(m_Play);
+        controls->AddChild(m_Next);
+        controls->SetAlign(Align::End, Align::Center);
+        controls->SetMargin(margin);
+        AddChild(controls);
+    }
+
+    ~CMediaCard()
+    {
+        Reset();
+    }
+
+    void Set(const TRAY_MEDIA_INFO *info)
+    {
+        Reset();
+        if (info)
+        {
+            m_Session = info->hwndSession;
+            m_Art = info->hIcon;
+            StringCchCopyW(m_Title, _countof(m_Title), info->szTitle);
+            if (info->szArtist[0] && info->szApp[0])
+                StringCchPrintfW(m_Caption, _countof(m_Caption), L"%s \x00B7 %s", info->szArtist, info->szApp);
+            else
+                StringCchCopyW(m_Caption, _countof(m_Caption), info->szArtist[0] ? info->szArtist : info->szApp);
+            m_Play->SetIcon(info->bPlaying ? L"pause_20_filled" : L"play_20_filled");
+        }
+        SetVisible(info != NULL);
+        Invalidate();
+    }
+
+    HWND Session() const { return m_Session; }
+
+protected:
+    void PaintOverride(PaintContext &context)
+    {
+        RectF rc = ToRectF(Bounds());
+        const ThemeTokens &tokens = context.Tokens;
+
+        context.Painter.FillRoundRect(rc, (float)LIBER_RADIUS_TILE, tokens.Color(LIBER_COLOR_FILL_TILE));
+        RectF art = { rc.X + 12.0f, rc.Y + 12.0f, 52.0f, 52.0f };
+        context.Painter.FillRoundRect(art, (float)LIBER_RADIUS_CONTROL, tokens.Color(LIBER_COLOR_FILL_TILE_HOVER));
+        if (m_Art)
+        {
+            RectF icon = { art.X + 10.0f, art.Y + 10.0f, 32.0f, 32.0f };
+            context.Painter.Image(m_Art, icon);
+        }
+        float textX = art.X + art.Width + 12.0f, textW = rc.X + rc.Width - textX - 112.0f - 12.0f;
+        RectF title = { textX, rc.Y + 20.0f, textW, 20.0f };
+        RectF caption = { textX, rc.Y + 40.0f, textW, 16.0f };
+        context.Painter.Text(m_Title, title, LIBER_TYPE_BODY_STRONG, tokens.Color(LIBER_COLOR_TEXT1),
+                             TextMiddle | TextEllipsis);
+        context.Painter.Text(m_Caption, caption, LIBER_TYPE_CAPTION, tokens.Color(LIBER_COLOR_TEXT2),
+                             TextMiddle | TextEllipsis);
+    }
+
+private:
+    void Reset()
+    {
+        if (m_Art)
+            DestroyIcon(m_Art);
+        m_Art = NULL;
+        m_Session = NULL;
+    }
+
+    HWND m_Session;
+    HICON m_Art;
+    WCHAR m_Title[160];
+    WCHAR m_Caption[260];
+    CMediaButton *m_Previous;
+    CMediaButton *m_Play;
+    CMediaButton *m_Next;
+};
+
 class CFlyoutSurface : public Surface
 {
 public:
@@ -327,6 +460,7 @@ private:
     CSliderCard *m_Display;
     CSliderCard *m_Sound;
     CBatteryButton *m_Battery;
+    CMediaCard *m_Media;
     CComPtr<IAudioEndpointVolume> m_pVolume;
 };
 
@@ -344,7 +478,7 @@ LRESULT CFlyoutSurface::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
 
 CLiberControlCenter::CLiberControlCenter()
     : m_Root(NULL), m_Wifi(NULL), m_Bluetooth(NULL), m_Airplane(NULL), m_Focus(NULL), m_Power(NULL), m_Dark(NULL),
-      m_Display(NULL), m_Sound(NULL), m_Battery(NULL)
+      m_Display(NULL), m_Sound(NULL), m_Battery(NULL), m_Media(NULL)
 {
 }
 
@@ -428,6 +562,8 @@ void CLiberControlCenter::Build()
     m_Root->AddChild(top);
     m_Root->AddChild(m_Display);
     m_Root->AddChild(m_Sound);
+    m_Media = new CMediaCard(this);
+    m_Root->AddChild(m_Media);
     m_Root->AddChild(footer);
 }
 
@@ -473,6 +609,8 @@ void CLiberControlCenter::Sync()
     if (GetSystemPowerStatus(&sps) && sps.BatteryFlag != 128 && sps.BatteryLifePercent <= 100)
         StringCchPrintfW(szText, _countof(szText), L"%u%%", sps.BatteryLifePercent);
     m_Battery->SetText(szText);
+    TRAY_MEDIA_INFO media;
+    m_Media->Set(TrayMedia_Query(&media) ? &media : NULL);
     UpdateValues();
 }
 
@@ -563,6 +701,17 @@ void CLiberControlCenter::OnControlEvent(Widget *source, ControlEvent event)
             Close();
             TrayPower_Toggle(NULL, &rc);
             break;
+        case CC_MEDIA_PREVIOUS:
+        case CC_MEDIA_PLAY:
+        case CC_MEDIA_NEXT:
+        {
+            static const UINT Commands[] = { APPCOMMAND_MEDIA_PREVIOUSTRACK, APPCOMMAND_MEDIA_PLAY_PAUSE,
+                                             APPCOMMAND_MEDIA_NEXTTRACK };
+            TrayMedia_Command(m_Media->Session(), m_Surface.Window(), Commands[control->Id() - CC_MEDIA_PREVIOUS]);
+            TRAY_MEDIA_INFO media;
+            m_Media->Set(TrayMedia_Query(&media) ? &media : NULL);
+            break;
+        }
         case CC_SETTINGS:
             Close();
             ShellExecuteW(NULL, NULL, L"ms-settings:", NULL, NULL, SW_SHOWNORMAL);

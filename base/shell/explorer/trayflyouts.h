@@ -17,6 +17,19 @@ VOID TrayVolume_StartWatch(VOID);
 VOID TrayNetwork_StartPortalWatch(VOID);
 VOID TrayBrightness_StartWatch(VOID);
 HWND TrayMedia_FindSession(BOOL *pbPlaying);
+
+typedef struct _TRAY_MEDIA_INFO
+{
+    HWND hwndSession;
+    BOOL bPlaying;
+    WCHAR szTitle[160];
+    WCHAR szArtist[160];
+    WCHAR szApp[96];
+    HICON hIcon;
+} TRAY_MEDIA_INFO;
+
+BOOL TrayMedia_Query(OUT TRAY_MEDIA_INFO *pInfo);
+VOID TrayMedia_Command(IN HWND hwndSession, IN HWND hwndFrom, IN UINT uAppCommand);
 VOID TrayNetwork_Toggle(IN HWND hwndOwner, IN const RECT *prcAnchor);
 VOID TrayBluetooth_Toggle(IN HWND hwndOwner, IN const RECT *prcAnchor);
 VOID TrayMixer_Open(IN const RECT *prcAnchor);

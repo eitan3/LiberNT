@@ -3827,6 +3827,32 @@ TfyMediaQuery(TFYMEDIA *pMedia)
     return TRUE;
 }
 
+BOOL TrayMedia_Query(OUT TRAY_MEDIA_INFO *pInfo)
+{
+    TFYMEDIA media;
+
+    if (!pInfo)
+        return FALSE;
+    ZeroMemory(pInfo, sizeof(*pInfo));
+    ZeroMemory(&media, sizeof(media));
+    if (!TfyMediaQuery(&media))
+        return FALSE;
+    pInfo->hwndSession = media.hwndSession;
+    pInfo->bPlaying = media.bPlaying;
+    StringCchCopyW(pInfo->szTitle, _countof(pInfo->szTitle), media.szTitle);
+    StringCchCopyW(pInfo->szArtist, _countof(pInfo->szArtist), media.szArtist);
+    StringCchCopyW(pInfo->szApp, _countof(pInfo->szApp), media.szApp);
+    pInfo->hIcon = media.hIcon;
+    media.hIcon = NULL;
+    return TRUE;
+}
+
+VOID TrayMedia_Command(IN HWND hwndSession, IN HWND hwndFrom, IN UINT uAppCommand)
+{
+    if (hwndSession && IsWindow(hwndSession))
+        PostMessageW(hwndSession, WM_APPCOMMAND, (WPARAM)hwndFrom, MAKELPARAM(0, FAPPCOMMAND_MOUSE | uAppCommand));
+}
+
 typedef CWinTraits<WS_POPUP,
                    WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_NOACTIVATE> CTrayOsdTraits;
 

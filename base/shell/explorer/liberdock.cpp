@@ -219,6 +219,45 @@ protected:
     }
 };
 
+class CTrayLanguage : public CTrayButton
+{
+public:
+    CTrayLanguage(CLiberDock *dock) : CTrayButton(dock, LIBER_LANGUAGE_WIDTH)
+    {
+        m_szLabel[0] = 0;
+    }
+
+    BOOL Update()
+    {
+        WCHAR szLabel[8] = L"";
+        HWND foreground = GetForegroundWindow();
+        HKL layout = GetKeyboardLayout(foreground ? GetWindowThreadProcessId(foreground, NULL) : 0);
+
+        LiberDock_LanguageLabel(LOWORD((ULONG_PTR)layout), szLabel, _countof(szLabel));
+        if (!wcscmp(szLabel, m_szLabel))
+            return FALSE;
+        StringCchCopyW(m_szLabel, _countof(m_szLabel), szLabel);
+        Invalidate();
+        return TRUE;
+    }
+
+    void OnClick()
+    {
+        HWND foreground = GetForegroundWindow();
+        if (foreground)
+            PostMessageW(foreground, WM_INPUTLANGCHANGEREQUEST, 0, (LPARAM)HKL_NEXT);
+    }
+
+protected:
+    void PaintContent(PaintContext &context, const RectF &rc)
+    {
+        ShadowedText(context, m_szLabel, rc, TextCenter | TextMiddle);
+    }
+
+private:
+    WCHAR m_szLabel[8];
+};
+
 class CSystemPill : public CTrayButton
 {
 public:
@@ -292,7 +331,7 @@ class CLiberDock
 {
 public:
     CLiberDock() : m_Tray(NULL), m_hwndSink(NULL), m_uShellHook(0), m_Count(0), m_DockRoot(NULL), m_TrayRoot(NULL),
-        m_Pill(NULL), m_Chevron(NULL), m_TrayWidth(0), m_Clock(NULL), m_Dpi(96)
+        m_Pill(NULL), m_Chevron(NULL), m_Language(NULL), m_TrayWidth(0), m_Clock(NULL), m_Dpi(96)
     {
         ZeroMemory(m_Entries, sizeof(m_Entries));
         ZeroMemory(m_Cells, sizeof(m_Cells));
@@ -338,6 +377,7 @@ private:
     StackPanel *m_TrayRoot;
     CSystemPill *m_Pill;
     CTrayChevron *m_Chevron;
+    CTrayLanguage *m_Language;
     ThemeTokens m_TrayTokens;
     int m_TrayWidth;
     CDockCell *m_Cells[LIBER_DOCK_MAX_ITEMS + LIBER_DOCK_FIXED_CELLS];
@@ -659,7 +699,8 @@ LRESULT CALLBACK CLiberDock::SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             KillTimer(hwnd, LIBER_TIMER_REFRESH);
             self->Refresh();
         }
-        else if (wParam == LIBER_TIMER_CLOCK && self->m_Clock && self->m_Clock->Update())
+        else if (wParam == LIBER_TIMER_CLOCK && self->m_Clock &&
+                 (self->m_Clock->Update() | (self->m_Language && self->m_Language->Update())))
         {
             self->m_TraySurface.Render(AnimationClock::Now());
         }
@@ -727,10 +768,17 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
     m_Chevron = new CTrayChevron(this);
     m_Pill = new CSystemPill(this, battery);
     m_TrayRoot->AddChild(m_Chevron);
-    m_TrayRoot->AddChild(m_Pill);
-    m_TrayRoot->AddChild(m_Clock);
     m_TrayWidth = 2 * LIBER_TRAY_PAD_X + LIBER_CHEVRON_WIDTH + LiberDock_SystemPillWidth(battery) + LIBER_CLOCK_WIDTH +
                   2 * LIBER_TRAY_GAP;
+    if (GetKeyboardLayoutList(0, NULL) > 1)
+    {
+        m_Language = new CTrayLanguage(this);
+        m_Language->Update();
+        m_TrayRoot->AddChild(m_Language);
+        m_TrayWidth += LIBER_LANGUAGE_WIDTH + LIBER_TRAY_GAP;
+    }
+    m_TrayRoot->AddChild(m_Pill);
+    m_TrayRoot->AddChild(m_Clock);
     m_Clock->Update();
 
     LiberShell_ApplyFont(&m_DockSurface);
@@ -783,6 +831,7 @@ void CLiberDock::Stop()
     m_TrayRoot = NULL;
     m_Pill = NULL;
     m_Chevron = NULL;
+    m_Language = NULL;
     m_Clock = NULL;
     ZeroMemory(m_Cells, sizeof(m_Cells));
     ClearEntries();
