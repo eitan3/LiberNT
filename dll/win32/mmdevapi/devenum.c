@@ -129,10 +129,8 @@ static inline IPropertyBagImpl *impl_from_IPropertyBag(IPropertyBag *iface)
 }
 
 #ifdef __REACTOS__
-/* The three device notifications of IMMNotificationClient, sent to the registered clients as notify_clients sends the default's (R7-01) */
-static void notify_device_added(const MMDevice *device);
-static void notify_device_removed(const MMDevice *device);
-static void notify_device_state(const MMDevice *device);
+/* The three device notifications of IMMNotificationClient, one per verdict of the diff, sent to the registered clients as notify_clients sends the default's (R7-01) */
+static void notify_device(enum notif_change change, const MMDevice *device);
 static CRITICAL_SECTION g_notif_lock;
 #endif
 
@@ -965,24 +963,42 @@ end:
 }
 
 #ifdef __REACTOS__
-/* One device of the list as the refresh found it before the driver was asked again */
-struct refresh_before
+/* The devices of the flows as the answer left them, in the list's order: the diff's Next (devenum_notif.h) */
+struct refresh_iter
 {
-    GUID id;
-    DWORD state;
+    struct list *at;
+    EDataFlow first, last;
 };
 
-/* The state a device had before the refresh: ABSENT when the list did not hold it */
-#define REFRESH_ABSENT   ((DWORD)-1)
-
-static DWORD refresh_before_state(const struct refresh_before *before, UINT count, const GUID *id)
+static BOOLEAN refresh_next(void *context, struct notif_after *after)
 {
-    UINT i;
+    struct refresh_iter *iter = context;
+    MMDevice *device;
 
-    for (i = 0; i < count; i++)
-        if (IsEqualGUID(&before[i].id, id))
-            return before[i].state;
-    return REFRESH_ABSENT;
+    while (iter->at != &device_list)
+    {
+        device = LIST_ENTRY(iter->at, MMDevice, entry);
+        iter->at = iter->at->next;
+        if (device->flow < iter->first || device->flow > iter->last)
+            continue;
+        after->id = &device->devguid;
+        after->state = device->state;
+        after->named = device->named;
+        after->device = device;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* The diff's verdict on a device told to the clients: a removed one is not present from now on */
+static void refresh_tell(enum notif_change change, struct notif_after *after, void *context)
+{
+    MMDevice *device = after->device;
+
+    (void)context;
+    if (change == NOTIF_REMOVED)
+        device->state = DEVICE_STATE_NOTPRESENT;
+    notify_device(change, device);
 }
 
 /*
@@ -993,12 +1009,14 @@ static DWORD refresh_before_state(const struct refresh_before *before, UINT coun
  * and was removed; one it names that was not there, or was not present, was
  * added; one whose state changed has the new state. An unchanged answer tells
  * nothing. The clients are told under g_notif_lock, as the default's change is.
+ * The diff itself is devenum_notif.h's, where the host test runs it.
  */
 static void reactos_refresh_devices(EDataFlow flow)
 {
-    struct refresh_before *before;
+    struct notif_before *before;
     MMDevice *device;
     EDataFlow first, last;
+    struct refresh_iter iter;
     UINT count = 0, i;
 
     if (!drvs.module && !reactos_ensure_driver())
@@ -1045,28 +1063,10 @@ static void reactos_refresh_devices(EDataFlow flow)
 
     EnterCriticalSection(&g_notif_lock);
 
-    LIST_FOR_EACH_ENTRY(device, &device_list, MMDevice, entry)
-    {
-        DWORD old;
-
-        if (device->flow < first || device->flow > last)
-            continue;
-        old = refresh_before_state(before, count, &device->devguid);
-        if (!device->named)
-        {
-            if (old == REFRESH_ABSENT || old == DEVICE_STATE_NOTPRESENT)
-                continue;
-            device->state = DEVICE_STATE_NOTPRESENT;
-            notify_device_removed(device);
-            continue;
-        }
-        if (device->state == DEVICE_STATE_NOTPRESENT)
-            continue;
-        if (old == REFRESH_ABSENT || old == DEVICE_STATE_NOTPRESENT)
-            notify_device_added(device);
-        else if (old != device->state)
-            notify_device_state(device);
-    }
+    iter.at = device_list.next;
+    iter.first = first;
+    iter.last = last;
+    notif_diff_run(before, count, refresh_next, refresh_tell, &iter);
 
     LeaveCriticalSection(&g_notif_lock);
     free(before);
@@ -1679,15 +1679,6 @@ static CRITICAL_SECTION_DEBUG g_notif_lock_debug =
 };
 static CRITICAL_SECTION g_notif_lock = { &g_notif_lock_debug, -1, 0, 0, 0, 0 };
 
-/* What a walk tells a client: the default device's change, or a device's one of the three notifications */
-enum notif_change
-{
-    NOTIF_DEFAULT,
-    NOTIF_REMOVED,
-    NOTIF_ADDED,
-    NOTIF_STATE
-};
-
 /* One change told to a client: the default's (flow, role and id), or a device's (which of the three, its id and its state) */
 struct notif_change_args
 {
@@ -1735,37 +1726,13 @@ static void notify_clients(EDataFlow flow, ERole role, const WCHAR *id)
 }
 
 /* The three device notifications, to every registered client as the default's goes (R7-01); the caller holds g_notif_lock */
-static void notify_device_added(const MMDevice *device)
+static void notify_device(enum notif_change change, const MMDevice *device)
 {
     struct notif_change_args args;
     WCHAR id[56];
 
     MMDevice_FormatId(device, id);
-    args.change = NOTIF_ADDED;
-    args.id = id;
-    args.state = 0;
-    notif_clients_walk(&g_notif_clients, call_client, &args);
-}
-
-static void notify_device_removed(const MMDevice *device)
-{
-    struct notif_change_args args;
-    WCHAR id[56];
-
-    MMDevice_FormatId(device, id);
-    args.change = NOTIF_REMOVED;
-    args.id = id;
-    args.state = 0;
-    notif_clients_walk(&g_notif_clients, call_client, &args);
-}
-
-static void notify_device_state(const MMDevice *device)
-{
-    struct notif_change_args args;
-    WCHAR id[56];
-
-    MMDevice_FormatId(device, id);
-    args.change = NOTIF_STATE;
+    args.change = change;
     args.id = id;
     args.state = device->state;
     notif_clients_walk(&g_notif_clients, call_client, &args);

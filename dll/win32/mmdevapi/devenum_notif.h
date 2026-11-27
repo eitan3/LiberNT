@@ -1,7 +1,7 @@
 /*
  * PROJECT:     ReactOS Audio Sound Manager
- * LICENSE:     LGPL-2.1-or-later (https://spdx.org/licenses/LGPL-2.1-or-later): the licence of devenum.c, whose register and unregister bookkeeping and walks moved here
- * PURPOSE:     The notification clients of the device enumerator: the register and unregister bookkeeping and the walks that never call a client unregistered under them and never free a wrapper a walk still holds (N7-04). Free of the device list's own types and of COM, so that the host test runs the very code the DLL runs
+ * LICENSE:     LGPL-2.1-or-later (https://spdx.org/licenses/LGPL-2.1-or-later): the licence of devenum.c, whose register and unregister bookkeeping, walks and diff of a device set moved here
+ * PURPOSE:     The notification clients of the device enumerator and the diff of a device set against its snapshot: the bookkeeping, the walks that never call a client unregistered under them and never free a wrapper a walk still holds (N7-04), and the verdict per device that tells an added, a removed and a changed endpoint apart (R7-01). Free of the device list's own types and of COM, so that the host test runs the very code the DLL runs (N7-06)
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  *
  * This library is free software; you can redistribute it and/or
@@ -25,7 +25,7 @@
 #include <stddef.h>
 #include <wine/list.h>
 
-/* The includer provides UINT32, BOOLEAN, malloc and free */
+/* The includer provides GUID, DWORD, UINT, UINT32, BOOLEAN, TRUE, FALSE, IsEqualGUID, DEVICE_STATE_NOTPRESENT, malloc and free */
 
 /* A registered client's wrapper: dead from its unregistration under a walk until no walk holds it */
 struct notif_client
@@ -128,6 +128,83 @@ static inline void notif_clients_walk(struct notif_clients *clients, void (*call
             call(wrapper->client, context);
     clients->walks--;
     notif_clients_sweep(clients);
+}
+
+/* What a walk tells a client: NOTIF_DEFAULT is the default device's change, the rest a device's verdict, which the diff gives and NOTIF_UNCHANGED is never told */
+enum notif_change
+{
+    NOTIF_DEFAULT,
+    NOTIF_UNCHANGED,
+    NOTIF_REMOVED,
+    NOTIF_ADDED,
+    NOTIF_STATE
+};
+
+/* One device of a flow's set as the refresh found it before the driver was asked again */
+struct notif_before
+{
+    GUID id;
+    DWORD state;
+};
+
+/* The state of a device the snapshot does not name */
+#define NOTIF_ABSENT   ((DWORD)-1)
+
+/* The device's state in the snapshot, NOTIF_ABSENT when it was not there */
+static inline DWORD notif_before_state(const struct notif_before *before, UINT count, const GUID *id)
+{
+    UINT i;
+
+    for (i = 0; i < count; i++)
+        if (IsEqualGUID(&before[i].id, id))
+            return before[i].state;
+    return NOTIF_ABSENT;
+}
+
+/* A device of the set as the answer left it: named by the answer, with its state, and the includer's own device behind it */
+struct notif_after
+{
+    const GUID *id;
+    DWORD state;
+    BOOLEAN named;
+    void *device;
+};
+
+/*
+ * The verdict on a device: one the answer no longer names is not present and
+ * was removed, unless it was not there or not present already; one it names
+ * that is not present tells nothing; one it names that was not there, or was
+ * not present, was added; one whose state changed has the new state; else
+ * nothing.
+ */
+static inline enum notif_change notif_diff(DWORD old, DWORD state, BOOLEAN named)
+{
+    if (!named)
+        return old == NOTIF_ABSENT || old == DEVICE_STATE_NOTPRESENT ? NOTIF_UNCHANGED : NOTIF_REMOVED;
+    if (state == DEVICE_STATE_NOTPRESENT)
+        return NOTIF_UNCHANGED;
+    if (old == NOTIF_ABSENT || old == DEVICE_STATE_NOTPRESENT)
+        return NOTIF_ADDED;
+    return old != state ? NOTIF_STATE : NOTIF_UNCHANGED;
+}
+
+/* The devices of the set in the list's order: Next gives one at a time into *After and returns FALSE at the end; Tell receives each verdict but NOTIF_UNCHANGED, with the device it is about */
+typedef BOOLEAN (*notif_next_t)(void *context, struct notif_after *after);
+typedef void (*notif_tell_t)(enum notif_change change, struct notif_after *after, void *context);
+
+/* The diff run: every device Next gives is judged against the snapshot and the verdict told, in Next's order */
+static inline void notif_diff_run(const struct notif_before *before, UINT count, notif_next_t next, notif_tell_t tell,
+                                  void *context)
+{
+    struct notif_after after;
+    enum notif_change change;
+
+    while (next(context, &after))
+    {
+        change = notif_diff(notif_before_state(before, count, after.id), after.state, after.named);
+        if (change != NOTIF_UNCHANGED)
+            tell(change, &after, context);
+    }
 }
 
 #endif /* _MMDEVAPI_DEVENUM_NOTIF_H_ */
