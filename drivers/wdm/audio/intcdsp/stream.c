@@ -207,7 +207,7 @@ IntcDspSend(
         return STATUS_SUCCESS;
     IntcDspStreamLog(Streams, "ipc: %s (%u) 0x%08x|0x%08x %s after %u us; the link is %s\n", SofIpcTypeName(Msg->Primary),
                      SofIpc4MsgType(Msg), Msg->Primary | FWLOAD_IPC_BUSY, Msg->Extension, SofIpcStatusName(Result),
-                     (UINT32)Streams->Ipc->Last.ElapsedUs, IntcDspLinkLost(Streams) ? "faulted" : "ready");
+                     (UINT32)Streams->Ipc->Last.ElapsedUs, SofIpcLinkName(Streams->Ipc->Link));
     return IntcDspIpcStatus(Result);
 }
 
