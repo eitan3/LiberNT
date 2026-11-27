@@ -17,8 +17,45 @@
 
 #define PERSONALIZE_KEY L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"
 
+static BOOL g_LiberGlass = TRUE;
+
+static BOOL ReadDwordDefault(HKEY root, LPCWSTR key, LPCWSTR name, DWORD fallback)
+{
+    DWORD value = 0, cb = sizeof(value);
+    if (RegGetValueW(root, key, name, RRF_RT_REG_DWORD, NULL, &value, &cb) != ERROR_SUCCESS)
+        return fallback != 0;
+    return value != 0;
+}
+
+BOOL LiberShell_ReadGlassEnabled(VOID)
+{
+    return ReadDwordDefault(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                            L"EnableTransparency", 1) &&
+           ReadDwordDefault(HKEY_CURRENT_USER, L"Software\\ReactOS\\DWM", L"EnableBlur", 1) &&
+           ReadDwordDefault(HKEY_CURRENT_USER, L"Software\\ReactOS\\DWM", L"EnableAcrylic", 1);
+}
+
+BOOL LiberShell_GlassEnabled(VOID)
+{
+    return g_LiberGlass;
+}
+
+VOID LiberShell_ApplyMaterial(LiberUI::Surface *pSurface, const LiberUI::ThemeTokens *pTokens,
+                              LIBER_MATERIAL_KIND material, float radiusDip)
+{
+    if (!g_LiberGlass || !pTokens)
+    {
+        pSurface->SetMaterial(-1, 0, 0, 0.0f);
+        return;
+    }
+    LiberUI::GlassTint tint = pTokens->Material(material, 0.5);
+    pSurface->SetMaterial((int)material, LiberUI::OklchToArgb(tint.Color, 1.0), (BYTE)(tint.Alpha * 255.0 + 0.5),
+                          radiusDip);
+}
+
 VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens)
 {
+    g_LiberGlass = LiberShell_ReadGlassEnabled();
     LiberUI::ThemeParams params = { LiberExperience_IsDark() ? LiberUI::ThemeMode::Dark : LiberUI::ThemeMode::Light,
                                     LiberUI::AccentPreset(LIBER_ACCENT_AZURE),
                                     (LiberUI::SurfaceTint)LiberExperience_SurfaceTint() };

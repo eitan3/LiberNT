@@ -8,6 +8,7 @@
 #include <apitest.h>
 
 #include <liberui.h>
+#include <libernt/dwmframe.h>
 
 #include <stdlib.h>
 
@@ -206,6 +207,11 @@ static void ScriptRoundGradient(IPainter &p)
     p.FillGradient(R(0, 0, 64, 64), 16.0f, PointF{ 0, 0 }, PointF{ 64, 64 }, 0xFF1A8FE8, 0xFF0A4FB4);
 }
 static void ScriptShadow(IPainter &p) { p.FillShadow(R(16, 16, 32, 32), 8.0f, 8.0f, 0xFF000000); }
+static void ScriptHollowShadow(IPainter &p)
+{
+    RectF shape = R(16, 16, 32, 32);
+    p.FillShadow(shape, 8.0f, 8.0f, 0xFF000000, &shape);
+}
 static void ScriptSharpShadow(IPainter &p) { p.FillShadow(R(16, 16, 32, 32), 0.0f, 0.0f, 0xFF000000); }
 
 static UINT CountInk(const DWORD *px, UINT count)
@@ -330,6 +336,11 @@ static void TestGpuPainter()
     ok(px[32 * 64 + 1] == 0 && px[0] == 0, "shadow ends past the blur: %08lX\n", px[32 * 64 + 1]);
     ok(ArgbA(px[32 * 64 + 20]) == ArgbA(px[32 * 64 + 43]) && ArgbA(px[20 * 64 + 32]) == ArgbA(px[43 * 64 + 32]),
        "shadow is symmetric\n");
+
+    ok(RenderScript(ScriptHollowShadow, 96, px, &gpu), "hollow shadow rendered\n");
+    ok(px[32 * 64 + 32] == 0 && px[24 * 64 + 24] == 0, "a shadow under glass leaves the shape clear: %08lX\n",
+       px[32 * 64 + 32]);
+    ok(ArgbA(px[32 * 64 + 12]) > 0 && ArgbA(px[52 * 64 + 32]) > 0, "it still falls outside the shape\n");
 
     ok(RenderScript(ScriptSharpShadow, 96, px, &gpu), "sharp shadow rendered\n");
     ok(px[20 * 64 + 20] == 0xFF000000 && px[10 * 64 + 10] == 0, "a zero blur shadow is the plain shape\n");
@@ -584,6 +595,38 @@ static void TestTransitions()
         setAwareness(previous);
 }
 
+static void TestMaterial()
+{
+    Surface surface;
+    ThemeTokens tokens;
+
+    ok(surface.Create(NULL, L"LiberUI material test", WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE), "surface created\n");
+    surface.SetDpi(96);
+    surface.SetElevation(LIBER_ELEVATION_E32, 28.0f);
+    ok(GetPropW(surface.Window(), DWM_PROP_LIBER_MATERIAL) == NULL && surface.Material() == -1,
+       "no material by default\n");
+    surface.SetMaterial(LIBER_MATERIAL_THICK, 0xFF10171E, 0xB8, 28.0f);
+    ULONG packed = (ULONG)(ULONG_PTR)GetPropW(surface.Window(), DWM_PROP_LIBER_MATERIAL);
+    ok((packed & DWM_LIBER_MATERIAL_VALID) && DWM_LIBER_MATERIAL_KIND(packed) == LIBER_MATERIAL_THICK + 1 &&
+           DWM_LIBER_MATERIAL_LAYER(packed) == DWM_LIBER_LAYER_SHELL &&
+           DWM_LIBER_MATERIAL_ELEVATION(packed) == LIBER_ELEVATION_E32 + 1 &&
+           DWM_LIBER_MATERIAL_EDGE(packed) == DWM_LIBER_EDGE_GLASS && DWM_LIBER_MATERIAL_ALPHA(packed) == 0xB8 &&
+           (packed & ~DWM_LIBER_MATERIAL_MASK) == 0,
+       "the material is packed for the compositor: %08lX\n", packed);
+    ok((ULONG_PTR)GetPropW(surface.Window(), DWM_PROP_LIBER_MATERIAL_TINT) == (ULONG_PTR)RGB(0x10, 0x17, 0x1E) + 1,
+       "the tint is a COLORREF plus one\n");
+    ok((ULONG_PTR)GetPropW(surface.Window(), DWM_PROP_CORNER_RADIUS) == 28, "the corner radius is in pixels\n");
+    surface.SetDpi(192);
+    ok((ULONG_PTR)GetPropW(surface.Window(), DWM_PROP_CORNER_RADIUS) == 56, "the radius follows the DPI\n");
+    surface.SetMaterial(LIBER_MATERIAL_THICK, 0xFF10171E, 0xB8, 40.0f);
+    ok(GetPropW(surface.Window(), DWM_PROP_CORNER_RADIUS) == NULL, "radii the compositor cannot round are left out\n");
+    surface.SetMaterial(-1, 0, 0, 0.0f);
+    ok(GetPropW(surface.Window(), DWM_PROP_LIBER_MATERIAL) == NULL &&
+           GetPropW(surface.Window(), DWM_PROP_LIBER_MATERIAL_TINT) == NULL && surface.Material() == -1,
+       "clearing the material removes the properties\n");
+    surface.Destroy();
+}
+
 static void TestShadow()
 {
     Surface surface;
@@ -717,6 +760,7 @@ START_TEST(Painter)
     TestGpuSurface();
     TestGpuPainter();
     TestShadow();
+    TestMaterial();
     TestTransitions();
     TestSurfaceInput();
     ok(AssertionFailures() == failures, "%ld assertions failed\n", AssertionFailures() - failures);

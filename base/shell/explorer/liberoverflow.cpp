@@ -28,13 +28,7 @@ public:
 protected:
     void PaintOverride(PaintContext &context)
     {
-        RectF rc = ToRectF(Bounds());
-        GlassTint tint = context.Tokens.Material(LIBER_MATERIAL_THICK, 0.5);
-        RectF edge = { rc.X + 0.5f, rc.Y + 0.5f, rc.Width - 1.0f, rc.Height - 1.0f };
-
-        context.Painter.FillRoundRect(rc, (float)LIBER_RADIUS_MENU, OklchToArgb(tint.Color, 1.0));
-        context.Painter.StrokeRoundRect(edge, LIBER_RADIUS_MENU - 0.5f, context.Tokens.Color(LIBER_COLOR_GLASS_EDGE),
-                                        1.0f);
+        LiberShell_PaintGlass(context, ToRectF(Bounds()), (float)LIBER_RADIUS_MENU, LIBER_MATERIAL_THICK);
     }
 };
 
@@ -238,6 +232,7 @@ BOOL CLiberOverflow::Open(const RECT *prcAnchor)
     LiberShell_BuildTokens(&m_Tokens);
     LiberShell_ApplyFont(&m_Surface);
     m_Surface.SetTokens(&m_Tokens);
+    LiberShell_ApplyMaterial(&m_Surface, &m_Tokens, LIBER_MATERIAL_THICK, (float)LIBER_RADIUS_MENU);
 
     SIZE available = { LIBER_OVERFLOW_WIDTH, LayoutInfinite };
     SIZE size = m_Root->Measure(available);

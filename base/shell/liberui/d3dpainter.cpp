@@ -160,8 +160,10 @@ void D3DPainter::FillGradient(const RectF &rc, float radius, PointF from, PointF
     Draw(GpuGradient, quad, shape, Px(radius), 0.0f, fromColor, NULL, NULL, NULL, FALSE, gradient);
 }
 
-void D3DPainter::FillShadow(const RectF &rc, float radius, float blur, Argb color)
+void D3DPainter::FillShadow(const RectF &rc, float radius, float blur, Argb color, const RectF *hole)
 {
+    float exclude[8];
+
     if (rc.Width <= 0.0f || rc.Height <= 0.0f)
         return;
     if (blur <= 0.0f)
@@ -172,7 +174,16 @@ void D3DPainter::FillShadow(const RectF &rc, float radius, float blur, Argb colo
     float reach = Px(blur) * 1.5f + 1.0f;
     float shape[4] = { Px(rc.X), Px(rc.Y), Px(rc.X + rc.Width), Px(rc.Y + rc.Height) };
     float quad[4] = { shape[0] - reach, shape[1] - reach, shape[2] + reach, shape[3] + reach };
-    Draw(GpuShadow, quad, shape, Px(radius), Px(blur) / 2.0f, color, NULL, NULL, NULL, FALSE);
+    if (hole)
+    {
+        exclude[0] = Px(hole->X);
+        exclude[1] = Px(hole->Y);
+        exclude[2] = Px(hole->X + hole->Width);
+        exclude[3] = Px(hole->Y + hole->Height);
+        exclude[4] = exclude[5] = exclude[6] = 0.0f;
+        exclude[7] = 1.0f;
+    }
+    Draw(GpuShadow, quad, shape, Px(radius), Px(blur) / 2.0f, color, NULL, NULL, NULL, FALSE, hole ? exclude : NULL);
 }
 
 void D3DPainter::StrokeRoundRect(const RectF &rc, float radius, Argb color, float width)

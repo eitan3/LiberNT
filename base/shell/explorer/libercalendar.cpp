@@ -35,13 +35,7 @@ public:
 protected:
     void PaintOverride(PaintContext &context)
     {
-        RectF rc = ToRectF(Bounds());
-        GlassTint tint = context.Tokens.Material(LIBER_MATERIAL_THICK, 0.5);
-        RectF edge = { rc.X + 0.5f, rc.Y + 0.5f, rc.Width - 1.0f, rc.Height - 1.0f };
-
-        context.Painter.FillRoundRect(rc, (float)LIBER_RADIUS_FLYOUT, OklchToArgb(tint.Color, 1.0));
-        context.Painter.StrokeRoundRect(edge, LIBER_RADIUS_FLYOUT - 0.5f, context.Tokens.Color(LIBER_COLOR_GLASS_EDGE),
-                                        1.0f);
+        LiberShell_PaintGlass(context, ToRectF(Bounds()), (float)LIBER_RADIUS_FLYOUT, LIBER_MATERIAL_THICK);
     }
 };
 
@@ -222,8 +216,9 @@ private:
 class CCalendarSurface : public Surface
 {
 public:
-    CCalendarSurface() : m_HiddenAt(0) {}
+    CCalendarSurface() : m_HiddenAt(0), m_Peer(NULL) {}
     ULONGLONG m_HiddenAt;
+    CCalendarSurface *m_Peer;
     void Hide()
     {
         if (Window() && IsWindowVisible(Window()) && !IsClosing())
@@ -238,7 +233,13 @@ protected:
     {
         if ((msg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE) || (msg == WM_KEYDOWN && wParam == VK_ESCAPE))
         {
-            Hide();
+            BOOL toPeer = msg == WM_ACTIVATE && m_Peer && (HWND)lParam == m_Peer->Window();
+            if (!toPeer)
+            {
+                Hide();
+                if (m_Peer)
+                    m_Peer->Hide();
+            }
             return 0;
         }
         return Surface::HandleMessage(msg, wParam, lParam);
@@ -252,7 +253,11 @@ public:
     ~CLiberCalendar();
 
     BOOL Open(const RECT *prcAnchor);
-    void Close() { m_Surface.Hide(); }
+    void Close()
+    {
+        m_Surface.Hide();
+        m_NotifSurface.Hide();
+    }
     BOOL IsOpen() const { return m_Surface.Window() && IsWindowVisible(m_Surface.Window()) && !m_Surface.IsClosing(); }
     BOOL JustClosed() const { return m_Surface.m_HiddenAt && GetTickCount64() - m_Surface.m_HiddenAt < 250; }
     void OnControlEvent(Widget *source, ControlEvent event);
@@ -264,8 +269,9 @@ private:
     void Place();
 
     CCalendarSurface m_Surface;
+    CCalendarSurface m_NotifSurface;
     ThemeTokens m_Tokens;
-    StackPanel *m_Root;
+    CGlassPanel *m_Root;
     CGlassPanel *m_Notifs;
     Label *m_Empty;
     CTextButton *m_Clear;
@@ -295,8 +301,11 @@ CLiberCalendar::CLiberCalendar()
 CLiberCalendar::~CLiberCalendar()
 {
     m_Surface.SetRoot(NULL);
+    m_NotifSurface.SetRoot(NULL);
     m_Surface.Destroy();
+    m_NotifSurface.Destroy();
     delete m_Root;
+    delete m_Notifs;
 }
 
 void CLiberCalendar::Build()
@@ -304,6 +313,7 @@ void CLiberCalendar::Build()
     Thickness notifPad = { 12, 12, 12, 12 };
     Thickness calPad = { 16, 16, 16, 16 };
     CGlassPanel *calendar = new CGlassPanel(0);
+    m_Root = calendar;
     Panel *notifHead = new Panel();
     Panel *monthHead = new Panel();
     StackPanel *arrows = new StackPanel(Orientation::Horizontal, 4);
@@ -311,8 +321,6 @@ void CLiberCalendar::Build()
     GridPanel *grid = new GridPanel(7, 0, 0);
     CRoundIconButton *prev = new CRoundIconButton(LCA_PREV, L"chevron_up_16_regular", 24, 16.0f);
     CRoundIconButton *next = new CRoundIconButton(LCA_NEXT, L"chevron_down_16_regular", 24, 16.0f);
-
-    m_Root = new StackPanel(Orientation::Vertical, LIBER_CAL_GAP);
 
     m_Notifs = new CGlassPanel(2);
     m_Notifs->SetPadding(notifPad);
@@ -368,9 +376,6 @@ void CLiberCalendar::Build()
     calendar->AddChild(monthHead);
     calendar->AddChild(weekdays);
     calendar->AddChild(grid);
-
-    m_Root->AddChild(m_Notifs);
-    m_Root->AddChild(calendar);
 }
 
 void CLiberCalendar::SyncNotifications()
@@ -424,12 +429,16 @@ void CLiberCalendar::Place()
 {
     SIZE available = { LIBER_CAL_WIDTH, LayoutInfinite };
     SIZE size = m_Root->Measure(available);
+    SIZE notifSize = m_Notifs->Measure(available);
     UINT dpi = m_Surface.Dpi();
     POINT pt;
 
     LiberShell_PlaceFlyout(&m_Anchor, ScaleToDpi(LIBER_CAL_WIDTH, dpi), ScaleToDpi(size.cy, dpi), FALSE, &pt);
     m_Surface.SetPosition(pt.x, pt.y, LIBER_CAL_WIDTH, size.cy);
     m_Surface.RequestLayout();
+    m_NotifSurface.SetPosition(pt.x, pt.y - ScaleToDpi(LIBER_CAL_GAP + notifSize.cy, dpi), LIBER_CAL_WIDTH,
+                               notifSize.cy);
+    m_NotifSurface.RequestLayout();
 }
 
 BOOL CLiberCalendar::Open(const RECT *prcAnchor)
@@ -439,11 +448,24 @@ BOOL CLiberCalendar::Open(const RECT *prcAnchor)
 
     if (!m_Root)
     {
-        if (!m_Surface.Create(NULL, L"Liber Calendar", WS_EX_TOPMOST | WS_EX_TOOLWINDOW))
+        if (!m_Surface.Create(NULL, L"Liber Calendar", WS_EX_TOPMOST | WS_EX_TOOLWINDOW) ||
+            !m_NotifSurface.Create(NULL, L"Liber Notifications", WS_EX_TOPMOST | WS_EX_TOOLWINDOW))
+        {
+            m_Surface.Destroy();
+            m_NotifSurface.Destroy();
             return FALSE;
-        m_Surface.SetInputShape((float)LIBER_RADIUS_FLYOUT);
+        }
+        m_Surface.m_Peer = &m_NotifSurface;
+        m_NotifSurface.m_Peer = &m_Surface;
+        Surface *surfaces[] = { &m_Surface, &m_NotifSurface };
+        for (UINT i = 0; i < _countof(surfaces); i++)
+        {
+            surfaces[i]->SetInputShape((float)LIBER_RADIUS_FLYOUT);
+            surfaces[i]->SetElevation(LIBER_ELEVATION_E32, (float)LIBER_RADIUS_FLYOUT);
+        }
         Build();
         m_Surface.SetRoot(m_Root);
+        m_NotifSurface.SetRoot(m_Notifs);
     }
     m_Anchor = *prcAnchor;
     GetLocalTime(&now);
@@ -457,14 +479,22 @@ BOOL CLiberCalendar::Open(const RECT *prcAnchor)
     }
 
     LiberShell_BuildTokens(&m_Tokens);
-    LiberShell_ApplyFont(&m_Surface);
-    m_Surface.SetTokens(&m_Tokens);
+    Surface *surfaces[] = { &m_NotifSurface, &m_Surface };
+    for (UINT i = 0; i < _countof(surfaces); i++)
+    {
+        LiberShell_ApplyFont(surfaces[i]);
+        surfaces[i]->SetTokens(&m_Tokens);
+        LiberShell_ApplyMaterial(surfaces[i], &m_Tokens, LIBER_MATERIAL_THICK, (float)LIBER_RADIUS_FLYOUT);
+    }
     SyncNotifications();
     SyncMonth();
     Place();
-    m_Surface.Render(AnimationClock::Now());
-    ShowWindow(m_Surface.Window(), SW_SHOW);
-    m_Surface.TransitionIn(32.0f, 300);
+    for (UINT i = 0; i < _countof(surfaces); i++)
+    {
+        surfaces[i]->Render(AnimationClock::Now());
+        ShowWindow(surfaces[i]->Window(), SW_SHOW);
+        surfaces[i]->TransitionIn(32.0f, 300);
+    }
     SetForegroundWindow(m_Surface.Window());
     return TRUE;
 }
@@ -501,7 +531,9 @@ void CLiberCalendar::OnControlEvent(Widget *source, ControlEvent event)
         Place();
     }
     m_Surface.InvalidateRect(m_Root->Bounds());
+    m_NotifSurface.InvalidateRect(m_Notifs->Bounds());
     m_Surface.Render(AnimationClock::Now());
+    m_NotifSurface.Render(AnimationClock::Now());
 }
 
 VOID LiberCalendar_Toggle(IN const RECT *prcAnchor)

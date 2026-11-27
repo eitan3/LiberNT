@@ -24,6 +24,7 @@
 #include "animation.h"
 #include "presenttrace.h"
 #include "settings.h"
+#include "libermaterial.h"
 
 DWORD_PTR NTAPI NtUserCallOneParam(DWORD_PTR Param, DWORD Routine);
 static void DwmLog(const char *s) { OutputDebugStringA(s); }
@@ -404,6 +405,7 @@ static BOOL g_noiseReady;
 
 #define DWM_BLUR_RADIUS_96          10
 #define DWM_BLUR_RADIUS_MAX         48
+#define DWM_GPU_BLUR_RADIUS_MAX     64
 #define DWM_BLUR_PASSES             3
 
 static BOOL
@@ -810,6 +812,29 @@ static LONG
 DwmMaterialBlurRadius(void)
 {
     return DwmScaledBlurRadius(DWM_MATERIAL_BLUR_RADIUS_96);
+}
+
+static LONG
+DwmWindowBlurRadius(const DWM_WIN *Window, ULONG MaxRadius, FLOAT *Saturation)
+{
+    DWM_LIBER_BLUR Blur;
+
+    if (DwmLiberBlur(Window, g_shadowDpi > 0 ? g_shadowDpi : 96, MaxRadius, &Blur))
+    {
+        if (Saturation)
+            *Saturation = Blur.Saturation;
+        return (LONG)Blur.Radius;
+    }
+    if (Saturation)
+        *Saturation = 1.0f;
+    return DwmBlurRadius();
+}
+
+static LONG
+DwmMaxBlurReach(void)
+{
+    return max(DwmBlurRadius(),
+               (LONG)min(DwmLiberMaxBlurRadius(g_shadowDpi > 0 ? g_shadowDpi : 96), (ULONG)DWM_GPU_BLUR_RADIUS_MAX));
 }
 
 /* Adds a buffer-relative rectangle, clipped to the buffer, to the damage
@@ -1414,7 +1439,7 @@ static BOOL
 DwmCaptureReads(const DWM_WIN *Windows, ULONG First, ULONG Last,
                 LONGLONG Left, LONGLONG Top, LONGLONG Right, LONGLONG Bottom)
 {
-    LONG FilterReach = 2 * (((DwmBlurRadius() + 1) / 2) * DWM_BLUR_PASSES + 2);
+    LONG FilterReach = 2 * (((DwmMaxBlurReach() + 1) / 2) * DWM_BLUR_PASSES + 2);
     ULONG Index;
 
     for (Index = First; Index < Last; ++Index)
@@ -3202,7 +3227,7 @@ DwmFindOpaqueCover(const DWM_WIN *Windows, ULONG Count, ULONG Index,
                    RECTL *Result)
 {
     LONGLONG Reach = 0, BestArea = 0;
-    LONG FilterReach = 2 * (((DwmBlurRadius() + 1) / 2) * DWM_BLUR_PASSES + 2);
+    LONG FilterReach = 2 * (((DwmMaxBlurReach() + 1) / 2) * DWM_BLUR_PASSES + 2);
     ULONG Above;
 
     /* GPU blur has its own sampling footprint. Use the uncropped path while
@@ -4627,7 +4652,10 @@ DwmComposeLoop(HANDLE hStopEvent)
                 }
             }
             for (i = 0; i < hdr->Count; ++i)
+            {
+                DwmLiberApplyMaterial(&wins[i]);
                 DwmSettingsApplyWindow(&Settings, &wins[i]);
+            }
 
             cl = pl; ct = pt; cr = pr; cb = pb;
             for (i = 0; i < hdr->Count; i++)
@@ -4650,7 +4678,7 @@ DwmComposeLoop(HANDLE hStopEvent)
                 }
                 if (wr <= pl || wl >= pr || wb <= pt || wt >= pb)
                     continue;
-                margin = DwmBlurRadius() * DWM_BLUR_PASSES + 1;
+                margin = DwmWindowBlurRadius(&wins[i], DWM_GPU_BLUR_RADIUS_MAX, NULL) * DWM_BLUR_PASSES + 1;
                 cl = pl - margin; ct = pt - margin;
                 cr = pr + margin; cb = pb + margin;
                 if (cl < 0) cl = 0;
@@ -4716,7 +4744,7 @@ DwmComposeLoop(HANDLE hStopEvent)
                     DwmGpuComposeScene(wins, hdr->Count,
                                         (const RECTL *)(g_buf + hdr->BlurRectArrayBase),
                                         hdr->BlurRectCount, g_originX, g_originY,
-                                        refreshBackdrop, DwmBlurRadius(), &gpuShadowMargins);
+                                        refreshBackdrop, DwmMaxBlurReach(), &gpuShadowMargins);
                     gpuFrame = DwmGpuComposeBegin(GetSysColor(COLOR_DESKTOP),
                                                        g_backdropBits, refreshBackdrop,
                                                        gpuDamage, gpuDamageCount);
@@ -4740,10 +4768,12 @@ DwmComposeLoop(HANDLE hStopEvent)
                             gpuFrame = FALSE;
                             break;
                         }
+                        FLOAT blurSaturation;
+                        LONG blurRadius = DwmWindowBlurRadius(&wins[i], DWM_GPU_BLUR_RADIUS_MAX, &blurSaturation);
                         if (!DwmGpuComposeBlurWindow(&wins[i],
                                 wins[i].BlurRectCount != 0 ?
                                     &((const RECTL *)(g_buf + hdr->BlurRectArrayBase))[wins[i].BlurRectBase] : NULL,
-                                g_originX, g_originY, DwmBlurRadius()) ||
+                                g_originX, g_originY, (ULONG)blurRadius, blurSaturation) ||
                             !DwmBlendShadow(NULL, g_W, g_H, 0, 0, g_W, g_H, &wins[i]) ||
                             !DwmGpuComposeWindow(&wins[i], gpix,
                                                  g_originX, g_originY))
@@ -4968,7 +4998,7 @@ DwmComposeLoop(HANDLE hStopEvent)
                         DwmApplyBlur((const ULONG *)g_compBits,
                                      (ULONG *)g_compBits, g_W, g_H,
                                      pl, pt, pr, pb, &wins[i],
-                                     windowBlurRects, DwmBlurRadius());
+                                     windowBlurRects, DwmWindowBlurRadius(&wins[i], DWM_BLUR_RADIUS_MAX, NULL));
                     }
                     DwmStatCounter(&stgB);
                     if (g_frameStats)

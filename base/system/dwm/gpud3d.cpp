@@ -2573,7 +2573,8 @@ WindowBlurRect(const DWM_WIN *Window, const RECTL *Region, LONG OriginX, LONG Or
 }
 
 BOOL
-DwmD3dBlurWindow(const DWM_WIN *Window, const RECTL *Rectangles, LONG OriginX, LONG OriginY, ULONG Radius)
+DwmD3dBlurWindow(const DWM_WIN *Window, const RECTL *Rectangles, LONG OriginX, LONG OriginY, ULONG Radius,
+                 FLOAT Saturation)
 {
     if (!(Window->BlurFlags & DWM_BLUR_ENABLE))
         return TRUE;
@@ -2607,11 +2608,22 @@ DwmD3dBlurWindow(const DWM_WIN *Window, const RECTL *Rectangles, LONG OriginX, L
     SetRectangle(Data, Capture.left, Capture.top, Capture.right, Capture.bottom);
     Data.SourceSize[2] = Alpha;
     SetSampleExtent(Data, Blur->Result, Blur->Width, Blur->Height);
+    Data.Filter[3] = Saturation != 1.0f ? Saturation : 0.0f;
+    DWM_GPU_WINDOW_GEOMETRY Geometry;
+    BOOL Rounded = Window->CornerRadius != 0 && DwmGpuWindowGeometry(Window, OriginX, OriginY, &Geometry);
+    if (Rounded)
+    {
+        Data.ClientRect[0] = (FLOAT)Geometry.Left;
+        Data.ClientRect[1] = (FLOAT)Geometry.Top;
+        Data.ClientRect[2] = (FLOAT)(Geometry.Left + Geometry.Width);
+        Data.ClientRect[3] = (FLOAT)(Geometry.Top + Geometry.Height);
+        Data.Extra[2] = (FLOAT)Window->CornerRadius * Geometry.Width / max(Window->cx, 1);
+    }
     for (ULONG Index = 0; Index < Count; ++Index)
     {
         RECT Part;
         if (WindowBlurRect(Window, &Rectangles[Index], OriginX, OriginY, Part) &&
-            !Draw(State.Canvas, BlurCopy, ClipDraw(Part), Data, Blur->Result.View, NULL, Alpha < 1))
+            !Draw(State.Canvas, BlurCopy, ClipDraw(Part), Data, Blur->Result.View, NULL, Alpha < 1 || Rounded))
             return FALSE;
     }
     return TRUE;

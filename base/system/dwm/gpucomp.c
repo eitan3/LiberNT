@@ -2436,12 +2436,12 @@ DwmGpuClipWindowBlurRect(const DWM_WIN *Window, const RECTL *Region,
 
 BOOL
 DwmGpuComposeBlurWindow(const DWM_WIN *Window, const RECTL *Rectangles,
-                        LONG OriginX, LONG OriginY, ULONG Radius)
+                        LONG OriginX, LONG OriginY, ULONG Radius, FLOAT Saturation)
 {
     if (DwmD3dIsActive())
     {
         DPT_SCOPE Trace = DptBegin(&g_DwmPresentTrace, DPT_BLUR);
-        BOOL Result = DwmD3dBlurWindow(Window, Rectangles, OriginX, OriginY, Radius);
+        BOOL Result = DwmD3dBlurWindow(Window, Rectangles, OriginX, OriginY, Radius, Saturation);
         DptEnd(&g_DwmPresentTrace, Trace, Result, 0);
         return Result;
     }
