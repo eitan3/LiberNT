@@ -418,7 +418,7 @@ EndpointAdvancedDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
     PENDPOINT_PROPS Props = (PENDPOINT_PROPS)GetWindowLongPtrW(hwndDlg, DWLP_USER);
     HWND hCombo = GetDlgItem(hwndDlg, IDC_EP_FORMAT);
-    WCHAR Text[128];
+    WCHAR Text[128] = L"";
     UINT Index;
 
     switch (uMsg)
@@ -455,7 +455,7 @@ EndpointAdvancedDlgProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lParam)
 
                 if (Selected >= 0 && Selected != Props->CurrentFormat && !SaveFormat(Props, Selected))
                 {
-                    WCHAR Caption[128];
+                    WCHAR Caption[128] = L"";
 
                     LoadStringW(hApplet, IDS_FORMAT_SAVE_FAILED, Text, _countof(Text));
                     GetWindowTextW(GetParent(hwndDlg), Caption, _countof(Caption));
