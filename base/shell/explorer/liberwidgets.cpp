@@ -294,8 +294,6 @@ void CLiberWidgets::Stop()
     {
         KillTimer(m_hwndSink, LIBER_WIDGET_TIMER);
         DestroyWindow(m_hwndSink);
-        m_hwndSink = NULL;
-        LiberUI::Shutdown();
     }
     for (UINT i = 0; i < LIBER_WIDGET_COUNT; i++)
     {
@@ -303,6 +301,11 @@ void CLiberWidgets::Stop()
         m_Surfaces[i].Destroy();
         delete m_Cards[i];
         m_Cards[i] = NULL;
+    }
+    if (m_hwndSink)
+    {
+        m_hwndSink = NULL;
+        LiberUI::Shutdown();
     }
 }
 
@@ -323,4 +326,12 @@ HRESULT LiberWidgets_Start(HWND hwndOwner)
 VOID LiberWidgets_Stop(VOID)
 {
     delete g_pLiberWidgets;
+}
+
+VOID LiberWidgets_Sync(HWND hwndOwner)
+{
+    if (LiberExperience_WidgetsEnabled())
+        LiberWidgets_Start(hwndOwner);
+    else
+        LiberWidgets_Stop();
 }

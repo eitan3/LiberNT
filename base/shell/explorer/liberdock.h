@@ -19,7 +19,10 @@ typedef struct _LIBER_DOCK_LAYOUT
 BOOL LiberDock_IsTaskWindow(HWND hwnd);
 VOID LiberDock_Layout(const RECT *prcMonitor, UINT dpi, UINT cells, int trayWidthDip, LIBER_DOCK_LAYOUT *pLayout);
 BOOL LiberDock_SameApp(LPCWSTR pszTarget, LPCWSTR pszImage);
+VOID LiberDock_WorkArea(const RECT *prcMonitor, UINT dpi, RECT *prcWork);
 
 struct ITrayWindow;
 HRESULT LiberDock_Start(ITrayWindow *Tray);
 VOID LiberDock_Stop(VOID);
+BOOL LiberDock_OpenStart(VOID);
+BOOL LiberDock_ReservedWorkArea(HMONITOR hMonitor, RECT *prcWork);

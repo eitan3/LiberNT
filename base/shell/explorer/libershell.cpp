@@ -30,22 +30,36 @@ VOID LiberShell_ApplyFont(LiberUI::Surface *pSurface)
     pSurface->Fonts().SetFamily(family[0] ? family : LIBER_FONT_UI);
 }
 
-VOID LiberShell_SetDarkMode(BOOL bDark)
+static DWORD WINAPI BroadcastColorSet(LPVOID pContext)
+{
+    DWORD_PTR result;
+
+    UNREFERENCED_PARAMETER(pContext);
+    SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM)L"ImmersiveColorSet", SMTO_ABORTIFHUNG, 200,
+                        &result);
+    return 0;
+}
+
+BOOL LiberShell_SetDarkMode(BOOL bDark)
 {
     HKEY key;
     DWORD light = bDark ? 0 : 1;
-    DWORD_PTR result;
+    LSTATUS status;
 
     if (RegCreateKeyExW(HKEY_CURRENT_USER, PERSONALIZE_KEY, 0, NULL, 0, KEY_SET_VALUE, NULL, &key, NULL) !=
         ERROR_SUCCESS)
     {
-        return;
+        return FALSE;
     }
-    RegSetValueExW(key, L"AppsUseLightTheme", 0, REG_DWORD, (const BYTE *)&light, sizeof(light));
-    RegSetValueExW(key, L"SystemUsesLightTheme", 0, REG_DWORD, (const BYTE *)&light, sizeof(light));
+    status = RegSetValueExW(key, L"AppsUseLightTheme", 0, REG_DWORD, (const BYTE *)&light, sizeof(light));
+    if (status == ERROR_SUCCESS)
+        status = RegSetValueExW(key, L"SystemUsesLightTheme", 0, REG_DWORD, (const BYTE *)&light, sizeof(light));
     RegCloseKey(key);
-    SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, (LPARAM)L"ImmersiveColorSet", SMTO_ABORTIFHUNG, 200,
-                        &result);
+    if (status != ERROR_SUCCESS)
+        return FALSE;
+    if (!QueueUserWorkItem(BroadcastColorSet, NULL, WT_EXECUTELONGFUNCTION))
+        BroadcastColorSet(NULL);
+    return TRUE;
 }
 
 VOID LiberShell_PlaceAbove(const RECT *prcAnchor, int widthPx, int heightPx, POINT *pptTopLeft)

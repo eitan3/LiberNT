@@ -623,8 +623,10 @@ static void TestSurface(DWORD flags)
     surface.Input().PointerMove(dip);
     surface.SetRoot(NULL);
     ok(surface.Input().Root() == NULL && root->Host() == NULL, "root detached\n");
+    ok(surface.Fonts().Font(LIBER_TYPE_BODY) != NULL && surface.Fonts().LoadedCount() > 0, "a font is loaded\n");
     surface.Destroy();
     ok(surface.Window() == NULL, "window destroyed\n");
+    ok(surface.Fonts().LoadedCount() == 0, "destroying the surface frees its GDI+ fonts\n");
     delete root;
 }
 

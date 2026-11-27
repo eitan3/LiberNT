@@ -43,6 +43,7 @@ static BOOL ImagePathOf(HWND hwnd, LPWSTR pszPath, DWORD cchPath)
 struct LIBER_DOCK_ENTRY
 {
     WCHAR szTarget[MAX_PATH];
+    WCHAR szSource[MAX_PATH];
     HWND hwnd;
     HICON hIcon;
     BOOL bOwnsIcon;
@@ -243,6 +244,8 @@ public:
     void OnCellClick(int index, const RECT &bounds);
     void OnClockClick(const RECT &bounds);
     void OnPillClick();
+    void OpenStart();
+    UINT Dpi() const { return m_Dpi; }
     void OnChevronClick();
 
 private:
@@ -306,7 +309,6 @@ BOOL CALLBACK CLiberDock::PinProc(PCWSTR pszShortcut, PCWSTR pszTarget, PCWSTR p
     CLiberDock *self = (CLiberDock *)lParam;
     SHFILEINFOW sfi;
 
-    UNREFERENCED_PARAMETER(pszShortcut);
     UNREFERENCED_PARAMETER(pszAppId);
     UNREFERENCED_PARAMETER(pCreationTime);
     if (self->m_Count >= LIBER_DOCK_MAX_ITEMS || !pszTarget || !*pszTarget)
@@ -315,6 +317,7 @@ BOOL CALLBACK CLiberDock::PinProc(PCWSTR pszShortcut, PCWSTR pszTarget, PCWSTR p
     LIBER_DOCK_ENTRY &entry = self->m_Entries[self->m_Count++];
     ZeroMemory(&entry, sizeof(entry));
     StringCchCopyW(entry.szTarget, _countof(entry.szTarget), pszTarget);
+    StringCchCopyW(entry.szSource, _countof(entry.szSource), pszShortcut && *pszShortcut ? pszShortcut : pszTarget);
     entry.bPinned = TRUE;
     ZeroMemory(&sfi, sizeof(sfi));
     if ((SHGetFileInfoW(pszTarget, 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON) && sfi.hIcon) ||
@@ -403,6 +406,11 @@ void CLiberDock::Place()
     m_DockSurface.SetPosition(m_Layout.Dock.left, m_Layout.Dock.top, (int)cells * LIBER_DOCK_CELL + 2 * LIBER_DOCK_PAD,
                               LIBER_DOCK_HEIGHT);
     m_TraySurface.SetPosition(m_Layout.Tray.left, m_Layout.Tray.top, LIBER_TRAY_WIDTH, LIBER_TRAY_HEIGHT);
+
+    RECT work;
+    LiberDock_WorkArea(&mi.rcMonitor, m_Dpi, &work);
+    if (!EqualRect(&work, &mi.rcWork))
+        SystemParametersInfoW(SPI_SETWORKAREA, 0, &work, SPIF_SENDCHANGE);
 }
 
 void CLiberDock::Refresh()
@@ -427,6 +435,11 @@ void CLiberDock::Refresh()
 
     if (same)
     {
+        for (UINT i = 0; i < m_Count; i++)
+        {
+            if (!previous[i].bOwnsIcon && !m_Entries[i].bOwnsIcon)
+                previous[i].hIcon = m_Entries[i].hIcon;
+        }
         ClearEntries();
         CopyMemory(m_Entries, previous, sizeof(m_Entries));
         m_Count = previousCount;
@@ -437,7 +450,9 @@ void CLiberDock::Refresh()
             m_Cells[i + 1]->Set(m_Entries[i].hIcon, m_Entries[i].hwnd != NULL,
                                 m_Entries[i].hwnd != NULL && m_Entries[i].hwnd == foreground);
         }
+        Place();
         m_DockSurface.Render(AnimationClock::Now());
+        m_TraySurface.Render(AnimationClock::Now());
         return;
     }
 
@@ -494,7 +509,20 @@ void CLiberDock::OnCellClick(int index, const RECT &bounds)
         return;
     }
     if (entry.bPinned)
-        TaskbarPin_Launch(entry.szTarget, NULL);
+    {
+        HANDLE process = NULL;
+        HRESULT hr = TaskbarPin_Launch(entry.szSource, &process);
+        if (process)
+            CloseHandle(process);
+        if (FAILED(hr) && hr != HRESULT_FROM_WIN32(ERROR_CANCELLED))
+            MessageBeep(MB_ICONERROR);
+    }
+}
+
+void CLiberDock::OpenStart()
+{
+    if (m_Cells[0])
+        OnCellClick(-1, m_Cells[0]->Bounds());
 }
 
 void CLiberDock::OnPillClick()
@@ -556,6 +584,7 @@ LRESULT CALLBACK CLiberDock::SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         LiberShell_ApplyFont(&self->m_TraySurface);
         self->m_DockSurface.SetTokens(&self->m_Tokens);
         self->m_TraySurface.SetTokens(&self->m_Tokens);
+        LiberWidgets_Sync(GetShellWindow());
         SetTimer(hwnd, LIBER_TIMER_REFRESH, LIBER_REFRESH_DELAY, NULL);
         return 0;
     }
@@ -653,7 +682,10 @@ void CLiberDock::Stop()
     if (g_pLiberDock == this)
         g_pLiberDock = NULL;
     if (m_Tray && m_Tray->GetHWND())
+    {
         ShowWindow(m_Tray->GetHWND(), SW_SHOW);
+        SendMessageW(m_Tray->GetHWND(), WM_SIZE, SIZE_RESTORED, 0);
+    }
     if (m_Tray)
         LiberUI::Shutdown();
     m_Tray = NULL;
@@ -671,6 +703,27 @@ HRESULT LiberDock_Start(ITrayWindow *Tray)
     if (FAILED(hr))
         delete dock;
     return hr;
+}
+
+BOOL LiberDock_OpenStart(VOID)
+{
+    if (!g_pLiberDock)
+        return FALSE;
+    g_pLiberDock->OpenStart();
+    return TRUE;
+}
+
+BOOL LiberDock_ReservedWorkArea(HMONITOR hMonitor, RECT *prcWork)
+{
+    MONITORINFO mi = { sizeof(mi) };
+
+    if (!g_pLiberDock || hMonitor != MonitorFromPoint(POINT(), MONITOR_DEFAULTTOPRIMARY) ||
+        !GetMonitorInfoW(hMonitor, &mi))
+    {
+        return FALSE;
+    }
+    LiberDock_WorkArea(&mi.rcMonitor, g_pLiberDock->Dpi(), prcWork);
+    return TRUE;
 }
 
 VOID LiberDock_Stop(VOID)

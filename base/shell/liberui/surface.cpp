@@ -114,6 +114,7 @@ void Surface::Destroy()
         GpuDestroy(m_Gpu);
         m_Gpu = NULL;
     }
+    m_Fonts.Reset();
     SetRectEmpty(&m_Placed);
     if (m_hwnd)
     {

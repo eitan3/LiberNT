@@ -93,6 +93,14 @@ FontSet::~FontSet()
     Reset();
 }
 
+UINT FontSet::LoadedCount() const
+{
+    UINT count = 0;
+    for (UINT i = 0; i < LIBER_TYPE_COUNT; i++)
+        count += m_Fonts[i] != NULL;
+    return count;
+}
+
 void FontSet::Reset()
 {
     for (UINT i = 0; i < LIBER_TYPE_COUNT; i++)

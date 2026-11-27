@@ -13,6 +13,7 @@
 #include <cfgmgr32.h>
 #include <regstr.h>
 #include "appbar.h"
+#include "liberdock.h"
 
 HRESULT TrayWindowCtxMenuCreator(ITrayWindow * TrayWnd, IN HWND hWndOwner, IContextMenu ** ppCtxMenu);
 
@@ -2464,6 +2465,10 @@ ChangePos:
             }
         }
 
+        RECT rcLiber;
+        if (LiberDock_ReservedWorkArea(m_Monitor, &rcLiber))
+            rcWorkArea = rcLiber;
+
         /*
          * Resize the current monitor work area. Win32k will also send
          * a WM_SIZE message to automatically resize the desktop.
@@ -4137,6 +4142,9 @@ HandleTrayContextMenu:
 
     LRESULT OnOpenStartMenu(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL& bHandled)
     {
+        if (LiberDock_OpenStart())
+            return TRUE;
+
         if (m_StartMenuPopup == NULL)
         {
             if (StartMenu2_IsVisible())

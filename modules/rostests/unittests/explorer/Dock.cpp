@@ -38,6 +38,25 @@ static void TestLayout()
     CheckRect(layout.Tray, 3840 - 12 - 168, 978 + 9, 3840 - 12, 978 + 9 + 72, "tray at 144 DPI");
 }
 
+static void TestWorkArea()
+{
+    RECT monitor = { 0, 0, 1920, 1080 }, work;
+
+    LiberDock_WorkArea(&monitor, 96, &work);
+    CheckRect(work, 0, 0, 1920, 1080 - LIBER_TASKBAR_DOCK, "work area at 96 DPI");
+    LIBER_DOCK_LAYOUT layout;
+    LiberDock_Layout(&monitor, 96, 5, 112, &layout);
+    ok(work.bottom <= layout.Dock.top && work.bottom <= layout.Tray.top, "the work area ends above the dock\n");
+
+    RECT second = { 1920, -200, 3840, 880 };
+    LiberDock_WorkArea(&second, 144, &work);
+    CheckRect(work, 1920, -200, 3840, 880 - 114, "work area at 144 DPI on a second monitor");
+
+    RECT tiny = { 0, 0, 640, 60 };
+    LiberDock_WorkArea(&tiny, 96, &work);
+    CheckRect(work, 0, 0, 640, 0, "a monitor shorter than the dock");
+}
+
 static void TestTaskWindows()
 {
     HWND normal = CreateWindowExW(0, L"STATIC", L"Liber test window", WS_OVERLAPPEDWINDOW, -2000, -2000, 100, 100,
@@ -184,6 +203,7 @@ START_TEST(Dock)
     TestStartSearch();
     TestDesignValues();
     TestLayout();
+    TestWorkArea();
     TestPlaceAbove();
     TestTaskWindows();
     TestExperience();
