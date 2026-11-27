@@ -12,6 +12,10 @@
 namespace LiberUI
 {
 
+#ifndef WS_EX_NOREDIRECTIONBITMAP
+#define WS_EX_NOREDIRECTIONBITMAP 0x00200000L
+#endif
+
 static const WCHAR SurfaceClass[] = L"LiberSurface";
 
 static BOOL RegisterSurfaceClass(HINSTANCE instance, WNDPROC proc)
@@ -32,12 +36,13 @@ static BOOL RegisterSurfaceClass(HINSTANCE instance, WNDPROC proc)
 
 Surface::Surface()
     : m_hwnd(NULL), m_Dpi(96), m_Tokens(NULL), m_Root(NULL), m_Dc(NULL), m_Bitmap(NULL), m_OldBitmap(NULL),
-      m_Bits(NULL), m_LayoutPending(TRUE), m_Tracking(FALSE)
+      m_Bits(NULL), m_LayoutPending(TRUE), m_Tracking(FALSE), m_Gpu(NULL), m_Presents(0)
 {
     m_Position.x = m_Position.y = 0;
     m_SizeDip.cx = m_SizeDip.cy = 0;
     m_SizePx.cx = m_SizePx.cy = 0;
     SetRectEmpty(&m_Dirty);
+    SetRectEmpty(&m_Placed);
 }
 
 Surface::~Surface()
@@ -55,8 +60,27 @@ BOOL Surface::Create(HWND owner, LPCWSTR title, DWORD exStyle)
     if (m_hwnd || !RegisterSurfaceClass(instance, WndProc))
         return FALSE;
 
-    m_hwnd = CreateWindowExW(WS_EX_LAYERED | exStyle, SurfaceClass, title ? title : L"", WS_POPUP, 0, 0, 0, 0, owner,
-                             NULL, instance, this);
+    m_Gpu = GpuCreate();
+    if (m_Gpu)
+    {
+        m_hwnd = CreateWindowExW(WS_EX_NOREDIRECTIONBITMAP | exStyle, SurfaceClass, title ? title : L"", WS_POPUP, 0, 0,
+                                 0, 0, owner, NULL, instance, this);
+        if (m_hwnd && !GpuAttach(m_Gpu, m_hwnd))
+        {
+            DestroyWindow(m_hwnd);
+            m_hwnd = NULL;
+        }
+        if (!m_hwnd)
+        {
+            GpuDestroy(m_Gpu);
+            m_Gpu = NULL;
+        }
+    }
+    if (!m_hwnd)
+    {
+        m_hwnd = CreateWindowExW(WS_EX_LAYERED | exStyle, SurfaceClass, title ? title : L"", WS_POPUP, 0, 0, 0, 0,
+                                 owner, NULL, instance, this);
+    }
     if (!m_hwnd)
         return FALSE;
 
@@ -71,6 +95,12 @@ BOOL Surface::Create(HWND owner, LPCWSTR title, DWORD exStyle)
 
 void Surface::Destroy()
 {
+    if (m_Gpu)
+    {
+        GpuDestroy(m_Gpu);
+        m_Gpu = NULL;
+    }
+    SetRectEmpty(&m_Placed);
     if (m_hwnd)
     {
         HWND hwnd = m_hwnd;
@@ -286,7 +316,33 @@ void Surface::Present()
     SIZE size = m_SizePx;
     BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
 
-    UpdateLayeredWindow(m_hwnd, NULL, &position, &size, m_Dc, &source, 0, &blend, ULW_ALPHA);
+    if (!m_Gpu)
+    {
+        if (UpdateLayeredWindow(m_hwnd, NULL, &position, &size, m_Dc, &source, 0, &blend, ULW_ALPHA))
+            m_Presents++;
+        return;
+    }
+
+    RECT placed = { position.x, position.y, position.x + size.cx, position.y + size.cy };
+    if (!EqualRect(&placed, &m_Placed))
+    {
+        SetWindowPos(m_hwnd, NULL, placed.left, placed.top, size.cx, size.cy,
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        m_Placed = placed;
+    }
+    if (!GpuPresent(m_Gpu, m_Bits, (UINT)size.cx, (UINT)size.cy))
+    {
+        GpuDestroy(m_Gpu);
+        m_Gpu = GpuCreate();
+        if (m_Gpu && !GpuAttach(m_Gpu, m_hwnd))
+        {
+            GpuDestroy(m_Gpu);
+            m_Gpu = NULL;
+        }
+        if (!m_Gpu || !GpuPresent(m_Gpu, m_Bits, (UINT)size.cx, (UINT)size.cy))
+            return;
+    }
+    m_Presents++;
 }
 
 LRESULT CALLBACK Surface::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)

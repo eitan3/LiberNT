@@ -182,6 +182,97 @@ static void TestInvalidStyles()
     ok(AssertionFailures() > failures, "out-of-range styles assert\n");
 }
 
+static void Pump(DWORD ms)
+{
+    ULONGLONG end = GetTickCount64() + ms;
+    MSG msg;
+
+    while (GetTickCount64() < end)
+    {
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        Sleep(10);
+    }
+}
+
+static COLORREF ScreenPixel(int x, int y)
+{
+    HDC screen = GetDC(NULL);
+    COLORREF color = screen ? GetPixel(screen, x, y) : CLR_INVALID;
+    if (screen)
+        ReleaseDC(NULL, screen);
+    return color;
+}
+
+static void TestGpuSurface()
+{
+    typedef HANDLE (WINAPI *PFN_SETTHREADDPIAWARENESSCONTEXT)(HANDLE);
+    PFN_SETTHREADDPIAWARENESSCONTEXT setAwareness = (PFN_SETTHREADDPIAWARENESSCONTEXT)GetProcAddress(
+        GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext");
+    HANDLE previous = setAwareness ? setAwareness((HANDLE)-4) : NULL;
+    Surface surface;
+    StackPanel *root = new StackPanel(Orientation::Horizontal, 0);
+    FillWidget *fill = new FillWidget(0xFFFF0000);
+    ThemeTokens tokens;
+
+    fill->SetSize(80, 80);
+    root->AddChild(fill);
+    ok(surface.Create(NULL, L"LiberUI D3D test", WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE),
+       "surface created\n");
+    if (!surface.IsGpu())
+    {
+        skip("Direct3D 11 composition is not available\n");
+        surface.Destroy();
+        delete root;
+        if (setAwareness && previous)
+            setAwareness(previous);
+        return;
+    }
+    ok((GetWindowLongPtrW(surface.Window(), GWL_EXSTYLE) & 0x00200000L) != 0, "the window has no redirection bitmap\n");
+    ok((GetWindowLongPtrW(surface.Window(), GWL_EXSTYLE) & WS_EX_LAYERED) == 0, "the window is not layered\n");
+
+    surface.SetDpi(96);
+    surface.SetTokens(&tokens);
+    surface.SetRoot(root);
+    surface.SetPosition(100, 100, 80, 80);
+    UINT presents = surface.PresentCount();
+    ok(surface.Render(0) && surface.PresentCount() == presents + 1, "render presents through the swap chain\n");
+    RECT rc;
+    GetWindowRect(surface.Window(), &rc);
+    ok(rc.left == 100 && rc.top == 100 && rc.right == 180 && rc.bottom == 180, "window placed at (%ld,%ld,%ld,%ld)\n",
+       rc.left, rc.top, rc.right, rc.bottom);
+
+    ShowWindow(surface.Window(), SW_SHOWNOACTIVATE);
+    Pump(400);
+    COLORREF red = ScreenPixel(140, 140);
+    ok(red == RGB(255, 0, 0), "the composed pixel is red: %06lX\n", red);
+
+    fill->Color = 0xFF0000FF;
+    fill->Invalidate();
+    surface.Render(0);
+    Pump(400);
+    COLORREF blue = ScreenPixel(140, 140);
+    ok(blue == RGB(0, 0, 255), "a second present updates the screen: %06lX\n", blue);
+
+    fill->Color = 0x00000000;
+    fill->Invalidate();
+    surface.Render(0);
+    Pump(400);
+    COLORREF through = ScreenPixel(140, 140);
+    ok(through != RGB(0, 0, 255) && through != RGB(255, 0, 0), "transparent pixels show what is below: %06lX\n",
+       through);
+
+    surface.SetRoot(NULL);
+    surface.Destroy();
+    ok(!surface.IsGpu() && surface.Window() == NULL, "destroyed\n");
+    delete root;
+    if (setAwareness && previous)
+        setAwareness(previous);
+}
+
 static void TestSurface()
 {
     Surface surface;
@@ -249,6 +340,7 @@ START_TEST(Painter)
     TestFonts();
     TestImage();
     TestSurface();
+    TestGpuSurface();
     ok(AssertionFailures() == failures, "%ld assertions failed\n", AssertionFailures() - failures);
     TestInvalidStyles();
     Shutdown();

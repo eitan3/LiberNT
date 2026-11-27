@@ -685,6 +685,8 @@ public:
     BOOL HasDirty() const { return !IsRectEmpty(&m_Dirty); }
     const RECT &Dirty() const { return m_Dirty; }
     POINT PixelToDip(POINT pt) const;
+    BOOL IsGpu() const { return m_Gpu != NULL; }
+    UINT PresentCount() const { return m_Presents; }
 
     void InvalidateRect(const RECT &rc);
     void RequestLayout();
@@ -718,6 +720,9 @@ private:
     RECT m_Dirty;
     BOOL m_LayoutPending;
     BOOL m_Tracking;
+    struct SurfaceGpu *m_Gpu;
+    UINT m_Presents;
+    RECT m_Placed;
 };
 
 int ScaleToDpi(int value, UINT dpi);
