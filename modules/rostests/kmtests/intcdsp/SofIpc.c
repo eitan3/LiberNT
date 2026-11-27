@@ -878,7 +878,10 @@ CheckStreamTrace(
     ok_eq_uint(Streams.Faulted, TRUE);
     ok_eq_uint(H->Ipc.Link, SofIpcLinkFaulted);
     ok_eq_uint(FakeBusCount(&Bus, FAKE_BUS_EVENT_FREE), 4);
-    ok_eq_uint(FakeBusCount(&Bus, FAKE_BUS_EVENT_BUFFER_FREE), 1);
+    /* the buffer of the allocate that faulted is detached, not freed by the bus, and returned by the manager itself (MmFreePagesFromMdl: the pin never had it, R5-01), so the bus's free count does not move */
+    ok_eq_uint(FakeBusCount(&Bus, FAKE_BUS_EVENT_BUFFER_DETACH), 1);
+    ok_eq_uint(FakeBusCount(&Bus, FAKE_BUS_EVENT_BUFFER_FREE), 0);
+    ok_eq_uint(IntcDspStreamsHeld(&Streams), 0);
     ok_eq_int(IntcDspStreamClose(&Streams, Render), STATUS_SUCCESS);
     ok_eq_int(IntcDspStreamClose(&Streams, Capture), STATUS_SUCCESS);
 }
