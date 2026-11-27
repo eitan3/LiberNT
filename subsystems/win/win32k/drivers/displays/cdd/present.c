@@ -52,6 +52,9 @@ RcddNotifyDirtyRects(
    ULONG Ret;
    BOOL Result;
 
+   if (ppdev->DxgkAdapter != NULL)
+      return RcddDxgkPresent(ppdev, prcl, Count);
+
    HeaderSize = FIELD_OFFSET(DXGK_PRESENT_DIRTY_RECTS_INPUT, Rects);
    if (Count > DXGK_PRESENT_DIRTY_MAX_RECTS)
       return FALSE;
@@ -533,6 +536,13 @@ RcddAcquireScreenReadRegion(
    Error = EngDeviceIoControl(ppdev->hDriver, IOCTL_VIDEO_DXGK_CAPTURE_DESKTOP,
                               &Capture, sizeof(Capture), &Capture,
                               sizeof(Capture), &Returned);
+   if (Error == (ULONG)STATUS_NOT_SUPPORTED || Error == (ULONG)STATUS_INVALID_DEVICE_REQUEST)
+   {
+      ASSERT(ppdev->CaptureMutex.OwnerThread == KeGetCurrentThread());
+      ppdev->ScreenMirrorNeeded = TRUE;
+      KeReleaseMutex(&ppdev->CaptureMutex, FALSE);
+      return TRUE;
+   }
    if (Error != 0 || Returned != sizeof(Capture))
       goto Failure;
    if (!(Capture.Flags & DXGK_DESKTOP_CAPTURE_HAS_IMAGE))

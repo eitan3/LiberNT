@@ -102,6 +102,37 @@ D3DKMTOpenResource(
 
 NTSTATUS
 APIENTRY
+D3DKMTOpenAdapterFromGdiDisplayName(
+    _Inout_ D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME *pData)
+{
+    WCHAR DeviceName[RTL_NUMBER_OF(pData->DeviceName)];
+    D3DKMT_OPENADAPTERFROMHDC Open;
+    NTSTATUS Status;
+    HDC hDC;
+
+    if (pData == NULL)
+        return STATUS_UNSUCCESSFUL;
+    RtlCopyMemory(DeviceName, pData->DeviceName, sizeof(DeviceName));
+    if (DeviceName[0] == UNICODE_NULL || wcsnlen(DeviceName, RTL_NUMBER_OF(DeviceName)) == RTL_NUMBER_OF(DeviceName))
+        return STATUS_UNSUCCESSFUL;
+    hDC = CreateDCW(DeviceName, NULL, NULL, NULL);
+    if (hDC == NULL)
+        return STATUS_UNSUCCESSFUL;
+    RtlZeroMemory(&Open, sizeof(Open));
+    Open.hDc = hDC;
+    Status = NtGdiDdDDIOpenAdapterFromHdc(&Open);
+    DeleteDC(hDC);
+    if (NT_SUCCESS(Status))
+    {
+        pData->hAdapter = Open.hAdapter;
+        pData->AdapterLuid = Open.AdapterLuid;
+        pData->VidPnSourceId = Open.VidPnSourceId;
+    }
+    return Status;
+}
+
+NTSTATUS
+APIENTRY
 D3DKMTCreateSynchronizationObject(
     _Inout_ D3DKMT_CREATESYNCHRONIZATIONOBJECT *pData)
 {
@@ -157,4 +188,29 @@ D3DKMTWaitForSynchronizationObject(
     Wait.ObjectCount = pData->ObjectCount;
     RtlCopyMemory(Wait.ObjectHandleArray, pData->ObjectHandleArray, sizeof(Wait.ObjectHandleArray));
     return NtGdiDdDDIWaitForSynchronizationObject(&Wait);
+}
+
+NTSTATUS
+APIENTRY
+D3DKMTSetVidPnSourceOwner(
+    _In_ CONST D3DKMT_SETVIDPNSOURCEOWNER *pData)
+{
+    D3DKMT_SETVIDPNSOURCEOWNER2 Owner;
+
+    RtlZeroMemory(&Owner, sizeof(Owner));
+    Owner.Version1.Version0 = *pData;
+    Owner.Version1.Flags.AllowOutputDuplication = 1;
+    return NtGdiDdDDISetVidPnSourceOwner(&Owner);
+}
+
+NTSTATUS
+APIENTRY
+D3DKMTSetVidPnSourceOwner1(
+    _In_ CONST D3DKMT_SETVIDPNSOURCEOWNER1 *pData)
+{
+    D3DKMT_SETVIDPNSOURCEOWNER2 Owner;
+
+    RtlZeroMemory(&Owner, sizeof(Owner));
+    Owner.Version1 = *pData;
+    return NtGdiDdDDISetVidPnSourceOwner(&Owner);
 }

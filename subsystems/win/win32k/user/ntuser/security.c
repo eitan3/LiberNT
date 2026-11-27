@@ -495,6 +495,7 @@ IntCheckParsedObjectAccess(
  * of a lack of needed pages to reserve for such allocation. A
  * failure NTSTATUS code is returned otherwise.
  */
+
 NTSTATUS
 NTAPI
 IntCreateServiceSecurity(

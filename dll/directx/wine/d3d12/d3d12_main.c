@@ -225,6 +225,9 @@ static struct d3d12_dred_settings *impl_from_ID3D12DeviceRemovedExtendedDataSett
 static HRESULT STDMETHODCALLTYPE
 d3d12_dred_settings_QueryInterface(ID3D12DeviceRemovedExtendedDataSettings2 *iface, REFIID iid, void **out)
 {
+    if (!out)
+        return E_POINTER;
+
     if (IsEqualGUID(iid, &IID_ID3D12DeviceRemovedExtendedDataSettings2)
             || IsEqualGUID(iid, &IID_ID3D12DeviceRemovedExtendedDataSettings1)
             || IsEqualGUID(iid, &IID_ID3D12DeviceRemovedExtendedDataSettings)
@@ -354,6 +357,9 @@ static struct d3d12_sdk_configuration *impl_from_ID3D12SDKConfiguration1(ID3D12S
 static HRESULT STDMETHODCALLTYPE
 d3d12_sdk_configuration_QueryInterface(ID3D12SDKConfiguration1 *iface, REFIID iid, void **out)
 {
+    if (!out)
+        return E_POINTER;
+
     if (IsEqualGUID(iid, &IID_ID3D12SDKConfiguration1) || IsEqualGUID(iid, &IID_ID3D12SDKConfiguration)
             || IsEqualGUID(iid, &IID_IUnknown))
     {
@@ -492,6 +498,9 @@ HRESULT WINAPI
 D3D12SerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC *root_signature_desc, D3D_ROOT_SIGNATURE_VERSION version,
                             ID3DBlob **blob, ID3DBlob **error_blob)
 {
+    if (!root_signature_desc)
+        return E_INVALIDARG;
+
     return vkd3d_serialize_root_signature(root_signature_desc, version, blob, error_blob);
 }
 
@@ -536,6 +545,9 @@ static HRESULT STDMETHODCALLTYPE
 d3d12_device_factory_QueryInterface(ID3D12DeviceFactory *iface, REFIID iid, void **out)
 {
     struct d3d12_device_factory *factory = impl_from_ID3D12DeviceFactory(iface);
+
+    if (!out)
+        return E_POINTER;
 
     if (IsEqualGUID(iid, &IID_ID3D12DeviceFactory) || IsEqualGUID(iid, &IID_IUnknown))
     {

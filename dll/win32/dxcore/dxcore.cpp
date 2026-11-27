@@ -153,7 +153,12 @@ static BOOL read_adapter(D3DKMT_HANDLE adapter, const LUID *luid, AdapterData *d
 
 static BOOL adapter_renders(const AdapterData *data)
 {
-    return data->Type.RenderSupported || data->Type.DisplaySupported;
+    return data->Type.RenderSupported;
+}
+
+static BOOL adapter_visible(const AdapterData *data)
+{
+    return data->Type.RenderSupported || data->Type.ComputeOnly;
 }
 
 static BOOL adapter_has_attribute(const AdapterData *data, REFGUID attribute)
@@ -424,8 +429,12 @@ HRESULT STDMETHODCALLTYPE Adapter::GetProperty(DXCoreAdapterProperty property, s
     const void *source = &value;
     size_t size;
 
-    if (!IsPropertySupported(property)) return DXGI_ERROR_INVALID_CALL;
     if (!propertyData) return E_POINTER;
+    if (!IsPropertySupported(property))
+    {
+        memset(propertyData, 0, bufferSize);
+        return DXGI_ERROR_INVALID_CALL;
+    }
     size = property_size(&m_data, property);
     memset(&value, 0, sizeof(value));
 
@@ -516,9 +525,10 @@ HRESULT STDMETHODCALLTYPE Adapter::QueryState(DXCoreAdapterState state, size_t i
                                               const void *inputStateDetails, size_t outputBufferSize,
                                               void *outputBuffer)
 {
+    if (!outputBuffer) return E_POINTER;
     if (state == DXCoreAdapterState::IsDriverUpdateInProgress)
     {
-        if (!outputBuffer || outputBufferSize < sizeof(bool)) return E_INVALIDARG;
+        if (outputBufferSize < sizeof(bool)) return E_INVALIDARG;
         *(bool *)outputBuffer = false;
         return S_OK;
     }
@@ -531,7 +541,10 @@ HRESULT STDMETHODCALLTYPE Adapter::QueryState(DXCoreAdapterState state, size_t i
         D3DKMT_QUERYVIDEOMEMORYINFO info = {};
         NTSTATUS status;
 
-        if (!input || inputStateDetailsSize < sizeof(*input) || !output || outputBufferSize < sizeof(*output))
+        if (!input && inputStateDetailsSize) return E_POINTER;
+        if (!input || inputStateDetailsSize < sizeof(*input) || outputBufferSize < sizeof(*output))
+            return E_INVALIDARG;
+        if (input->segmentGroup != DXCoreSegmentGroup::Local && input->segmentGroup != DXCoreSegmentGroup::NonLocal)
             return E_INVALIDARG;
         open.AdapterLuid = m_data.Luid;
         if (!NT_SUCCESS(D3DKMTOpenAdapterFromLuid(&open)))
@@ -549,7 +562,7 @@ HRESULT STDMETHODCALLTYPE Adapter::QueryState(DXCoreAdapterState state, size_t i
         output->currentReservation = info.CurrentReservation;
         return S_OK;
     }
-    return DXGI_ERROR_UNSUPPORTED;
+    return DXGI_ERROR_INVALID_CALL;
 }
 
 HRESULT STDMETHODCALLTYPE Adapter::GetFactory(REFIID riid, void **ppvFactory)
@@ -757,7 +770,7 @@ HRESULT Factory::BuildList(const GUID *const *attributes, uint32_t count, REFIID
         AdapterData data;
         Adapter *adapter;
 
-        if (read_adapter(infos[i].hAdapter, &infos[i].AdapterLuid, &data))
+        if (read_adapter(infos[i].hAdapter, &infos[i].AdapterLuid, &data) && adapter_visible(&data))
         {
             for (j = 0; j < count; j++)
             {
@@ -838,7 +851,7 @@ HRESULT STDMETHODCALLTYPE Factory::GetAdapterByLuid(const LUID &adapterLUID, REF
     {
         open.AdapterLuid = adapterLUID;
         if (!NT_SUCCESS(D3DKMTOpenAdapterFromLuid(&open))) return E_INVALIDARG;
-        if (read_adapter(open.hAdapter, &adapterLUID, &data))
+        if (read_adapter(open.hAdapter, &adapterLUID, &data) && adapter_visible(&data))
             adapter = FindOrCreate(adapterLUID, &data);
         close_adapter(open.hAdapter);
         if (!adapter) return E_INVALIDARG;

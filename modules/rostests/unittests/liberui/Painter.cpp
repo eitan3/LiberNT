@@ -182,7 +182,343 @@ static void TestInvalidStyles()
     ok(AssertionFailures() > failures, "out-of-range styles assert\n");
 }
 
-static void TestSurface()
+typedef void (*PAINT_SCRIPT)(IPainter &painter);
+
+class ScriptWidget : public Widget
+{
+public:
+    ScriptWidget(PAINT_SCRIPT script) : Script(script) {}
+    PAINT_SCRIPT Script;
+
+protected:
+    void PaintOverride(PaintContext &context) { Script(context.Painter); }
+};
+
+static BOOL RenderScript(PAINT_SCRIPT script, UINT dpi, DWORD *pixels, BOOL *gpu, DWORD flags = 0)
+{
+    Surface surface;
+    StackPanel *root = new StackPanel(Orientation::Horizontal, 0);
+    ScriptWidget *widget = new ScriptWidget(script);
+    ThemeTokens tokens;
+    BOOL rendered;
+
+    ZeroMemory(pixels, (SIZE_T)ScaleToDpi(64, dpi) * ScaleToDpi(64, dpi) * sizeof(DWORD));
+    widget->SetSize(64, 64);
+    root->AddChild(widget);
+    if (!surface.Create(NULL, L"LiberUI GPU painter test", WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, flags))
+    {
+        delete root;
+        return FALSE;
+    }
+    surface.SetDpi(dpi);
+    surface.SetTokens(&tokens);
+    surface.SetRoot(root);
+    surface.SetPosition(-2000, -2000, 64, 64);
+    *gpu = surface.IsGpu();
+    rendered = surface.Render(0) && surface.ReadPixels(pixels, ScaleToDpi(64, dpi) * 4);
+    surface.SetRoot(NULL);
+    surface.Destroy();
+    delete root;
+    return rendered;
+}
+
+static void ScriptRound(IPainter &p) { p.FillRoundRect(R(0, 0, 64, 64), 16.0f, 0xFFFF0000); }
+static void ScriptHalf(IPainter &p) { p.FillRect(R(0, 0, 64, 64), 0x80FFFFFF); }
+static void ScriptSmall(IPainter &p) { p.FillRect(R(0, 0, 10, 10), 0xFF00FF00); }
+static void ScriptClip(IPainter &p)
+{
+    p.PushClip(R(0, 0, 32, 64), 0.0f);
+    p.FillRect(R(0, 0, 64, 64), 0xFF0000FF);
+    p.PopClip();
+}
+static void ScriptStroke(IPainter &p) { p.StrokeRoundRect(R(0, 0, 64, 64), 8.0f, 0xFFFFFFFF, 1.0f); }
+static void ScriptEllipse(IPainter &p) { p.FillEllipse(R(0, 0, 64, 64), 0xFF00FF00); }
+static void ScriptArc(IPainter &p) { p.StrokeArc(R(8, 8, 48, 48), -90.0f, 90.0f, 0xFFFF0000, 6.0f); }
+static void ScriptLine(IPainter &p) { p.Line(PointF{ 0, 32 }, PointF{ 64, 32 }, 0xFF0000FF, 2.0f); }
+static void ScriptText(IPainter &p)
+{
+    p.Text(L"Liber", R(0, 0, 64, 64), LIBER_TYPE_BODY_STRONG, 0xFF000000, TextCenter | TextMiddle);
+}
+static void ScriptIcon(IPainter &p) { p.Icon(L"settings_20_regular", R(0, 0, 64, 64), 0xFFFFFFFF); }
+static void ScriptNestedClip(IPainter &p)
+{
+    p.PushClip(R(0, 0, 64, 64), 0.0f);
+    p.PushClip(R(8, 8, 48, 48), 16.0f);
+    p.FillRect(R(0, 0, 64, 64), 0xFFFF0000);
+    p.PopClip();
+    p.PopClip();
+}
+static void ScriptInnerSquare(IPainter &p)
+{
+    p.PushClip(R(0, 0, 64, 64), 24.0f);
+    p.PushClip(R(24, 24, 16, 16), 0.0f);
+    p.FillRect(R(0, 0, 64, 64), 0xFF00FF00);
+    p.PopClip();
+    p.PopClip();
+}
+static void ScriptEmptyClip(IPainter &p)
+{
+    p.PushClip(R(0, 0, 20, 64), 0.0f);
+    p.PushClip(R(40, 0, 20, 64), 0.0f);
+    p.FillRect(R(0, 0, 64, 64), 0xFFFF0000);
+    p.PopClip();
+    p.PopClip();
+}
+static void ScriptShortLine(IPainter &p) { p.Line(PointF{ 16, 32 }, PointF{ 48, 32 }, 0xFF0000FF, 8.0f); }
+static void ScriptOffsetText(IPainter &p)
+{
+    p.Text(L"Liber", R(0.5f, 0.25f, 64, 64), LIBER_TYPE_BODY_STRONG, 0xFF000000, TextCenter | TextMiddle);
+}
+
+static UINT CountInk(const DWORD *px, UINT count)
+{
+    UINT inked = 0;
+    for (UINT i = 0; i < count; i++)
+        inked += ArgbA(px[i]) != 0;
+    return inked;
+}
+
+static UINT AlphaMismatches(const DWORD *a, const DWORD *b, UINT count, int tolerance)
+{
+    UINT mismatches = 0;
+    for (UINT i = 0; i < count; i++)
+        mismatches += abs((int)ArgbA(a[i]) - (int)ArgbA(b[i])) > tolerance;
+    return mismatches;
+}
+
+static ULONG Coverage(const DWORD *px, UINT count)
+{
+    ULONG sum = 0;
+    for (UINT i = 0; i < count; i++)
+        sum += ArgbA(px[i]);
+    return sum;
+}
+
+static void TestGpuParity()
+{
+    static const struct
+    {
+        PAINT_SCRIPT Script;
+        const char *Name;
+        UINT Allowed;
+    } Cases[] = {
+        { ScriptRound, "round rect", 0 },     { ScriptStroke, "stroke", 0 },      { ScriptEllipse, "ellipse", 0 },
+        { ScriptArc, "arc", 0 },              { ScriptLine, "line", 0 },          { ScriptShortLine, "short line", 0 },
+        { ScriptClip, "clip", 0 },            { ScriptNestedClip, "nested clip", 16 },
+        { ScriptEmptyClip, "empty clip", 0 }, { ScriptText, "text", 24 },         { ScriptOffsetText, "offset text", 24 },
+        { ScriptIcon, "icon", 24 },
+    };
+    static DWORD gpuPx[64 * 64], cpuPx[64 * 64];
+    BOOL gpu = FALSE, cpu = TRUE;
+
+    for (UINT i = 0; i < _countof(Cases); i++)
+    {
+        ok(RenderScript(Cases[i].Script, 96, gpuPx, &gpu), "%s rendered on the GPU\n", Cases[i].Name);
+        ok(RenderScript(Cases[i].Script, 96, cpuPx, &cpu, SurfaceNoGpu), "%s rendered on the CPU\n", Cases[i].Name);
+        ok(!cpu, "%s CPU surface is not on the GPU\n", Cases[i].Name);
+        if (!gpu)
+            continue;
+        UINT mismatches = AlphaMismatches(gpuPx, cpuPx, 64 * 64, 128);
+        ok(mismatches <= Cases[i].Allowed, "%s: %u pixels disagree between Direct3D and GDI+\n", Cases[i].Name,
+           mismatches);
+        ULONG gpuCover = Coverage(gpuPx, 64 * 64), cpuCover = Coverage(cpuPx, 64 * 64);
+        ULONG delta = gpuCover > cpuCover ? gpuCover - cpuCover : cpuCover - gpuCover;
+        ok(delta * 10 <= max(cpuCover, 255UL), "%s: coverage %lu on Direct3D, %lu on GDI+\n", Cases[i].Name, gpuCover,
+           cpuCover);
+    }
+}
+
+static void TestGpuPainter()
+{
+    static DWORD px[128 * 128];
+    BOOL gpu = FALSE;
+
+    ok(RenderScript(ScriptRound, 96, px, &gpu), "round rect rendered\n");
+    if (!gpu)
+    {
+        skip("Direct3D 11 is not available\n");
+        return;
+    }
+    ok(px[32 * 64 + 32] == 0xFFFF0000, "center is opaque red: %08lX\n", px[32 * 64 + 32]);
+    ok(px[0] == 0, "rounded corner stays transparent: %08lX\n", px[0]);
+    ok(px[32 * 64] == 0xFFFF0000, "straight edge is filled: %08lX\n", px[32 * 64]);
+    ok(ArgbA(px[4 * 64 + 4]) > 0 && ArgbA(px[4 * 64 + 4]) < 255, "corner edge is anti-aliased: %08lX\n",
+       px[4 * 64 + 4]);
+
+    ok(RenderScript(ScriptHalf, 96, px, &gpu), "half fill rendered\n");
+    ok(Near(px[10 * 64 + 10], 0x80808080, 1), "translucent fill is premultiplied: %08lX\n", px[10 * 64 + 10]);
+
+    ok(RenderScript(ScriptSmall, 192, px, &gpu), "high DPI fill rendered\n");
+    ok(px[19 * 128 + 19] == 0xFF00FF00 && px[21 * 128 + 21] == 0, "DIPs scale with DPI: %08lX %08lX\n",
+       px[19 * 128 + 19], px[21 * 128 + 21]);
+
+    ok(RenderScript(ScriptClip, 96, px, &gpu), "clip rendered\n");
+    ok(px[10 * 64 + 10] == 0xFF0000FF && px[10 * 64 + 50] == 0, "clip limits drawing: %08lX %08lX\n",
+       px[10 * 64 + 10], px[10 * 64 + 50]);
+
+    ok(RenderScript(ScriptNestedClip, 96, px, &gpu), "nested clip rendered\n");
+    ok(px[9 * 64 + 9] == 0 && px[32 * 64 + 32] == 0xFFFF0000 && px[4 * 64 + 32] == 0,
+       "nested clip keeps the inner rounded rect: %08lX %08lX %08lX\n", px[9 * 64 + 9], px[32 * 64 + 32],
+       px[4 * 64 + 32]);
+
+    ok(RenderScript(ScriptInnerSquare, 96, px, &gpu), "inner square clip rendered\n");
+    ok(px[24 * 64 + 24] == 0xFF00FF00 && px[39 * 64 + 39] == 0xFF00FF00,
+       "a square clip inside a rounded one keeps its corners: %08lX %08lX\n", px[24 * 64 + 24], px[39 * 64 + 39]);
+
+    ok(RenderScript(ScriptEmptyClip, 96, px, &gpu), "empty clip rendered\n");
+    ok(CountInk(px, 64 * 64) == 0, "disjoint clips draw nothing: %u\n", CountInk(px, 64 * 64));
+
+    ok(RenderScript(ScriptStroke, 96, px, &gpu), "stroke rendered\n");
+    ok(px[32 * 64] != 0 && px[32 * 64 + 32] == 0, "stroke draws the edge only: %08lX %08lX\n", px[32 * 64],
+       px[32 * 64 + 32]);
+
+    ok(RenderScript(ScriptEllipse, 96, px, &gpu), "ellipse rendered\n");
+    ok(px[32 * 64 + 32] == 0xFF00FF00 && px[0] == 0 && px[63] == 0, "ellipse: %08lX %08lX\n", px[32 * 64 + 32], px[0]);
+
+    ok(RenderScript(ScriptArc, 96, px, &gpu), "arc rendered\n");
+    ok(ArgbR(px[8 * 64 + 32]) > 200, "arc starts at the top: %08lX\n", px[8 * 64 + 32]);
+    ok(ArgbR(px[32 * 64 + 56]) > 200, "a quarter arc reaches the right: %08lX\n", px[32 * 64 + 56]);
+    ok(px[56 * 64 + 32] == 0 && px[32 * 64 + 8] == 0, "the rest of the circle is empty: %08lX %08lX\n",
+       px[56 * 64 + 32], px[32 * 64 + 8]);
+
+    ok(RenderScript(ScriptLine, 96, px, &gpu), "line rendered\n");
+    ok(ArgbB(px[32 * 64 + 32]) > 200 && px[20 * 64 + 32] == 0, "line: %08lX %08lX\n", px[32 * 64 + 32],
+       px[20 * 64 + 32]);
+
+    ok(RenderScript(ScriptShortLine, 96, px, &gpu), "short line rendered\n");
+    ok(ArgbB(px[32 * 64 + 17]) > 200 && px[32 * 64 + 13] == 0 && px[32 * 64 + 50] == 0,
+       "lines have flat caps: %08lX %08lX %08lX\n", px[32 * 64 + 17], px[32 * 64 + 13], px[32 * 64 + 50]);
+
+    ok(RenderScript(ScriptText, 96, px, &gpu), "text rendered\n");
+    UINT inked = CountInk(px, 64 * 64);
+    ok(inked > 20 && px[0] == 0, "text drew %u pixels\n", inked);
+
+    ok(RenderScript(ScriptIcon, 96, px, &gpu), "icon rendered\n");
+    inked = CountInk(px, 64 * 64);
+    ok(inked > 50, "icon drew %u pixels\n", inked);
+}
+
+static void Pump(DWORD ms)
+{
+    ULONGLONG end = GetTickCount64() + ms;
+    MSG msg;
+
+    while (GetTickCount64() < end)
+    {
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        Sleep(10);
+    }
+}
+
+static COLORREF ScreenPixel(int x, int y)
+{
+    HDC screen = GetDC(NULL);
+    COLORREF color = screen ? GetPixel(screen, x, y) : CLR_INVALID;
+    if (screen)
+        ReleaseDC(NULL, screen);
+    return color;
+}
+
+static void TestGpuSurface()
+{
+    typedef HANDLE (WINAPI *PFN_SETTHREADDPIAWARENESSCONTEXT)(HANDLE);
+    PFN_SETTHREADDPIAWARENESSCONTEXT setAwareness = (PFN_SETTHREADDPIAWARENESSCONTEXT)GetProcAddress(
+        GetModuleHandleW(L"user32.dll"), "SetThreadDpiAwarenessContext");
+    HANDLE previous = setAwareness ? setAwareness((HANDLE)-4) : NULL;
+    Surface surface;
+    StackPanel *root = new StackPanel(Orientation::Horizontal, 0);
+    FillWidget *fill = new FillWidget(0xFFFF0000);
+    ThemeTokens tokens;
+
+    fill->SetSize(80, 80);
+    root->AddChild(fill);
+    ok(surface.Create(NULL, L"LiberUI D3D test", WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE),
+       "surface created\n");
+    if (!surface.IsGpu())
+    {
+        skip("Direct3D 11 composition is not available\n");
+        surface.Destroy();
+        delete root;
+        if (setAwareness && previous)
+            setAwareness(previous);
+        return;
+    }
+    ok((GetWindowLongPtrW(surface.Window(), GWL_EXSTYLE) & 0x00200000L) != 0, "the window has no redirection bitmap\n");
+    ok((GetWindowLongPtrW(surface.Window(), GWL_EXSTYLE) & WS_EX_LAYERED) == 0, "the window is not layered\n");
+
+    surface.SetDpi(96);
+    surface.SetTokens(&tokens);
+    surface.SetRoot(root);
+    surface.SetPosition(100, 100, 80, 80);
+    UINT presents = surface.PresentCount();
+    ok(surface.Render(0) && surface.PresentCount() == presents + 1, "render presents through the swap chain\n");
+    RECT rc;
+    GetWindowRect(surface.Window(), &rc);
+    ok(rc.left == 100 && rc.top == 100 && rc.right == 180 && rc.bottom == 180, "window placed at (%ld,%ld,%ld,%ld)\n",
+       rc.left, rc.top, rc.right, rc.bottom);
+
+    ShowWindow(surface.Window(), SW_SHOWNOACTIVATE);
+    Pump(400);
+    COLORREF red = ScreenPixel(140, 140);
+    ok(red == RGB(255, 0, 0), "the composed pixel is red: %06lX\n", red);
+
+    surface.SetPosition(120, 100, 80, 80);
+    ok(surface.Render(0), "render after a move\n");
+    GetWindowRect(surface.Window(), &rc);
+    ok(rc.left == 120 && rc.top == 100, "a move without a resize places the window at (%ld,%ld)\n", rc.left, rc.top);
+    surface.SetPosition(100, 100, 80, 80);
+    surface.Render(0);
+
+    ok(surface.RecreateGpu() && surface.IsGpu(), "the device is recreated on the same window\n");
+    ok(surface.Render(0), "render after recreating the device\n");
+    Pump(400);
+    red = ScreenPixel(140, 140);
+    ok(red == RGB(255, 0, 0), "the recreated device presents: %06lX\n", red);
+
+    RECT box;
+    ok(GetWindowRgnBox(surface.Window(), &box) == ERROR, "no input shape by default\n");
+    surface.SetInputShape(20.0f);
+    ok(surface.Render(0), "render after setting the input shape\n");
+    HRGN shape = CreateRectRgn(0, 0, 0, 0);
+    ok(shape && GetWindowRgn(surface.Window(), shape) != ERROR, "the input shape sets a window region\n");
+    if (shape)
+    {
+        ok(!PtInRegion(shape, 1, 1) && PtInRegion(shape, 40, 40) && PtInRegion(shape, 40, 0),
+           "transparent corners are outside the input shape\n");
+        DeleteObject(shape);
+    }
+    surface.SetInputShape(0.0f);
+    surface.Render(0);
+    ok(GetWindowRgnBox(surface.Window(), &box) == ERROR, "clearing the input shape removes the region\n");
+
+    fill->Color = 0xFF0000FF;
+    fill->Invalidate();
+    surface.Render(0);
+    Pump(400);
+    COLORREF blue = ScreenPixel(140, 140);
+    ok(blue == RGB(0, 0, 255), "a second present updates the screen: %06lX\n", blue);
+
+    fill->Color = 0x00000000;
+    fill->Invalidate();
+    surface.Render(0);
+    Pump(400);
+    COLORREF through = ScreenPixel(140, 140);
+    ok(through != RGB(0, 0, 255) && through != RGB(255, 0, 0), "transparent pixels show what is below: %06lX\n",
+       through);
+
+    surface.SetRoot(NULL);
+    surface.Destroy();
+    ok(!surface.IsGpu() && surface.Window() == NULL, "destroyed\n");
+    delete root;
+    if (setAwareness && previous)
+        setAwareness(previous);
+}
+
+static void TestSurface(DWORD flags)
 {
     Surface surface;
     StackPanel *root = new StackPanel(Orientation::Horizontal, 0);
@@ -195,7 +531,12 @@ static void TestSurface()
     root->AddChild(left);
     root->AddChild(right);
 
-    ok(surface.Create(NULL, L"LiberUI test", WS_EX_TOOLWINDOW), "surface created\n");
+    ok(surface.Create(NULL, L"LiberUI test", WS_EX_TOOLWINDOW, flags), "surface created\n");
+    if (flags & SurfaceNoGpu)
+    {
+        ok(!surface.IsGpu(), "the CPU surface does not use Direct3D\n");
+        ok((GetWindowLongPtrW(surface.Window(), GWL_EXSTYLE) & WS_EX_LAYERED) != 0, "the CPU surface is layered\n");
+    }
     surface.SetDpi(96);
     surface.SetTokens(&tokens);
     surface.SetRoot(root);
@@ -203,9 +544,10 @@ static void TestSurface()
     ok(surface.Render(0), "render\n");
     ok(surface.PixelSize().cx == 40 && surface.PixelSize().cy == 10, "buffer %ld x %ld\n", surface.PixelSize().cx,
        surface.PixelSize().cy);
-    const DWORD *px = surface.Pixels();
-    ok(px && px[5 * 40 + 5] == 0xFFFF0000 && px[5 * 40 + 35] == 0xFF0000FF, "widgets painted: %08lX %08lX\n",
-       px ? px[5 * 40 + 5] : 0, px ? px[5 * 40 + 35] : 0);
+    static DWORD px[80 * 20];
+    ok(surface.ReadPixels(px, 40 * 4), "read back\n");
+    ok(px[5 * 40 + 5] == 0xFFFF0000 && px[5 * 40 + 35] == 0xFF0000FF, "widgets painted: %08lX %08lX\n",
+       px[5 * 40 + 5], px[5 * 40 + 35]);
     ok(!surface.HasDirty(), "nothing dirty after render\n");
 
     UINT before = right->Paints;
@@ -215,14 +557,14 @@ static void TestSurface()
     left->Invalidate();
     ok(surface.HasDirty() && surface.Dirty().right == 20, "only the left widget is dirty\n");
     surface.Render(0);
-    px = surface.Pixels();
+    surface.ReadPixels(px, 40 * 4);
     ok(px[5 * 40 + 5] == 0xFF00FF00 && px[5 * 40 + 35] == 0xFF0000FF, "partial repaint keeps the rest: %08lX %08lX\n",
        px[5 * 40 + 5], px[5 * 40 + 35]);
 
     surface.SetDpi(192);
     surface.Render(0);
     ok(surface.PixelSize().cx == 80 && surface.PixelSize().cy == 20, "DPI resizes the buffer\n");
-    px = surface.Pixels();
+    surface.ReadPixels(px, 80 * 4);
     ok(px[10 * 80 + 70] == 0xFF0000FF, "high DPI paint %08lX\n", px[10 * 80 + 70]);
     POINT dip = { 70, 10 };
     dip = surface.PixelToDip(dip);
@@ -248,7 +590,11 @@ START_TEST(Painter)
     TestShapes();
     TestFonts();
     TestImage();
-    TestSurface();
+    TestSurface(0);
+    TestSurface(SurfaceNoGpu);
+    TestGpuSurface();
+    TestGpuPainter();
+    TestGpuParity();
     ok(AssertionFailures() == failures, "%ld assertions failed\n", AssertionFailures() - failures);
     TestInvalidStyles();
     Shutdown();

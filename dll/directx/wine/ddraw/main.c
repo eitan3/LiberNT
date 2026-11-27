@@ -298,7 +298,8 @@ static HRESULT DDRAW_Create(const GUID *guid, void **out, IUnknown *outer_unknow
     TRACE("driver_guid %s, ddraw %p, outer_unknown %p, interface_iid %s.\n",
             debugstr_guid(guid), out, outer_unknown, debugstr_guid(iid));
 
-    *out = NULL;
+    if (!out)
+        return DDERR_INVALIDPARAMS;
 
     if (guid == (GUID *) DDCREATE_EMULATIONONLY)
     {
@@ -317,6 +318,8 @@ static HRESULT DDRAW_Create(const GUID *guid, void **out, IUnknown *outer_unknow
     if (outer_unknown != NULL)
         return CLASS_E_NOAGGREGATION;
 
+    *out = NULL;
+
     if (!IsEqualGUID(iid, &IID_IDirectDraw7))
         flags = WINED3D_LEGACY_FFP_LIGHTING;
 
@@ -325,6 +328,7 @@ static HRESULT DDRAW_Create(const GUID *guid, void **out, IUnknown *outer_unknow
         ERR("Out of memory when creating DirectDraw.\n");
         return E_OUTOFMEMORY;
     }
+    list_init(&ddraw->ddraw_list_entry);
 
     if (FAILED(hr = ddraw_init(ddraw, flags, device_type)))
     {
@@ -757,6 +761,10 @@ HRESULT WINAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, void **out)
 
     TRACE("rclsid %s, riid %s, out %p.\n",
             debugstr_guid(rclsid), debugstr_guid(riid), out);
+
+    if (!out)
+        return E_INVALIDARG;
+    *out = NULL;
 
     if (!IsEqualGUID(&IID_IClassFactory, riid)
             && !IsEqualGUID(&IID_IUnknown, riid))

@@ -27,6 +27,7 @@ extern void func_keyedmutex(void);
 extern void func_overlay(void);
 extern void func_power(void);
 extern void func_D3dkmtAdapterInfo(void);
+extern void func_D3dkmtVBlank(void);
 extern void func_adapterclass(void);
 extern void func_wddmcaps(void);
 extern void func_sharing(void);
@@ -39,6 +40,7 @@ extern void func_allocresidency(void);
 extern void func_allocreserve(void);
 extern void func_allocdestroy2(void);
 extern void func_displayext(void);
+extern void func_ownerabi(void);
 extern void func_presentext(void);
 extern void func_misc(void);
 extern void func_teardown(void);
@@ -125,6 +127,7 @@ const struct test winetest_testlist[] =
     { "overlay",       func_overlay },
     { "power",         func_power },
     { "D3dkmtAdapterInfo", func_D3dkmtAdapterInfo },
+    { "D3dkmtVBlank", func_D3dkmtVBlank },
     { "adapterclass",  func_adapterclass },
     { "wddmcaps",      func_wddmcaps },
     { "sharing",       func_sharing },
@@ -137,6 +140,7 @@ const struct test winetest_testlist[] =
     { "allocreserve",  func_allocreserve },
     { "allocdestroy2", func_allocdestroy2 },
     { "displayext",    func_displayext },
+    { "ownerabi",      func_ownerabi },
     { "presentext",    func_presentext },
     { "misc",          func_misc },
     { "teardown",      func_teardown },

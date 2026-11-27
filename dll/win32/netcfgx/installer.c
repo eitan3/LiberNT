@@ -966,6 +966,52 @@ InstallNetTransport(VOID)
     return ERROR_GEN_FAILURE;
 }
 
+static
+DWORD
+RemoveNetDevice(
+    _In_ HDEVINFO DeviceInfoSet,
+    _In_ PSP_DEVINFO_DATA DeviceInfoData)
+{
+    WCHAR InstanceGuid[40];
+    WCHAR KeyPath[360];
+    HKEY hDriverKey;
+    DWORD dwType, dwLength;
+    LONG rc;
+
+    if (DeviceInfoData == NULL)
+        return ERROR_DI_DO_DEFAULT;
+
+    hDriverKey = SetupDiOpenDevRegKey(DeviceInfoSet, DeviceInfoData,
+                                      DICS_FLAG_GLOBAL, 0, DIREG_DRV, KEY_QUERY_VALUE);
+    if (hDriverKey == INVALID_HANDLE_VALUE)
+        return ERROR_DI_DO_DEFAULT;
+
+    dwLength = sizeof(InstanceGuid) - sizeof(WCHAR);
+    ZeroMemory(InstanceGuid, sizeof(InstanceGuid));
+    rc = RegQueryValueExW(hDriverKey, L"NetCfgInstanceId", NULL, &dwType,
+                          (LPBYTE)InstanceGuid, &dwLength);
+    RegCloseKey(hDriverKey);
+
+    if (rc == ERROR_SUCCESS && dwType == REG_SZ && InstanceGuid[0] != UNICODE_NULL)
+    {
+        StringCchPrintfW(KeyPath, ARRAYSIZE(KeyPath),
+                         L"%s\\%s", NETSETUP_INTERFACES_KEY, InstanceGuid);
+        RegDeleteTreeW(HKEY_LOCAL_MACHINE, KeyPath);
+
+        StringCchPrintfW(KeyPath, ARRAYSIZE(KeyPath),
+                         L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\%s",
+                         InstanceGuid);
+        RegDeleteTreeW(HKEY_LOCAL_MACHINE, KeyPath);
+
+        StringCchPrintfW(KeyPath, ARRAYSIZE(KeyPath),
+                         L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\%s",
+                         InstanceGuid);
+        RegDeleteTreeW(HKEY_LOCAL_MACHINE, KeyPath);
+    }
+
+    return ERROR_DI_DO_DEFAULT;
+}
+
 DWORD
 WINAPI
 NetClassInstaller(
@@ -992,6 +1038,8 @@ NetClassInstaller(
     LONG rc;
     DWORD dwLength;
 
+    if (InstallFunction == DIF_REMOVE)
+        return RemoveNetDevice(DeviceInfoSet, DeviceInfoData);
     if (InstallFunction != DIF_INSTALLDEVICE)
         return ERROR_DI_DO_DEFAULT;
 

@@ -511,6 +511,8 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
     DWORD exStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
     if (!m_DockSurface.Create(NULL, L"Liber Dock", exStyle) || !m_TraySurface.Create(NULL, L"Liber Tray", exStyle))
         return E_FAIL;
+    m_DockSurface.SetInputShape((float)LIBER_DOCK_HEIGHT / 2.0f);
+    m_TraySurface.SetInputShape((float)LIBER_TRAY_HEIGHT / 2.0f);
 
     m_DockRoot = new CLiberPanel(Orientation::Horizontal, 0, (float)LIBER_DOCK_HEIGHT / 2.0f, LIBER_MATERIAL_REGULAR);
     Thickness pad = { LIBER_DOCK_PAD, LIBER_DOCK_PAD, LIBER_DOCK_PAD, LIBER_DOCK_PAD };

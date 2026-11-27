@@ -8,6 +8,7 @@
 #include <ntifs.h>
 #include <windef.h>
 #include <d3dkmthk.h>
+#include <ntddvdeo.h>
 
 /*
  * XPDM does not have a dxgkrnl bridge. Keep only the symbols referenced by
@@ -191,6 +192,100 @@ BOOLEAN
 WddmBridgeIsProviderBound(VOID)
 {
     return FALSE;
+}
+
+struct _WDDM_BRIDGE_TRUSTED_BUFFER;
+
+VOID
+WddmBridgeTrustKernelBuffer(
+    _Out_ struct _WDDM_BRIDGE_TRUSTED_BUFFER *Trusted,
+    _In_reads_bytes_(Size) CONST VOID *Buffer,
+    _In_ SIZE_T Size)
+{
+    UNREFERENCED_PARAMETER(Trusted);
+    UNREFERENCED_PARAMETER(Buffer);
+    UNREFERENCED_PARAMETER(Size);
+}
+
+VOID
+WddmBridgeDistrustKernelBuffer(
+    _Inout_ struct _WDDM_BRIDGE_TRUSTED_BUFFER *Trusted)
+{
+    UNREFERENCED_PARAMETER(Trusted);
+}
+
+BOOLEAN
+WddmHandOverIsActive(VOID)
+{
+    return FALSE;
+}
+
+NTSTATUS
+WddmHandOverOpenAdapter(
+    _In_ PDEVICE_OBJECT DisplayDevice,
+    _Out_ D3DKMT_HANDLE *hAdapter,
+    _Out_ LUID *AdapterLuid,
+    _Out_ D3DDDI_VIDEO_PRESENT_SOURCE_ID *VidPnSourceId)
+{
+    UNREFERENCED_PARAMETER(DisplayDevice);
+    *hAdapter = 0;
+    RtlZeroMemory(AdapterLuid, sizeof(*AdapterLuid));
+    *VidPnSourceId = D3DDDI_ID_UNINITIALIZED;
+    return STATUS_DEVICE_NOT_READY;
+}
+
+NTSTATUS
+WddmHandOverCloseAdapter(
+    _In_ D3DKMT_HANDLE hAdapter)
+{
+    UNREFERENCED_PARAMETER(hAdapter);
+    return STATUS_DEVICE_NOT_READY;
+}
+
+NTSTATUS
+WddmHandOverIsPresentSource(
+    _In_ LUID AdapterLuid,
+    _In_ D3DDDI_VIDEO_PRESENT_SOURCE_ID VidPnSourceId,
+    _Out_ PBOOLEAN IsSource)
+{
+    UNREFERENCED_PARAMETER(AdapterLuid);
+    UNREFERENCED_PARAMETER(VidPnSourceId);
+    *IsSource = FALSE;
+    return STATUS_DEVICE_NOT_READY;
+}
+
+NTSTATUS
+WddmHandOverInitGdiDevice(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Inout_ struct _VIDEO_WIN32K_CALLBACKS *Callbacks)
+{
+    UNREFERENCED_PARAMETER(DeviceObject);
+    UNREFERENCED_PARAMETER(Callbacks);
+    return STATUS_NOT_SUPPORTED;
+}
+
+const VOID *
+NTAPI
+RosWddmHandOverEngineInterface(VOID)
+{
+    return NULL;
+}
+
+VOID
+WddmHandOverProcessCallout(
+    _Inout_ PVOID *DxgProcess,
+    _In_ BOOLEAN Create)
+{
+    UNREFERENCED_PARAMETER(DxgProcess);
+    UNREFERENCED_PARAMETER(Create);
+}
+
+NTSTATUS
+WddmHandOverStartSession(
+    _Inout_ PVOID *CsrDxgProcess)
+{
+    UNREFERENCED_PARAMETER(CsrDxgProcess);
+    return STATUS_SUCCESS;
 }
 
 VOID

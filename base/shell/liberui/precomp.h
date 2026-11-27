@@ -16,6 +16,11 @@ namespace LiberUI
 
 void AssertFailed(const char *file, int line, const char *condition);
 
+struct SurfaceGpu;
+SurfaceGpu *GpuCreate();
+BOOL GpuAttach(SurfaceGpu *gpu, HWND hwnd);
+void GpuDestroy(SurfaceGpu *gpu);
+
 }
 
 #define LUI_ASSERT(cond) \

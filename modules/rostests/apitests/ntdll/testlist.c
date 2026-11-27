@@ -124,13 +124,16 @@ extern void func_NtQueryInformationToken(void);
 extern void func_NtQueryKey(void);
 extern void func_ObjectTypeIndex(void);
 extern void func_MemoryImageInformation(void);
+extern void func_PartialImageMap(void);
 extern void func_ObjectTypeIndex(void);
 extern void func_NtQueryObject(void);
 extern void func_NtQueryObjectName(void);
 extern void func_NtQueryOpenSubKeys(void);
 extern void func_NtQuerySection(void);
+extern void func_NtQuerySectionImageNoExecute(void);
 extern void func_NtQuerySecurityObject(void);
 extern void func_NtSetSecurityObjectStatus(void);
+extern void func_PipeMailslotSecurity(void);
 extern void func_NtQuerySystemEnvironmentValue(void);
 extern void func_NtQueryLicenseValue(void);
 extern void func_NtQuerySystemInformation(void);
@@ -392,10 +395,13 @@ const struct test winetest_testlist[] =
     { "NtQueryObject",                  func_NtQueryObject },
     { "NtQueryObjectName",              func_NtQueryObjectName },
     { "MemoryImageInformation",         func_MemoryImageInformation },
+    { "PartialImageMap",                func_PartialImageMap },
     { "NtQueryOpenSubKeys",             func_NtQueryOpenSubKeys },
     { "NtQuerySection",                 func_NtQuerySection },
+    { "NtQuerySectionImageNoExecute",   func_NtQuerySectionImageNoExecute },
     { "NtQuerySecurityObject",          func_NtQuerySecurityObject },
     { "NtSetSecurityObjectStatus",      func_NtSetSecurityObjectStatus },
+    { "PipeMailslotSecurity",           func_PipeMailslotSecurity },
     { "NtQuerySystemEnvironmentValue",  func_NtQuerySystemEnvironmentValue },
     { "NtQueryLicenseValue",            func_NtQueryLicenseValue },
     { "NtQuerySystemInformation",       func_NtQuerySystemInformation },

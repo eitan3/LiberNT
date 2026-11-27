@@ -136,6 +136,9 @@ static HRESULT WINAPI ddraw7_QueryInterface(IDirectDraw7 *iface, REFIID riid, vo
 
     TRACE("iface %p, riid %s, out %p.\n", iface, debugstr_guid(riid), out);
 
+    if (!out)
+        return DDERR_INVALIDPARAMS;
+
     if (!riid)
     {
         *out = NULL;
@@ -1863,6 +1866,9 @@ static HRESULT WINAPI ddraw7_GetMonitorFrequency(IDirectDraw7 *iface, DWORD *fre
 
     TRACE("iface %p, frequency %p.\n", iface, frequency);
 
+    if (!frequency)
+        return DDERR_INVALIDPARAMS;
+
     wined3d_mutex_lock();
     hr = wined3d_output_get_display_mode(ddraw->wined3d_output, &mode, NULL);
     wined3d_mutex_unlock();
@@ -2049,6 +2055,9 @@ static HRESULT WINAPI ddraw2_GetAvailableVidMem(IDirectDraw2 *iface,
 
     TRACE("iface %p, caps %p, total %p, free %p.\n", iface, caps, total, free);
 
+    if (!caps)
+        return DDERR_INVALIDPARAMS;
+
     DDRAW_Convert_DDSCAPS_1_To_2(caps, &caps2);
     return ddraw7_GetAvailableVidMem(&ddraw->IDirectDraw7_iface, &caps2, total, free);
 }
@@ -2219,6 +2228,9 @@ static HRESULT WINAPI ddraw7_WaitForVerticalBlank(IDirectDraw7 *iface, DWORD Fla
         hide = TRUE;
     }
 
+    if (Flags & ~(DDWAITVB_BLOCKBEGIN | DDWAITVB_BLOCKBEGINEVENT | DDWAITVB_BLOCKEND))
+        return DDERR_INVALIDPARAMS;
+
     /* MSDN says DDWAITVB_BLOCKBEGINEVENT is not supported */
     if(Flags & DDWAITVB_BLOCKBEGINEVENT)
         return DDERR_UNSUPPORTED; /* unchecked */
@@ -2344,6 +2356,9 @@ static HRESULT WINAPI ddraw7_GetGDISurface(IDirectDraw7 *iface, IDirectDrawSurfa
 
     TRACE("iface %p, surface %p.\n", iface, surface);
 
+    if (!surface)
+        return DDERR_INVALIDPARAMS;
+
     wined3d_mutex_lock();
 
     if (!ddraw->gdi_surface || !(ddraw_surface = wined3d_texture_get_sub_resource_parent(ddraw->gdi_surface, 0)))
@@ -2370,6 +2385,9 @@ static HRESULT WINAPI ddraw4_GetGDISurface(IDirectDraw4 *iface, IDirectDrawSurfa
 
     TRACE("iface %p, surface %p.\n", iface, surface);
 
+    if (!surface)
+        return DDERR_INVALIDPARAMS;
+
     hr = ddraw7_GetGDISurface(&ddraw->IDirectDraw7_iface, &surface7);
     if (FAILED(hr))
     {
@@ -2393,6 +2411,9 @@ static HRESULT WINAPI ddraw2_GetGDISurface(IDirectDraw2 *iface, IDirectDrawSurfa
 
     TRACE("iface %p, surface %p.\n", iface, surface);
 
+    if (!surface)
+        return DDERR_INVALIDPARAMS;
+
     hr = ddraw7_GetGDISurface(&ddraw->IDirectDraw7_iface, &surface7);
     if (FAILED(hr))
     {
@@ -2415,6 +2436,9 @@ static HRESULT WINAPI ddraw1_GetGDISurface(IDirectDraw *iface, IDirectDrawSurfac
     HRESULT hr;
 
     TRACE("iface %p, surface %p.\n", iface, surface);
+
+    if (!surface)
+        return DDERR_INVALIDPARAMS;
 
     hr = ddraw7_GetGDISurface(&ddraw->IDirectDraw7_iface, &surface7);
     if (FAILED(hr))
@@ -2485,6 +2509,12 @@ static HRESULT WINAPI ddraw7_EnumDisplayModes(IDirectDraw7 *iface, DWORD Flags,
             iface, Flags, DDSD, Context, cb);
 
     if (!cb)
+        return DDERR_INVALIDPARAMS;
+
+    if (Flags & ~(DDEDM_REFRESHRATES | DDEDM_STANDARDVGAMODES))
+        return DDERR_INVALIDPARAMS;
+
+    if (DDSD && DDSD->dwSize != sizeof(*DDSD))
         return DDERR_INVALIDPARAMS;
 
     if (!(enum_modes = malloc(enum_mode_array_size * sizeof(*enum_modes))))
@@ -2603,6 +2633,12 @@ static HRESULT WINAPI ddraw2_EnumDisplayModes(IDirectDraw2 *iface, DWORD flags,
     TRACE("iface %p, flags %#lx, surface_desc %p, context %p, callback %p.\n",
             iface, flags, surface_desc, context, callback);
 
+    if (!callback)
+        return DDERR_INVALIDPARAMS;
+
+    if (surface_desc && surface_desc->dwSize != sizeof(*surface_desc))
+        return DDERR_INVALIDPARAMS;
+
     cbcontext.func = callback;
     cbcontext.context = context;
 
@@ -2620,6 +2656,12 @@ static HRESULT WINAPI ddraw1_EnumDisplayModes(IDirectDraw *iface, DWORD flags,
 
     TRACE("iface %p, flags %#lx, surface_desc %p, context %p, callback %p.\n",
             iface, flags, surface_desc, context, callback);
+
+    if (!callback)
+        return DDERR_INVALIDPARAMS;
+
+    if (surface_desc && surface_desc->dwSize != sizeof(*surface_desc))
+        return DDERR_INVALIDPARAMS;
 
     cbcontext.func = callback;
     cbcontext.context = context;
@@ -2681,6 +2723,10 @@ static HRESULT WINAPI ddraw7_GetDeviceIdentifier(IDirectDraw7 *iface,
     if (!DDDI)
         return DDERR_INVALIDPARAMS;
 
+    memset(DDDI, 0, FIELD_OFFSET(DDDEVICEIDENTIFIER2, dwWHQLLevel));
+    if (Flags & ~DDGDI_GETHOSTIDENTIFIER)
+        return DDERR_INVALIDPARAMS;
+
     if (Flags & DDGDI_GETHOSTIDENTIFIER)
     {
         /* The DDGDI_GETHOSTIDENTIFIER returns the information about the 2D
@@ -2722,6 +2768,9 @@ static HRESULT WINAPI ddraw4_GetDeviceIdentifier(IDirectDraw4 *iface,
     HRESULT hr;
 
     TRACE("iface %p, identifier %p, flags %#lx.\n", iface, identifier, flags);
+
+    if (!identifier)
+        return DDERR_INVALIDPARAMS;
 
     hr = ddraw7_GetDeviceIdentifier(&ddraw->IDirectDraw7_iface, &identifier2, flags);
     DDRAW_Convert_DDDEVICEIDENTIFIER_2_To_1(&identifier2, identifier);
@@ -3323,6 +3372,7 @@ static HRESULT WINAPI ddraw7_EnumSurfaces(IDirectDraw7 *iface, DWORD flags,
 {
     struct ddraw *ddraw = impl_from_IDirectDraw7(iface);
     HRESULT hr = DD_OK;
+    DWORD search;
 
     TRACE("iface %p, flags %#lx, surface_desc %p, context %p, callback %p.\n",
             iface, flags, surface_desc, context, callback);
@@ -3330,11 +3380,30 @@ static HRESULT WINAPI ddraw7_EnumSurfaces(IDirectDraw7 *iface, DWORD flags,
     if (!callback)
         return DDERR_INVALIDPARAMS;
 
+    if (flags & ~(DDENUMSURFACES_ALL | DDENUMSURFACES_MATCH | DDENUMSURFACES_NOMATCH | DDENUMSURFACES_CANBECREATED
+            | DDENUMSURFACES_DOESEXIST))
+        return DDERR_INVALIDPARAMS;
+
+    search = flags & (DDENUMSURFACES_ALL | DDENUMSURFACES_MATCH | DDENUMSURFACES_NOMATCH);
+    if (search != DDENUMSURFACES_ALL && search != DDENUMSURFACES_MATCH && search != DDENUMSURFACES_NOMATCH)
+        return DDERR_INVALIDPARAMS;
+
+    if ((flags & (DDENUMSURFACES_CANBECREATED | DDENUMSURFACES_DOESEXIST))
+            == (DDENUMSURFACES_CANBECREATED | DDENUMSURFACES_DOESEXIST))
+        return DDERR_INVALIDPARAMS;
+
+    if (search != DDENUMSURFACES_ALL && !surface_desc)
+        return DDERR_INVALIDPARAMS;
+
     if (flags & DDENUMSURFACES_CANBECREATED)
     {
         IDirectDrawSurface7 *surface;
 
         if ((flags & (DDENUMSURFACES_ALL | DDENUMSURFACES_MATCH | DDENUMSURFACES_NOMATCH)) != DDENUMSURFACES_MATCH)
+            return DDERR_INVALIDPARAMS;
+
+        if (!surface_desc || (surface_desc->dwFlags & (DDSD_CKDESTOVERLAY | DDSD_CKDESTBLT | DDSD_CKSRCOVERLAY
+                | DDSD_CKSRCBLT | DDSD_LPSURFACE)))
             return DDERR_INVALIDPARAMS;
 
         wined3d_mutex_lock();

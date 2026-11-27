@@ -16,8 +16,29 @@ NTSTATUS WddmBridgeGetStatus(VOID);
 NTSTATUS WddmBridgeRequireReady(VOID);
 BOOLEAN  WddmBridgeIsReady(VOID);
 BOOLEAN  WddmBridgeIsProviderBound(VOID);
+NTSTATUS WddmHandOverInit(_In_ PDEVICE_OBJECT DeviceObject);
+BOOLEAN  WddmHandOverIsActive(VOID);
+NTSTATUS WddmHandOverIsPresentSource(_In_ LUID AdapterLuid, _In_ D3DDDI_VIDEO_PRESENT_SOURCE_ID VidPnSourceId, _Out_ PBOOLEAN IsSource);
+NTSTATUS WddmHandOverOpenAdapter(_In_ PDEVICE_OBJECT DisplayDevice, _Out_ D3DKMT_HANDLE *hAdapter, _Out_ LUID *AdapterLuid, _Out_ D3DDDI_VIDEO_PRESENT_SOURCE_ID *VidPnSourceId);
+NTSTATUS WddmHandOverCloseAdapter(_In_ D3DKMT_HANDLE hAdapter);
+LONG __cdecl D3dkmtHandOverOpenAdapterFromHdc(_Inout_ D3DKMT_OPENADAPTERFROMHDC *Open);
+struct _VIDEO_WIN32K_CALLBACKS;
+NTSTATUS WddmHandOverInitGdiDevice(_In_ PDEVICE_OBJECT DeviceObject, _Inout_ struct _VIDEO_WIN32K_CALLBACKS *Callbacks);
+VOID     WddmHandOverProcessCallout(_Inout_ PVOID *DxgProcess, _In_ BOOLEAN Create);
+NTSTATUS WddmHandOverStartSession(_Inout_ PVOID *CsrDxgProcess);
 ULONG    WddmBridgeGetInterfaceVersion(VOID);
 NTSTATUS WddmBridgeGetInterface(_Out_ PREACTOS_WIN32K_DXGKRNL_INTERFACE Interface);
+
+typedef struct _WDDM_BRIDGE_TRUSTED_BUFFER
+{
+    LIST_ENTRY Link;
+    PETHREAD Thread;
+    ULONG_PTR Start;
+    ULONG_PTR End;
+} WDDM_BRIDGE_TRUSTED_BUFFER, *PWDDM_BRIDGE_TRUSTED_BUFFER;
+
+VOID WddmBridgeTrustKernelBuffer(_Out_ PWDDM_BRIDGE_TRUSTED_BUFFER Trusted, _In_reads_bytes_(Size) CONST VOID *Buffer, _In_ SIZE_T Size);
+VOID WddmBridgeDistrustKernelBuffer(_Inout_ PWDDM_BRIDGE_TRUSTED_BUFFER Trusted);
 
 ULONG_PTR
 NTAPI

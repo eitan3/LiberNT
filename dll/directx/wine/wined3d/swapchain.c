@@ -26,6 +26,7 @@
 
 #ifdef __REACTOS__
 #include "libernt/undocuser.h"
+#include <libernt/dwmframe.h>
 #endif
 
 WINE_DEFAULT_DEBUG_CHANNEL(d3d);
@@ -46,6 +47,37 @@ static BOOL set_window_present_rect(HWND hwnd, UINT x, UINT y, UINT width, UINT 
 }
 #endif
 
+#ifdef __REACTOS__
+typedef HRESULT (WINAPI *PFN_DWMP_DX_PUBLISH_WINDOW_PIXELS)(HWND, const RECT *, const void *, UINT, DWORD);
+typedef HRESULT (WINAPI *PFN_DWMP_DX_RETIRE_WINDOW_PIXELS)(HWND);
+
+static INIT_ONCE swapchain_dwmapi_once = INIT_ONCE_STATIC_INIT;
+static PFN_DWMP_DX_PUBLISH_WINDOW_PIXELS dwmp_publish_window_pixels;
+static PFN_DWMP_DX_RETIRE_WINDOW_PIXELS dwmp_retire_window_pixels;
+
+static BOOL CALLBACK swapchain_init_dwmapi(PINIT_ONCE once, void *parameter, void **context)
+{
+    HMODULE module;
+
+    module = LoadLibraryW(L"dwmapi.dll");
+    if (module)
+    {
+        dwmp_publish_window_pixels = (PFN_DWMP_DX_PUBLISH_WINDOW_PIXELS)
+                GetProcAddress(module, "DwmpDxPublishWindowPixels");
+        dwmp_retire_window_pixels = (PFN_DWMP_DX_RETIRE_WINDOW_PIXELS)
+                GetProcAddress(module, "DwmpDxRetireWindowPixels");
+    }
+    return TRUE;
+}
+
+static void swapchain_retire_composition_pixels(HWND window)
+{
+    InitOnceExecuteOnce(&swapchain_dwmapi_once, swapchain_init_dwmapi, NULL, NULL);
+    if (dwmp_retire_window_pixels)
+        dwmp_retire_window_pixels(window);
+}
+#endif
+
 void wined3d_swapchain_cleanup(struct wined3d_swapchain *swapchain)
 {
     HRESULT hr;
@@ -53,6 +85,10 @@ void wined3d_swapchain_cleanup(struct wined3d_swapchain *swapchain)
 
     TRACE("Destroying swapchain %p.\n", swapchain);
 
+#ifdef __REACTOS__
+    if (swapchain->composition)
+        swapchain_retire_composition_pixels(swapchain->win_handle);
+#endif
     wined3d_swapchain_state_cleanup(&swapchain->state);
     wined3d_swapchain_set_gamma_ramp(swapchain, 0, &swapchain->orig_gamma);
 
@@ -235,6 +271,10 @@ void CDECL wined3d_swapchain_set_window(struct wined3d_swapchain *swapchain, HWN
 
     wined3d_cs_finish(swapchain->device->cs, WINED3D_CS_QUEUE_DEFAULT);
 
+#ifdef __REACTOS__
+    if (swapchain->composition)
+        swapchain_retire_composition_pixels(swapchain->win_handle);
+#endif
     if (swapchain->dc)
         wined3d_release_dc(swapchain->win_handle, swapchain->dc);
 
@@ -531,6 +571,64 @@ static BOOL swapchain_composition_rects(const struct wined3d_swapchain *swapchai
     }
     return TRUE;
 }
+
+static BOOL swapchain_composition_publish_pixels(struct wined3d_swapchain *swapchain,
+        struct wined3d_texture *texture, void *memory, unsigned int pitch,
+        const RECT *src_rects, const RECT *dst_rects, unsigned int rect_count)
+{
+    unsigned int width = wined3d_texture_get_level_width(texture, 0);
+    unsigned int height = wined3d_texture_get_level_height(texture, 0);
+    enum wined3d_format_id format_id = texture->resource.format->id;
+    RECT source_rect, draw_rect;
+    const RECT *present_source = NULL, *present_draw = NULL;
+    const BYTE *bits;
+    HRESULT hr;
+    unsigned int i;
+
+    InitOnceExecuteOnce(&swapchain_dwmapi_once, swapchain_init_dwmapi, NULL, NULL);
+    if (!dwmp_publish_window_pixels || !memory)
+        return FALSE;
+    if (format_id != WINED3DFMT_B8G8R8A8_UNORM && format_id != WINED3DFMT_B8G8R8X8_UNORM)
+        return FALSE;
+
+    for (i = 0; src_rects && i < rect_count; ++i)
+    {
+        if (!IsRectEmpty(&src_rects[i]) && !IsRectEmpty(&dst_rects[i]))
+        {
+            present_source = &src_rects[i];
+            present_draw = &dst_rects[i];
+            break;
+        }
+    }
+
+    SetRect(&source_rect, 0, 0, width, height);
+    draw_rect = source_rect;
+    if (present_source)
+    {
+        LONG source_width = present_source->right - present_source->left;
+        LONG source_height = present_source->bottom - present_source->top;
+        LONG draw_width = present_draw->right - present_draw->left;
+        LONG draw_height = present_draw->bottom - present_draw->top;
+
+        draw_rect.left = present_draw->left - MulDiv(present_source->left, draw_width, source_width);
+        draw_rect.top = present_draw->top - MulDiv(present_source->top, draw_height, source_height);
+        draw_rect.right = draw_rect.left + MulDiv(width, draw_width, source_width);
+        draw_rect.bottom = draw_rect.top + MulDiv(height, draw_height, source_height);
+    }
+    if (!swapchain_composition_rects(swapchain, &source_rect, &draw_rect))
+        return TRUE;
+    if (source_rect.right - source_rect.left != draw_rect.right - draw_rect.left
+            || source_rect.bottom - source_rect.top != draw_rect.bottom - draw_rect.top)
+        return FALSE;
+
+    bits = (const BYTE *)memory + source_rect.top * pitch + source_rect.left * 4;
+    hr = dwmp_publish_window_pixels(swapchain->win_handle, &draw_rect, bits, pitch,
+            swapchain->premultiplied_alpha ? DWM_DX_PUBLISH_PREMULTIPLIED : 0);
+    if (hr == S_OK || hr == S_FALSE)
+        return TRUE;
+    WARN("Composition pixel publication failed, hr %#lx; falling back to GDI.\n", hr);
+    return FALSE;
+}
 #endif
 
 static void swapchain_present_bounds(const RECT *src_rects, const RECT *dst_rects,
@@ -652,6 +750,12 @@ static void swapchain_blit_gdi(struct wined3d_swapchain *swapchain,
 
     TRACE("Created source DC %p, bitmap %p for backbuffer %p.\n", src_dc, bitmap, back_buffer);
 
+#ifdef __REACTOS__
+    if (swapchain->composition
+            && swapchain_composition_publish_pixels(swapchain, back_buffer,
+                    create_desc.pMemory, row_pitch, src_rects, dst_rects, rect_count))
+        goto destroy_dc;
+#endif
     if (scroll_rect && !BitBlt(swapchain->dc, scroll_rect->left, scroll_rect->top,
             scroll_rect->right - scroll_rect->left, scroll_rect->bottom - scroll_rect->top,
             swapchain->dc, scroll_rect->left - scroll_offset->x, scroll_rect->top - scroll_offset->y, SRCCOPY))
@@ -689,6 +793,9 @@ static void swapchain_blit_gdi(struct wined3d_swapchain *swapchain,
             ERR("Failed to blit.\n");
     }
 
+#ifdef __REACTOS__
+destroy_dc:
+#endif
     destroy_desc.hDc = src_dc;
     destroy_desc.hBitmap = bitmap;
     if ((status = D3DKMTDestroyDCFromMemory(&destroy_desc)))
@@ -889,7 +996,7 @@ static void swapchain_gl_present(struct wined3d_swapchain *swapchain, const RECT
     pixel_format = &wined3d_adapter_gl(swapchain->device->adapter)->pixel_formats[context_gl->pixel_format - 1];
     if (
 #ifdef __REACTOS__
-            (swapchain->composition && pixel_format->swap_method != WGL_SWAP_COPY_ARB) ||
+            swapchain->composition ||
             (scroll_rect && pixel_format->swap_method != WGL_SWAP_COPY_ARB) ||
 #endif
             context_gl->dc == wined3d_device_gl(swapchain->device)->backup_dc
@@ -1637,6 +1744,12 @@ static void swapchain_gdi_frontbuffer_updated(struct wined3d_swapchain *swapchai
 #ifdef __REACTOS__
     if (swapchain->composition)
     {
+        unsigned int row_pitch, slice_pitch;
+
+        wined3d_texture_get_pitch(swapchain->front_buffer, 0, &row_pitch, &slice_pitch);
+        if (swapchain_composition_publish_pixels(swapchain, swapchain->front_buffer,
+                swapchain->front_buffer->resource.heap_memory, row_pitch, NULL, NULL, 0))
+            goto done;
         OffsetRect(&draw_rect, swapchain->composition_offset.x,
                 swapchain->composition_offset.y);
         if (swapchain->composition_has_clip)
@@ -1685,6 +1798,38 @@ done:
 #endif
     SetRectEmpty(&swapchain->front_buffer_update);
 }
+
+#ifdef __REACTOS__
+/* Presented rectangles are in back buffer and client coordinates, unlike front buffer updates. */
+static void swapchain_gdi_present_window(struct wined3d_swapchain *swapchain, const RECT *src_rects,
+        const RECT *dst_rects, unsigned int rect_count, const RECT *scroll_rect)
+{
+    HDC src_dc = swapchain->front_buffer->dc_info[0].dc;
+    unsigned int i;
+
+    assert(!swapchain->composition);
+    if (swapchain->palette)
+        wined3d_palette_apply_to_dc(swapchain->palette, src_dc);
+    if (swapchain->front_buffer->resource.map_count)
+        ERR("Trying to blit a mapped surface.\n");
+
+    if (scroll_rect && !BitBlt(swapchain->dc, scroll_rect->left, scroll_rect->top,
+            scroll_rect->right - scroll_rect->left, scroll_rect->bottom - scroll_rect->top,
+            src_dc, scroll_rect->left, scroll_rect->top, SRCCOPY))
+        ERR("Failed to present the scrolled rectangle.\n");
+    for (i = 0; i < rect_count; ++i)
+    {
+        if (IsRectEmpty(&src_rects[i]) || IsRectEmpty(&dst_rects[i]))
+            continue;
+        if (!StretchBlt(swapchain->dc, dst_rects[i].left, dst_rects[i].top,
+                dst_rects[i].right - dst_rects[i].left, dst_rects[i].bottom - dst_rects[i].top,
+                src_dc, src_rects[i].left, src_rects[i].top,
+                src_rects[i].right - src_rects[i].left, src_rects[i].bottom - src_rects[i].top, SRCCOPY))
+            ERR("Failed to present %s to %s.\n", wine_dbgstr_rect(&src_rects[i]), wine_dbgstr_rect(&dst_rects[i]));
+    }
+    SetRectEmpty(&swapchain->front_buffer_update);
+}
+#endif
 
 static void swapchain_gdi_present(struct wined3d_swapchain *swapchain, const RECT *src_rects,
         const RECT *dst_rects, unsigned int rect_count, const RECT *scroll_rect, const POINT *scroll_offset,
@@ -1741,6 +1886,11 @@ static void swapchain_gdi_present(struct wined3d_swapchain *swapchain, const REC
 
 #ifdef __REACTOS__
 present:
+    if (!swapchain->composition)
+    {
+        swapchain_gdi_present_window(swapchain, src_rects, dst_rects, rect_count, scroll_rect);
+        return;
+    }
 #endif
 #ifndef __REACTOS__
     SetRect(&swapchain->front_buffer_update, 0, 0,

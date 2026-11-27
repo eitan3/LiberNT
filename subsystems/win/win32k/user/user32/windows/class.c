@@ -1146,7 +1146,7 @@ GetClassWord(
     WS_EX_LEFTSCROLLBAR | WS_EX_RTLREADING | WS_EX_RIGHT | WS_EX_CONTEXTHELP | \
     WS_EX_CLIENTEDGE | WS_EX_WINDOWEDGE | WS_EX_TOOLWINDOW | WS_EX_MDICHILD | \
     WS_EX_TRANSPARENT | WS_EX_ACCEPTFILES | WS_EX_TOPMOST | WS_EX_NOPARENTNOTIFY | \
-    WS_EX_DRAGDETECT | WS_EX_DLGMODALFRAME \
+    WS_EX_DRAGDETECT | WS_EX_DLGMODALFRAME | WS_EX_NOREDIRECTIONBITMAP \
 )
 
 LONG_PTR IntGetWindowLong( HWND hwnd, INT offset, UINT size, BOOL unicode )
@@ -1183,7 +1183,9 @@ LONG_PTR IntGetWindowLong( HWND hwnd, INT offset, UINT size, BOOL unicode )
 
     if (offset >= 0 && wndPtr->fnid != FNID_DESKTOP)
     {
-        if (FNID_HAS_PRIVATE_EXTRA(wndPtr->fnid) || offset > (int)(wndPtr->cbwndExtra - size))
+        if ((ULONG)offset < FNID_PRIVATE_EXTRA_SIZE(wndPtr->fnid) ||
+            (ULONG)offset > wndPtr->cbwndExtra ||
+            (wndPtr->cbwndExtra - (ULONG)offset) < size)
         {
             WARN("Invalid offset %d\n", offset );
             SetLastError( ERROR_INVALID_INDEX );

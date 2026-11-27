@@ -4035,6 +4035,8 @@ DxgkpQueryAdapterInfoCaptured(
             AdapterType.RenderSupported = DxgkpAdapterSupportsRender(Adapter);
             AdapterType.DisplaySupported = Adapter->NumberOfVideoPresentSources != 0;
             AdapterType.SoftwareDevice = Adapter->MiniportContext != NULL && Adapter->MiniportContext->IsBasicDisplayFallback;
+            AdapterType.PostDevice = DxgkPostDisplayCoreReportsPostDevice(DxgkpIsPostDisplayOwner(Adapter),
+                                                                          DxgkpPostDisplayRole(Adapter));
             AdapterType.HybridDiscrete = Adapter->HybridDiscrete ? 1 : 0;
             AdapterType.HybridIntegrated = Adapter->HybridIntegrated ? 1 : 0;
             AdapterType.ACGSupported =
@@ -6608,6 +6610,13 @@ DxgkpQueryScanLine(
         return STATUS_NOT_SUPPORTED;
     RtlZeroMemory(&GetScanLineArgs, sizeof(GetScanLineArgs));
     Status = DxgkVidPnResolveTargetForSource(Adapter, pData->VidPnSourceId, &GetScanLineArgs.VidPnTargetId);
+    if (Status == STATUS_GRAPHICS_SOURCE_NOT_IN_TOPOLOGY)
+    {
+        /* A source that scans out to no target reports itself in vertical blank at line 0. */
+        pData->InVerticalBlank = TRUE;
+        pData->ScanLine = 0;
+        return STATUS_SUCCESS;
+    }
     if (!NT_SUCCESS(Status))
         return Status;
     if (!DxgkAcquireKmdCall(Adapter))
