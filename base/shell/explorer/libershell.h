@@ -87,6 +87,9 @@ public:
         m_Action->SetVisible(action != NULL);
     }
 
+    CLiberSectionHead(const CLiberSectionHead &) = delete;
+    CLiberSectionHead &operator=(const CLiberSectionHead &) = delete;
+
 private:
     typedef LiberUI::Thickness Thickness;
     LiberUI::Label *m_Title;
