@@ -54,6 +54,55 @@ DwmLiberResolveMaterial(
     return TRUE;
 }
 
+BOOLEAN
+DwmLiberBlur(
+    _In_ const DWM_WIN *Window,
+    _In_ ULONG Dpi,
+    _In_ ULONG MaxRadius,
+    _Out_ PDWM_LIBER_BLUR Blur)
+{
+    DWM_LIBER_MATERIAL_INFO Info;
+    ULONG Luma;
+
+    assert(Window != NULL && Blur != NULL);
+    ZeroMemory(Blur, sizeof(*Blur));
+    if (!DwmLiberResolveMaterial(Window, Dpi, &Info) || Info.Kind == LIBER_MATERIAL_MICA)
+        return FALSE;
+
+    Blur->Radius = min(max(Info.BlurRadius, 1u), MaxRadius);
+    Luma = (GetRValue(Info.TintColor) * 54u + GetGValue(Info.TintColor) * 183u + GetBValue(Info.TintColor) * 19u) >> 8;
+    Blur->Saturation = Luma < 128 ? LiberGlassDark.Saturate : LiberGlassLight.Saturate;
+    return TRUE;
+}
+
+VOID
+DwmLiberApplyMaterial(
+    _Inout_ DWM_WIN *Window)
+{
+    DWM_LIBER_MATERIAL_INFO Info;
+
+    assert(Window != NULL);
+    if (!DwmLiberResolveMaterial(Window, 96, &Info) || Info.Kind == LIBER_MATERIAL_MICA)
+        return;
+    Window->BlurFlags |= DWM_BLUR_ENABLE | DWM_BLUR_REGION_ENTIRE_WINDOW;
+    Window->BlurRectCount = 0;
+}
+
+ULONG
+DwmLiberMaxBlurRadius(
+    _In_ ULONG Dpi)
+{
+    ULONG Radius = 0;
+    UINT Index;
+
+    for (Index = 0; Index < LIBER_MATERIAL_COUNT; ++Index)
+    {
+        if (Index != LIBER_MATERIAL_MICA)
+            Radius = max(Radius, (ULONG)LiberMaterials[Index].Blur);
+    }
+    return (ULONG)MulDiv((int)Radius, Dpi ? (int)Dpi : 96, 96);
+}
+
 ULONG
 DwmLiberSolidColor(
     _In_ const DWM_LIBER_MATERIAL_INFO *Info)

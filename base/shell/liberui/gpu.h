@@ -95,7 +95,7 @@ public:
     void FillRect(const RectF &rc, Argb color);
     void FillRoundRect(const RectF &rc, float radius, Argb color);
     void FillGradient(const RectF &rc, float radius, PointF from, PointF to, Argb fromColor, Argb toColor);
-    void FillShadow(const RectF &rc, float radius, float blur, Argb color);
+    void FillShadow(const RectF &rc, float radius, float blur, Argb color, const RectF *hole = NULL);
     void StrokeRoundRect(const RectF &rc, float radius, Argb color, float width);
     void FillEllipse(const RectF &rc, Argb color);
     void StrokeArc(const RectF &rc, float startDegrees, float sweepDegrees, Argb color, float width);

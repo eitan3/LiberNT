@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT DWM - Unit-tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     Test decoding of the Liber material window property
+ * PURPOSE:     Test decoding of the Liber material window property and its backdrop blur
  * COPYRIGHT:   Copyright 2026 Eitan Hadar <eitanhadar4@gmail.com>
  */
 
@@ -78,9 +78,56 @@ static void TestRejected(void)
     ok(Resolve(Good, 0x00FFFFFFu, 96, &Info) && Info.TintColor == 0x00FFFFFF, "largest tint\n");
 }
 
+static void TestBlur(void)
+{
+    DWM_WIN Window;
+    DWM_LIBER_BLUR Blur;
+
+    ZeroMemory(&Window, sizeof(Window));
+    ok(!DwmLiberBlur(&Window, 96, 64, &Blur) && Blur.Radius == 0, "no material, no Liber blur\n");
+    DwmLiberApplyMaterial(&Window);
+    ok(Window.BlurFlags == 0, "a window without a material keeps its blur flags\n");
+
+    Window.LiberMaterial = DWM_LIBER_MATERIAL_PACK(LIBER_MATERIAL_THICK + 1, FALSE, DWM_LIBER_LAYER_SHELL, 0,
+                                                   DWM_LIBER_EDGE_GLASS, 0xB8);
+    Window.LiberMaterialTint = RGB(0xF3, 0xF8, 0xFE);
+    Window.BlurRectCount = 3;
+    ok(DwmLiberBlur(&Window, 96, 64, &Blur) && Blur.Radius == 60, "thick glass blurs 60 px at 96 DPI: %lu\n",
+       Blur.Radius);
+    ok(Blur.Saturation == LiberGlassLight.Saturate, "a light tint uses the light glass saturation: %f\n",
+       Blur.Saturation);
+    ok(DwmLiberBlur(&Window, 144, 64, &Blur) && Blur.Radius == 64, "the radius is capped by the compositor\n");
+    ok(DwmLiberBlur(&Window, 96, 48, &Blur) && Blur.Radius == 48, "and by the software path's cap\n");
+    Window.LiberMaterialTint = RGB(0x10, 0x17, 0x1E);
+    ok(DwmLiberBlur(&Window, 96, 64, &Blur) && Blur.Saturation == LiberGlassDark.Saturate,
+       "a dark tint uses the dark glass saturation\n");
+    Window.LiberMaterial = DWM_LIBER_MATERIAL_PACK(LIBER_MATERIAL_THIN + 1, FALSE, DWM_LIBER_LAYER_SHELL, 0,
+                                                   DWM_LIBER_EDGE_GLASS, 0x80);
+    ok(DwmLiberBlur(&Window, 96, 64, &Blur) && Blur.Radius == 24, "thin glass blurs 24 px: %lu\n", Blur.Radius);
+    Window.LiberMaterial = DWM_LIBER_MATERIAL_PACK(LIBER_MATERIAL_REGULAR + 1, FALSE, DWM_LIBER_LAYER_SHELL, 0,
+                                                   DWM_LIBER_EDGE_GLASS, 0x80);
+    ok(DwmLiberBlur(&Window, 192, 64, &Blur) && Blur.Radius == 64, "regular glass at 192 DPI is capped: %lu\n",
+       Blur.Radius);
+
+    DwmLiberApplyMaterial(&Window);
+    ok((Window.BlurFlags & DWM_BLUR_ENABLE) && (Window.BlurFlags & DWM_BLUR_REGION_ENTIRE_WINDOW) &&
+       Window.BlurRectCount == 0, "a Liber material blurs behind the whole window\n");
+
+    ZeroMemory(&Window, sizeof(Window));
+    Window.LiberMaterial = DWM_LIBER_MATERIAL_PACK(LIBER_MATERIAL_MICA + 1, FALSE, DWM_LIBER_LAYER_WINDOW, 0,
+                                                   DWM_LIBER_EDGE_WINDOW, 0x80);
+    ok(!DwmLiberBlur(&Window, 96, 64, &Blur), "mica is not a blur behind\n");
+    DwmLiberApplyMaterial(&Window);
+    ok(Window.BlurFlags == 0, "mica leaves the blur flags alone\n");
+
+    ok(DwmLiberMaxBlurRadius(96) == 60 && DwmLiberMaxBlurRadius(192) == 120, "largest reach %lu\n",
+       DwmLiberMaxBlurRadius(96));
+}
+
 START_TEST(Material)
 {
     TestPacking();
     TestResolve();
     TestRejected();
+    TestBlur();
 }

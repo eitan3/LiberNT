@@ -629,6 +629,7 @@ BOOL CLiberControlCenter::Open(const RECT *prcAnchor)
     LiberShell_BuildTokens(&m_Tokens);
     LiberShell_ApplyFont(&m_Surface);
     m_Surface.SetTokens(&m_Tokens);
+    LiberShell_ApplyMaterial(&m_Surface, &m_Tokens, LIBER_MATERIAL_THICK, (float)LIBER_RADIUS_FLYOUT);
     Sync();
 
     SIZE available = { LIBER_CC_WIDTH, LayoutInfinite };
@@ -677,6 +678,7 @@ void CLiberControlCenter::OnControlEvent(Widget *source, ControlEvent event)
                 m_Dark->SetOn(!m_Dark->IsOn());
             LiberShell_BuildTokens(&m_Tokens);
             m_Surface.SetTokens(&m_Tokens);
+            LiberShell_ApplyMaterial(&m_Surface, &m_Tokens, LIBER_MATERIAL_THICK, (float)LIBER_RADIUS_FLYOUT);
             break;
         case CC_POWER:
         {

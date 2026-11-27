@@ -761,6 +761,8 @@ LRESULT CALLBACK CLiberDock::SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         LiberShell_ApplyFont(&self->m_DockSurface);
         LiberShell_ApplyFont(&self->m_TraySurface);
         self->m_DockSurface.SetTokens(&self->m_Tokens);
+        LiberShell_ApplyMaterial(&self->m_DockSurface, &self->m_Tokens, LIBER_MATERIAL_REGULAR,
+                                 (float)LIBER_DOCK_HEIGHT / 2.0f);
         self->m_TraySurface.SetTokens(&self->m_TrayTokens);
         LiberWidgets_Sync(GetShellWindow());
         SetTimer(hwnd, LIBER_TIMER_REFRESH, LIBER_REFRESH_DELAY, NULL);
@@ -835,6 +837,7 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
     m_DockSurface.SetDpi(m_Dpi);
     m_TraySurface.SetDpi(m_Dpi);
     m_DockSurface.SetTokens(&m_Tokens);
+    LiberShell_ApplyMaterial(&m_DockSurface, &m_Tokens, LIBER_MATERIAL_REGULAR, (float)LIBER_DOCK_HEIGHT / 2.0f);
     m_TraySurface.SetTokens(&m_TrayTokens);
     m_DockSurface.SetRoot(m_DockRoot);
     m_TraySurface.SetRoot(m_TrayRoot);

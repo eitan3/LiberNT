@@ -92,7 +92,7 @@ BOOL DwmGpuComposeBlurRect(const RECT *Rect, ULONG Radius);
 /* Apply an explicit blur-behind region using a single GPU backdrop capture. */
 BOOL DwmGpuComposeBlurWindow(const struct _DWM_WIN *Window,
                              const RECTL *Rectangles,
-                             LONG OriginX, LONG OriginY, ULONG Radius);
+                             LONG OriginX, LONG OriginY, ULONG Radius, FLOAT Saturation);
 
 BOOL DwmGpuComposeShadow(const RECT *Bounds, LONGLONG X, LONGLONG Y,
                           LONG Width, LONG Height, LONG Offset, LONG WideExtent,

@@ -32,3 +32,24 @@ DwmLiberResolveMaterial(
 ULONG
 DwmLiberSolidColor(
     _In_ const DWM_LIBER_MATERIAL_INFO *Info);
+
+typedef struct _DWM_LIBER_BLUR
+{
+    ULONG Radius;
+    FLOAT Saturation;
+} DWM_LIBER_BLUR, *PDWM_LIBER_BLUR;
+
+BOOLEAN
+DwmLiberBlur(
+    _In_ const DWM_WIN *Window,
+    _In_ ULONG Dpi,
+    _In_ ULONG MaxRadius,
+    _Out_ PDWM_LIBER_BLUR Blur);
+
+VOID
+DwmLiberApplyMaterial(
+    _Inout_ DWM_WIN *Window);
+
+ULONG
+DwmLiberMaxBlurRadius(
+    _In_ ULONG Dpi);

@@ -10,6 +10,7 @@
 
 #include <windowsx.h>
 #include <strsafe.h>
+#include <libernt/dwmframe.h>
 
 namespace LiberUI
 {
@@ -38,7 +39,8 @@ static BOOL RegisterSurfaceClass(HINSTANCE instance, WNDPROC proc)
 
 Surface::Surface()
     : m_hwnd(NULL), m_Dpi(96), m_Tokens(NULL), m_Root(NULL), m_LayoutPending(TRUE), m_Tracking(FALSE), m_Gpu(NULL), m_Presents(0), m_Owner(NULL), m_ExStyle(0),
-      m_InputRadius(0.0f), m_Opacity(1.0f), m_OffsetY(0.0f), m_Transition(FALSE), m_HideAtEnd(FALSE), m_Shadow(NULL), m_ShadowWidget(NULL), m_Elevation(-1), m_ShadowRadius(0.0f),
+      m_InputRadius(0.0f), m_Opacity(1.0f), m_OffsetY(0.0f), m_Transition(FALSE), m_HideAtEnd(FALSE), m_Shadow(NULL), m_ShadowWidget(NULL), m_Elevation(-1), m_ShadowRadius(0.0f), m_Material(-1),
+      m_MaterialTint(0), m_MaterialAlpha(0), m_MaterialRadius(0.0f),
       m_Recovering(FALSE)
 {
     m_Title[0] = L'\0';
@@ -115,10 +117,11 @@ Thickness ShadowMargin(const LIBER_SHADOW &shadow)
 class ShadowWidget : public Widget
 {
 public:
-    ShadowWidget() : Elevation(LIBER_ELEVATION_E2), Radius(0.0f) {}
+    ShadowWidget() : Elevation(LIBER_ELEVATION_E2), Radius(0.0f), Glass(FALSE) {}
 
     LIBER_ELEVATION Elevation;
     float Radius;
+    BOOL Glass;
 
 protected:
     void PaintOverride(PaintContext &context)
@@ -129,15 +132,52 @@ protected:
         RectF shape = { (float)(bounds.left + margin.Left), (float)(bounds.top + margin.Top),
                         (float)(bounds.right - bounds.left - margin.Left - margin.Right),
                         (float)(bounds.bottom - bounds.top - margin.Top - margin.Bottom) };
+        const RectF *hole = Glass ? &shape : NULL;
         const LIBER_SHADOW_LAYER *layers[] = { &shadow.Ambient, &shadow.Contact };
 
         for (UINT i = 0; i < _countof(layers); i++)
         {
             RectF layer = { shape.X + layers[i]->X, shape.Y + layers[i]->Y, shape.Width, shape.Height };
-            context.Painter.FillShadow(layer, Radius, (float)layers[i]->Blur, (Argb)layers[i]->Argb);
+            context.Painter.FillShadow(layer, Radius, (float)layers[i]->Blur, (Argb)layers[i]->Argb, hole);
         }
     }
 };
+
+void Surface::SetMaterial(int material, Argb tint, BYTE alpha, float radiusDip)
+{
+    LUI_ASSERT(material >= -1 && material < LIBER_MATERIAL_COUNT && radiusDip >= 0.0f);
+    if (material < -1 || material >= LIBER_MATERIAL_COUNT)
+        material = -1;
+    m_Material = material;
+    m_MaterialTint = tint;
+    m_MaterialAlpha = alpha;
+    m_MaterialRadius = radiusDip;
+    ApplyMaterial();
+    SetRectEmpty(&m_Placed);
+}
+
+void Surface::ApplyMaterial()
+{
+    if (!m_hwnd)
+        return;
+    if (m_Material < 0)
+    {
+        RemovePropW(m_hwnd, DWM_PROP_LIBER_MATERIAL);
+        RemovePropW(m_hwnd, DWM_PROP_LIBER_MATERIAL_TINT);
+        RemovePropW(m_hwnd, DWM_PROP_CORNER_RADIUS);
+        return;
+    }
+    ULONG packed = DWM_LIBER_MATERIAL_PACK(m_Material + 1, FALSE, DWM_LIBER_LAYER_SHELL,
+                                           m_Elevation >= 0 ? m_Elevation + 1 : 0, DWM_LIBER_EDGE_GLASS, m_MaterialAlpha);
+    COLORREF tint = RGB(ArgbR(m_MaterialTint), ArgbG(m_MaterialTint), ArgbB(m_MaterialTint));
+    ULONG radius = (ULONG)ScaleToDpi((int)(m_MaterialRadius + 0.5f), m_Dpi);
+    SetPropW(m_hwnd, DWM_PROP_LIBER_MATERIAL, (HANDLE)(ULONG_PTR)packed);
+    SetPropW(m_hwnd, DWM_PROP_LIBER_MATERIAL_TINT, (HANDLE)(ULONG_PTR)(tint + 1));
+    if (radius >= 1 && radius <= 64)
+        SetPropW(m_hwnd, DWM_PROP_CORNER_RADIUS, (HANDLE)(ULONG_PTR)radius);
+    else
+        RemovePropW(m_hwnd, DWM_PROP_CORNER_RADIUS);
+}
 
 void Surface::SetElevation(int elevation, float radiusDip)
 {
@@ -180,6 +220,11 @@ void Surface::UpdateShadow(BOOL show)
         m_ShadowWidget->Elevation = (LIBER_ELEVATION)m_Elevation;
         m_ShadowWidget->Radius = m_ShadowRadius;
         m_Shadow->SetRoot(m_ShadowWidget);
+    }
+    if (m_ShadowWidget->Glass != (m_Material >= 0))
+    {
+        m_ShadowWidget->Glass = m_Material >= 0;
+        m_ShadowWidget->Invalidate();
     }
 
     ThemeTokens fallback;
@@ -324,6 +369,7 @@ void Surface::SetDpi(UINT dpi)
         return;
     m_Dpi = dpi;
     m_LayoutPending = TRUE;
+    ApplyMaterial();
     SetRect(&m_Dirty, 0, 0, m_SizeDip.cx, m_SizeDip.cy);
 }
 

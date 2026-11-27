@@ -30,7 +30,7 @@ BOOL DwmD3dBegin(ULONG BackdropColor, const BYTE *BackdropPixels,
 BOOL DwmD3dWindow(const DWM_WIN *Window, const BYTE *Pixels, LONG OriginX, LONG OriginY);
 BOOL DwmD3dBlurRect(const RECT *Rect, ULONG Radius);
 BOOL DwmD3dBlurWindow(const DWM_WIN *Window, const RECTL *Rectangles,
-                      LONG OriginX, LONG OriginY, ULONG Radius);
+                      LONG OriginX, LONG OriginY, ULONG Radius, FLOAT Saturation);
 BOOL DwmD3dShadow(const RECT *Bounds, LONGLONG X, LONGLONG Y, LONG Width,
                   LONG Height, LONG Offset, LONG WideExtent, LONG Radius, BOOL Active,
                   ULONG WideOpacity, ULONG TightOpacity, ULONG WindowAlpha);

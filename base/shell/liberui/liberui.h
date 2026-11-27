@@ -248,7 +248,7 @@ public:
     virtual void FillRect(const RectF &rc, Argb color) = 0;
     virtual void FillRoundRect(const RectF &rc, float radius, Argb color) = 0;
     virtual void FillGradient(const RectF &rc, float radius, PointF from, PointF to, Argb fromColor, Argb toColor) = 0;
-    virtual void FillShadow(const RectF &rc, float radius, float blur, Argb color) = 0;
+    virtual void FillShadow(const RectF &rc, float radius, float blur, Argb color, const RectF *hole = NULL) = 0;
     virtual void StrokeRoundRect(const RectF &rc, float radius, Argb color, float width) = 0;
     virtual void FillEllipse(const RectF &rc, Argb color) = 0;
     virtual void StrokeArc(const RectF &rc, float startDegrees, float sweepDegrees, Argb color, float width) = 0;
@@ -652,6 +652,8 @@ public:
     void SetPosition(int x, int y, int widthDip, int heightDip);
     void SetInputShape(float radiusDip);
     void SetElevation(int elevation, float radiusDip);
+    void SetMaterial(int material, Argb tint, BYTE alpha, float radiusDip);
+    int Material() const { return m_Material; }
     void SetOpacity(float opacity);
     float Opacity() const { return m_Opacity; }
     float OffsetY() const { return m_OffsetY; }
@@ -691,6 +693,7 @@ private:
     BOOL RenderPass(ULONGLONG now, BOOL *lost);
     void ApplyInputShape();
     void UpdateShadow(BOOL show);
+    void ApplyMaterial();
     LONG OffsetPx() const;
 
     HWND m_hwnd;
@@ -722,6 +725,10 @@ private:
     class ShadowWidget *m_ShadowWidget;
     int m_Elevation;
     float m_ShadowRadius;
+    int m_Material;
+    Argb m_MaterialTint;
+    BYTE m_MaterialAlpha;
+    float m_MaterialRadius;
     BOOL m_Recovering;
 };
 

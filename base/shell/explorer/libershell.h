@@ -96,6 +96,28 @@ private:
     CLiberPillButton *m_Action;
 };
 
+BOOL LiberShell_GlassEnabled(VOID);
+BOOL LiberShell_ReadGlassEnabled(VOID);
+
+static inline void LiberShell_PaintGlass(LiberUI::PaintContext &context, const LiberUI::RectF &rc, float radius,
+                                         LIBER_MATERIAL_KIND material)
+{
+    LiberUI::GlassTint tint = context.Tokens.Material(material, 0.5);
+    LiberUI::RectF edge = { rc.X + 0.5f, rc.Y + 0.5f, rc.Width - 1.0f, rc.Height - 1.0f };
+    LiberUI::RectF top = { rc.X, rc.Y, rc.Width, radius };
+    LiberUI::RectF highlight = { rc.X + 0.5f, rc.Y + 1.5f, rc.Width - 1.0f, rc.Height - 2.0f };
+
+    context.Painter.FillRoundRect(rc, radius,
+                                  LiberUI::OklchToArgb(tint.Color, LiberShell_GlassEnabled() ? tint.Alpha : 1.0));
+    context.Painter.StrokeRoundRect(edge, radius - 0.5f, context.Tokens.Color(LIBER_COLOR_GLASS_EDGE), 1.0f);
+    context.Painter.PushClip(top, 0.0f);
+    context.Painter.StrokeRoundRect(highlight, radius - 1.5f, context.Tokens.Color(LIBER_COLOR_GLASS_EDGE_TOP), 1.0f);
+    context.Painter.PopClip();
+}
+
+VOID LiberShell_ApplyMaterial(LiberUI::Surface *pSurface, const LiberUI::ThemeTokens *pTokens,
+                              LIBER_MATERIAL_KIND material, float radiusDip);
+
 class CLiberPanel : public LiberUI::StackPanel
 {
 public:
@@ -108,18 +130,7 @@ protected:
     void PaintOverride(LiberUI::PaintContext &context)
     {
         LiberUI::RectF rc = LiberUI::ToRectF(Bounds());
-        LiberUI::GlassTint tint = context.Tokens.Material(m_Material, 0.5);
-
-        float radius = min(m_Radius, rc.Height / 2);
-        LiberUI::RectF edge = { rc.X + 0.5f, rc.Y + 0.5f, rc.Width - 1.0f, rc.Height - 1.0f };
-        LiberUI::RectF top = { rc.X, rc.Y, rc.Width, radius };
-
-        context.Painter.FillRoundRect(rc, radius, LiberUI::OklchToArgb(tint.Color, 1.0));
-        context.Painter.StrokeRoundRect(edge, radius - 0.5f, context.Tokens.Color(LIBER_COLOR_GLASS_EDGE), 1.0f);
-        context.Painter.PushClip(top, 0.0f);
-        LiberUI::RectF highlight = { rc.X + 0.5f, rc.Y + 1.5f, rc.Width - 1.0f, rc.Height - 2.0f };
-        context.Painter.StrokeRoundRect(highlight, radius - 1.5f, context.Tokens.Color(LIBER_COLOR_GLASS_EDGE_TOP), 1.0f);
-        context.Painter.PopClip();
+        LiberShell_PaintGlass(context, rc, min(m_Radius, rc.Height / 2), m_Material);
     }
 
 private:

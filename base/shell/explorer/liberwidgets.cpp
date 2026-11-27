@@ -23,18 +23,7 @@ public:
 protected:
     void PaintCard(PaintContext &context)
     {
-        RectF rc = ToRectF(Bounds());
-        GlassTint tint = context.Tokens.Material(LIBER_MATERIAL_THIN, 0.5);
-        float radius = (float)LIBER_RADIUS_WIDGET;
-        RectF edge = { rc.X + 0.5f, rc.Y + 0.5f, rc.Width - 1.0f, rc.Height - 1.0f };
-        RectF top = { rc.X, rc.Y, rc.Width, radius };
-        RectF highlight = { rc.X + 0.5f, rc.Y + 1.5f, rc.Width - 1.0f, rc.Height - 2.0f };
-
-        context.Painter.FillRoundRect(rc, radius, OklchToArgb(tint.Color, 1.0));
-        context.Painter.StrokeRoundRect(edge, radius - 0.5f, context.Tokens.Color(LIBER_COLOR_GLASS_EDGE), 1.0f);
-        context.Painter.PushClip(top, 0.0f);
-        context.Painter.StrokeRoundRect(highlight, radius - 1.5f, context.Tokens.Color(LIBER_COLOR_GLASS_EDGE_TOP), 1.0f);
-        context.Painter.PopClip();
+        LiberShell_PaintGlass(context, ToRectF(Bounds()), (float)LIBER_RADIUS_WIDGET, LIBER_MATERIAL_THIN);
     }
 
     static RectF Inset(const RectF &rc, float x, float y, float width, float height)
@@ -240,6 +229,8 @@ LRESULT CALLBACK CLiberWidgets::SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         {
             LiberShell_ApplyFont(&self->m_Surfaces[i]);
             self->m_Surfaces[i].SetTokens(&self->m_Tokens);
+            LiberShell_ApplyMaterial(&self->m_Surfaces[i], &self->m_Tokens, LIBER_MATERIAL_THIN,
+                                     (float)LIBER_RADIUS_WIDGET);
         }
         self->Place();
         self->Tick(TRUE);
@@ -279,6 +270,7 @@ HRESULT CLiberWidgets::Start(HWND hwndOwner)
         m_Surfaces[i].SetElevation(LIBER_ELEVATION_E8, (float)LIBER_RADIUS_WIDGET);
         LiberShell_ApplyFont(&m_Surfaces[i]);
         m_Surfaces[i].SetTokens(&m_Tokens);
+        LiberShell_ApplyMaterial(&m_Surfaces[i], &m_Tokens, LIBER_MATERIAL_THIN, (float)LIBER_RADIUS_WIDGET);
         m_Surfaces[i].SetRoot(m_Cards[i]);
     }
     g_pLiberWidgets = this;

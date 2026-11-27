@@ -72,6 +72,7 @@ static const char LiberShaderSource[] =
     "  else if (kind > 6.5 && kind < 7.5) {\n"
     "    float sigma = max(params.y, 0.0001);\n"
     "    c = saturate(0.5 - 0.5 * erfApprox(roundRect(p, shape, params.x) / (sigma * 1.4142136)));\n"
+    "    if (uvRect.w > 0.5) c *= 1 - cover(roundRect(p, arc, params.x));\n"
     "  }\n"
     "  else if (kind > 7.5) c = cover(roundRect(p, shape, params.x));\n"
     "  if (clipParams.z > 0.5) c = 0;\n"
