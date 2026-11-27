@@ -718,10 +718,15 @@ IntcDspEvtDeviceReleaseHardware(
     _In_ WDFCMRESLIST ResourcesTranslated)
 {
     PINTCDSP_DEVICE Dev = IntcDspGetData(Device);
+    UINT32 Held;
 
     UNREFERENCED_PARAMETER(ResourcesTranslated);
     IntcDspPowerDown(Dev);
     IntcDspReleaseStream(Dev);
+    /* the buffers held for their pins across a power-down or a fault (stream.c, R5-01) outlive the hardware when a pin did not free its own: they stay allocated, with the pages and the MDL the pin may still map; a leak is the safe side, a free under a mapping is not */
+    Held = IntcDspStreamsHeld(&Dev->Streams);
+    if (Held != 0)
+        IntcDspLog("streams: %lu buffer%s still held for its pin%s at the removal; left allocated (a free under a mapping is not)\n", Held, Held == 1 ? "" : "s", Held == 1 ? "" : "s");
     if (Dev->DmaBuffer)
         MmFreeContiguousMemorySpecifyCache(Dev->DmaBuffer, (ULONG)Dev->DmaBytes, MmNonCached);
     Dev->DmaBuffer = NULL;

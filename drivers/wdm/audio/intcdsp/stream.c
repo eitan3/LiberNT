@@ -571,7 +571,125 @@ IntcDspPathBuild(
     return Status;
 }
 
-/* The buffer of a stream given back to the bus: its mapping is dropped first, then the software bound off and the pages freed */
+static
+HANDLE
+IntcDspStreamHandle(
+    _In_ const INTCDSP_STREAMS* Streams,
+    _In_ const INTCDSP_STREAM* Stream);
+
+/* The held buffer kept under a handle's full word, NULL for none (INTCDSP_HELD) */
+static
+PINTCDSP_HELD
+IntcDspHeldOf(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    HANDLE Handle)
+{
+    UINT32 I;
+
+    for (I = 0; I < Streams->HeldCount; I++)
+        if (Streams->Held[I].Owner == (UINT_PTR)Handle)
+            return &Streams->Held[I];
+    return NULL;
+}
+
+/*
+ * A held buffer given back: the pages and the MDL as the bus's free returns
+ * them (hdac_stream.cpp hdac_stream_free_buffer: MmFreePagesFromMdl, then the
+ * MDL), at PASSIVE_LEVEL under the manager's mutex, which is a KMUTEX; no
+ * bus call is made, so it works after a power-down and after the release of
+ * the hardware. The record goes, the last taking its place. The caller
+ * holds the lock.
+ */
+static
+VOID
+IntcDspHeldRelease(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    _Inout_ PINTCDSP_HELD Held)
+{
+    PMDL Mdl = Held->Mdl;
+    UINT8 Tag = Held->Tag;
+    BOOLEAN Capture = Held->Capture;
+    UINT32 Bytes = (UINT32)Held->Bytes;
+
+    *Held = Streams->Held[--Streams->HeldCount];
+    RtlZeroMemory(&Streams->Held[Streams->HeldCount], sizeof(Streams->Held[0]));
+    MmFreePagesFromMdl(Mdl);
+    ExFreePool(Mdl);
+    {
+        INTCDSP_STREAM Stream;
+
+        RtlZeroMemory(&Stream, sizeof(Stream));
+        Stream.Tag = Tag;
+        Stream.Capture = Capture;
+        IntcDspTrace(Streams, &Stream, INTCDSP_TRACE_BUFFER_FREE, 0, 0, Bytes);
+    }
+}
+
+/* The held buffer of a handle's word given back, if the manager holds one: the buffer a transition kept for nobody (the allocate that did not hand it over, the pin's free that forced a fault) */
+static
+VOID
+IntcDspHeldGiveBack(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    HANDLE Handle)
+{
+    PINTCDSP_HELD Held = IntcDspHeldOf(Streams, Handle);
+
+    if (Held != NULL)
+        IntcDspHeldRelease(Streams, Held);
+}
+
+/*
+ * The buffer of a stream let go under a live pin (R5-01): the mapping is
+ * dropped first, the software bound is switched off, and the buffer is
+ * detached from the bus's stream, not freed, and kept under the word of the
+ * owner's handle for the pin's free (IntcDspStreamFree); the pages and the
+ * MDL are the pin's until then. The bus's table of a full manager leaves the
+ * buffer allocated with a line: a leak is the safe side, a free under a
+ * mapping is not.
+ */
+static
+VOID
+IntcDspStreamHoldBuffer(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    _Inout_ PINTCDSP_STREAM Stream)
+{
+    const ADSP_BUS_INTERFACE* Bus = Streams->Bus;
+    PMDL Mdl = NULL;
+    NTSTATUS Status;
+
+    if (Stream->Mdl == NULL)
+        return;
+    if (Streams->Ops != NULL && Streams->Ops->Unmap != NULL)
+        Streams->Ops->Unmap(Streams->Ops->Context, Stream->Mdl);
+    Bus->DSPDisableSPIB(Bus->Context, Stream->Handle);
+    IntcDspTrace(Streams, Stream, INTCDSP_TRACE_SPIB_OFF, 0, 0, 0);
+    Status = Bus->DetachDmaBuffer(Bus->Context, Stream->Handle, &Mdl);
+    if (!NT_SUCCESS(Status) || Mdl == NULL)
+    {
+        IntcDspStreamLog(Streams, "stream %u: the bus does not detach its buffer of %I64u bytes (0x%08x); it stays with the stream, allocated\n",
+                         Stream->Tag, (UINT64)Stream->Bytes, (UINT32)Status);
+    }
+    else if (Streams->HeldCount >= INTCDSP_HELD_MAX)
+    {
+        IntcDspStreamLog(Streams, "stream %u: its buffer of %I64u bytes is held for nobody, the manager's table of held buffers being full; left allocated\n",
+                         Stream->Tag, (UINT64)Stream->Bytes);
+    }
+    else
+    {
+        PINTCDSP_HELD Held = &Streams->Held[Streams->HeldCount++];
+
+        Held->Owner = (UINT_PTR)IntcDspStreamHandle(Streams, Stream);
+        Held->Mdl = Mdl;
+        Held->Bytes = Stream->Bytes;
+        Held->Tag = Stream->Tag;
+        Held->Capture = Stream->Capture;
+        IntcDspTrace(Streams, Stream, INTCDSP_TRACE_BUFFER_HELD, 0, 0, (UINT32)Stream->Bytes);
+    }
+    Stream->Mdl = NULL;
+    Stream->Bytes = 0;
+}
+
+/* The buffer of a stream given back to the bus: its mapping is dropped first, then the software bound off and the pages freed; the owner's release, from the pin's free of a live stream and from a transition that failed without a fault, where the pin never had the buffer */
 static
 VOID
 IntcDspStreamReleaseBuffer(
@@ -592,7 +710,7 @@ IntcDspStreamReleaseBuffer(
     Stream->Bytes = 0;
 }
 
-/* Everything the bus gave a stream, given back: it is stopped, its buffer released, its tag freed */
+/* Everything the bus gave a stream, given back: it is stopped, its buffer detached and held for its pin (R5-01), its tag freed */
 static
 VOID
 IntcDspStreamLetGo(
@@ -606,7 +724,7 @@ IntcDspStreamLetGo(
         Bus->SetDmaEngineState(Bus->Context, Stream->Handle, PauseState);
         IntcDspTrace(Streams, Stream, INTCDSP_TRACE_STOP, 0, 0, PauseState);
     }
-    IntcDspStreamReleaseBuffer(Streams, Stream);
+    IntcDspStreamHoldBuffer(Streams, Stream);
     if (Stream->Handle != NULL)
     {
         IntcDspTrace(Streams, Stream, INTCDSP_TRACE_FREE, 0, 0, 0);
@@ -618,9 +736,10 @@ IntcDspStreamLetGo(
 
 /*
  * Everything the streams hold, given back: each stream what the bus gave
- * it, the paths what they built, the instance ids; a stream object in use
- * is Released from here and waits for its close. The fault and the
- * power-down's release end here, the caller holding the lock.
+ * it, its buffer detached and held for its pin (R5-01), the paths what they
+ * built, the instance ids; a stream object in use is Released from here and
+ * waits for its close. The fault and the power-down's release end here, the
+ * caller holding the lock.
  */
 static
 VOID
@@ -725,6 +844,14 @@ IntcDspStreamsBytes(
 {
     return (SIZE_T)Model->PcmCount * sizeof(INTCDSP_PATH) + (SIZE_T)Model->PipelineCount * 4 * sizeof(UINT32) +
         (SIZE_T)Model->WidgetCount * 2 + INTCDSP_STREAM_MODULES_MAX;
+}
+
+/* How many buffers the manager holds for their pins (R5-01): the removal's line says it */
+UINT32
+IntcDspStreamsHeld(
+    _In_ const INTCDSP_STREAMS* Streams)
+{
+    return Streams->HeldCount;
 }
 
 /* The module ids the manager keeps an instance count for are stream.h's (INTCDSP_STREAM_MODULES_MAX): a module widget's index by its id */
@@ -1043,14 +1170,19 @@ IntcDspStreamBuffer(
         Stream->State = IntcDspStreamStatePrepared;
         return STATUS_SUCCESS;
     }
-    /* a fault on the way released the buffer and the tag of every stream and forgot the path (the build's own undo may have forced it, R1-04): nothing is left to undo */
+    /* a fault on the way released the tag of every stream and forgot the path (the build's own undo may have forced it, R1-04): nothing is left to undo; the buffer this allocate did not hand to its pin is held for nobody, so its pages go back here (R5-01) */
     if (Streams->Faulted)
+    {
+        IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream));
         return Status;
+    }
     Path->Held--;
     if (IntcDspLinkLost(Streams))
     {
-        /* the fault released the buffer and the tag of every stream */
-        return IntcDspFailed(Streams, Status);
+        /* the fault released the tag of every stream */
+        Status = IntcDspFailed(Streams, Status);
+        IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream));
+        return Status;
     }
     if (Path->Held == 0 && Path->Built)
     {
@@ -1069,7 +1201,9 @@ IntcDspStreamBuffer(
             /* what was built could not be deleted again: nothing of it is kept */
             IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be deleted after the failed build (0x%08x); released as after a fault\n",
                              Stream->Tag, (UINT32)Step);
-            return IntcDspStuck(Streams, Step);
+            Status = IntcDspStuck(Streams, Step);
+            IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream));
+            return Status;
         }
     }
     IntcDspStreamReleaseBuffer(Streams, Stream);
@@ -1348,7 +1482,10 @@ IntcDspStreamFreeLocked(
                 IntcDspStreamLog(Streams, "stream %u: its copier could not be told the stream is going (0x%08x); released as after a fault\n",
                                  Stream->Tag, (UINT32)Status);
             }
-            return IntcDspStuck(Streams, Status);
+            /* the pin's own free asked for the buffer to go and forgets the MDL whatever the answer: the forced release held it, and it is returned here (R5-01) */
+            Status = IntcDspStuck(Streams, Status);
+            IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream));
+            return Status;
         }
     }
     /* the last holder: the pipeline is reset, the instances and the pipeline deleted (the plan's §5.10) */
@@ -1369,7 +1506,10 @@ IntcDspStreamFreeLocked(
                 IntcDspStreamLog(Streams, "stream %u: the PCM's pipelines could not be deleted (0x%08x); released as after a fault\n", Stream->Tag,
                                  (UINT32)Status);
             }
-            return IntcDspStuck(Streams, Status);
+            /* the pin's own free asked for the buffer to go and forgets the MDL whatever the answer: the forced release held it, and it is returned here (R5-01) */
+            Status = IntcDspStuck(Streams, Status);
+            IntcDspHeldGiveBack(Streams, IntcDspStreamHandle(Streams, Stream));
+            return Status;
         }
     }
     IntcDspStreamReleaseBuffer(Streams, Stream);
@@ -1383,10 +1523,19 @@ IntcDspStreamFree(
     HANDLE Handle)
 {
     NTSTATUS Status;
+    PINTCDSP_HELD Held;
 
     if (KeGetCurrentIrql() != PASSIVE_LEVEL)
         return STATUS_INVALID_DEVICE_STATE;
     IntcDspStreamsLock(Streams);
+    /* the free of a buffer held for its pin (R5-01): answered before anything of the manager's state is asked, so it works after a power-down, after a fault and after the release of the hardware; a second free of the word finds nothing */
+    Held = IntcDspHeldOf(Streams, Handle);
+    if (Held != NULL)
+    {
+        IntcDspHeldRelease(Streams, Held);
+        IntcDspStreamsUnlock(Streams);
+        return STATUS_SUCCESS;
+    }
     Status = IntcDspStreamFreeLocked(Streams, Handle);
     IntcDspStreamsUnlock(Streams);
     return Status;

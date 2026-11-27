@@ -460,10 +460,8 @@ IntcDspAudioFreeBuffer(
     PINTCDSP_STREAMS Streams = &IntcDspAudioDevice(Context)->Streams;
     PINTCDSP_STREAM Managed = IntcDspStreamOf(Streams, Stream);
 
-    if (Managed == NULL)
-        return STATUS_INVALID_HANDLE;
-    /* only the buffer the allocation gave goes back: another one is refused before anything is released */
-    if (Managed->State != IntcDspStreamStateReleased && (Managed->Mdl != Mdl || Managed->Bytes != Bytes))
+    /* only the buffer the allocation gave goes back: another one is refused before anything is released; a stream the manager let go keeps its buffer under the handle's word for this free (stream.c, R5-01), and the manager answers that word, or a handle that names nothing */
+    if (Managed != NULL && Managed->State != IntcDspStreamStateReleased && (Managed->Mdl != Mdl || Managed->Bytes != Bytes))
         return STATUS_INVALID_PARAMETER;
     return IntcDspStreamFree(Streams, Stream);
 }

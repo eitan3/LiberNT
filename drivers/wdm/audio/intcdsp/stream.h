@@ -61,6 +61,7 @@ extern "C" {
 #define INTCDSP_TRACE_FREE             3   /* the tag went back to the pool */
 #define INTCDSP_TRACE_BUFFER           4   /* the buffer; Value: its bytes */
 #define INTCDSP_TRACE_BUFFER_FREE      5
+#define INTCDSP_TRACE_BUFFER_HELD      11  /* the buffer detached and held for its pin; Value: its bytes */
 #define INTCDSP_TRACE_RUN              6   /* the stream runs */
 #define INTCDSP_TRACE_STOP             7   /* the stream is paused or stopped */
 #define INTCDSP_TRACE_RESET            8
@@ -153,14 +154,37 @@ typedef struct _INTCDSP_STREAMS_OPS
      */
     VOID (*Fault)(_In_opt_ PVOID Context);
     /*
-     * A buffer goes back to the bus: whatever the driver mapped of it is
-     * unmapped here, before the bus frees its pages. The self-test maps
-     * the pages it writes and reads; the stream manager calls this for
-     * every buffer it releases, on the way out of a transition and on a
-     * fault alike.
+     * A buffer goes back to the bus, or is held for its pin: whatever the
+     * driver mapped of it is unmapped here, before the bus frees its pages
+     * and before the buffer is held (R5-01). The self-test maps the pages it
+     * writes and reads; the stream manager calls this for every buffer it
+     * releases or holds, on the way out of a transition, on a fault and on a
+     * power-down alike.
      */
     VOID (*Unmap)(_In_opt_ PVOID Context, _In_ PMDL Mdl);
 } INTCDSP_STREAMS_OPS, *PINTCDSP_STREAMS_OPS;
+
+/*
+     * A stream's buffer held for its pin (R5-01): the manager let the stream
+     * go (a power-down, a fault, a transition that forced the release) while
+     * the pin that owns the buffer still maps it, so the buffer was detached
+     * from the bus's stream, not freed, and is kept under the full word of the
+     * owner's handle until the pin's free arrives (IntcDspStreamFree), which
+     * returns the pages and the MDL as the bus's free would. The tag went
+     * back at once: no tag is kept across a suspend.
+     */
+typedef struct _INTCDSP_HELD
+{
+    /* the owner's handle word as it was: the generation above the index, so a handle of another boot names nothing */
+    UINT_PTR Owner;
+    PMDL Mdl;
+    SIZE_T Bytes;
+    UINT8 Tag;
+    BOOLEAN Capture;
+} INTCDSP_HELD, *PINTCDSP_HELD;
+
+/* The buffers a manager may hold for their pins at once: one per stream object of four boots, more than a machine's pins outlive */
+#define INTCDSP_HELD_MAX              (INTCDSP_STREAMS_MAX * 4)
 
 typedef struct _INTCDSP_STREAMS
 {
@@ -186,6 +210,16 @@ typedef struct _INTCDSP_STREAMS
      * acts neither on the stream that took its object nor on a free one.
      */
     UINT32 Generation;
+    /*
+     * The buffers held for their pins (INTCDSP_HELD), and how many. They sit
+     * before Ops on purpose: the initialization zeroes the manager from Ops
+     * on, and the generation moves at a power-down, while a held buffer
+     * outlives both, since its pin frees it by the word it was given. The
+     * driver's device extension holds the manager by value, so nothing is
+     * allocated to hold a buffer at a power-down (R5-01).
+     */
+    INTCDSP_HELD Held[INTCDSP_HELD_MAX];
+    UINT32 HeldCount;
     const INTCDSP_STREAMS_OPS* Ops;
     const ADSP_BUS_INTERFACE* Bus;
     SOFIPC_CONTEXT* Ipc;
@@ -218,6 +252,11 @@ typedef struct _INTCDSP_STREAMS
 SIZE_T
 IntcDspStreamsBytes(
     _In_ const SOFTPLG_IPC4_MODEL* Model);
+
+/* How many buffers the manager holds for their pins (INTCDSP_HELD), read without the lock for the removal's one line (R5-01) */
+UINT32
+IntcDspStreamsHeld(
+    _In_ const INTCDSP_STREAMS* Streams);
 
 /*
  * The first module widget of a model whose module id the manager cannot
