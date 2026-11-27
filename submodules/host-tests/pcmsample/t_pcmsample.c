@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT host-native tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The Core Audio engine's PCM sample conversion and dither (dll/win32/mmdevapi/pcm_sample.h), the same source the engine compiles: the seed leaves the xorshift's fixed point, a dithered write moves a sample by at most one LSB and is not constant on a constant input, the dither's amount is one LSB at 8, 16, 20, 24 and 32 valid bits (the reference derives it on its own), and a sample at the full scale, or one LSB past it, stays at the full scale; under ASan and UBSan
+ * PURPOSE:     The Core Audio engine's PCM sample conversion and dither (dll/win32/mmdevapi/pcm_sample.h), the same source the engine compiles: the seed leaves the xorshift's fixed point, a dithered write moves a sample by at most one LSB and is not constant on a constant input, the dither's amount is one LSB at 8, 16, 20, 24 and 32 valid bits (the reference derives it on its own), its sign is balanced (the positive and the negative draws are each half of many, within a tenth: a one-sided dither fails), and a sample at the full scale, or one LSB past it, stays at the full scale; under ASan and UBSan
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -163,6 +163,47 @@ TestDitherAmplitude(
         CHECK_EQ(Moved, 0);
 }
 
+/*
+ * The dither's sign (R8-03), by hand, as the function applies it: each word
+ * is a uniform integer of the 32 - ValidBits bits the random word keeps, M =
+ * 2^(32 - ValidBits) values, and the dither is their difference, so it is
+ * positive with (M - 1) / 2M and negative with the same. A sample written
+ * half an LSB past a valid-bit boundary moves up when the dither is at least
+ * half an LSB and down when it is at most minus half: each with 1 / 8 of the
+ * draws (the pairs with F - S at least M / 2 are (M / 2)(M / 2 + 1) / 2 of
+ * M squared), and it stays with 3 / 4. Over DITHER_DRAWS samples each move is
+ * within a tenth of an eighth, so neither sign is missing and neither leans:
+ * a dither of one sign fails. Read through the written sample, so it is the
+ * dither the function applies, and not the sequence alone, that is measured.
+ */
+#define DITHER_DRAWS    65536
+
+static
+void
+TestDitherSignBalance(
+    WORD ValidBits)
+{
+    pcm_dither Dither = (pcm_dither)PCM_DITHER_INIT;
+    INT32 Half = (INT32)(LSB_OF(ValidBits) / 2);
+    int Up = 0, Down = 0, i;
+
+    for (i = 0; i < DITHER_DRAWS; ++i)
+    {
+        BYTE Plain[4], Dithered[4];
+
+        memset(Plain, 0, sizeof(Plain));
+        memset(Dithered, 0, sizeof(Dithered));
+        write_pcm_sample(Plain, 32, ValidBits, Half);
+        write_pcm_sample_dithered(Dithered, 32, ValidBits, Half, &Dither);
+        if (ReadUnits(Dithered, 32, ValidBits) > ReadUnits(Plain, 32, ValidBits))
+            Up++;
+        else if (ReadUnits(Dithered, 32, ValidBits) < ReadUnits(Plain, 32, ValidBits))
+            Down++;
+    }
+    /* an eighth of the draws, within a tenth: 1638 to 14745 of 65536, each way */
+    CHECK(Up >= DITHER_DRAWS / 40 && Up <= DITHER_DRAWS * 9 / 40);
+    CHECK(Down >= DITHER_DRAWS / 40 && Down <= DITHER_DRAWS * 9 / 40);
+}
 /* The seed is not the xorshift's fixed point, and zero, the state an endpoint's calloc leaves without the seed, is */
 static
 void
@@ -296,6 +337,8 @@ main(void)
     TestFullScaleStaysAtFullScale(16);
     TestFullScaleStaysAtFullScale(8);
     TestOneLsbPastFullScale();
+    TestDitherSignBalance(16);
+    TestDitherSignBalance(8);
     TestDitherAmplitude(16, 8);
     TestDitherAmplitude(32, 8);
     TestDitherAmplitude(16, 16);
