@@ -3,6 +3,7 @@ list(APPEND SOURCE
     anim.cpp
     color.cpp
     controls.cpp
+    d3dpainter.cpp
     gpusurface.cpp
     input.cpp
     layout.cpp

@@ -6,6 +6,7 @@
  */
 
 #include "precomp.h"
+#include "gpu.h"
 
 #include <windowsx.h>
 
@@ -226,6 +227,18 @@ BOOL Surface::EnsureBuffer()
         FreeBuffer();
         return FALSE;
     }
+    if (m_Gpu)
+    {
+        BOOL resized = px.cx != m_SizePx.cx || px.cy != m_SizePx.cy;
+        if (!GpuEnsureCanvas(m_Gpu, (UINT)px.cx, (UINT)px.cy))
+            return FALSE;
+        if (resized)
+        {
+            m_SizePx = px;
+            SetRect(&m_Dirty, 0, 0, m_SizeDip.cx, m_SizeDip.cy);
+        }
+        return TRUE;
+    }
     if (m_Bits && px.cx == m_SizePx.cx && px.cy == m_SizePx.cy)
         return TRUE;
 
@@ -288,27 +301,60 @@ BOOL Surface::Render(ULONGLONG now)
     RECT dirty = m_Dirty;
     SetRectEmpty(&m_Dirty);
 
-    GdiplusPainter painter(m_Bits, m_SizePx.cx, m_SizePx.cy, m_SizePx.cx * 4, m_Dpi, &m_Fonts);
-    if (!painter.IsValid())
-        return FALSE;
-
-    RectF clip = ToRectF(dirty);
-    painter.PushClip(clip, 0.0f);
-    painter.Clear(0);
-    if (m_Root)
+    if (m_Gpu)
     {
-        PaintContext context = { painter, *tokens, now };
-        m_Root->Paint(context);
+        RECT px = { MulDiv(dirty.left, (int)m_Dpi, 96) - 1, MulDiv(dirty.top, (int)m_Dpi, 96) - 1,
+                    MulDiv(dirty.right, (int)m_Dpi, 96) + 1, MulDiv(dirty.bottom, (int)m_Dpi, 96) + 1 };
+        RECT all = { 0, 0, m_SizePx.cx, m_SizePx.cy };
+        IntersectRect(&px, &px, &all);
+
+        D3DPainter painter(m_Gpu, m_Dpi, &m_Fonts, px);
+        if (!painter.IsValid())
+            return FALSE;
+        painter.Clear(0);
+        if (m_Root)
+        {
+            PaintContext context = { painter, *tokens, now };
+            m_Root->Paint(context);
+        }
     }
-    painter.PopClip();
+    else
+    {
+        GdiplusPainter painter(m_Bits, m_SizePx.cx, m_SizePx.cy, m_SizePx.cx * 4, m_Dpi, &m_Fonts);
+        if (!painter.IsValid())
+            return FALSE;
+
+        RectF clip = ToRectF(dirty);
+        painter.PushClip(clip, 0.0f);
+        painter.Clear(0);
+        if (m_Root)
+        {
+            PaintContext context = { painter, *tokens, now };
+            m_Root->Paint(context);
+        }
+        painter.PopClip();
+    }
 
     Present();
     return TRUE;
 }
 
+BOOL Surface::ReadPixels(DWORD *pixels, UINT stride) const
+{
+    if (!pixels || m_SizePx.cx <= 0 || stride < (UINT)m_SizePx.cx * sizeof(DWORD))
+        return FALSE;
+    if (m_Gpu)
+        return GpuReadCanvas(m_Gpu, pixels, stride);
+    if (!m_Bits)
+        return FALSE;
+    for (LONG y = 0; y < m_SizePx.cy; y++)
+        CopyMemory((BYTE *)pixels + (SIZE_T)y * stride, m_Bits + (SIZE_T)y * m_SizePx.cx, m_SizePx.cx * sizeof(DWORD));
+    return TRUE;
+}
+
 void Surface::Present()
 {
-    if (!m_hwnd || !m_Dc)
+    if (!m_hwnd || (!m_Gpu && !m_Dc))
         return;
 
     POINT source = { 0, 0 };
@@ -330,17 +376,19 @@ void Surface::Present()
                      SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         m_Placed = placed;
     }
-    if (!GpuPresent(m_Gpu, m_Bits, (UINT)size.cx, (UINT)size.cy))
+    if (!GpuPresentCanvas(m_Gpu))
     {
-        GpuDestroy(m_Gpu);
-        m_Gpu = GpuCreate();
-        if (m_Gpu && !GpuAttach(m_Gpu, m_hwnd))
+        SurfaceGpu *replacement = GpuCreate();
+        if (!replacement || !GpuAttach(replacement, m_hwnd))
         {
-            GpuDestroy(m_Gpu);
-            m_Gpu = NULL;
-        }
-        if (!m_Gpu || !GpuPresent(m_Gpu, m_Bits, (UINT)size.cx, (UINT)size.cy))
+            GpuDestroy(replacement);
             return;
+        }
+        GpuDestroy(m_Gpu);
+        m_Gpu = replacement;
+        m_SizePx.cx = m_SizePx.cy = 0;
+        SetRect(&m_Dirty, 0, 0, m_SizeDip.cx, m_SizeDip.cy);
+        return;
     }
     m_Presents++;
 }

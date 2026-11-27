@@ -681,6 +681,7 @@ public:
     SIZE SizeDip() const { return m_SizeDip; }
     BOOL Render(ULONGLONG now);
     const DWORD *Pixels() const { return m_Bits; }
+    BOOL ReadPixels(DWORD *pixels, UINT stride) const;
     SIZE PixelSize() const { return m_SizePx; }
     BOOL HasDirty() const { return !IsRectEmpty(&m_Dirty); }
     const RECT &Dirty() const { return m_Dirty; }

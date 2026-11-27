@@ -19,7 +19,6 @@ void AssertFailed(const char *file, int line, const char *condition);
 struct SurfaceGpu;
 SurfaceGpu *GpuCreate();
 BOOL GpuAttach(SurfaceGpu *gpu, HWND hwnd);
-BOOL GpuPresent(SurfaceGpu *gpu, const DWORD *bits, UINT width, UINT height);
 void GpuDestroy(SurfaceGpu *gpu);
 
 }
