@@ -4862,6 +4862,85 @@ CheckStreamDeviceBoot(
     free(S);
 }
 
+/*
+ * (i22) A manager that was never made ready, the need of a boot clear
+ * (N10-03): a bus without the stream members leaves the manager not ready
+ * at its start, no fault and no power-down before it, and the Boot
+ * operation is wired all the same. One that stops before the manager is
+ * started has the open refused STATUS_DEVICE_NOT_READY, nothing taken or
+ * sent, and the need of a boot set by the open's own look at the manager
+ * after the operation, the one path where nothing else sets it (every
+ * stopped boot of (i17) and (i18) begins with the need already set), with
+ * the line saying so; a second open under the same stop is refused alike.
+ * The bus carrying the stream members again, the next open's boot starts
+ * the manager and goes through, its line the recovery's since the need was
+ * set.
+ */
+static
+void
+CheckStreamNeverReady(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    HANDLE Fresh = NULL;
+    USHORT Size;
+    UINT32 Pcm, Sx;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    /* the bus without the stream members: the manager's start leaves it not ready, with no fault and no power-down before it */
+    Size = S->Bus.Interface.Size;
+    FakeBusTruncate(&S->Bus, RTL_SIZEOF_THROUGH_FIELD(ADSP_BUS_INTERFACE, GetTopologySources));
+    CHECK(!IntcDspBusStreams(&S->Bus.Interface));
+    S->Ops.Boot = StreamBootAtOpen;
+    IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
+    CHECK(!S->Streams.Ready && !S->Streams.Faulted);
+    CHECK(!S->Streams.NeedsBoot);
+    CHECK_EQ(S->Streams.Faults, 0);
+    CHECK_EQ(S->Streams.Generation, 2);
+    CHECK(StreamLogCount(S, "streams: not started (the bus carries no stream members)\n") == 1);
+    /* a Boot that stops before the manager is started: refused, the operation once under the open's lock, nothing taken or sent */
+    S->BootStops = TRUE;
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_DEVICE_NOT_READY);
+    CHECK(Fresh == NULL);
+    CHECK_EQ(S->Boots, 1);
+    CHECK_EQ(S->BootDepth, 1);
+    CHECK(!S->Streams.Ready && !S->Streams.Faulted);
+    CHECK_EQ(S->Streams.Path[Pcm].Open, 0);
+    CHECK_EQ(S->H.Dsp->TransportRequests, 0);
+    CHECK_EQ(S->Streams.Generation, 2);
+    /* the need of a boot, set by the open's look at the manager after the operation alone */
+    CHECK_EQ(S->Streams.NeedsBoot, TRUE);
+    CHECK(StreamLogCount(S, "boot at stream open failed: ") == 1);
+    CHECK(StreamLogCount(S, "recovered: open ok after ") == 0);
+    /* a second open under the same stop: refused alike, the operation for it too */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_DEVICE_NOT_READY);
+    CHECK(Fresh == NULL);
+    CHECK_EQ(S->Boots, 2);
+    CHECK_EQ(S->Streams.NeedsBoot, TRUE);
+    CHECK(StreamLogCount(S, "boot at stream open failed: ") == 2);
+    /* the bus carries the stream members again: the next open's boot starts the manager and goes through */
+    FakeBusTruncate(&S->Bus, Size);
+    CHECK(IntcDspBusStreams(&S->Bus.Interface));
+    S->BootStops = FALSE;
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_SUCCESS);
+    CHECK(Fresh != NULL);
+    CHECK_EQ(S->Boots, 3);
+    CHECK(S->Streams.Ready && !S->Streams.Faulted && !S->Streams.NeedsBoot);
+    CHECK(StreamLogCount(S, "recovered: open ok after ") == 1);
+    CHECK(StreamLogCount(S, "boot at stream open: ok") == 0);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Fresh), STATUS_SUCCESS);
+    for (Sx = 0; Sx < INTCDSP_STREAMS_MAX; Sx++)
+        CHECK_EQ(S->Streams.Stream[Sx].State, IntcDspStreamStateFree);
+    CHECK_EQ(S->Streams.HeldCount, 0);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+}
+
 int
 main(
     void)
@@ -4913,6 +4992,7 @@ main(
     CheckStreamPinTold();
     CheckStreamFaultAtEachStep();
     CheckStreamDeviceBoot();
+    CheckStreamNeverReady();
 
     printf("sofipc: %d checks, %d failures\n", Checks, Failures);
     free(H->Dsp);
