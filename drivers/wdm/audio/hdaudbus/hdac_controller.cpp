@@ -203,6 +203,11 @@ NTSTATUS StopHDAController(PFDO_CONTEXT fdoCtx) {
 	return status;
 }
 
+/* Whether the controller's registers can be handed out to be read: started, and BAR0, where they and the streams' registers sit, still mapped; FALSE from a stop to the next start, and after the release of the hardware, which frees the streams too (R5-02) */
+BOOLEAN HdaControllerStarted(PFDO_CONTEXT fdoCtx) {
+	return fdoCtx != NULL && fdoCtx->ControllerEnabled && fdoCtx->m_BAR0.Base.Base != NULL;
+}
+
 static UINT16 HDACommandAddr(UINT32 cmd) {
 	return (cmd >> 28) & 0xF;
 }

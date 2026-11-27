@@ -383,8 +383,9 @@ HDA_GetWallClockRegister(
 	_Out_ PULONG* Wallclock
 ) {
 	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
-	if (!devData->FdoContext) {
-		*Wallclock = NULL;
+	/* the wall clock is a BAR0 register: none is handed out while the controller is not started (R5-02) */
+	*Wallclock = NULL;
+	if (!HdaControllerStarted(devData->FdoContext)) {
 		return;
 	}
 	*Wallclock = (ULONG *)((devData->FdoContext)->m_BAR0.Base.baseptr + HDA_REG_WALLCLKA);
@@ -400,6 +401,10 @@ HDA_GetLinkPositionRegister(
 	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
 	if (!devData->FdoContext) {
 		return STATUS_NO_SUCH_DEVICE;
+	}
+	/* the stream's registers sit in BAR0 and its record is the controller's: a controller that is not started answers before the handle is looked at (R5-02) */
+	if (!HdaControllerStarted(devData->FdoContext)) {
+		return STATUS_DEVICE_NOT_READY;
 	}
 
 	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;

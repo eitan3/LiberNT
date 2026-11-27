@@ -63,6 +63,9 @@ CMiniportWaveRTStream::GetClockRegister(
 {
     Register->Width = 32;
     m_Interface.GetWallClockRegister(m_Interface.Context, (PULONG*)&Register->Register);
+    /* the bus hands out no register while its controller is not started (hdaudio.cpp HDA_GetWallClockRegister): a NULL clock is not one the engine may read */
+    if (Register->Register == NULL)
+        return STATUS_DEVICE_NOT_READY;
     return STATUS_SUCCESS;
 }
 
