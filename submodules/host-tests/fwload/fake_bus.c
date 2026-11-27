@@ -13,6 +13,11 @@
 #endif
 #include "fake_bus.h"
 
+#ifndef FAKE_BUS_KERNEL
+/* The bus whose MDLs the host's stubs of the kernel's free act on: the last made, which in a harness is the stream manager's */
+static FAKE_BUS* FakeBusMdlOwner;
+#endif
+
 /* The members of version 1 answer success and do nothing */
 static NTSTATUS NoResources(PVOID Context, PCI_BAR* HdaBar, PCI_BAR* AdspBar, PVOID* Ppcap, PNHLT_INFO NhltInfo, BUS_INTERFACE_STANDARD* PciConfig)
 {
@@ -92,16 +97,14 @@ FakeBusPlatformInfo(
     return Bus->InfoStatus;
 }
 
+/* The host's blocks: the fake's MDL and its pages (the kernel twin's MDL carries real pages, FakeBusAllocateBuffer) */
+#ifndef FAKE_BUS_KERNEL
 static
 PVOID
 FakeBusAllocate(
     SIZE_T Bytes)
 {
-#ifdef FAKE_BUS_KERNEL
-    return ExAllocatePoolWithTag(PagedPool, Bytes, 'uBkM');
-#else
     return calloc(1, Bytes);
-#endif
 }
 
 static
@@ -109,12 +112,9 @@ VOID
 FakeBusFree(
     PVOID Memory)
 {
-#ifdef FAKE_BUS_KERNEL
-    ExFreePoolWithTag(Memory, 'uBkM');
-#else
     free(Memory);
-#endif
 }
+#endif
 
 /* One line of the log: what the driver did to a stream, if it names one */
 static
@@ -127,7 +127,7 @@ FakeBusLog(
 {
     PFAKE_BUS_EVENT Event;
 
-    if (Kind <= FAKE_BUS_EVENT_POWER)
+    if (Kind <= FAKE_BUS_EVENT_LAST)
         Bus->Counts[Kind]++;
     if (Bus->LogCount >= FAKE_BUS_EVENTS_LOG)
         return;
@@ -249,11 +249,28 @@ FakeBusOwned(
     return Stream != NULL && Stream->Used ? Stream : NULL;
 }
 
+/* The fake's record of an MDL it handed out, NULL for any other pointer */
+static PFAKE_BUS_MDL FakeBusMdlOf(PFAKE_BUS Bus, PMDL Mdl) {
+    UINT32 Index;
+
+    for (Index = 0; Index < Bus->MdlCount; Index++)
+        if (Bus->Mdls[Index].Mdl == Mdl)
+            return &Bus->Mdls[Index];
+    return NULL;
+}
+
+/* The record of an MDL gone: the last takes its place */
+static VOID FakeBusMdlForget(PFAKE_BUS Bus, PFAKE_BUS_MDL Entry) {
+    *Entry = Bus->Mdls[--Bus->MdlCount];
+    RtlZeroMemory(&Bus->Mdls[Bus->MdlCount], sizeof(Bus->Mdls[0]));
+}
+
 static NTSTATUS FakeBusAllocateBuffer(PVOID Context, HANDLE Handle, ULONG NotificationCount, SIZE_T RequestedBufferSize,
     PMDL* BufferMdl, SIZE_T* AllocatedBufferSize, SIZE_T* OffsetFromFirstPage, UCHAR* StreamId, PULONG FifoSize)
 {
     PFAKE_BUS Bus = (PFAKE_BUS)Context;
     PFAKE_BUS_STREAM Stream = FakeBusOwned(Bus, Handle);
+    PFAKE_BUS_MDL Entry;
     PMDL Mdl;
 
     if (Stream == NULL)
@@ -264,14 +281,38 @@ static NTSTATUS FakeBusAllocateBuffer(PVOID Context, HANDLE Handle, ULONG Notifi
         return Bus->BufferStatus;
     if (RequestedBufferSize == 0 || NotificationCount == 0 || NotificationCount > 2)
         return STATUS_INVALID_PARAMETER;
+    if (Bus->MdlCount >= FAKE_BUS_MDLS)
+        return STATUS_INSUFFICIENT_RESOURCES;
     /* the MDL is opaque to the driver's stream manager, which maps it through its own operations: the fake keeps the pages beside it */
+#ifdef FAKE_BUS_KERNEL
+    /* the kernel twin's MDL is the bus's own kind, pages from MmAllocatePagesForMdl, so that the manager's direct free of a held buffer (MmFreePagesFromMdl, ExFreePool) is the real one (R5-01) */
+    {
+        PHYSICAL_ADDRESS Zero, Max;
+
+        Zero.QuadPart = 0;
+        Max.QuadPart = MAXULONG64;
+        Mdl = MmAllocatePagesForMdl(Zero, Max, Zero, RequestedBufferSize);
+    }
+    if (Mdl == NULL)
+        return STATUS_NO_MEMORY;
+#else
     Mdl = (PMDL)FakeBusAllocate(sizeof(MDL));
     if (Mdl == NULL)
         return STATUS_NO_MEMORY;
+#endif
+#ifdef FAKE_BUS_KERNEL
+    Stream->Memory = MmGetSystemAddressForMdlSafe(Mdl, NormalPagePriority);
+#else
     Stream->Memory = FakeBusAllocate(RequestedBufferSize);
+#endif
     if (Stream->Memory == NULL)
     {
+#ifdef FAKE_BUS_KERNEL
+        MmFreePagesFromMdl(Mdl);
+        ExFreePool(Mdl);
+#else
         FakeBusFree(Mdl);
+#endif
         return STATUS_NO_MEMORY;
     }
     Stream->Mdl = Mdl;
@@ -281,6 +322,12 @@ static NTSTATUS FakeBusAllocateBuffer(PVOID Context, HANDLE Handle, ULONG Notifi
     Stream->State = (UINT8)ResetState;
     Stream->Position = 0;
     Stream->DmaPosition = 0;
+    Entry = &Bus->Mdls[Bus->MdlCount++];
+    Entry->Mdl = Mdl;
+    Entry->Memory = Stream->Memory;
+    Entry->Bytes = RequestedBufferSize;
+    Entry->Pins = 0;
+    Entry->Detached = FALSE;
     *BufferMdl = Mdl;
     *AllocatedBufferSize = RequestedBufferSize;
     *OffsetFromFirstPage = 0;
@@ -290,18 +337,73 @@ static NTSTATUS FakeBusAllocateBuffer(PVOID Context, HANDLE Handle, ULONG Notifi
     return STATUS_SUCCESS;
 }
 
+/* The pages of a buffer the bus handed out, returned once: the stream's or, for a detached buffer, the pin's free through the manager */
+static VOID FakeBusPagesReturn(PFAKE_BUS Bus, PFAKE_BUS_MDL Entry, PFAKE_BUS_STREAM Stream, UINT32 Kind) {
+#ifdef FAKE_BUS_KERNEL
+    MmFreePagesFromMdl(Entry->Mdl);
+    ExFreePool(Entry->Mdl);
+#else
+    FakeBusFree(Entry->Memory);
+    FakeBusFree(Entry->Mdl);
+#endif
+    FakeBusLog(Bus, Kind, Stream, (UINT32)Entry->Bytes);
+    FakeBusMdlForget(Bus, Entry);
+}
+
 static NTSTATUS FakeBusFreeBuffer(PVOID Context, HANDLE Handle, PMDL BufferMdl, SIZE_T BufferSize)
 {
     PFAKE_BUS Bus = (PFAKE_BUS)Context;
     PFAKE_BUS_STREAM Stream = FakeBusOwned(Bus, Handle);
+    PFAKE_BUS_MDL Entry;
 
     if (Stream == NULL)
         return STATUS_INVALID_HANDLE;
     if (Stream->Running || !Stream->Buffer)
         return STATUS_INVALID_DEVICE_REQUEST;
-    FakeBusLog(Bus, FAKE_BUS_EVENT_BUFFER_FREE, Stream, (UINT32)Stream->Bytes);
-    FakeBusFree(Stream->Memory);
-    FakeBusFree(Stream->Mdl);
+    Entry = FakeBusMdlOf(Bus, Stream->Mdl);
+    /* a free under a pin: the real bus frees the pages under the mapping (R5-01's defect); the fake refuses it, and the log says so */
+    if (Entry != NULL && Entry->Pins != 0)
+    {
+        FakeBusLog(Bus, FAKE_BUS_EVENT_BUFFER_FREE_UNDER_PIN, Stream, (UINT32)Stream->Bytes);
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
+    if (Entry != NULL)
+        FakeBusPagesReturn(Bus, Entry, Stream, FAKE_BUS_EVENT_BUFFER_FREE);
+    else
+    {
+#ifdef FAKE_BUS_KERNEL
+        MmFreePagesFromMdl(Stream->Mdl);
+        ExFreePool(Stream->Mdl);
+#else
+        FakeBusFree(Stream->Memory);
+        FakeBusFree(Stream->Mdl);
+#endif
+        FakeBusLog(Bus, FAKE_BUS_EVENT_BUFFER_FREE, Stream, (UINT32)Stream->Bytes);
+    }
+    Stream->Memory = NULL;
+    Stream->Mdl = NULL;
+    Stream->Buffer = FALSE;
+    Stream->Bytes = 0;
+    return STATUS_SUCCESS;
+}
+
+/* The buffer taken off the stream and handed to the caller, nothing freed (the bus's DetachDmaBuffer, R5-01): the slot is free for its tag again, the MDL stays the pin's */
+static NTSTATUS FakeBusDetachBuffer(PVOID Context, HANDLE Handle, PMDL* BufferMdl)
+{
+    PFAKE_BUS Bus = (PFAKE_BUS)Context;
+    PFAKE_BUS_STREAM Stream = FakeBusOwned(Bus, Handle);
+    PFAKE_BUS_MDL Entry;
+
+    if (Stream == NULL)
+        return STATUS_INVALID_HANDLE;
+    if (Stream->Running || !Stream->Buffer)
+        return STATUS_INVALID_DEVICE_REQUEST;
+    Entry = FakeBusMdlOf(Bus, Stream->Mdl);
+    if (Entry == NULL)
+        return STATUS_INVALID_DEVICE_REQUEST;
+    *BufferMdl = Stream->Mdl;
+    Entry->Detached = TRUE;
+    FakeBusLog(Bus, FAKE_BUS_EVENT_BUFFER_DETACH, Stream, (UINT32)Stream->Bytes);
     Stream->Memory = NULL;
     Stream->Mdl = NULL;
     Stream->Buffer = FALSE;
@@ -487,12 +589,16 @@ FakeBusInit(
     Bus->Interface.DSPDisableSPIB = FakeBusDisableSpib;
     Bus->Interface.AllocateDmaBufferWithNotification = FakeBusAllocateBuffer;
     Bus->Interface.FreeDmaBufferWithNotification = FakeBusFreeBuffer;
+    Bus->Interface.DetachDmaBuffer = FakeBusDetachBuffer;
     Bus->Interface.SetDmaEngineState = FakeBusSetState;
     Bus->Interface.GetLinkPositionRegister = FakeBusPositionRegister;
     Bus->Interface.GetPositionRegister = FakeBusDmaPositionRegister;
     Bus->Interface.GetWallClockRegister = FakeBusWallClockRegister;
     Bus->Interface.RegisterNotificationEvent = FakeBusRegister;
     Bus->Interface.UnregisterNotificationEvent = FakeBusUnregister;
+#ifndef FAKE_BUS_KERNEL
+    FakeBusMdlOwner = Bus;
+#endif
 }
 
 NTSTATUS
@@ -621,12 +727,98 @@ KeWaitForSingleObject(
 }
 #endif
 
+VOID
+FakeBusPinOpen(
+    _Inout_ PFAKE_BUS Bus,
+    PMDL Mdl)
+{
+    PFAKE_BUS_MDL Entry = FakeBusMdlOf(Bus, Mdl);
+
+    if (Entry != NULL)
+        Entry->Pins++;
+}
+
+VOID
+FakeBusPinClose(
+    _Inout_ PFAKE_BUS Bus,
+    PMDL Mdl)
+{
+    PFAKE_BUS_MDL Entry = FakeBusMdlOf(Bus, Mdl);
+
+    if (Entry != NULL && Entry->Pins != 0)
+        Entry->Pins--;
+}
+
+PVOID
+FakeBusMdlMemory(
+    _In_ const FAKE_BUS* Bus,
+    PMDL Mdl)
+{
+    const FAKE_BUS_MDL* Entry = FakeBusMdlOf((PFAKE_BUS)Bus, Mdl);
+
+    return Entry != NULL ? Entry->Memory : NULL;
+}
+
+UINT32
+FakeBusMdlPins(
+    _In_ const FAKE_BUS* Bus,
+    PMDL Mdl)
+{
+    const FAKE_BUS_MDL* Entry = FakeBusMdlOf((PFAKE_BUS)Bus, Mdl);
+
+    return Entry != NULL ? Entry->Pins : 0;
+}
+
+UINT32
+FakeBusMdlCount(
+    _In_ const FAKE_BUS* Bus)
+{
+    return Bus->MdlCount;
+}
+
+#ifndef FAKE_BUS_KERNEL
+/*
+ * The kernel's free of a held buffer's pages, as the manager makes it
+ * (intcdsp/stream.c IntcDspHeldRelease: MmFreePagesFromMdl, then ExFreePool of
+ * the MDL): on the host the pages are the fake's block behind the MDL, and
+ * the MDL its block. The record of the MDL goes with its pages; the MDL's own
+ * block goes with ExFreePool, a plain free, so a second free of the same MDL
+ * is the sanitizer's to catch.
+ */
+VOID
+MmFreePagesFromMdl(
+    PMDL Mdl)
+{
+    PFAKE_BUS_MDL Entry;
+
+    if (FakeBusMdlOwner == NULL || (Entry = FakeBusMdlOf(FakeBusMdlOwner, Mdl)) == NULL)
+        return;
+    FakeBusLog(FakeBusMdlOwner, FAKE_BUS_EVENT_BUFFER_HELD_FREE, NULL, (UINT32)Entry->Bytes);
+    free(Entry->Memory);
+    Entry->Memory = NULL;
+}
+
+VOID
+ExFreePool(
+    PVOID Memory)
+{
+    if (FakeBusMdlOwner != NULL)
+    {
+        PFAKE_BUS_MDL Entry = FakeBusMdlOf(FakeBusMdlOwner, (PMDL)Memory);
+
+        if (Entry != NULL)
+            FakeBusMdlForget(FakeBusMdlOwner, Entry);
+    }
+    free(Memory);
+}
+#endif
+
 UINT32
 FakeBusCount(
     _In_ const FAKE_BUS* Bus,
     UINT32 Kind)
 {
-    return Kind <= FAKE_BUS_EVENT_POWER ? Bus->Counts[Kind] : 0;
+    return Kind <= FAKE_BUS_EVENT_LAST ? Bus->Counts[Kind] : 0;
 }
 
 const FAKE_BUS_EVENT*

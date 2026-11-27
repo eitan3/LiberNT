@@ -1390,6 +1390,16 @@ CheckLink(
 #define STREAM_REAL_MODULES     64
 #define STREAM_FRAMES           4096
 
+/* A wave pin holding the MDL of its stream's buffer, as PortCls keeps one across the manager's transitions (R5-01) */
+typedef struct _STREAM_PIN
+{
+    HANDLE Handle;
+    PMDL Mdl;
+    BOOLEAN Open;
+} STREAM_PIN;
+
+#define STREAM_PINS    8
+
 typedef struct _STREAM_HARNESS
 {
     HARNESS H;
@@ -1424,6 +1434,8 @@ typedef struct _STREAM_HARNESS
     UINT32 PeriodsLeft;
     UINT32 PeriodBytes;
     UINT32 Wakes;
+    /* the pins that hold their stream's buffer (R5-01): each a wave pin with the MDL its allocation gave, until its close */
+    STREAM_PIN Pins[STREAM_PINS];
 } STREAM_HARNESS;
 
 static const INTCDSP_SELFTEST_OPS StreamSelfTestOps;
@@ -1637,6 +1649,131 @@ StreamByMdl(
             if (S->Bus.Stream[D][I].Used && S->Bus.Stream[D][I].Mdl == Mdl)
                 return &S->Bus.Stream[D][I];
     return NULL;
+}
+
+/* The pin of a handle, NULL for none */
+static
+STREAM_PIN*
+StreamPinOf(
+    STREAM_HARNESS* S,
+    HANDLE Handle)
+{
+    UINT32 I;
+
+    for (I = 0; I < STREAM_PINS; I++)
+        if (S->Pins[I].Open && S->Pins[I].Handle == Handle)
+            return &S->Pins[I];
+    return NULL;
+}
+
+/*
+ * A pin takes the buffer its stream's allocation gave, after the allocate
+ * succeeded (R5-01): the fake counts the owner, so a free of the buffer while
+ * the pin holds it is refused and logged where the bus would free the pages
+ * under the pin's mapping.
+ */
+static
+void
+StreamPinOpen(
+    STREAM_HARNESS* S,
+    HANDLE Handle)
+{
+    PINTCDSP_STREAM Stream = IntcDspStreamOf(&S->Streams, Handle);
+    STREAM_PIN* Pin = NULL;
+    UINT32 I;
+
+    for (I = 0; I < STREAM_PINS; I++)
+        if (S->Pins[I].Mdl == NULL)
+        {
+            Pin = &S->Pins[I];
+            break;
+        }
+    CHECK(Pin != NULL && Stream != NULL && Stream->Mdl != NULL);
+    if (Pin == NULL || Stream == NULL || Stream->Mdl == NULL)
+        return;
+    Pin->Handle = Handle;
+    Pin->Mdl = Stream->Mdl;
+    Pin->Open = TRUE;
+    FakeBusPinOpen(&S->Bus, Stream->Mdl);
+}
+
+/*
+ * The pin's close: a probe through the MDL, whose pages must be the pin's
+ * while it holds it, then its free of the buffer, which must be answered
+ * STATUS_SUCCESS and return the pages once. The pin is gone afterwards; a
+ * second close of its handle finds nothing (StreamPinCloseAgain).
+ */
+static
+void
+StreamPinClose(
+    STREAM_HARNESS* S,
+    HANDLE Handle)
+{
+    STREAM_PIN* Pin = StreamPinOf(S, Handle);
+    PVOID Memory;
+    NTSTATUS Status;
+
+    CHECK(Pin != NULL);
+    if (Pin == NULL)
+        return;
+    Memory = FakeBusMdlMemory(&S->Bus, Pin->Mdl);
+    CHECK(Memory != NULL);
+    if (Memory != NULL)
+        ((UINT8*)Memory)[0] ^= 0x5A;
+    /* the wave pin unmaps before its free (pin_wavert.cpp): the pin lets the pages go, and the fake will not refuse the owner's own free of a live stream */
+    FakeBusPinClose(&S->Bus, Pin->Mdl);
+    Status = IntcDspStreamFree(&S->Streams, Handle);
+    CHECK_EQ(Status, STATUS_SUCCESS);
+    Pin->Open = FALSE;
+    /* the pages are gone: the fake saw the held buffer's return, and the MDL names nothing */
+    CHECK(FakeBusMdlMemory(&S->Bus, Pin->Mdl) == NULL);
+    Pin->Mdl = NULL;
+}
+
+/* A second close of a pin's handle: nothing is held under the word, so nothing is freed and the free is refused; after a fault in the same boot the stream's object still answers for the word with the manager's not-ready, after a power-down the word names nothing */
+static
+void
+StreamPinCloseAgain(
+    STREAM_HARNESS* S,
+    HANDLE Handle)
+{
+    NTSTATUS Status;
+
+    CHECK(StreamPinOf(S, Handle) == NULL);
+    Status = IntcDspStreamFree(&S->Streams, Handle);
+    CHECK(Status == STATUS_INVALID_HANDLE || Status == STATUS_DEVICE_NOT_READY);
+}
+
+/* The pin forgets its MDL, as the wave pin does when its free is answered with a failure (pin_wavert.cpp): no probe, no free from the pin again */
+static
+void
+StreamPinForget(
+    STREAM_HARNESS* S,
+    HANDLE Handle)
+{
+    STREAM_PIN* Pin = StreamPinOf(S, Handle);
+
+    CHECK(Pin != NULL);
+    if (Pin == NULL)
+        return;
+    Pin->Open = FALSE;
+    Pin->Mdl = NULL;
+}
+
+/* The held-buffer contract of a release under a live pin (R5-01): while the pin lives nothing is freed, and the fake never saw a free under it */
+static
+void
+StreamPinHeld(
+    STREAM_HARNESS* S,
+    UINT32 Buffers,
+    UINT32 GivenBack)
+{
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE_UNDER_PIN), 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_DETACH), Buffers + GivenBack);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), GivenBack);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), Buffers);
+    CHECK_EQ(FakeBusLockDepth, 0);
 }
 
 static
@@ -2231,9 +2368,11 @@ CheckStreamTimeouts(
         Status = IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2);
         if (K > IPC4_STREAM_TRACE_ALLOCATE_REQUESTS)
         {
-            /* the capture stream's run: its paused request is the seventh, its running request the eighth */
+            /* the render pin holds its buffer; the capture stream's run: its paused request is the seventh, its running request the eighth */
             CHECK_EQ(Status, STATUS_SUCCESS);
+            StreamPinOpen(S, Render);
             CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+            StreamPinOpen(S, Capture);
             Status = IntcDspStreamRun(&S->Streams, Capture);
         }
         /* the request that was dropped is the one the firmware never answers: the transport's timeout, the manager's status */
@@ -2244,9 +2383,9 @@ CheckStreamTimeouts(
         CHECK_EQ(S->H.Ipc.Link, SofIpcLinkFaulted);
         CHECK_EQ(S->Streams.Faulted, TRUE);
         CHECK_EQ(S->Faults, 1);
-        /* every stream's buffer and tag went back to the bus; none had run when the fault came */
+        /* every tag went back to the bus (R5-01: no tag is kept across the release); the buffer of the allocate that failed is the manager's to return, the pins' buffers are held for them and none had run when the fault came */
         CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 2);
-        CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), K >= IPC4_STREAM_TRACE_ALLOCATE_REQUESTS + 1 ? 2 : 1);
+        StreamPinHeld(S, K >= IPC4_STREAM_TRACE_ALLOCATE_REQUESTS + 1 ? 2 : 0, K >= IPC4_STREAM_TRACE_ALLOCATE_REQUESTS + 1 ? 0 : 1);
         CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_STOP), 0);
         CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_SPIB_OFF), K >= IPC4_STREAM_TRACE_ALLOCATE_REQUESTS + 1 ? 2 : 1);
         for (Sx = 0; Sx < INTCDSP_STREAMS_MAX; Sx++)
@@ -2259,6 +2398,15 @@ CheckStreamTimeouts(
         CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_DEVICE_NOT_READY);
         CHECK(Fresh == NULL);
         CHECK_EQ(IntcDspStreamRun(&S->Streams, Capture), STATUS_DEVICE_NOT_READY);
+        /* the pins' frees return their held buffers after the fault, whatever the manager's state; a second free of a word is refused */
+        if (K >= IPC4_STREAM_TRACE_ALLOCATE_REQUESTS + 1)
+        {
+            StreamPinClose(S, Render);
+            StreamPinCloseAgain(S, Render);
+            StreamPinClose(S, Capture);
+            StreamPinCloseAgain(S, Capture);
+        }
+        StreamPinHeld(S, 0, K >= IPC4_STREAM_TRACE_ALLOCATE_REQUESTS + 1 ? 2 : 1);
         CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
         CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
         for (Sx = 0; Sx < INTCDSP_STREAMS_MAX; Sx++)
@@ -2841,19 +2989,22 @@ CheckStreamPowerDown(
     CHECK_EQ((UINT_PTR)Render >> INTCDSP_STREAM_INDEX_BITS, 1);
     CHECK_EQ((UINT_PTR)Capture >> INTCDSP_STREAM_INDEX_BITS, 1);
     CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    StreamPinOpen(S, Render);
     CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    StreamPinOpen(S, Capture);
     CHECK_EQ(IntcDspStreamRun(&S->Streams, Capture), STATUS_SUCCESS);
     CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_SUCCESS);
     Requests = S->H.Dsp->TransportRequests;
-    /* the power-down (intcdsp.c IntcDspPowerDown, from D0 exit): everything goes back to the bus, nothing is sent, the driver is not told */
+    /* the power-down (intcdsp.c IntcDspPowerDown, from D0 exit): everything goes back to the bus but the pins' buffers, which are held for them (R5-01), nothing is sent, the driver is not told */
     IntcDspStreamsRelease(&S->Streams);
     CHECK(!S->Streams.Ready);
     CHECK(!S->Streams.Faulted);
     CHECK_EQ(S->Faults, 0);
     CHECK_EQ(S->H.Dsp->TransportRequests, Requests);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_STOP), 2);
-    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 2);
+    StreamPinHeld(S, 2, 0);
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_SPIB_OFF), 2);
+    /* every tag went back at the release, the pins' buffers notwithstanding: a tag is never kept across a suspend */
     CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 2);
     CHECK_EQ(S->Unmaps, 2);
     for (D = 0; D < 2; D++)
@@ -2867,9 +3018,11 @@ CheckStreamPowerDown(
         CHECK(S->Streams.Stream[I].State == IntcDspStreamStateFree || S->Streams.Stream[I].State == IntcDspStreamStateReleased);
     CHECK(StreamLogCount(S, "streams: released for the power-down; nothing is sent until the DSP is booted again\n") == 1);
     CHECK_EQ(S->Streams.Generation, 2);
-    /* between the power-down and the next D0 entry the handles are refused, and an open fails fast: no request pays the budget */
+    /* between the power-down and the next D0 entry the handles are refused, and an open fails fast: no request pays the budget; the capture pin's free is the exception, the held buffer returned under its stale word (R5-01) */
     CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_INVALID_HANDLE);
-    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_INVALID_HANDLE);
+    StreamPinClose(S, Capture);
+    StreamPinCloseAgain(S, Capture);
+    StreamPinHeld(S, 1, 1);
     CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_INVALID_HANDLE);
     CHECK_EQ(IntcDspStreamPosition(&S->Streams, Render), 0);
     CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Fresh), STATUS_DEVICE_NOT_READY);
@@ -2890,11 +3043,13 @@ CheckStreamPowerDown(
     CHECK(IntcDspStreamOf(&S->Streams, Fresh) == &S->Streams.Stream[0]);
     CHECK_EQ((UINT_PTR)Fresh & INTCDSP_STREAM_INDEX_MASK, 1);
     CHECK_EQ((UINT_PTR)Fresh >> INTCDSP_STREAM_INDEX_BITS, 4);
-    /* the stale render handle: refused at every entry, the new stream untouched and nothing sent */
+    /* the stale render handle: refused at every entry but its buffer's free, the new stream untouched and nothing sent; the render pin frees its held buffer after the D0 entry */
     CHECK(IntcDspStreamOf(&S->Streams, Render) == NULL);
     CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_INVALID_HANDLE);
     CHECK_EQ(IntcDspStreamRun(&S->Streams, Render), STATUS_INVALID_HANDLE);
-    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_INVALID_HANDLE);
+    StreamPinClose(S, Render);
+    StreamPinCloseAgain(S, Render);
+    StreamPinHeld(S, 0, 2);
     CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_INVALID_HANDLE);
     CHECK_EQ(IntcDspStreamPositionRegister(&S->Streams, Render, &Register), STATUS_INVALID_HANDLE);
     CHECK_EQ(IntcDspStreamRegisterEvent(&S->Streams, Render, &S->Event), STATUS_INVALID_HANDLE);
@@ -3030,6 +3185,115 @@ CheckStreamLock(
         StreamStop(S);
         free(S);
     }
+}
+
+/*
+ * (i13a) A buffer held for its pin across each release the manager makes
+ * without the pin asking (R5-01, R8-12). First the undo that fails and is not
+ * busy (R1-04): the build's third request is busy and the undo's pipeline
+ * deletions are answered with a firmware error, which FA-03 left without a
+ * case. The run settled INFO 10: the transport faults the link on every
+ * failed exchange, a firmware status included (sofipc.c SofIpcRequest), so
+ * the forced release is reached through the lost link and no outcome of the
+ * fake DSP leaves the link ready beside a failed undo; the case asserts the
+ * release as it comes. The buffer the allocate did not hand to its pin is
+ * the manager's to return. Then the same forced release from the pin's own
+ * free, with another pin's buffer live: held across a D0 entry, returned by
+ * that pin's free once. The contract in each: nothing is freed while a pin
+ * lives, the tag goes back at once, the pin's free returns the pages once, a
+ * second free of the word is refused, the lock is given back.
+ */
+static
+void
+CheckStreamHeldBuffer(
+    void)
+{
+    STREAM_HARNESS* S;
+    HANDLE Render = NULL, Capture = NULL;
+    NTSTATUS Status;
+    UINT32 Pcm, Requests, Sx;
+
+    /* the build's undo, stuck: the forced release, the link still ready */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    S->H.LockBusyAtRequest = 3;
+    S->H.Dsp->Faults.IpcStatusForType = SofIpc4GlbDeletePipeline;
+    S->H.Dsp->Faults.IpcStatusValue = SofIpc4InvalidResourceState;
+    Requests = S->H.Dsp->TransportRequests;
+    Status = IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2);
+    /* the build's status is answered, busy, though its undo lost the link: the link's state, not the status, says what came */
+    CHECK_EQ(Status, STATUS_RETRY);
+    CHECK_EQ(S->H.Ipc.Link, SofIpcLinkFaulted);
+    CHECK_EQ(S->H.Ipc.Faults, 1);
+    CHECK_EQ(S->Streams.Faulted, TRUE);
+    CHECK_EQ(S->Streams.Faults, 1);
+    CHECK_EQ(S->Faults, 1);
+    CHECK_EQ(S->FaultDepth, 1);
+    /* the bus has its tag back and the buffer detached; the pin never had it, so the manager returned it at once */
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 1);
+    StreamPinHeld(S, 0, 1);
+    CHECK_EQ(S->Unmaps, 1);
+    CHECK(IntcDspStreamOf(&S->Streams, Render) != NULL && IntcDspStreamOf(&S->Streams, Render)->State == IntcDspStreamStateReleased);
+    CHECK(StreamLogCount(S, "released after the fault; nothing is sent until the DSP is booted again\n") == 1);
+    CHECK(S->H.Dsp->TransportRequests > Requests);
+    /* the pin's free of a word nothing is held under: refused, nothing freed */
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_DEVICE_NOT_READY);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 1);
+    StreamStop(S);
+    free(S);
+
+    /* the pin's own free that forces the release: the other pin's buffer is held across the D0 entry and returned by its free */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Capture, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    StreamPinOpen(S, Render);
+    StreamPinOpen(S, Capture);
+    /* the render's free while the capture holds the PCM: its copier is told the stream is going, and the large-configuration set is answered with a firmware error, which faults the link; the forced release follows */
+    S->H.Dsp->Faults.IpcStatusForType = SofIpc4ModLargeConfigSet;
+    S->H.Dsp->Faults.IpcStatusValue = SofIpc4InvalidResourceState;
+    Status = IntcDspStreamFree(&S->Streams, Render);
+    CHECK_EQ(Status, STATUS_DEVICE_PROTOCOL_ERROR);
+    CHECK_EQ(S->H.Ipc.Link, SofIpcLinkFaulted);
+    CHECK_EQ(S->Streams.Faulted, TRUE);
+    CHECK_EQ(S->Faults, 1);
+    CHECK_EQ(S->FaultDepth, 1);
+    /* both tags went back; the render pin's buffer, which its own free asked for, is returned on the way out; the capture pin's is held */
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), 2);
+    StreamPinHeld(S, 1, 1);
+    CHECK_EQ(S->Unmaps, 2);
+    CHECK(StreamLogCount(S, "released as after a fault\n") == 1);
+    CHECK(StreamLogCount(S, "released after the fault; nothing is sent until the DSP is booted again\n") == 1);
+    /* the D0 entry boots the DSP and initializes the manager: the held buffer outlives the generation */
+    StreamBoot(S, NULL);
+    IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
+    CHECK(S->Streams.Ready && !S->Streams.Faulted);
+    StreamPinHeld(S, 1, 1);
+    /* the capture pin's close: the probe through its MDL, the free that returns the pages once, a second free refused */
+    StreamPinClose(S, Capture);
+    StreamPinCloseAgain(S, Capture);
+    StreamPinHeld(S, 0, 2);
+    /* the render pin's word: its buffer went back on the way out of its free and the pin forgot the MDL, so nothing is held; a free of the word again is refused */
+    StreamPinForget(S, Render);
+    StreamPinCloseAgain(S, Render);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 2);
+    for (Sx = 0; Sx < INTCDSP_STREAMS_MAX; Sx++)
+        CHECK_EQ(S->Streams.Stream[Sx].State, IntcDspStreamStateFree);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 0);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
 }
 
 /* (i13) An undo that fails while the link still carries requests (R1-04, FA-03): the build's teardown, the free's copier and the free's teardown. A busy transport (STATUS_RETRY) is not a fault: the undo is sent again a bounded number of times, the driver is not told, no tag goes back and the DSP is not powered down. Still busy after the tries, the transition fails with STATUS_RETRY, the state records what the firmware holds and the next transition of the PCM finishes the undo. A failure that is not busy still forces the uniform release, as after a lost link */
@@ -3442,6 +3706,7 @@ main(
     CheckStreamPowerDown();
     CheckStreamLock();
     CheckStreamStuckUndo();
+    CheckStreamHeldBuffer();
     CheckStreamModuleStart();
     CheckStreamModuleRange();
 

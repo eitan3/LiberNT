@@ -29,6 +29,24 @@
 #define FAKE_BUS_EVENT_REGISTER     10
 #define FAKE_BUS_EVENT_UNREGISTER   11
 #define FAKE_BUS_EVENT_POWER        12
+#define FAKE_BUS_EVENT_BUFFER_DETACH  13  /* the buffer taken off the stream, kept for its pin */
+#define FAKE_BUS_EVENT_BUFFER_FREE_UNDER_PIN  14  /* a free of a buffer a pin still holds: refused, nothing freed */
+#define FAKE_BUS_EVENT_BUFFER_HELD_FREE  15  /* the pages of a held buffer returned by its pin's free */
+#define FAKE_BUS_EVENT_LAST          FAKE_BUS_EVENT_BUFFER_HELD_FREE
+
+/* The buffers a fake may have handed out and not seen returned: one per stream slot of four boots, as the manager's table of held buffers */
+#define FAKE_BUS_MDLS                (FAKE_BUS_STREAMS * 2 * 4)
+
+/* An MDL the fake handed out, with its pages and the pins that hold it: kept after the tag went back, which the stream slot is not (R5-01) */
+typedef struct _FAKE_BUS_MDL
+{
+    PMDL Mdl;
+    PVOID Memory;
+    SIZE_T Bytes;
+    UINT32 Pins;
+    /* detached from the stream: the slot no longer names it, the pin still does */
+    BOOLEAN Detached;
+} FAKE_BUS_MDL, *PFAKE_BUS_MDL;
 
 typedef struct _FAKE_BUS_EVENT
 {
@@ -83,10 +101,12 @@ typedef struct _FAKE_BUS
     NTSTATUS BufferStatus;
     UINT32 FifoSize;
     FAKE_BUS_STREAM Stream[2][FAKE_BUS_STREAMS];
+    FAKE_BUS_MDL Mdls[FAKE_BUS_MDLS];
+    UINT32 MdlCount;
     FAKE_BUS_EVENT Log[FAKE_BUS_EVENTS_LOG];
     UINT32 LogCount;
     /* how often each kind of event came, whether or not the log still holds it */
-    UINT32 Counts[FAKE_BUS_EVENT_POWER + 1];
+    UINT32 Counts[FAKE_BUS_EVENT_LAST + 1];
     UINT32 PowerStates;
     DEVICE_POWER_STATE LastPowerState;
 } FAKE_BUS, *PFAKE_BUS;
@@ -142,6 +162,35 @@ FakeBusFind(
     _In_ const FAKE_BUS* Bus,
     UINT32 Kind,
     UINT32 Index);
+
+/* A pin takes a buffer the fake handed out: the test's record of the owner, which may still map the pages (R5-01); a free of the buffer while a pin holds it is refused and logged */
+VOID
+FakeBusPinOpen(
+    _Inout_ PFAKE_BUS Bus,
+    PMDL Mdl);
+
+/* The pin unmaps the buffer and lets it go before its free, as the wave pin does: a free of the stream's buffer after this is the owner's own */
+VOID
+FakeBusPinClose(
+    _Inout_ PFAKE_BUS Bus,
+    PMDL Mdl);
+
+/* The pages behind an MDL the fake handed out and nobody returned, NULL for any other: the pin's probe through its MDL reads them, and NULL says the pages are gone */
+PVOID
+FakeBusMdlMemory(
+    _In_ const FAKE_BUS* Bus,
+    PMDL Mdl);
+
+/* How many pins hold the buffer, 0 for an MDL the fake does not know */
+UINT32
+FakeBusMdlPins(
+    _In_ const FAKE_BUS* Bus,
+    PMDL Mdl);
+
+/* How many buffers the fake handed out and has not seen returned */
+UINT32
+FakeBusMdlCount(
+    _In_ const FAKE_BUS* Bus);
 
 #ifndef FAKE_BUS_KERNEL
 /*

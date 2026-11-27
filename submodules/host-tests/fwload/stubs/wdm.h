@@ -21,6 +21,9 @@ typedef struct _MDL
 {
     UCHAR Opaque[16];
 } MDL, *PMDL;
+/* the kernel's free of a buffer's pages and of the MDL itself: the stream manager's direct free of a buffer held for its pin (fake_bus.c defines them for the host, R5-01) */
+VOID MmFreePagesFromMdl(PMDL Mdl);
+VOID ExFreePool(PVOID Memory);
 typedef struct _KEVENT
 {
     /* the fake bus: whether a period set it, and how often */
