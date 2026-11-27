@@ -34,8 +34,8 @@
 #define FAKE_BUS_EVENT_BUFFER_HELD_FREE  15  /* the pages of a held buffer returned by its pin's free */
 #define FAKE_BUS_EVENT_LAST          FAKE_BUS_EVENT_BUFFER_HELD_FREE
 
-/* The buffers a fake may have handed out and not seen returned: one per stream slot of four boots, as the manager's table of held buffers */
-#define FAKE_BUS_MDLS                (FAKE_BUS_STREAMS * 2 * 4)
+/* The buffers a fake may have handed out and not seen returned: one per stream slot of eight boots, more than the manager's table of held buffers (four boots), so that a case can fill that table (R5-01's held for nobody) */
+#define FAKE_BUS_MDLS                (FAKE_BUS_STREAMS * 2 * 8)
 
 /* An MDL the fake handed out, with its pages and the pins that hold it: kept after the tag went back, which the stream slot is not (R5-01) */
 typedef struct _FAKE_BUS_MDL

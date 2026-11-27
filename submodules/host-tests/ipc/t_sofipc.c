@@ -1413,7 +1413,7 @@ CheckLink(
 #define STREAM_REAL_MODULES     64
 #define STREAM_FRAMES           4096
 
-/* A wave pin holding the MDL of its stream's buffer, as PortCls keeps one across the manager's transitions (R5-01) */
+/* A wave pin holding the MDL of its stream's buffer, as PortCls keeps one across the manager's transitions (R5-01); room for the pins of five boots, the manager's table of held buffers being four boots of sixteen (INTCDSP_HELD_MAX) */
 typedef struct _STREAM_PIN
 {
     HANDLE Handle;
@@ -1421,7 +1421,7 @@ typedef struct _STREAM_PIN
     BOOLEAN Open;
 } STREAM_PIN;
 
-#define STREAM_PINS    8
+#define STREAM_PINS    (INTCDSP_HELD_MAX + 8)
 
 typedef struct _STREAM_HARNESS
 {
@@ -3296,9 +3296,10 @@ CheckStreamHeldBuffer(
     void)
 {
     STREAM_HARNESS* S;
-    HANDLE Render = NULL, Capture = NULL;
+    HANDLE Render = NULL, Capture = NULL, Taken;
+    PINTCDSP_STREAM Stream;
     NTSTATUS Status;
-    UINT32 Pcm, Requests, Sx;
+    UINT32 Pcm, Requests, Sx, I, D;
 
     /* the build's undo, stuck: the forced release, the link still ready */
     S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
@@ -3412,6 +3413,67 @@ CheckStreamHeldBuffer(
         CHECK_EQ(S->Streams.Stream[Sx].State, IntcDspStreamStateFree);
     CHECK_EQ(FakeBusMdlCount(&S->Bus), 0);
     CHECK_EQ(FakeBusLockDepth, 0);
+    StreamStop(S);
+    free(S);
+
+    /* the manager's table of held buffers full (R5-01's "held for nobody"): four boots of sixteen pinned streams fill it, and the fifth boot's one stream finds it full at its release. That buffer was detached from the bus's stream, so the slot is the pool's again with the tag, but no record keeps it: it is left allocated, never freed, under a pin or not, and its pin's later free of the stale word is refused. A leak is the safe side, a free under a mapping is not */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    for (I = 0; I <= INTCDSP_HELD_MAX / INTCDSP_STREAMS_MAX; I++)
+    {
+        if (I != 0)
+        {
+            StreamBoot(S, NULL);
+            IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
+            CHECK(S->Streams.Ready && !S->Streams.Faulted);
+        }
+        Requests = I < INTCDSP_HELD_MAX / INTCDSP_STREAMS_MAX ? INTCDSP_STREAMS_MAX : 1;
+        for (D = 0; D < Requests; D++)
+        {
+            CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, (D & 1) != 0, 48000, 2, 32, 32, &Taken), STATUS_SUCCESS);
+            CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Taken, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+            StreamPinOpen(S, Taken);
+        }
+        IntcDspStreamsRelease(&S->Streams);
+        CHECK(!S->Streams.Ready);
+        /* every tag back at every release (R5-01: no tag is kept across a suspend), every buffer detached, none freed */
+        CHECK_EQ(S->Streams.Freed, Requests);
+        for (D = 0; D < 2; D++)
+            for (Sx = 0; Sx < FAKE_BUS_STREAMS; Sx++)
+                CHECK(!S->Bus.Stream[D][Sx].Used);
+    }
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_FREE), INTCDSP_HELD_MAX + 1);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), INTCDSP_HELD_MAX);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_DETACH), INTCDSP_HELD_MAX + 1);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE), 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_FREE_UNDER_PIN), 0);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), 0);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), INTCDSP_HELD_MAX + 1);
+    CHECK(StreamLogCount(S, "held for nobody, the manager's table of held buffers being full; left allocated\n") == 1);
+    /* the pins' frees after the fifth boot: the held ones return their pages; the one held for nobody is refused its stale word, and its pages stay allocated */
+    for (I = 0; I < INTCDSP_HELD_MAX; I++)
+        StreamPinClose(S, S->Pins[I].Handle);
+    CHECK_EQ(FakeBusCount(&S->Bus, FAKE_BUS_EVENT_BUFFER_HELD_FREE), INTCDSP_HELD_MAX);
+    CHECK_EQ(IntcDspStreamsHeld(&S->Streams), 0);
+    Stream = IntcDspStreamOf(&S->Streams, S->Pins[INTCDSP_HELD_MAX].Handle);
+    CHECK(Stream == NULL);
+    FakeBusPinClose(&S->Bus, S->Pins[INTCDSP_HELD_MAX].Mdl);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, S->Pins[INTCDSP_HELD_MAX].Handle), STATUS_INVALID_HANDLE);
+    CHECK(FakeBusMdlMemory(&S->Bus, S->Pins[INTCDSP_HELD_MAX].Mdl) != NULL);
+    CHECK_EQ(FakeBusMdlCount(&S->Bus), 1);
+    CHECK_EQ(FakeBusLockDepth, 0);
+    /* the leak the manager made, freed here so that the sanitizer does not count it against the harness */
+    for (I = 0; I < FAKE_BUS_MDLS; I++)
+        if (S->Bus.Mdls[I].Mdl != NULL)
+        {
+            free(S->Bus.Mdls[I].Memory);
+            free(S->Bus.Mdls[I].Mdl);
+            S->Bus.Mdls[I].Mdl = NULL;
+        }
     StreamStop(S);
     free(S);
 }
