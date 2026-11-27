@@ -276,6 +276,45 @@ NTSTATUS hdac_stream_free_buffer(PHDAC_STREAM stream) {
 }
 
 /*
+ * A buffer the stream no longer uses, taken off the stream and handed to
+ * the caller with its pages and its MDL as they are: the registers are
+ * cleared as the free clears them, under the same lock, and nothing is
+ * freed. The DSP driver's stream manager calls this when it must let a
+ * stream go while the pin that owns the buffer still maps it, across a
+ * power-down or a fault (intcdsp/stream.c, R5-01): the pin's own free
+ * returns the pages and the MDL, as the bus's free would. The stream must
+ * not run and must hold a buffer, as for the free.
+ */
+NTSTATUS hdac_stream_detach_buffer(PHDAC_STREAM stream, PMDL* bufferMdl) {
+	if (KeGetCurrentIrql() > PASSIVE_LEVEL) {
+		return STATUS_UNSUCCESSFUL;
+	}
+
+	if (stream->running) {
+		return STATUS_INVALID_DEVICE_REQUEST;
+	}
+
+	if (!stream->mdlBuf) {
+		return STATUS_INVALID_DEVICE_REQUEST;
+	}
+
+	*bufferMdl = NULL;
+	WdfInterruptAcquireLock(stream->FdoContext->Interrupt);
+
+	stream_write32(stream, SD_BDLPL, 0);
+	stream_write32(stream, SD_BDLPU, 0);
+	stream_write32(stream, SD_CTL, 0);
+
+	*bufferMdl = stream->mdlBuf;
+	stream->mdlBuf = NULL;
+	stream->bufSz = 0;
+
+	WdfInterruptReleaseLock(stream->FdoContext->Interrupt);
+
+	return STATUS_SUCCESS;
+}
+
+/*
  * Run: the stream is set up once more and started. Pause and stop: it is
  * stopped and a period that was still pending is forgotten. Reset: a stream
  * that is not running is reset and set up.

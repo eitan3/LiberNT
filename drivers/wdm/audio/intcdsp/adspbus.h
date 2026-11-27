@@ -13,8 +13,8 @@
 #include <hdaudio.h>
 #include <policy.h>
 
-/* The version of GUID_ADSP_BUS_INTERFACE this driver asks for; a bus of version 1 answers with its shorter structure (drivers/wdm/audio/hdaudbus/adsp.h) */
-#define ADSP_BUS_INTERFACE_VERSION  2
+/* The version of GUID_ADSP_BUS_INTERFACE this driver asks for: a bus of version 1 or 2 answers with a shorter structure (drivers/wdm/audio/hdaudbus/adsp.h); version 3 carries DetachDmaBuffer, without which no stream is opened (IntcDspBusStreams), so an older bus is refused by the framework's query (R5-01) */
+#define ADSP_BUS_INTERFACE_VERSION  3
 
 typedef struct _PCI_BAR
 {
@@ -70,6 +70,8 @@ typedef _Must_inspect_result_ NTSTATUS(*PGET_ADSP_TOPOLOGY_SOURCES)(_In_ PVOID C
 /* Appended for this driver's PCM streams (drivers/wdm/audio/hdaudbus/adsp.h): the stream routines the codec interfaces have, through the bus's one code path for every stream. The buffer of a stream: its pages in an MDL, the descriptor list over them (the interrupt on completion at the end of the buffer, or of each of its halves for two notifications) and the stream set up and stopped; the stream runs, pauses or resets by the codec interface's state names (hdaudio.h HDAUDIO_STREAM_STATE); its link position register (LPIB) and the controller's extended DMA-position register of it are handed out for the audio engine to read, as is the 24 MHz wall clock; a period's event is set by the bus's interrupt DPC */
 typedef _Must_inspect_result_ NTSTATUS(*PADSP_ALLOCATE_DMA_BUFFER_WITH_NOTIFICATION)(_In_ PVOID Context, _In_ HANDLE Handle, _In_ ULONG NotificationCount, _In_ SIZE_T RequestedBufferSize, _Out_ PMDL* BufferMdl, _Out_ PSIZE_T AllocatedBufferSize, _Out_ PSIZE_T OffsetFromFirstPage, _Out_ PUCHAR StreamId, _Out_ PULONG FifoSize);
 typedef _Must_inspect_result_ NTSTATUS(*PADSP_FREE_DMA_BUFFER_WITH_NOTIFICATION)(_In_ PVOID Context, _In_ HANDLE Handle, _In_ PMDL BufferMdl, _In_ SIZE_T BufferSize);
+/* Appended for version 3 (R5-01): a stream's buffer taken off the stream and handed back, nothing freed; the manager holds it for the pin that still maps it across a power-down or a fault, and the pin's own free returns the pages and the MDL */
+typedef _Must_inspect_result_ NTSTATUS(*PADSP_DETACH_DMA_BUFFER)(_In_ PVOID Context, _In_ HANDLE Handle, _Out_ PMDL* BufferMdl);
 typedef _Must_inspect_result_ NTSTATUS(*PADSP_SET_DMA_ENGINE_STATE)(_In_ PVOID Context, _In_ HANDLE Handle, _In_ HDAUDIO_STREAM_STATE StreamState);
 typedef _Must_inspect_result_ NTSTATUS(*PADSP_GET_STREAM_POSITION_REGISTER)(_In_ PVOID Context, _In_ HANDLE Handle, _Out_ PULONG* Position);
 typedef void(*PADSP_GET_WALL_CLOCK_REGISTER)(_In_ PVOID Context, _Out_ PULONG* Wallclock);
@@ -108,6 +110,7 @@ typedef struct _ADSP_BUS_INTERFACE
     PADSP_GET_WALL_CLOCK_REGISTER GetWallClockRegister;
     PADSP_STREAM_NOTIFICATION_EVENT RegisterNotificationEvent;
     PADSP_STREAM_NOTIFICATION_EVENT UnregisterNotificationEvent;
+    PADSP_DETACH_DMA_BUFFER DetachDmaBuffer;
 } ADSP_BUS_INTERFACE, *PADSP_BUS_INTERFACE;
 
 /* Whether the interface a query returned carries one appended member: a bus built before it reports a shorter structure, and one that has it may leave it empty */

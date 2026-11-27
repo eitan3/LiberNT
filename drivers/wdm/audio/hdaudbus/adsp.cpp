@@ -466,6 +466,21 @@ NTSTATUS ADSPFreeDmaBuffer(_In_ PVOID _context, _In_ HANDLE Handle, _In_ PMDL Bu
 	return hdac_stream_free_buffer(stream);
 }
 
+/* A stream's buffer taken off the stream and handed to the caller, nothing freed (hdac_stream_detach_buffer): the DSP driver's stream manager holds it for the pin that still maps it (R5-01) */
+NTSTATUS ADSPDetachDmaBuffer(_In_ PVOID _context, _In_ HANDLE Handle, _Out_ PMDL* BufferMdl) {
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+	if (!devData->FdoContext) {
+		return STATUS_NO_SUCH_DEVICE;
+	}
+
+	PHDAC_STREAM stream = (PHDAC_STREAM)Handle;
+	if (!stream || stream->PdoContext != devData) {
+		return STATUS_INVALID_HANDLE;
+	}
+
+	return hdac_stream_detach_buffer(stream, BufferMdl);
+}
+
 NTSTATUS ADSPSetDmaEngineState(_In_ PVOID _context, _In_ HANDLE Handle, _In_ HDAUDIO_STREAM_STATE StreamState) {
 	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
 	if (!devData->FdoContext) {
@@ -570,7 +585,7 @@ ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
 	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)Context;
 
 	busInterface.Size = sizeof(ADSP_BUS_INTERFACE);
-	busInterface.Version = 2;
+	busInterface.Version = 3;
 	busInterface.Context = Context;
 	busInterface.InterfaceReference = WdfDeviceInterfaceReferenceNoOp;
 	busInterface.InterfaceDereference = WdfDeviceInterfaceDereferenceNoOp;
@@ -597,6 +612,7 @@ ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
 	busInterface.GetTopologySources = ADSPGetTopologySources;
 	busInterface.AllocateDmaBufferWithNotification = ADSPAllocateDmaBuffer;
 	busInterface.FreeDmaBufferWithNotification = ADSPFreeDmaBuffer;
+	busInterface.DetachDmaBuffer = ADSPDetachDmaBuffer;
 	busInterface.SetDmaEngineState = ADSPSetDmaEngineState;
 	busInterface.GetLinkPositionRegister = ADSPGetLinkPositionRegister;
 	busInterface.GetPositionRegister = ADSPGetPositionRegister;

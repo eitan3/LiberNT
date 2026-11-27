@@ -21,10 +21,10 @@ BOOLEAN
 IntcDspBusStreams(
     _In_ const ADSP_BUS_INTERFACE* Bus)
 {
-    /* the last of the stream members: a bus that reports through it has room for all of them */
+    /* the last of the stream members: a bus that reports through it has room for all of them; and the buffer's detach, without which a stream let go under a live pin could not keep its buffer (R5-01) */
     return INTCDSP_BUS_HAS(Bus, UnregisterNotificationEvent) && INTCDSP_BUS_HAS(Bus, AllocateDmaBufferWithNotification) &&
         INTCDSP_BUS_HAS(Bus, FreeDmaBufferWithNotification) && INTCDSP_BUS_HAS(Bus, SetDmaEngineState) &&
-        INTCDSP_BUS_HAS(Bus, RegisterNotificationEvent);
+        INTCDSP_BUS_HAS(Bus, RegisterNotificationEvent) && INTCDSP_BUS_HAS(Bus, DetachDmaBuffer) && Bus->DetachDmaBuffer != NULL;
 }
 
 UINT64
