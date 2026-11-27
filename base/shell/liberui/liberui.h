@@ -270,51 +270,15 @@ public:
     BOOL SetFamily(LPCWSTR family);
     LPCWSTR Family() const { return m_Family; }
     BOOL UsesFallback() const { return m_Fallback; }
-    void *Font(LIBER_TYPE style);
+    void *Format(LIBER_TYPE style);
     float Tracking(LIBER_TYPE style) const;
-    void Face(LIBER_TYPE style, LPCWSTR *face, INT *fontStyle) const;
     void Reset();
     UINT LoadedCount() const;
 
 private:
-
     WCHAR m_Family[LF_FACESIZE];
     BOOL m_Fallback;
-    void *m_Fonts[LIBER_TYPE_COUNT];
-    WCHAR m_Faces[LIBER_TYPE_COUNT][LF_FACESIZE];
-    INT m_Styles[LIBER_TYPE_COUNT];
-};
-
-class GdiplusPainter : public IPainter
-{
-public:
-    GdiplusPainter(void *bits, int width, int height, int stride, UINT dpi, FontSet *fonts);
-    ~GdiplusPainter();
-
-    BOOL IsValid() const { return m_Graphics != NULL; }
-    void Clear(Argb color);
-    void FillRect(const RectF &rc, Argb color);
-    void FillRoundRect(const RectF &rc, float radius, Argb color);
-    void FillGradient(const RectF &rc, float radius, PointF from, PointF to, Argb fromColor, Argb toColor);
-    void FillShadow(const RectF &rc, float radius, float blur, Argb color);
-    void StrokeRoundRect(const RectF &rc, float radius, Argb color, float width);
-    void FillEllipse(const RectF &rc, Argb color);
-    void StrokeArc(const RectF &rc, float startDegrees, float sweepDegrees, Argb color, float width);
-    void Line(PointF from, PointF to, Argb color, float width);
-    void Text(LPCWSTR text, const RectF &rc, LIBER_TYPE style, Argb color, UINT flags);
-    SIZE MeasureText(LPCWSTR text, LIBER_TYPE style, float maxWidth);
-    void Icon(LPCWSTR name, const RectF &rc, Argb color);
-    void Image(HICON icon, const RectF &rc);
-    void PushClip(const RectF &rc, float radius);
-    void PopClip();
-
-private:
-    enum { MaxClips = 16 };
-    void *m_Bitmap;
-    void *m_Graphics;
-    FontSet *m_Fonts;
-    UINT m_ClipDepth;
-    DWORD m_Clips[MaxClips];
+    void *m_Formats[LIBER_TYPE_COUNT];
 };
 
 BOOL Startup();
@@ -666,11 +630,6 @@ private:
 
 Widget *NextInTree(Widget *root, Widget *from, BOOL forward);
 
-enum SurfaceFlags
-{
-    SurfaceNoGpu = 0x1
-};
-
 Thickness ShadowMargin(const LIBER_SHADOW &shadow);
 
 class Surface : public IWidgetHost, public IAnimationClient
@@ -679,7 +638,7 @@ public:
     Surface();
     virtual ~Surface();
 
-    BOOL Create(HWND owner, LPCWSTR title, DWORD exStyle, DWORD flags = 0);
+    BOOL Create(HWND owner, LPCWSTR title, DWORD exStyle);
     void Destroy();
     HWND Window() const { return m_hwnd; }
     UINT Dpi() const { return m_Dpi; }
@@ -704,7 +663,6 @@ public:
     Surface *ShadowSurface() const { return m_Shadow; }
     SIZE SizeDip() const { return m_SizeDip; }
     BOOL Render(ULONGLONG now);
-    const DWORD *Pixels() const { return m_Bits; }
     BOOL ReadPixels(DWORD *pixels, UINT stride) const;
     SIZE PixelSize() const { return m_SizePx; }
     BOOL HasDirty() const { return !IsRectEmpty(&m_Dirty); }
@@ -729,7 +687,7 @@ private:
     void FreeBuffer();
     void Layout();
     BOOL Present();
-    BOOL CreateWindowFor(BOOL gpu);
+    BOOL CreateGpuWindow();
     BOOL RenderPass(ULONGLONG now, BOOL *lost);
     void ApplyInputShape();
     void UpdateShadow(BOOL show);
@@ -744,10 +702,6 @@ private:
     POINT m_Position;
     SIZE m_SizeDip;
     SIZE m_SizePx;
-    HDC m_Dc;
-    HBITMAP m_Bitmap;
-    HGDIOBJ m_OldBitmap;
-    DWORD *m_Bits;
     RECT m_Dirty;
     BOOL m_LayoutPending;
     BOOL m_Tracking;

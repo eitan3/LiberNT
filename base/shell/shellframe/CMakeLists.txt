@@ -10,6 +10,7 @@ add_custom_command(
 list(APPEND SOURCE
     canvas.cpp
     icons.cpp
+    iconsource.cpp
     navigation.cpp
     tabband.cpp
     theme.cpp

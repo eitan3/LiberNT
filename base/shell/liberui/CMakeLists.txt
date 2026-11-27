@@ -7,9 +7,10 @@ list(APPEND SOURCE
     gpusurface.cpp
     input.cpp
     layout.cpp
-    painter.cpp
     palette.cpp
+    raster.cpp
     surface.cpp
+    text.cpp
     tokens.cpp
     widget.cpp)
 
