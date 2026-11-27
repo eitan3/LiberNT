@@ -450,11 +450,25 @@ LRESULT Surface::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
             return 0;
 
         case WM_LBUTTONUP:
+            m_Input.PointerUp(PixelToDip(pt));
             if (GetCapture() == m_hwnd)
                 ReleaseCapture();
-            m_Input.PointerUp(PixelToDip(pt));
             Render(AnimationClock::Now());
             return 0;
+
+        case WM_CANCELMODE:
+            if (m_Input.Capture())
+            {
+                POINT outside = { -1, -1 };
+                m_Input.PointerUp(outside);
+                Render(AnimationClock::Now());
+            }
+            break;
+
+        case WM_WINDOWPOSCHANGED:
+            if (((const WINDOWPOS *)lParam)->flags & SWP_SHOWWINDOW)
+                Present();
+            break;
 
         case WM_CAPTURECHANGED:
             if ((HWND)lParam != m_hwnd && m_Input.Capture())

@@ -279,8 +279,9 @@ BOOL CALLBACK CLiberDock::PinProc(PCWSTR pszShortcut, PCWSTR pszTarget, PCWSTR p
     StringCchCopyW(entry.szTarget, _countof(entry.szTarget), pszTarget);
     entry.bPinned = TRUE;
     ZeroMemory(&sfi, sizeof(sfi));
-    if (SHGetFileInfoW(pszShortcut && *pszShortcut ? pszShortcut : pszTarget, 0, &sfi, sizeof(sfi),
-                       SHGFI_ICON | SHGFI_LARGEICON) && sfi.hIcon)
+    if ((SHGetFileInfoW(pszTarget, 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON) && sfi.hIcon) ||
+        (pszShortcut && *pszShortcut &&
+         SHGetFileInfoW(pszShortcut, 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON) && sfi.hIcon))
     {
         entry.hIcon = sfi.hIcon;
         entry.bOwnsIcon = TRUE;
@@ -369,7 +370,45 @@ void CLiberDock::Place()
 void CLiberDock::Refresh()
 {
     HWND foreground = GetForegroundWindow();
+    LIBER_DOCK_ENTRY *previous = (LIBER_DOCK_ENTRY *)LocalAlloc(LPTR, sizeof(m_Entries));
+    UINT previousCount = m_Count;
+    BOOL same;
 
+    if (!previous)
+        return;
+    CopyMemory(previous, m_Entries, sizeof(m_Entries));
+    ZeroMemory(m_Entries, sizeof(m_Entries));
+    m_Count = 0;
+    if (!TaskbarPin_IsDisabled())
+        TaskbarPin_Enum(PinProc, (LPARAM)this);
+    EnumWindows(WindowProc, (LPARAM)this);
+
+    same = m_Cells[0] != NULL && m_Count == previousCount;
+    for (UINT i = 0; same && i < m_Count; i++)
+        same = previous[i].hwnd == m_Entries[i].hwnd && !lstrcmpiW(previous[i].szTarget, m_Entries[i].szTarget);
+
+    if (same)
+    {
+        ClearEntries();
+        CopyMemory(m_Entries, previous, sizeof(m_Entries));
+        m_Count = previousCount;
+        LocalFree(previous);
+        m_Cells[0]->Set(NULL, FALSE, LiberStart_IsOpen());
+        for (UINT i = 0; i < m_Count; i++)
+        {
+            m_Cells[i + 1]->Set(m_Entries[i].hIcon, m_Entries[i].hwnd != NULL,
+                                m_Entries[i].hwnd != NULL && m_Entries[i].hwnd == foreground);
+        }
+        m_DockSurface.Render(AnimationClock::Now());
+        return;
+    }
+
+    for (UINT i = 0; i < previousCount; i++)
+    {
+        if (previous[i].bOwnsIcon && previous[i].hIcon)
+            DestroyIcon(previous[i].hIcon);
+    }
+    LocalFree(previous);
     for (UINT i = 0; i <= LIBER_DOCK_MAX_ITEMS; i++)
     {
         if (m_Cells[i])
@@ -379,10 +418,6 @@ void CLiberDock::Refresh()
             m_Cells[i] = NULL;
         }
     }
-    ClearEntries();
-    if (!TaskbarPin_IsDisabled())
-        TaskbarPin_Enum(PinProc, (LPARAM)this);
-    EnumWindows(WindowProc, (LPARAM)this);
 
     m_Cells[0] = new CDockCell(this, -1);
     m_Cells[0]->Set(NULL, FALSE, LiberStart_IsOpen());
