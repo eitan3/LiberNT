@@ -770,7 +770,7 @@ IntcDspEvtDevicePrepareHardware(
     switch (Decision)
     {
         case FwloadBootYes:
-            IntcDspLog("BootDsp = %lu: the DSP is booted at the next D0 entry with '%s'\n", Dev->BootDsp, Dev->Platform->FirmwareName);
+            IntcDspLog("BootDsp = %lu: the DSP boots at the first stream open with '%s' (BootAtStart = 1: at every D0 entry)\n", Dev->BootDsp, Dev->Platform->FirmwareName);
             break;
         case FwloadBootNotRequested:
             IntcDspLog("BootDsp = %lu: probe only, the DSP is not touched\n", Dev->BootDsp);
@@ -810,6 +810,7 @@ IntcDspEvtDeviceReleaseHardware(
     Dev->Topology = NULL;
     Dev->TopologyBytes = 0;
     Dev->TopologyModel = NULL;
+    Dev->TopologyLimitsChecked = FALSE;
     Dev->TopologyName[0] = 0;
     Dev->DspState = IntcDspNoDsp;
     if (Dev->StreamsState)
@@ -881,13 +882,34 @@ IntcDspEvtDeviceD0Entry(
         return STATUS_SUCCESS;
     IntcDspReadSetting(INTCDSP_SETTINGS_VALUE, &Dev->BootDsp);
     IntcDspReadIpcSettings(Dev);
-    /* BootDsp = 1 boots at every D0 entry (E2 changes the rule): the sequence the boot at an open shares, with the self-tests */
+    /*
+     * The D0 rule (E2, D2): with BootDsp = 1 the DSP boots at a D0 entry
+     * only when BootAtStart = 1 or a self-test asks for it (the sequence the
+     * boot at an open shares, with the self-tests); otherwise the entry
+     * powers nothing, and the first stream open boots it (E1). The wake
+     * guarantee holds either way: the topology file is parsed here and the
+     * PCM child reported below, powered or not, so the endpoints are listed
+     * at once after a wake; the model's check against the firmware's limits
+     * is made at the boot that runs it (topology.c IntcDspTopologyCheck).
+     */
     if (Dev->BootDsp)
     {
-        /* serialized with the boot at an open (N10-04): the manager is marked around the sequence, so that an open coming while it runs is refused instead of booting the device a second time; the mark is set and cleared under the manager's lock, which is held around nothing here and which the sequence takes itself at its start of the manager */
-        IntcDspStreamsDeviceBootBegin(&Dev->Streams);
-        IntcDspBootSequence(Dev, FALSE);
-        IntcDspStreamsDeviceBootEnd(&Dev->Streams);
+        if (Dev->BootAtStart || Dev->SelfTest != 0)
+        {
+            /* serialized with the boot at an open (N10-04): the manager is marked around the sequence, so that an open coming while it runs is refused instead of booting the device a second time; the mark is set and cleared under the manager's lock, which is held around nothing here and which the sequence takes itself at its start of the manager */
+            IntcDspStreamsDeviceBootBegin(&Dev->Streams);
+            IntcDspBootSequence(Dev, FALSE);
+            IntcDspStreamsDeviceBootEnd(&Dev->Streams);
+        }
+        else
+        {
+            /* the same mark around the parse, which may replace the model a boot at an open reads; a model that is not there, or that the manager cannot keep, gets no endpoint and the DSP is left alone */
+            IntcDspStreamsDeviceBootBegin(&Dev->Streams);
+            IntcDspTopologyParse(Dev);
+            IntcDspStreamsDeviceBootEnd(&Dev->Streams);
+            Dev->DspState = Dev->TopologyModel != NULL ? IntcDspNeedsBoot : IntcDspNoDsp;
+            IntcDspLog("D0 entry: the DSP is not booted (BootAtStart = 0); the first stream open boots it\n");
+        }
     }
     /* the audio children follow the topology the device holds: one per PCM of its model while the model is resident (audioif.c) */
     IntcDspAudioUpdate(Dev);

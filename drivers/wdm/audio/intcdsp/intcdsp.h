@@ -141,6 +141,8 @@ typedef struct _INTCDSP_DEVICE
     PUCHAR Topology;
     SIZE_T TopologyBytes;
     PSOFTPLG_IPC4_MODEL TopologyModel;
+    /* whether the booted firmware's limits were checked for the model (E2, topology.c IntcDspTopologyCheck): at the first boot that runs it */
+    BOOLEAN TopologyLimitsChecked;
     CHAR TopologyName[DSP_TOPOLOGY_NAME_BYTES];
     FWLOAD_STATUS LastStatus;
     BOOLEAN InterruptArmed;
@@ -245,7 +247,17 @@ IntcDspReadFile(
     _Out_ PSIZE_T Bytes,
     ULONGLONG MaxBytes);
 
-/* The topology of a booted device, selected, read and kept as its model; FALSE powers the DSP down with no endpoint */
+/*
+ * The topology of a device, powered or not (E2): the file the evidence
+ * names, read and built into the model the device keeps; the D0 entry the
+ * DSP is not booted at calls this alone, and the endpoints are listed from
+ * the model. FALSE: no model, no endpoint.
+ */
+BOOLEAN
+IntcDspTopologyParse(
+    _Inout_ PINTCDSP_DEVICE Dev);
+
+/* The topology of a booted device, selected, read and kept as its model, and checked against the firmware's limits; FALSE powers the DSP down with no endpoint */
 BOOLEAN
 IntcDspTopologyLoad(
     _Inout_ PINTCDSP_DEVICE Dev);

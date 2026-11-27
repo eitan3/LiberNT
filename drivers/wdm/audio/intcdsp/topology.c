@@ -291,17 +291,20 @@ IntcDspTopologyRefused(
 }
 
 /*
- * The topology of a booted device: the file the evidence names, read and
- * built into the model the device keeps. FALSE when no file was selected,
- * the file could not be read or built, or the firmware cannot run what it
- * describes; the caller powers the DSP down then and no endpoint is created.
+ * The topology of a device, powered or not (E2, D2's guarantee): the file
+ * the evidence names, read and built into the model the device keeps, and
+ * kept for the next D0 entries (R6). Nothing here needs the DSP: the
+ * module lookup reads the image file, read at start. FALSE when no file
+ * was selected, the file could not be read or built, or a widget names a
+ * module the manager cannot keep: no endpoint is created then, and a
+ * booted caller powers the DSP down. Whether the firmware can run the
+ * model is IntcDspTopologyCheck's, at the first boot that runs it.
  */
 BOOLEAN
-IntcDspTopologyLoad(
+IntcDspTopologyParse(
     _Inout_ PINTCDSP_DEVICE Dev)
 {
     SOFTPLG_MODEL_INPUT Input;
-    SOFTPLG_IPC4_LIMITS Limits;
     SOFTPLG_IPC4_PROBLEM Problem;
     PSOFTPLG_IPC4_MODEL Model = NULL;
     DSP_TOPOLOGY_EVIDENCE Evidence;
@@ -326,11 +329,11 @@ IntcDspTopologyLoad(
     Evidence.MicTplg = Sources.MicTplg[0] != 0 ? Sources.MicTplg : NULL;
     DspTopologySelect(&Evidence, &Selection);
 
-    /* the model of the device's first boot stands while the selection names the same file: a resume reads nothing again (R6) */
+    /* the model of the device stands while the selection names the same file: a resume, a recovery and a D0 entry without a boot read nothing again (R6) */
     if (Dev->TopologyModel != NULL && Selection.Name != NULL && DspTopologyNameValid(Selection.Name) &&
         strncmp(Dev->TopologyName, Selection.Name, sizeof(Dev->TopologyName)) == 0)
     {
-        IntcDspLog("topology '%s': resident, the model of the device's first boot\n", Dev->TopologyName);
+        IntcDspLog("topology '%s': resident, the model the device kept; nothing is read again\n", Dev->TopologyName);
         IntcDspTopologyLog(Dev);
         return TRUE;
     }
@@ -400,15 +403,6 @@ IntcDspTopologyLoad(
         Model->WidgetCount, IntcDspPlural(Model->WidgetCount), Model->EdgeCount, IntcDspPlural(Model->EdgeCount), Model->PcmCount, IntcDspPlural(Model->PcmCount),
         Model->PipelineCount, IntcDspPlural(Model->PipelineCount), Model->ManifestItems, IntcDspPlural(Model->ManifestItems), DspTopologySourceName(Selection.Source));
 
-    /* the firmware's limits as its configuration reply gave them */
-    Limits.MaxPipelines = Dev->Fw.FwConfig.MaxPipelines;
-    Limits.MailboxBytes = Dev->Fw.FwConfig.DownlinkMailboxBytes;
-    Result = SoftplgModelValidate(Model, &Limits, &Problem);
-    if (Result != SoftplgModelOk)
-    {
-        IntcDspTopologyRefused(Dev->TopologyName, Result, Model, Problem.Widget);
-        goto Fail;
-    }
     /* the stream manager counts a module's instances by its id, below INTCDSP_STREAM_MODULES_MAX (stream.h): a widget naming one at or beyond it is refused here, before any stream counts with it (R1-05) */
     Index = IntcDspStreamsModuleRange(Model);
     if (Index != SOFTPLG_NO_WIDGET)
@@ -417,7 +411,9 @@ IntcDspTopologyLoad(
             Dev->TopologyName, (ULONG)Index, Model->Widgets[Index].ModuleId, (ULONG)INTCDSP_STREAM_MODULES_MAX);
         goto Fail;
     }
-    /* the model stands alone: the file's bytes are not needed again */
+
+    /* the model stands alone: the file's bytes are not needed again; the firmware's limits are not asked yet (IntcDspTopologyCheck) */
+    Dev->TopologyLimitsChecked = FALSE;
     ExFreePoolWithTag(Data, INTCDSP_POOL_TAG);
     IntcDspTopologyLog(Dev);
     return TRUE;
@@ -432,4 +428,57 @@ Fail:
     }
     Dev->TopologyModel = NULL;
     return FALSE;
+}
+
+/*
+ * The firmware's limits for the model the device keeps (E0 §1.7, E2): the
+ * check the parse cannot make, since the limits come in the boot's
+ * configuration reply. Made once per model, at the first boot that runs
+ * it: the D0 entry's, or the boot at an open when the model was parsed at a
+ * D0 entry the DSP was not booted at (the wake guarantee). A model the
+ * firmware cannot run goes as the load's failures always made it go, with
+ * its one line, and the caller powers the DSP down: at a boot at an open
+ * that is a failed boot, the open refused STATUS_DEVICE_NOT_READY. The
+ * audio child is reported again at the next D0 entry, by the rule of a
+ * resident model, which this no longer is. TRUE when the firmware can run
+ * the model.
+ */
+static
+BOOLEAN
+IntcDspTopologyCheck(
+    _Inout_ PINTCDSP_DEVICE Dev)
+{
+    SOFTPLG_IPC4_LIMITS Limits;
+    SOFTPLG_IPC4_PROBLEM Problem;
+    SOFTPLG_MODEL_STATUS Result;
+
+    if (Dev->TopologyLimitsChecked)
+        return TRUE;
+    /* the firmware's limits as its configuration reply gave them */
+    Limits.MaxPipelines = Dev->Fw.FwConfig.MaxPipelines;
+    Limits.MailboxBytes = Dev->Fw.FwConfig.DownlinkMailboxBytes;
+    Result = SoftplgModelValidate(Dev->TopologyModel, &Limits, &Problem);
+    if (Result == SoftplgModelOk)
+    {
+        Dev->TopologyLimitsChecked = TRUE;
+        return TRUE;
+    }
+    IntcDspTopologyRefused(Dev->TopologyName, Result, Dev->TopologyModel, Problem.Widget);
+    ExFreePoolWithTag(Dev->Topology, INTCDSP_POOL_TAG);
+    Dev->Topology = NULL;
+    Dev->TopologyBytes = 0;
+    Dev->TopologyModel = NULL;
+    return FALSE;
+}
+
+/*
+ * The topology of a booted device: the parse, then the firmware's limits
+ * for the model. FALSE when there is no model or the firmware cannot run
+ * it; the caller powers the DSP down then and no endpoint is created.
+ */
+BOOLEAN
+IntcDspTopologyLoad(
+    _Inout_ PINTCDSP_DEVICE Dev)
+{
+    return IntcDspTopologyParse(Dev) && IntcDspTopologyCheck(Dev);
 }
