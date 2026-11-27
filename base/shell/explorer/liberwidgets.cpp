@@ -269,6 +269,7 @@ HRESULT CLiberWidgets::Start(HWND hwndOwner)
     {
         if (!m_Surfaces[i].Create(hwndOwner, L"Liber Widget", WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE))
             return E_FAIL;
+        m_Surfaces[i].SetInputShape((float)LIBER_RADIUS_WIDGET);
         LiberShell_ApplyFont(&m_Surfaces[i]);
         m_Surfaces[i].SetTokens(&m_Tokens);
         m_Surfaces[i].SetRoot(m_Cards[i]);

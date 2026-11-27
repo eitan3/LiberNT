@@ -108,13 +108,16 @@ private:
         float Rect[4];
         float Radius;
         BOOL Enabled;
+        BOOL Empty;
     };
 
     float Px(float dip) const { return dip * m_Scale; }
+    void Mask(UINT kind, LPCWSTR name, LPCWSTR text, LIBER_TYPE style, UINT flags, HICON icon, const RectF &rc,
+              Argb color);
     void Draw(GpuShape shape, const float quad[4], const float rect[4], float radius, float width, Argb color,
               const float arc[2], ID3D11ShaderResourceView *view, const float uv[4], BOOL copy);
     ID3D11ShaderResourceView *Raster(LPCWSTR key, UINT width, UINT height, UINT kind, LPCWSTR text, LIBER_TYPE style,
-                                     UINT flags, HICON icon, const RectF &dipRect);
+                                     UINT flags, HICON icon, const RectF &local);
 
     SurfaceGpu *m_Gpu;
     FontSet *m_Fonts;
@@ -125,7 +128,9 @@ private:
     UINT m_ClipDepth;
 };
 
-BOOL GpuEnsureCanvas(SurfaceGpu *gpu, UINT width, UINT height);
+BOOL GpuEnsureCanvas(SurfaceGpu *gpu, UINT width, UINT height, BOOL *recreated);
+BOOL GpuHasCanvas(const SurfaceGpu *gpu);
+BOOL GpuDeviceLost(SurfaceGpu *gpu);
 BOOL GpuPresentCanvas(SurfaceGpu *gpu);
 BOOL GpuReadCanvas(SurfaceGpu *gpu, DWORD *pixels, UINT stride);
 

@@ -60,12 +60,13 @@ static const char LiberShaderSource[] =
     "    c = cover((arc.y >= 6.28318 || a <= arc.y) ? min(band, caps) : caps);\n"
     "  }\n"
     "  else if (kind < 4.5) {\n"
-    "    float2 pa = p - shape.xy; float2 ba = shape.zw - shape.xy;\n"
-    "    float h = saturate(dot(pa, ba) / max(dot(ba, ba), 0.000001));\n"
-    "    c = cover(length(pa - ba * h) - params.y * 0.5);\n"
+    "    float2 ba = shape.zw - shape.xy; float len = max(length(ba), 0.000001); float2 dir = ba / len;\n"
+    "    float2 pa = p - shape.xy; float along = dot(pa, dir); float across = abs(dot(pa, float2(-dir.y, dir.x)));\n"
+    "    c = cover(max(across - params.y * 0.5, max(-along, along - len)));\n"
     "  }\n"
     "  else if (kind < 5.5) c = tex.Sample(samp, v.uv).a;\n"
-    "  if (clipParams.y > 0.5) c *= cover(roundRect(p, clipRect, clipParams.x));\n"
+    "  if (clipParams.z > 0.5) c = 0;\n"
+    "  else if (clipParams.y > 0.5) c *= cover(roundRect(p, clipRect, clipParams.x));\n"
     "  if (kind > 5.5) result = tex.Sample(samp, v.uv) * c; else result = color * c;\n"
     "  return result;\n"
     "}\n";
@@ -86,6 +87,22 @@ static void ReleaseCanvas(SurfaceGpu *gpu)
     ReleaseCom(gpu->Canvas);
 }
 
+static void ReleaseDevice(SurfaceGpu *gpu)
+{
+    ReleaseCom(gpu->Sampler);
+    ReleaseCom(gpu->Rasterizer);
+    ReleaseCom(gpu->BlendCopy);
+    ReleaseCom(gpu->BlendOver);
+    ReleaseCom(gpu->Constants);
+    ReleaseCom(gpu->PixelShader);
+    ReleaseCom(gpu->VertexShader);
+    ReleaseCom(gpu->Composition);
+    ReleaseCom(gpu->Factory);
+    ReleaseCom(gpu->DxgiDevice);
+    ReleaseCom(gpu->Context);
+    ReleaseCom(gpu->Device);
+}
+
 void GpuDestroy(SurfaceGpu *gpu)
 {
     if (!gpu)
@@ -97,21 +114,10 @@ void GpuDestroy(SurfaceGpu *gpu)
     if (gpu->Composition)
         gpu->Composition->Commit();
     ReleaseCanvas(gpu);
-    ReleaseCom(gpu->Sampler);
-    ReleaseCom(gpu->Rasterizer);
-    ReleaseCom(gpu->BlendCopy);
-    ReleaseCom(gpu->BlendOver);
-    ReleaseCom(gpu->Constants);
-    ReleaseCom(gpu->PixelShader);
-    ReleaseCom(gpu->VertexShader);
     ReleaseCom(gpu->Visual);
     ReleaseCom(gpu->Target);
     ReleaseCom(gpu->SwapChain);
-    ReleaseCom(gpu->Composition);
-    ReleaseCom(gpu->Factory);
-    ReleaseCom(gpu->DxgiDevice);
-    ReleaseCom(gpu->Context);
-    ReleaseCom(gpu->Device);
+    ReleaseDevice(gpu);
     if (gpu->Compiler)
         FreeLibrary(gpu->Compiler);
     if (gpu->Dcomp)
@@ -221,19 +227,20 @@ SurfaceGpu *GpuCreate()
     {
         hr = createDevice(NULL, Drivers[i], NULL, D3D11_CREATE_DEVICE_BGRA_SUPPORT, NULL, 0, D3D11_SDK_VERSION,
                           &gpu->Device, NULL, &gpu->Context);
+        if (SUCCEEDED(hr))
+            hr = gpu->Device->QueryInterface(__uuidof(IDXGIDevice), (void **)&gpu->DxgiDevice);
+        if (SUCCEEDED(hr))
+            hr = gpu->DxgiDevice->GetAdapter(&adapter);
+        if (SUCCEEDED(hr))
+            hr = adapter->GetParent(__uuidof(IDXGIFactory2), (void **)&gpu->Factory);
+        ReleaseCom(adapter);
+        if (SUCCEEDED(hr))
+            hr = createComposition(gpu->DxgiDevice, __uuidof(IDCompositionDevice), (void **)&gpu->Composition);
+        if (SUCCEEDED(hr))
+            hr = CreatePipeline(gpu);
+        if (FAILED(hr))
+            ReleaseDevice(gpu);
     }
-    if (SUCCEEDED(hr))
-        hr = gpu->Device->QueryInterface(__uuidof(IDXGIDevice), (void **)&gpu->DxgiDevice);
-    if (SUCCEEDED(hr))
-        hr = gpu->DxgiDevice->GetAdapter(&adapter);
-    if (SUCCEEDED(hr))
-        hr = adapter->GetParent(__uuidof(IDXGIFactory2), (void **)&gpu->Factory);
-    if (adapter)
-        adapter->Release();
-    if (SUCCEEDED(hr))
-        hr = createComposition(gpu->DxgiDevice, __uuidof(IDCompositionDevice), (void **)&gpu->Composition);
-    if (SUCCEEDED(hr))
-        hr = CreatePipeline(gpu);
     if (FAILED(hr))
     {
         GpuDestroy(gpu);
@@ -258,13 +265,25 @@ BOOL GpuAttach(SurfaceGpu *gpu, HWND hwnd)
     return TRUE;
 }
 
-BOOL GpuEnsureCanvas(SurfaceGpu *gpu, UINT width, UINT height)
+BOOL GpuHasCanvas(const SurfaceGpu *gpu)
 {
-    LUI_ASSERT(gpu && width && height);
-    if (!gpu || !width || !height)
+    return gpu && gpu->Canvas && gpu->SwapChain;
+}
+
+BOOL GpuDeviceLost(SurfaceGpu *gpu)
+{
+    return gpu && gpu->Device && gpu->Device->GetDeviceRemovedReason() != S_OK;
+}
+
+BOOL GpuEnsureCanvas(SurfaceGpu *gpu, UINT width, UINT height, BOOL *recreated)
+{
+    LUI_ASSERT(gpu && width && height && recreated);
+    if (!gpu || !width || !height || !recreated)
         return FALSE;
+    *recreated = FALSE;
     if (gpu->Canvas && gpu->Width == width && gpu->Height == height)
         return TRUE;
+    *recreated = TRUE;
 
     ReleaseCanvas(gpu);
     if (gpu->SwapChain)
