@@ -148,20 +148,23 @@ check_select(
 {
     HDA_WIDGET Widgets[12];
     HDA_CAPTURE_AMP Selected[8];
-    ULONG Count, I, J;
+    ULONG Count, I, J, Expected;
 
     memcpy(Widgets, Case->Widgets, sizeof(Widgets));
     for (I = 0; I < 12 && Widgets[I].Id != 0; I++)
         Widgets[I].Connections = Lists[I];
     Count = (ULONG)I;
     memset(Selected, 0xAA, sizeof(Selected));
-    I = HdaCaptureAmpsSelect(Widgets, Count, Case->Pin, Selected, 8);
-    for (J = 0; Case->Expected[J].Converter != 0; J++)
+    Count = HdaCaptureAmpsSelect(Widgets, Count, Case->Pin, Selected, 8);
+    /* the row's expectations end with a converter of 0 before their table's end: a row that reaches the end has no end (N6-01) */
+    Expected = (ULONG)(sizeof(Case->Expected) / sizeof(Case->Expected[0]));
+    for (J = 0; J < Expected && Case->Expected[J].Converter != 0; J++)
         ;
-    if (I != J)
-        fprintf(stderr, "  in the row '%s': %u pairs, %u expected\n", Case->Name, (unsigned int)I, (unsigned int)J);
-    CHECK_EQ(I, J);
-    for (I = 0; I < J && I < sizeof(Case->Expected) / sizeof(Case->Expected[0]); I++)
+    CHECK(J < Expected);
+    if (Count != J)
+        fprintf(stderr, "  in the row '%s': %u pairs, %u expected\n", Case->Name, (unsigned int)Count, (unsigned int)J);
+    CHECK_EQ(Count, J);
+    for (I = 0; I < J; I++)
     {
         if (Selected[I].Converter != Case->Expected[I].Converter || Selected[I].Connection != Case->Expected[I].Connection)
             fprintf(stderr, "  in the row '%s': pair %u: converter %u/%u connection %u/%u\n", Case->Name, (unsigned int)I,
