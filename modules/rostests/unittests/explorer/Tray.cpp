@@ -12,8 +12,27 @@
 
 #include "trayflyouts.h"
 
+static void TestFlyoutPosition()
+{
+    RECT monitor = { 0, 0, 1920, 1080 }, anchor = { 1700, 1018, 1912, 1066 }, empty = { 0, 0, 0, 0 };
+    RECT bottomBar = { 0, 1032, 1920, 1080 }, topBar = { 0, 0, 1920, 48 };
+    SIZE size = { 300, 400 };
+    POINT pt;
+
+    TrayFlyout_Position(&empty, &anchor, &monitor, size, FALSE, 12, &pt);
+    ok(pt.x == 1920 - 12 - 300 && pt.y == 1018 - 12 - 400, "an invisible owner places above the anchor: %ld,%ld\n",
+       pt.x, pt.y);
+    TrayFlyout_Position(NULL, &anchor, &monitor, size, TRUE, 12, &pt);
+    ok(pt.x == 1920 - 12 - 300 && pt.y == 606, "a centered flyout is kept on the monitor: %ld,%ld\n", pt.x, pt.y);
+    TrayFlyout_Position(&bottomBar, &anchor, &monitor, size, FALSE, 12, &pt);
+    ok(pt.y == 1032 - 12 - 400, "a bottom taskbar places above the bar: %ld\n", pt.y);
+    TrayFlyout_Position(&topBar, &anchor, &monitor, size, FALSE, 12, &pt);
+    ok(pt.y == 48 + 12, "a top taskbar places below the bar: %ld\n", pt.y);
+}
+
 START_TEST(Tray)
 {
+    TestFlyoutPosition();
     ok(TrayIcon_Listed(0, FALSE, FALSE), "an overflowed icon is listed\n");
     ok(!TrayIcon_Listed(0, TRUE, FALSE), "a promoted icon stays on the taskbar\n");
     ok(TrayIcon_Listed(0, TRUE, TRUE), "the Liber overflow lists promoted icons too\n");

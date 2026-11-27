@@ -37,6 +37,25 @@ static inline BOOL TrayIcon_Listed(DWORD dwState, BOOL bVisible, BOOL bAll)
         return FALSE;
     return bAll || !bVisible;
 }
+static inline VOID TrayFlyout_Position(const RECT *prcBar, const RECT *prcAnchor, const RECT *prcMonitor, SIZE size,
+                                       BOOL bCenter, int nGap, POINT *ppt)
+{
+    const RECT *prcEdge = (prcBar && !IsRectEmpty(prcBar)) ? prcBar : prcAnchor;
+
+    if (bCenter)
+        ppt->x = (prcAnchor->left + prcAnchor->right - size.cx) / 2;
+    else
+        ppt->x = prcMonitor->right - nGap - size.cx;
+    if (ppt->x + size.cx > prcMonitor->right - nGap)
+        ppt->x = prcMonitor->right - nGap - size.cx;
+    if (ppt->x < prcMonitor->left + nGap)
+        ppt->x = prcMonitor->left + nGap;
+
+    if (prcEdge->top > (prcMonitor->top + prcMonitor->bottom) / 2)
+        ppt->y = prcEdge->top - nGap - size.cy;
+    else
+        ppt->y = prcEdge->bottom + nGap;
+}
 BOOL TrayOverflow_IsOpen(VOID);
 VOID TrayOverflow_Refresh(VOID);
 

@@ -9860,26 +9860,12 @@ TfyW11Position(HWND hwndOwner, const RECT *prcAnchor, SIZE size, BOOL bCenter, P
     MONITORINFO mi;
     RECT rcBar;
     HWND hwndRoot = GetAncestor(hwndOwner, GA_ROOT);
-    int nGap = ShellScaleForDpi(12);
 
     mi.cbSize = sizeof(mi);
     GetMonitorInfoW(MonitorFromRect(prcAnchor, MONITOR_DEFAULTTONEAREST), &mi);
-    if (!hwndRoot || !::GetWindowRect(hwndRoot, &rcBar))
-        rcBar = *prcAnchor;
-
-    if (bCenter)
-        ppt->x = (prcAnchor->left + prcAnchor->right - size.cx) / 2;
-    else
-        ppt->x = mi.rcMonitor.right - nGap - size.cx;
-    if (ppt->x + size.cx > mi.rcMonitor.right - nGap)
-        ppt->x = mi.rcMonitor.right - nGap - size.cx;
-    if (ppt->x < mi.rcMonitor.left + nGap)
-        ppt->x = mi.rcMonitor.left + nGap;
-
-    if (rcBar.top > (mi.rcMonitor.top + mi.rcMonitor.bottom) / 2)
-        ppt->y = rcBar.top - nGap - size.cy;
-    else
-        ppt->y = rcBar.bottom + nGap;
+    if (!hwndRoot || !::IsWindowVisible(hwndRoot) || !::GetWindowRect(hwndRoot, &rcBar))
+        SetRectEmpty(&rcBar);
+    TrayFlyout_Position(&rcBar, prcAnchor, &mi.rcMonitor, size, bCenter, ShellScaleForDpi(12), ppt);
 }
 
 static HWND
