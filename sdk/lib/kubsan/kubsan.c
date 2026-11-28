@@ -159,6 +159,23 @@ KubsanFlush(VOID)
 
 static
 KIRQL
+KubsanCurrentIrql(VOID);
+
+VOID
+NTAPI
+KubsanFlushPending(VOID)
+{
+    if (!KubsanCanPrint() || KubsanCurrentIrql() > DISPATCH_LEVEL)
+        return;
+    if (InterlockedCompareExchange(&KubsanBusy, 1, 0) != 0)
+        return;
+
+    KubsanFlush();
+    InterlockedExchange(&KubsanBusy, 0);
+}
+
+static
+KIRQL
 KubsanCurrentIrql(VOID)
 {
 #if defined(_M_IX86)

@@ -11,6 +11,12 @@
 #define NDEBUG
 #include <debug.h>
 
+#ifdef KERNEL_UBSAN
+VOID
+NTAPI
+KubsanFlushPending(VOID);
+#endif
+
 /* PRIVATE FUNCTIONS **********************************************************/
 
 /*
@@ -280,6 +286,9 @@ KdInitSystem(
 
         /* The providers decide for themselves what each later phase means */
         Status = KdpInitializeProviders(BootPhase);
+#ifdef KERNEL_UBSAN
+        KubsanFlushPending();
+#endif
         return NT_SUCCESS(Status);
     }
 
