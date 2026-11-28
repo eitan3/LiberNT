@@ -1595,10 +1595,62 @@ LONG WINAPI RegSetKeyValueA( HKEY hkey, LPCSTR subkey, LPCSTR name, DWORD type, 
 
 /* FIXME: we should read data from system32/perf009c.dat (or perf###c depending
  * on locale) instead */
+static BOOL query_perf_table( const WCHAR *file, DWORD *type, void *data, DWORD *ret_size, BOOL unicode, DWORD *err )
+{
+    WCHAR path[MAX_PATH];
+    DWORD size = *ret_size, len, table_size, read;
+    WCHAR *table;
+    HANDLE handle;
+    UINT dir;
+
+    dir = GetSystemDirectoryW( path, MAX_PATH );
+    if (!dir || dir + lstrlenW( file ) + 2 > MAX_PATH)
+        return FALSE;
+    lstrcatW( path, L"\\" );
+    lstrcatW( path, file );
+    handle = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL );
+    if (handle == INVALID_HANDLE_VALUE)
+        return FALSE;
+    len = GetFileSize( handle, NULL );
+    if (len == INVALID_FILE_SIZE || len < 4 || (len & 1) || !(table = HeapAlloc( GetProcessHeap(), 0, len )))
+    {
+        CloseHandle( handle );
+        return FALSE;
+    }
+    if (!ReadFile( handle, table, len, &read, NULL ) || read != len)
+    {
+        HeapFree( GetProcessHeap(), 0, table );
+        CloseHandle( handle );
+        return FALSE;
+    }
+    CloseHandle( handle );
+
+    table_size = len;
+    if (type) *type = REG_MULTI_SZ;
+    *ret_size = unicode ? table_size : table_size / sizeof(WCHAR);
+    if (!data)
+        *err = ERROR_SUCCESS;
+    else if (size < *ret_size)
+        *err = ERROR_MORE_DATA;
+    else
+    {
+        if (unicode)
+            memcpy( data, table, table_size );
+        else
+            RtlUnicodeToMultiByteN( data, size, NULL, table, table_size );
+        *err = ERROR_SUCCESS;
+    }
+    HeapFree( GetProcessHeap(), 0, table );
+    return TRUE;
+}
+
 static DWORD query_perf_names( DWORD *type, void *data, DWORD *ret_size, BOOL unicode )
 {
     static const WCHAR names[] = L"1\0" "1847\0" "1846\0End Marker\0";
-    DWORD size = *ret_size;
+    DWORD size = *ret_size, err;
+
+    if (query_perf_table( L"perfc009.dat", type, data, ret_size, unicode, &err ))
+        return err;
 
     if (type) *type = REG_MULTI_SZ;
     *ret_size = sizeof(names);
@@ -1619,7 +1671,10 @@ static DWORD query_perf_names( DWORD *type, void *data, DWORD *ret_size, BOOL un
 static DWORD query_perf_help( DWORD *type, void *data, DWORD *ret_size, BOOL unicode )
 {
     static const WCHAR names[] = L"1847\0End Marker\0";
-    DWORD size = *ret_size;
+    DWORD size = *ret_size, err;
+
+    if (query_perf_table( L"perfh009.dat", type, data, ret_size, unicode, &err ))
+        return err;
 
     if (type) *type = REG_MULTI_SZ;
     *ret_size = sizeof(names);
@@ -1831,7 +1886,7 @@ static DWORD query_perf_data( const WCHAR *query, DWORD *type, void *data, DWORD
     pdb->TotalByteLength = pdb->HeaderLength;
 
     data_size -= pdb->HeaderLength;
-    data = (char *)data + pdb->HeaderLength;
+    data = (char *)pdb + pdb->HeaderLength;
 
     err = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"System\\CurrentControlSet\\Services", 0, KEY_READ, &root);
     if (err != ERROR_SUCCESS)

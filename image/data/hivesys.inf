@@ -2489,6 +2489,12 @@ HKLM,"SYSTEM\CurrentControlSet\Services\Pci\Parameters","10DE002F",0x00030003,00
 HKLM,"SYSTEM\CurrentControlSet\Services\Pci\Parameters","101300D6101880D6",0x00030003,00,00,00,00,00,00,00,00
 
 ; Plug and Play manager
+HKLM,"SYSTEM\CurrentControlSet\Services\PerfOS\Performance","Library",0x00020000,"%SystemRoot%\System32\perfos.dll"
+HKLM,"SYSTEM\CurrentControlSet\Services\PerfOS\Performance","Open",0x00000000,"OpenOSObject"
+HKLM,"SYSTEM\CurrentControlSet\Services\PerfOS\Performance","Collect",0x00000000,"CollectOSObjectData"
+HKLM,"SYSTEM\CurrentControlSet\Services\PerfOS\Performance","Close",0x00000000,"CloseOSObject"
+HKLM,"SYSTEM\CurrentControlSet\Services\PerfOS\Performance","Object List",0x00000000,"2 4 238"
+
 HKLM,"SYSTEM\CurrentControlSet\Services\PlugPlay","DisplayName",0x00000000,%PLUGPLAY_SERVICE%
 HKLM,"SYSTEM\CurrentControlSet\Services\PlugPlay","Description",0x00000000,%PLUGPLAY_SERVICE_DESCRIPTION%
 HKLM,"SYSTEM\CurrentControlSet\Services\PlugPlay","ErrorControl",0x00010001,0x00000001

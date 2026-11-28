@@ -54,6 +54,7 @@ list(APPEND SOURCE
     RegOpenKeyExW.c
     RegOpenKeyTransacted.c
     RegQueryInfoKey.c
+    PerfData.c
     RegQueryValueExW.c
     RestrictedTokenUser.c
     RtlEncryptMemory.c

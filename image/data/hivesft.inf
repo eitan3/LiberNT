@@ -1009,6 +1009,8 @@ HKLM,"SOFTWARE\Microsoft\Windows NT\CurrentVersion\OpenGLDrivers",,0x00000012
 HKLM,"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Perflib",,0x00000012
 HKLM,"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Perflib\009",,0x00000012
 HKLM,"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Perflib\CurrentLanguage",,0x00000012
+HKLM,"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Perflib","Last Counter",0x00010001,1758
+HKLM,"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Perflib","Last Help",0x00010001,1847
 
 ; Auto-Execute (AE) Debugger
 HKLM,"SOFTWARE\Microsoft\Windows NT\CurrentVersion\AeDebug","UserDebuggerHotKey",0x00010001,0x00000000
