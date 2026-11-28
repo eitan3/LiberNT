@@ -253,6 +253,7 @@ list(APPEND SOURCE
 list(APPEND PCH_SKIP_SOURCE
     ../advapi32/svchlp.c
     FileSecurityCache.c
+    TokenExports.c
     testlist.c)
 
 add_executable(kernel32_apitest

@@ -984,6 +984,7 @@
 @ stdcall OpenSemaphoreW(long long wstr)
 @ stdcall -version=0x602+ OpenStateExplicit(ptr ptr)
 @ stdcall OpenThread(long long long)
+@ stdcall -version=0x602+ OpenThreadToken(long long long ptr) kernelbase.OpenThreadToken
 @ stdcall OpenWaitableTimerA(long long str)
 @ stdcall OpenWaitableTimerW(long long wstr)
 @ stdcall OutputDebugStringA(str)
@@ -1303,6 +1304,7 @@
 @ stdcall SetThreadPriorityBoost(long long)
 @ stdcall -version=0xA00+ SetThreadSelectedCpuSets(ptr ptr long) kernelbase.SetThreadSelectedCpuSets
 @ stdcall SetThreadStackGuarantee(ptr)
+@ stdcall -version=0x602+ SetThreadToken(ptr ptr) kernelbase.SetThreadToken
 @ stdcall SetThreadUILanguage(long)
 @ stdcall -thunk -version=0x600+ SetThreadpoolStackInformation(ptr ptr) kernelbase.SetThreadpoolStackInformation
 @ stdcall -version=0x600+ SetThreadpoolThreadMaximum(ptr long) ntdll.TpSetPoolMaxThreads
