@@ -90,7 +90,9 @@ static const struct endpoint_pin_kind endpoint_pin_kinds[] =
  * Whether Path is the device interface of the DSP's PCM: the audio child
  * intcdsp creates under the bus's child (drivers/wdm/audio/intcdsp/audioif.c,
  * INTELDSP_CHILD_DEVICE_ID), the rule the apitests find an endpoint by
- * (modules/rostests/apitests/include/apitest_dspidentity.h).
+ * (modules/rostests/apitests/include/apitest_dspidentity.h). The path comes
+ * as an interface path does: in the Win32 form (\\?\) or in the NT form
+ * (\??\), which is the form the kernel's connector string is in.
  */
 static __inline BOOL endpoint_is_dsp_pcm(const WCHAR *path)
 {
@@ -99,7 +101,7 @@ static __inline BOOL endpoint_is_dsp_pcm(const WCHAR *path)
     static const WCHAR controllers[][5] = { L"7f50", L"7e28" };
     size_t i;
 
-    if (endpoint_text_starts(path, L"\\\\?\\"))
+    if (endpoint_text_starts(path, L"\\\\?\\") || endpoint_text_starts(path, L"\\??\\"))
         path += 4;
     if (!endpoint_text_starts(path, enumerator))
         return FALSE;

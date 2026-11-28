@@ -1113,7 +1113,7 @@ enum
 /*
  * The form factor of an endpoint from the path of its connector: the codec driver's kinds for the flow each
  * belongs to, the ordinal and the case the path may carry, a kind without a member or of the other flow, the
- * DSP's PCM (no jack), and a path that tells nothing (not answered, the value left as it was).
+ * DSP's PCM (no jack) in either form of an interface path, and a path that tells nothing (not answered, the value left as it was).
  */
 static void check_endpoint_form_factor(void)
 {
@@ -1164,6 +1164,30 @@ static void check_endpoint_form_factor(void)
         L"\\\\?\\INTCDSP#PCM&CTLR_VEN_8086&CTLR_DEV_7E28#00#{6994ad04-93ef-11d0-a3cc-00a0c9223196}\\LoopbackWave",
         eRender, &value));
     CHECK_EQ(value, UnknownFormFactor);
+
+    /* the DSP's PCM by the NT form of its interface path, the form the kernel's connector string is in: the render
+       endpoint's path as the P5 image's registry printed it, and the capture endpoint's, the same interface under the
+       reference its topology is registered by; the value is set apart first, so a stale answer cannot pass */
+    value = 0xdeadbeef;
+    CHECK(endpoint_form_factor(
+        L"\\??\\INTCDSP#PCM&CTLR_VEN_8086&CTLR_DEV_7F50#5&4d9fad45&0&00#{6994ad04-93ef-11d0-a3cc-00a0c9223196}\\LoopbackTopo",
+        eRender, &value));
+    CHECK_EQ(value, UnknownFormFactor);
+    value = 0xdeadbeef;
+    CHECK(endpoint_form_factor(
+        L"\\??\\INTCDSP#PCM&CTLR_VEN_8086&CTLR_DEV_7F50#5&4d9fad45&0&00#{6994ad04-93ef-11d0-a3cc-00a0c9223196}\\LoopbackInTopo",
+        eCapture, &value));
+    CHECK_EQ(value, UnknownFormFactor);
+    CHECK(endpoint_is_dsp_pcm(L"\\??\\intcdsp#pcm&ctlr_ven_8086&ctlr_dev_7f50#00"));
+    CHECK(!endpoint_is_dsp_pcm(L"\\??\\hdaudio#intcdsp#pcm&ctlr_ven_8086&ctlr_dev_7f50#00"));
+    CHECK(!endpoint_is_dsp_pcm(L"\\??\\intcdsp#pcm&ctlr_ven_8086&ctlr_dev_7f51#00"));
+
+    /* the codec's line out by the NT form of its path, as the same registry printed it */
+    CHECK(endpoint_form_factor(
+        L"\\??\\HDAUDIO#FUNC_01&VEN_1AF4&DEV_0022&SUBSYS_1AF40022&REV_1001#4&aeefd634&0&0001#{6994ad04-93ef-11d0-a3cc-00a0c9223196}\\eLineOutTopo",
+        eRender, &value));
+    CHECK_EQ(value, LineLevel);
+
     CHECK(endpoint_is_dsp_pcm(L"intcdsp#pcm&ctlr_ven_8086&ctlr_dev_7f50#00"));
     CHECK(endpoint_is_dsp_pcm(L"intcdsp\\pcm&ctlr_ven_8086&ctlr_dev_7f50\\00"));
     CHECK(endpoint_is_dsp_pcm(L"intcdsp#pcm&ctlr_ven_8086&ctlr_dev_7f50"));
