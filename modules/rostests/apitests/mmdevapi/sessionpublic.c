@@ -107,7 +107,8 @@ START_TEST(sessionpublic)
     {
         hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(DeviceEnumerator, eRender,
                                                           eMultimedia, &Endpoint);
-        if (hr != E_NOTFOUND)
+        /* mmdevapi answers ERROR_NOT_FOUND when no device is active (LEG-1) */
+        if (hr != E_NOTFOUND && hr != HRESULT_FROM_WIN32(ERROR_NOT_FOUND))
             break;
         Sleep(100);
     } while ((LONG)(deadline - GetTickCount()) > 0);

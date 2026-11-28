@@ -629,7 +629,8 @@ START_TEST(exclusivestream)
     ok(hr == S_OK, "MMDeviceEnumerator %#lx\n", hr);
     if (FAILED(hr)) goto done;
     hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(enumerator, eRender, eConsole, &device);
-    if (hr == E_NOTFOUND)
+    /* mmdevapi answers ERROR_NOT_FOUND when no device is active (LEG-1) */
+    if (hr == E_NOTFOUND || hr == HRESULT_FROM_WIN32(ERROR_NOT_FOUND))
     {
         apitest_missing("No render endpoint\n");
         goto done;

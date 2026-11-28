@@ -1255,8 +1255,9 @@ static void reactos_refresh_devices(EDataFlow flow)
  * and asks the driver for the endpoints again: reactos_refresh_devices tells
  * the registered clients the states and the defaults that changed, as a
  * client's own enumeration would. The events are enabled again after each
- * answer, since the endpoints it names may differ; with nothing to wait for
- * it looks again later.
+ * answer, since the endpoints it names may differ, and after a timeout of the
+ * bounded wait when the endpoints changed; with nothing to wait for it looks
+ * again later.
  */
 #define JACK_WATCH_MAX       32
 #define JACK_WATCH_IDLE_MS   30000
@@ -1266,7 +1267,41 @@ struct jack_watch
     HANDLE filters[JACK_WATCH_MAX];
     HANDLE events[JACK_WATCH_MAX];
     UINT count;
+    /* the endpoints the events were armed for */
+    GUID endpoints[JACK_WATCH_MAX];
+    UINT endpoint_count;
 };
+
+/* The endpoints there are now, at most JACK_WATCH_MAX */
+static UINT jack_endpoints(GUID *endpoints)
+{
+    MMDevice *device;
+    UINT count = 0;
+
+    EnterCriticalSection(&g_refresh_lock);
+    LIST_FOR_EACH_ENTRY(device, &device_list, MMDevice, entry)
+    {
+        if (count < JACK_WATCH_MAX)
+            endpoints[count++] = device->devguid;
+    }
+    LeaveCriticalSection(&g_refresh_lock);
+    return count;
+}
+
+/* Whether the endpoints are not the set the events were armed for: an endpoint that came since is armed when the watcher arms again */
+static BOOL jack_watch_stale(const struct jack_watch *watch)
+{
+    GUID endpoints[JACK_WATCH_MAX];
+    UINT count, i;
+
+    count = jack_endpoints(endpoints);
+    if (count != watch->endpoint_count)
+        return TRUE;
+    for (i = 0; i < count; i++)
+        if (!IsEqualGUID(&endpoints[i], &watch->endpoints[i]))
+            return TRUE;
+    return FALSE;
+}
 
 static void jack_watch_disarm(struct jack_watch *watch)
 {
@@ -1284,19 +1319,12 @@ static void jack_watch_disarm(struct jack_watch *watch)
 static void jack_watch_arm(struct jack_watch *watch)
 {
     static const GUID pin_caps_change = {STATIC_KSEVENTSETID_PinCapsChange};
-    GUID endpoints[JACK_WATCH_MAX];
     KSEVENT event;
-    MMDevice *device;
-    UINT count = 0, i;
+    UINT count, i;
 
     jack_watch_disarm(watch);
-    EnterCriticalSection(&g_refresh_lock);
-    LIST_FOR_EACH_ENTRY(device, &device_list, MMDevice, entry)
-    {
-        if (count < JACK_WATCH_MAX)
-            endpoints[count++] = device->devguid;
-    }
-    LeaveCriticalSection(&g_refresh_lock);
+    count = jack_endpoints(watch->endpoints);
+    watch->endpoint_count = count;
 
     event.Set = pin_caps_change;
     event.Id = KSEVENT_PINCAPS_JACKINFOCHANGE;
@@ -1310,7 +1338,7 @@ static void jack_watch_arm(struct jack_watch *watch)
         DWORD bytes;
         ULONG pin;
 
-        if (FAILED(reactos_wave_connector(&endpoints[i], &path, &pin)))
+        if (FAILED(reactos_wave_connector(&watch->endpoints[i], &path, &pin)))
             continue;
         filter = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         free(path);
@@ -1349,26 +1377,38 @@ static DWORD WINAPI jack_thread_proc(void *user)
     UNREFERENCED_PARAMETER(user);
     SetThreadDescription(GetCurrentThread(), L"libernt_mmdevapi_jack");
     watch.count = 0;
+    watch.endpoint_count = 0;
 
     for (;;)
     {
         jack_watch_arm(&watch);
-        if (!watch.count)
+        for (;;)
         {
-            Sleep(JACK_WATCH_IDLE_MS);
-            continue;
+            if (!watch.count)
+            {
+                Sleep(JACK_WATCH_IDLE_MS);
+                break;
+            }
+            for (i = 0; i < watch.count; i++)
+                handles[i] = watch.events[i];
+            /* a bounded wait: an endpoint that came since the events were armed is armed in time */
+            woken = WaitForMultipleObjects(watch.count, handles, FALSE, JACK_WATCH_IDLE_MS);
+            if (woken == WAIT_TIMEOUT)
+            {
+                if (jack_watch_stale(&watch))
+                    break;
+                continue;
+            }
+            if (woken == WAIT_FAILED)
+            {
+                jack_watch_disarm(&watch);
+                Sleep(JACK_WATCH_IDLE_MS);
+                break;
+            }
+            TRACE("jack change told by endpoint %lu: asking the driver again\n", woken);
+            reactos_refresh_devices(eAll);
+            break;
         }
-        for (i = 0; i < watch.count; i++)
-            handles[i] = watch.events[i];
-        woken = WaitForMultipleObjects(watch.count, handles, FALSE, INFINITE);
-        if (woken == WAIT_FAILED)
-        {
-            jack_watch_disarm(&watch);
-            Sleep(JACK_WATCH_IDLE_MS);
-            continue;
-        }
-        TRACE("jack change told by endpoint %lu: asking the driver again\n", woken);
-        reactos_refresh_devices(eAll);
     }
     return 0;
 }
@@ -1859,9 +1899,10 @@ static HRESULT WINAPI MMDevEnum_GetDefaultAudioEndpoint(IMMDeviceEnumerator *ifa
     /* the first active of the user's choices and of the driver's default, else the first active one (LEG-1) */
     {
         MMDevice *impl = pick_default_device(flow, role);
+        HRESULT hr = notif_default_result(impl);
 
-        if (!impl)
-            return E_NOTFOUND;
+        if (FAILED(hr))
+            return hr;
         *device = &impl->IMMDevice_iface;
         IMMDevice_AddRef(*device);
         return S_OK;

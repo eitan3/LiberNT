@@ -239,4 +239,17 @@ static inline void *notif_default_pick(notif_next_t next, void *context, const G
     return found ? found : first;
 }
 
+/*
+ * GetDefaultAudioEndpoint's answer when the pick is NULL, no device of the
+ * flow being active (LEG-1, N16-05): ERROR_NOT_FOUND as Windows answers it,
+ * 0x80070490, which a caller may test for.
+ */
+#define NOTIF_DEFAULT_NOT_FOUND   ((DWORD)0x80070490)
+
+/* The answer for a pick: S_OK with a device, not found without one */
+static inline DWORD notif_default_result(const void *device)
+{
+    return device ? 0 : NOTIF_DEFAULT_NOT_FOUND;
+}
+
 #endif /* _MMDEVAPI_DEVENUM_NOTIF_H_ */

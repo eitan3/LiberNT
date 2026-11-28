@@ -184,7 +184,8 @@ TestEnforcement(LPCWSTR Image)
     ok(SetConsent(AppKey, NULL), "clearing the app Value failed\n");
     ok(SetStrict(FALSE), "turning strict mode off failed\n");
     hr = OpenCapture(Enumerator);
-    if (hr == E_NOTFOUND || hr == AUDCLNT_E_DEVICE_INVALIDATED)
+    /* mmdevapi answers ERROR_NOT_FOUND when no device is active (LEG-1) */
+    if (hr == E_NOTFOUND || hr == HRESULT_FROM_WIN32(ERROR_NOT_FOUND) || hr == AUDCLNT_E_DEVICE_INVALIDATED)
     {
         apitest_missing("No recording device (0x%08lx)\n", hr);
         IMMDeviceEnumerator_Release(Enumerator);
