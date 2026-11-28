@@ -141,6 +141,122 @@ AudioEnumerator()
     return enumerator;
 }
 
+/*
+ * The Sound page's notification client (LEG-1). mmdevapi tells a device's
+ * state or the default changing, from its jack watcher or its registry thread;
+ * the page is rebuilt on the window's own thread, as WM_SETTINGS_REFRESH does.
+ * A client is told only while its page is the one shown: told otherwise, it
+ * unregisters itself and goes.
+ */
+class SoundNotify;
+
+/* The client the page shows with: the window's thread stores and takes it, a callback clears it when it goes */
+static SoundNotify *volatile g_SoundNotify;
+
+class SoundNotify : public IMMNotificationClient
+{
+public:
+    SoundNotify(SettingsHost *host) : m_Ref(1), m_Host(host), m_Enumerator(NULL), m_Registered(FALSE) {}
+    virtual ~SoundNotify()
+    {
+        if (m_Enumerator)
+        {
+            if (m_Registered)
+                m_Enumerator->UnregisterEndpointNotificationCallback(this);
+            m_Enumerator->Release();
+        }
+    }
+
+    bool Register()
+    {
+        m_Enumerator = AudioEnumerator();
+        m_Registered = m_Enumerator && SUCCEEDED(m_Enumerator->RegisterEndpointNotificationCallback(this));
+        return m_Registered != FALSE;
+    }
+
+    bool Shows(SettingsHost *host) const { return m_Host == host; }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv)
+    {
+        if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_IMMNotificationClient))
+        {
+            *ppv = static_cast<IMMNotificationClient *>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = NULL;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() { return (ULONG)InterlockedIncrement(&m_Ref); }
+    ULONG STDMETHODCALLTYPE Release()
+    {
+        ULONG ref = (ULONG)InterlockedDecrement(&m_Ref);
+        if (!ref)
+            delete this;
+        return ref;
+    }
+    /* a callback holds a reference while it runs: the window's thread may let the page's go meanwhile */
+    HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR id, DWORD state) { Guarded(); return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR id) { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR id) { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR id) { Guarded(); return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR id, PROPERTYKEY key) { return S_OK; }
+
+private:
+    void Guarded()
+    {
+        AddRef();
+        Changed();
+        Release();
+    }
+
+    void Changed()
+    {
+        if (!m_Host)
+            return;
+        if (m_Host->Page() != PageId::Sound)
+        {
+            /* The page is gone: this client goes, and the page's slot is cleared if it still names it */
+            m_Host = NULL;
+            InterlockedCompareExchangePointer((void *volatile *)&g_SoundNotify, NULL, this);
+            m_Registered = FALSE;
+            m_Enumerator->UnregisterEndpointNotificationCallback(this);
+            Release();
+            return;
+        }
+        PostMessageW(m_Host->Window(), WM_SETTINGS_REFRESH, 0, 0);
+    }
+
+    LONG m_Ref;
+    SettingsHost *m_Host;
+    IMMDeviceEnumerator *m_Enumerator;
+    BOOL m_Registered;
+};
+
+/* The client the page shows with: the window's thread stores and takes it, a callback clears it when it goes */
+static void
+SoundNotifyAttach(SettingsHost *host)
+{
+    SoundNotify *notify = (SoundNotify *)InterlockedExchangePointer((void *volatile *)&g_SoundNotify, NULL);
+
+    /* the client of this window, still registered, is kept: a page rebuilt is the same page */
+    if (notify && notify->Shows(host))
+    {
+        g_SoundNotify = notify;
+        return;
+    }
+    if (notify)
+        notify->Release();
+    /* only the page that is shown attaches a client (a dump of the rows has none) */
+    if (!host || host->Page() != PageId::Sound)
+        return;
+    notify = new SoundNotify(host);
+    if (notify->Register())
+        g_SoundNotify = notify;
+    else
+        notify->Release();
+}
+
 static std::wstring
 AudioName(IMMDevice *device)
 {
@@ -603,6 +719,9 @@ BuildSound(PageBuilder &page)
 {
     AddAudioGroup(page, eRender);
     AddAudioGroup(page, eCapture);
+    /* told of a device's or of the default's change while the page is shown (LEG-1) */
+    if (!page.Indexing)
+        SoundNotifyAttach(page.Host);
 
     page.Group(Str(IDS_APP_VOLUME));
     if (!page.Indexing)

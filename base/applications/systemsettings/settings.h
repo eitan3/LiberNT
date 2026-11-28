@@ -282,6 +282,7 @@ public:
     virtual void Back() = 0;
     virtual void StartJob(Settings::Job *job) = 0;
     virtual void SetTimerRefresh(UINT milliseconds) = 0;
+    virtual PageId Page() const = 0;
 
     template <class WorkFunction, class DoneFunction>
     void RunJob(WorkFunction work, DoneFunction done)

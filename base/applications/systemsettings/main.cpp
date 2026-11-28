@@ -190,6 +190,8 @@ public:
 
     HWND Window() const override { return m_hwnd; }
 
+    PageId Page() const override { return m_Page; }
+
     void Refresh() override
     {
         Rebuild(FALSE);
@@ -2270,6 +2272,7 @@ public:
         delete job;
     }
     void SetTimerRefresh(UINT milliseconds) override {}
+    PageId Page() const override { return PageId::None; }
 };
 
 static int
