@@ -517,6 +517,7 @@ START_TEST(dsploop)
     unsigned I;
     UINT RunsCompared = 0;
     int Result;
+    BOOL Held = FALSE;
 
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     ok(SUCCEEDED(hr), "CoInitializeEx: 0x%08lx\n", hr);
@@ -538,9 +539,10 @@ START_TEST(dsploop)
         apitest_missing("dsploop: no active capture endpoint of the DSP's PCM (" DSPPCM_ID_TEXT "; 0x%08lx)\n", hr);
         goto Done;
     }
-    /* the hold (N12-03): one pin open and not running, the runs not made */
+    /* the hold (N12-03): one pin open and not running, the runs not made, their count not judged */
     if (HoldSeconds() != 0)
     {
+        Held = TRUE;
         HoldPin(Render, HoldSeconds());
         goto Done;
     }
@@ -564,7 +566,9 @@ Done:
     if (Enumerator)
         IMMDeviceEnumerator_Release(Enumerator);
     CoUninitialize();
-    /* the count is the program's own: a run the engine refused, or that failed, leaves it below three; under the expected switch that is a failure as well */
+    /* the count is the program's own: a run the engine refused, or that failed, leaves it below three; under the expected switch that is a failure as well; the hold made no run and is not counted */
+    if (Held)
+        return;
     if (ApitestRequired())
         ok(RunsCompared == 3, "dsploop: %u of 3 depths compared\n", RunsCompared);
     ApitestSummary("dsploop", RunsCompared, 3, "depths compared");
