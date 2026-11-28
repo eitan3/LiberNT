@@ -469,17 +469,26 @@ static const struct column col_physicalmedia[] =
 };
 static const struct column col_physicalmemory[] =
 {
-    { L"BankLabel",            CIM_STRING },
+    { L"Attributes",           CIM_UINT32 },
+    { L"BankLabel",            CIM_STRING|COL_FLAG_DYNAMIC },
     { L"Capacity",             CIM_UINT64 },
     { L"Caption",              CIM_STRING },
     { L"ConfiguredClockSpeed", CIM_UINT32 },
-    { L"DeviceLocator",        CIM_STRING },
+    { L"ConfiguredVoltage",    CIM_UINT32 },
+    { L"DataWidth",            CIM_UINT16 },
+    { L"DeviceLocator",        CIM_STRING|COL_FLAG_DYNAMIC },
     { L"FormFactor",           CIM_UINT16 },
-    { L"Manufacturer",         CIM_STRING },
+    { L"Manufacturer",         CIM_STRING|COL_FLAG_DYNAMIC },
+    { L"MaxVoltage",           CIM_UINT32 },
     { L"MemoryType",           CIM_UINT16 },
-    { L"PartNumber",           CIM_STRING },
-    { L"SerialNumber",         CIM_STRING },
+    { L"MinVoltage",           CIM_UINT32 },
+    { L"PartNumber",           CIM_STRING|COL_FLAG_DYNAMIC },
+    { L"SerialNumber",         CIM_STRING|COL_FLAG_DYNAMIC },
+    { L"SMBIOSMemoryType",     CIM_UINT32 },
     { L"Speed",                CIM_UINT32 },
+    { L"Tag",                  CIM_STRING|COL_FLAG_DYNAMIC|COL_FLAG_KEY },
+    { L"TotalWidth",           CIM_UINT16 },
+    { L"TypeDetail",           CIM_UINT16 },
 };
 static const struct column col_physicalmemoryarray[] =
 {
@@ -1274,17 +1283,26 @@ struct record_physicalmedia
 };
 struct record_physicalmemory
 {
+    UINT32       attributes;
     const WCHAR *banklabel;
     UINT64       capacity;
     const WCHAR *caption;
     UINT32       configuredclockspeed;
+    UINT32       configuredvoltage;
+    UINT16       datawidth;
     const WCHAR *devicelocator;
     UINT16       formfactor;
     const WCHAR *manufacturer;
+    UINT32       maxvoltage;
     UINT16       memorytype;
+    UINT32       minvoltage;
     const WCHAR *partnumber;
     const WCHAR *serial;
+    UINT32       smbiosmemorytype;
     UINT32       speed;
+    const WCHAR *tag;
+    UINT16       totalwidth;
+    UINT16       typedetail;
 };
 struct record_physicalmemoryarray
 {
@@ -1886,6 +1904,7 @@ enum smbios_type
     SMBIOS_TYPE_BASEBOARD = 2,
     SMBIOS_TYPE_CHASSIS = 3,
     SMBIOS_TYPE_PROCESSOR = 4,
+    SMBIOS_TYPE_MEMDEVICE = 17,
     SMBIOS_TYPE_BOOTINFO = 32,
     SMBIOS_TYPE_END = 127
 };
@@ -1971,6 +1990,32 @@ struct smbios_processor
     WORD                 core_count2;
     WORD                 core_enabled2;
     WORD                 thread_count2;
+};
+struct smbios_memdevice
+{
+    struct smbios_header hdr;
+    WORD                 array_handle;
+    WORD                 error_handle;
+    WORD                 total_width;
+    WORD                 data_width;
+    WORD                 size;
+    BYTE                 form_factor;
+    BYTE                 device_set;
+    BYTE                 device_locator;
+    BYTE                 bank_locator;
+    BYTE                 memory_type;
+    WORD                 type_detail;
+    WORD                 speed;
+    BYTE                 manufacturer;
+    BYTE                 serial;
+    BYTE                 asset_tag;
+    BYTE                 part_number;
+    BYTE                 attributes;
+    DWORD                extended_size;
+    WORD                 configured_speed;
+    WORD                 min_voltage;
+    WORD                 max_voltage;
+    WORD                 configured_voltage;
 };
 #pragma pack(pop)
 
@@ -5439,28 +5484,134 @@ static enum fill_status fill_networkadapterconfig( struct table *table, const st
     return status;
 }
 
+static UINT16 smbios_to_cim_form_factor( BYTE form_factor )
+{
+    static const UINT16 map[] =
+    {
+        0,  /* 0x00 */
+        1,  /* 0x01 Other */
+        0,  /* 0x02 Unknown */
+        7,  /* 0x03 SIMM */
+        2,  /* 0x04 SIP */
+        0,  /* 0x05 Chip */
+        3,  /* 0x06 DIP */
+        4,  /* 0x07 ZIP */
+        6,  /* 0x08 Proprietary Card */
+        8,  /* 0x09 DIMM */
+        9,  /* 0x0a TSOP */
+        0,  /* 0x0b Row of chips */
+        11, /* 0x0c RIMM */
+        12, /* 0x0d SODIMM */
+        13, /* 0x0e SRIMM */
+    };
+    return form_factor < ARRAY_SIZE(map) ? map[form_factor] : 0;
+}
+
+static UINT16 smbios_to_cim_memory_type( BYTE type )
+{
+    static const UINT16 map[] =
+    {
+        0,  /* 0x00 */
+        1,  /* 0x01 Other */
+        0,  /* 0x02 Unknown */
+        2,  /* 0x03 DRAM */
+        6,  /* 0x04 EDRAM */
+        7,  /* 0x05 VRAM */
+        8,  /* 0x06 SRAM */
+        9,  /* 0x07 RAM */
+        10, /* 0x08 ROM */
+        11, /* 0x09 Flash */
+        12, /* 0x0a EEPROM */
+        13, /* 0x0b FEPROM */
+        14, /* 0x0c EPROM */
+        15, /* 0x0d CDRAM */
+        16, /* 0x0e 3DRAM */
+        17, /* 0x0f SDRAM */
+        18, /* 0x10 SGRAM */
+        19, /* 0x11 RDRAM */
+        20, /* 0x12 DDR */
+        21, /* 0x13 DDR2 */
+        22, /* 0x14 DDR2 FB-DIMM */
+        0,  /* 0x15 */
+        0,  /* 0x16 */
+        0,  /* 0x17 */
+        24, /* 0x18 DDR3 */
+        25, /* 0x19 FBD2 */
+    };
+    return type < ARRAY_SIZE(map) ? map[type] : 0;
+}
+
+static UINT64 get_memdevice_capacity( const struct smbios_memdevice *dev )
+{
+    if (dev->hdr.length < offsetof(struct smbios_memdevice, form_factor) || !dev->size || dev->size == 0xffff) return 0;
+    if (dev->size == 0x7fff && dev->hdr.length >= offsetof(struct smbios_memdevice, configured_speed))
+        return (UINT64)(dev->extended_size & 0x7fffffff) << 20;
+    if (dev->size & 0x8000) return (UINT64)(dev->size & 0x7fff) << 10;
+    return (UINT64)dev->size << 20;
+}
+
+#define MEMDEV_FIELD(dev, field) \
+    ((dev)->hdr.length >= offsetof(struct smbios_memdevice, field) + sizeof((dev)->field) ? (dev)->field : 0)
+
 static enum fill_status fill_physicalmemory( struct table *table, const struct expr *cond )
 {
     struct record_physicalmemory *rec;
     enum fill_status status = FILL_STATUS_UNFILTERED;
-    UINT row = 0;
+    const struct smbios_memdevice *dev;
+    UINT row = 0, index, count = 0, len, offset;
+    char *buf;
 
-    if (!resize_table( table, 1, sizeof(*rec) )) return FILL_STATUS_FAILED;
+    len = GetSystemFirmwareTable( RSMB, 0, NULL, 0 );
+    if (!len)
+    {
+        table->num_rows = 0;
+        return status;
+    }
+    if (!(buf = malloc( len ))) return FILL_STATUS_FAILED;
+    GetSystemFirmwareTable( RSMB, 0, buf, len );
 
-    rec = (struct record_physicalmemory *)table->data;
-    rec->banklabel            = L"BANK 0";
-    rec->capacity             = get_total_physical_memory();
-    rec->caption              = L"Physical Memory";
-    rec->configuredclockspeed = 1600;
-    rec->devicelocator        = L"DIMM 0";
-    rec->formfactor           = 8; /* DIMM */
-    rec->memorytype           = 9; /* RAM */
-    rec->manufacturer         = L"Wine";
-    rec->partnumber           = L"";
-    rec->serial               = L"";
-    rec->speed                = 3200;
-    if (!match_row( table, row, cond, &status )) free_row_values( table, row );
-    else row++;
+    while (find_smbios_entry( SMBIOS_TYPE_MEMDEVICE, count, buf, len )) count++;
+    if (!resize_table( table, max( count, 1 ), sizeof(*rec) ))
+    {
+        free( buf );
+        return FILL_STATUS_FAILED;
+    }
+
+    for (index = 0; index < count; index++)
+    {
+        WCHAR tag[32];
+
+        dev = (const struct smbios_memdevice *)find_smbios_entry( SMBIOS_TYPE_MEMDEVICE, index, buf, len );
+        if (!get_memdevice_capacity( dev )) continue;
+        offset = (const char *)dev - buf + dev->hdr.length;
+        swprintf( tag, ARRAY_SIZE(tag), L"Physical Memory %u", index );
+
+        rec = (struct record_physicalmemory *)(table->data + row * sizeof(*rec));
+        rec->attributes           = MEMDEV_FIELD( dev, attributes ) & 0x0f;
+        rec->banklabel            = get_smbios_string_by_id( MEMDEV_FIELD( dev, bank_locator ), buf, offset, len );
+        rec->capacity             = get_memdevice_capacity( dev );
+        rec->caption              = L"Physical Memory";
+        rec->configuredclockspeed = MEMDEV_FIELD( dev, configured_speed );
+        rec->configuredvoltage    = MEMDEV_FIELD( dev, configured_voltage );
+        rec->datawidth            = MEMDEV_FIELD( dev, data_width );
+        rec->devicelocator        = get_smbios_string_by_id( MEMDEV_FIELD( dev, device_locator ), buf, offset, len );
+        rec->formfactor           = smbios_to_cim_form_factor( MEMDEV_FIELD( dev, form_factor ) );
+        rec->manufacturer         = get_smbios_string_by_id( MEMDEV_FIELD( dev, manufacturer ), buf, offset, len );
+        rec->maxvoltage           = MEMDEV_FIELD( dev, max_voltage );
+        rec->memorytype           = smbios_to_cim_memory_type( MEMDEV_FIELD( dev, memory_type ) );
+        rec->minvoltage           = MEMDEV_FIELD( dev, min_voltage );
+        rec->partnumber           = get_smbios_string_by_id( MEMDEV_FIELD( dev, part_number ), buf, offset, len );
+        rec->serial               = get_smbios_string_by_id( MEMDEV_FIELD( dev, serial ), buf, offset, len );
+        rec->smbiosmemorytype     = MEMDEV_FIELD( dev, memory_type );
+        rec->speed                = MEMDEV_FIELD( dev, speed );
+        rec->tag                  = wcsdup( tag );
+        rec->totalwidth           = MEMDEV_FIELD( dev, total_width );
+        rec->typedetail           = MEMDEV_FIELD( dev, type_detail );
+        if (!match_row( table, row, cond, &status )) free_row_values( table, row );
+        else row++;
+    }
+
+    free( buf );
 
     TRACE("created %u rows\n", row);
     table->num_rows = row;

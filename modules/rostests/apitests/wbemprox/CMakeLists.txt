@@ -2,6 +2,7 @@
 list(APPEND SOURCE
     common.c
     decoupled.c
+    PhysicalMemory.c
     repository.c
     testlist.c)
 

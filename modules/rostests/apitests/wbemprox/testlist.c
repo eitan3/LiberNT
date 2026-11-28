@@ -9,11 +9,13 @@
 #include <apitest.h>
 
 extern void func_Decoupled(void);
+extern void func_PhysicalMemory(void);
 extern void func_Repository(void);
 
 const struct test winetest_testlist[] =
 {
     { "Decoupled", func_Decoupled },
+    { "PhysicalMemory", func_PhysicalMemory },
     { "Repository", func_Repository },
     { 0, 0 }
 };
