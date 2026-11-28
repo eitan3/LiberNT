@@ -93,6 +93,39 @@ HKR, Ndi\Params\*UDPChecksumOffloadIPv6\enum,  "1",       0, %TxEnabled%
 HKR, Ndi\Params\*UDPChecksumOffloadIPv6\enum,  "2",       0, %RxEnabled%
 HKR, Ndi\Params\*UDPChecksumOffloadIPv6\enum,  "3",       0, %RxTxEnabled%
 
+HKR, Ndi\Params\*JumboPacket,       ParamDesc, 0, %JumboPacket%
+HKR, Ndi\Params\*JumboPacket,       Type,      0, "enum"
+HKR, Ndi\Params\*JumboPacket,       Default,   0, "1514"
+HKR, Ndi\Params\*JumboPacket\enum,  "1514",   0, %Disabled%
+HKR, Ndi\Params\*JumboPacket\enum,  "4088",   0, %Jumbo4K%
+HKR, Ndi\Params\*JumboPacket\enum,  "9014",   0, %Jumbo9K%
+
+HKR, Ndi\Params\*SpeedDuplex,       ParamDesc, 0, %SpeedDuplex%
+HKR, Ndi\Params\*SpeedDuplex,       Type,      0, "enum"
+HKR, Ndi\Params\*SpeedDuplex,       Default,   0, "0"
+HKR, Ndi\Params\*SpeedDuplex\enum,  "0",      0, %AutoNegotiation%
+HKR, Ndi\Params\*SpeedDuplex\enum,  "1",      0, %Speed10Half%
+HKR, Ndi\Params\*SpeedDuplex\enum,  "2",      0, %Speed10Full%
+HKR, Ndi\Params\*SpeedDuplex\enum,  "3",      0, %Speed100Half%
+HKR, Ndi\Params\*SpeedDuplex\enum,  "4",      0, %Speed100Full%
+HKR, Ndi\Params\*SpeedDuplex\enum,  "6",      0, %Speed1000Full%
+HKR, Ndi\Params\*SpeedDuplex\enum,  "2500",   0, %Speed2500Full%
+HKR, Ndi\Params\*SpeedDuplex\enum,  "5000",   0, %Speed5000Full%
+
+HKR, Ndi\Params\*FlowControl,       ParamDesc, 0, %FlowControl%
+HKR, Ndi\Params\*FlowControl,       Type,      0, "enum"
+HKR, Ndi\Params\*FlowControl,       Default,   0, "3"
+HKR, Ndi\Params\*FlowControl\enum,  "0",      0, %Disabled%
+HKR, Ndi\Params\*FlowControl\enum,  "1",      0, %TxEnabled%
+HKR, Ndi\Params\*FlowControl\enum,  "2",      0, %RxEnabled%
+HKR, Ndi\Params\*FlowControl\enum,  "3",      0, %RxTxEnabled%
+
+HKR, Ndi\Params\*EEE,       ParamDesc, 0, %Eee%
+HKR, Ndi\Params\*EEE,       Type,      0, "enum"
+HKR, Ndi\Params\*EEE,       Default,   0, "0"
+HKR, Ndi\Params\*EEE\enum,  "0",      0, %Disabled%
+HKR, Ndi\Params\*EEE\enum,  "1",      0, %Enabled%
+
 [RTL8125_HwAddReg.NT]
 HKR, Interrupt Management,,0x00000010
 HKR, Interrupt Management\MessageSignaledInterruptProperties,,0x00000010
@@ -127,3 +160,18 @@ Disabled           = "Disabled"
 TxEnabled          = "Tx Enabled"
 RxEnabled          = "Rx Enabled"
 RxTxEnabled        = "Rx & Tx Enabled"
+JumboPacket        = "Jumbo Packet"
+Jumbo4K            = "4088 Bytes"
+Jumbo9K            = "9014 Bytes"
+SpeedDuplex        = "Speed & Duplex"
+AutoNegotiation    = "Auto Negotiation"
+Speed10Half        = "10 Mbps Half Duplex"
+Speed10Full        = "10 Mbps Full Duplex"
+Speed100Half       = "100 Mbps Half Duplex"
+Speed100Full       = "100 Mbps Full Duplex"
+Speed1000Full      = "1.0 Gbps Full Duplex"
+Speed2500Full      = "2.5 Gbps Full Duplex"
+Speed5000Full      = "5 Gbps Full Duplex"
+FlowControl        = "Flow Control"
+Eee                = "Energy-Efficient Ethernet"
+Enabled            = "Enabled"

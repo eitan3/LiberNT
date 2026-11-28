@@ -45,6 +45,9 @@ const NDIS_OID Rt25SupportedOids[] =
     OID_802_3_RCV_ERROR_ALIGNMENT,
     OID_802_3_XMIT_ONE_COLLISION,
     OID_802_3_XMIT_MORE_COLLISIONS,
+    OID_802_3_XMIT_MAX_COLLISIONS,
+    OID_802_3_RCV_OVERRUN,
+    OID_802_3_XMIT_UNDERRUN,
     OID_TCP_OFFLOAD_PARAMETERS,
     OID_OFFLOAD_ENCAPSULATION,
     OID_PNP_QUERY_POWER,
@@ -337,23 +340,40 @@ Rt25FillStatistics(
     _In_ PRT25_ADAPTER Adapter,
     _Out_ PNDIS_STATISTICS_INFO Statistics)
 {
+    ULONG64 RxGroup, TxGroup;
+
+    Rt25ReclaimTransmit(Adapter);
+    Rt25UpdateTally(Adapter);
+    RxGroup = Adapter->RxMulticast + Adapter->RxBroadcast;
+    TxGroup = Adapter->TxMulticast + Adapter->TxBroadcast;
+
     NdisZeroMemory(Statistics, sizeof(*Statistics));
     Statistics->Header.Type = NDIS_OBJECT_TYPE_DEFAULT;
     Statistics->Header.Revision = NDIS_STATISTICS_INFO_REVISION_1;
     Statistics->Header.Size = NDIS_SIZEOF_STATISTICS_INFO_REVISION_1;
     Statistics->SupportedStatistics = NDIS_STATISTICS_FLAGS_VALID_DIRECTED_FRAMES_RCV |
+                                      NDIS_STATISTICS_FLAGS_VALID_MULTICAST_FRAMES_RCV |
+                                      NDIS_STATISTICS_FLAGS_VALID_BROADCAST_FRAMES_RCV |
                                       NDIS_STATISTICS_FLAGS_VALID_RCV_ERROR |
                                       NDIS_STATISTICS_FLAGS_VALID_RCV_DISCARDS |
                                       NDIS_STATISTICS_FLAGS_VALID_BYTES_RCV |
                                       NDIS_STATISTICS_FLAGS_VALID_DIRECTED_FRAMES_XMIT |
+                                      NDIS_STATISTICS_FLAGS_VALID_MULTICAST_FRAMES_XMIT |
+                                      NDIS_STATISTICS_FLAGS_VALID_BROADCAST_FRAMES_XMIT |
                                       NDIS_STATISTICS_FLAGS_VALID_XMIT_ERROR |
                                       NDIS_STATISTICS_FLAGS_VALID_BYTES_XMIT;
-    Statistics->ifHCInUcastPkts = Adapter->RxPackets;
-    Statistics->ifInErrors = Adapter->RxErrors;
-    Statistics->ifInDiscards = Adapter->RxErrors + Adapter->RxNoBuffer;
+
+    /* Frame classes and bytes are counted by the driver; errors and drops come from the controller. */
+    Statistics->ifHCInUcastPkts = Adapter->RxPackets - min(RxGroup, Adapter->RxPackets);
+    Statistics->ifHCInMulticastPkts = Adapter->RxMulticast;
+    Statistics->ifHCInBroadcastPkts = Adapter->RxBroadcast;
+    Statistics->ifInErrors = Adapter->RxErrors + Adapter->Tally.RxErrors;
+    Statistics->ifInDiscards = Adapter->RxNoBuffer + Adapter->Tally.RxMissed;
     Statistics->ifHCInOctets = Adapter->RxBytes;
-    Statistics->ifHCOutUcastPkts = Adapter->TxPackets;
-    Statistics->ifOutErrors = Adapter->TxErrors;
+    Statistics->ifHCOutUcastPkts = Adapter->TxPackets - min(TxGroup, Adapter->TxPackets);
+    Statistics->ifHCOutMulticastPkts = Adapter->TxMulticast;
+    Statistics->ifHCOutBroadcastPkts = Adapter->TxBroadcast;
+    Statistics->ifOutErrors = Adapter->TxErrors + Adapter->Tally.TxErrors;
     Statistics->ifHCOutOctets = Adapter->TxBytes;
 }
 
@@ -400,7 +420,7 @@ Rt25QueryInformation(
 
         case OID_GEN_MAXIMUM_LOOKAHEAD:
         case OID_GEN_MAXIMUM_FRAME_SIZE:
-            Data.Ulong = RT25_MTU;
+            Data.Ulong = Adapter->MaxFrame - RT25_ETH_HEADER;
             return Rt25CopyQuery(Request, &Data.Ulong, sizeof(Data.Ulong));
 
         case OID_GEN_CURRENT_LOOKAHEAD:
@@ -410,12 +430,12 @@ Rt25QueryInformation(
         case OID_GEN_MAXIMUM_TOTAL_SIZE:
         case OID_GEN_TRANSMIT_BLOCK_SIZE:
         case OID_GEN_RECEIVE_BLOCK_SIZE:
-            Data.Ulong = RT25_MAX_FRAME;
+            Data.Ulong = Adapter->MaxFrame;
             return Rt25CopyQuery(Request, &Data.Ulong, sizeof(Data.Ulong));
 
         case OID_GEN_TRANSMIT_BUFFER_SPACE:
         case OID_GEN_RECEIVE_BUFFER_SPACE:
-            Data.Ulong = RT25_RING_SIZE * RT25_MAX_FRAME;
+            Data.Ulong = RT25_RING_SIZE * Adapter->MaxFrame;
             return Rt25CopyQuery(Request, &Data.Ulong, sizeof(Data.Ulong));
 
         case OID_GEN_MAXIMUM_SEND_PACKETS:
@@ -461,19 +481,23 @@ Rt25QueryInformation(
             return Rt25CopyQuery(Request, &Data.Ulong, sizeof(Data.Ulong));
 
         case OID_GEN_XMIT_OK:
+            Rt25ReclaimTransmit(Adapter);
             return Rt25CopyCounter(Request, Adapter->TxPackets);
 
         case OID_GEN_RCV_OK:
             return Rt25CopyCounter(Request, Adapter->RxPackets);
 
         case OID_GEN_XMIT_ERROR:
-            return Rt25CopyCounter(Request, Adapter->TxErrors);
+            Rt25UpdateTally(Adapter);
+            return Rt25CopyCounter(Request, Adapter->TxErrors + Adapter->Tally.TxErrors);
 
         case OID_GEN_RCV_ERROR:
-            return Rt25CopyCounter(Request, Adapter->RxErrors);
+            Rt25UpdateTally(Adapter);
+            return Rt25CopyCounter(Request, Adapter->RxErrors + Adapter->Tally.RxErrors);
 
         case OID_GEN_RCV_NO_BUFFER:
-            return Rt25CopyCounter(Request, Adapter->RxNoBuffer);
+            Rt25UpdateTally(Adapter);
+            return Rt25CopyCounter(Request, Adapter->RxNoBuffer + Adapter->Tally.RxMissed);
 
         case OID_GEN_STATISTICS:
             Rt25FillStatistics(Adapter, &Data.Statistics);
@@ -493,10 +517,28 @@ Rt25QueryInformation(
             return Rt25CopyQuery(Request, &Data.Ulong, sizeof(Data.Ulong));
 
         case OID_802_3_RCV_ERROR_ALIGNMENT:
+            Rt25UpdateTally(Adapter);
+            return Rt25CopyCounter(Request, Adapter->Tally.AlignErrors);
+
         case OID_802_3_XMIT_ONE_COLLISION:
+            Rt25UpdateTally(Adapter);
+            return Rt25CopyCounter(Request, Adapter->Tally.TxOneCollision);
+
         case OID_802_3_XMIT_MORE_COLLISIONS:
-            Data.Ulong = 0;
-            return Rt25CopyQuery(Request, &Data.Ulong, sizeof(Data.Ulong));
+            Rt25UpdateTally(Adapter);
+            return Rt25CopyCounter(Request, Adapter->Tally.TxMultiCollision);
+
+        case OID_802_3_XMIT_MAX_COLLISIONS:
+            Rt25UpdateTally(Adapter);
+            return Rt25CopyCounter(Request, Adapter->Tally.TxAborted);
+
+        case OID_802_3_RCV_OVERRUN:
+            Rt25UpdateTally(Adapter);
+            return Rt25CopyCounter(Request, Adapter->Tally.RxMissed);
+
+        case OID_802_3_XMIT_UNDERRUN:
+            Rt25UpdateTally(Adapter);
+            return Rt25CopyCounter(Request, Adapter->Tally.TxUnderrun);
 
         case OID_OFFLOAD_ENCAPSULATION:
             Rt25FillEncapsulation(Adapter, &Data.Encapsulation);
@@ -555,7 +597,7 @@ Rt25SetInformation(
             }
 
             NdisMoveMemory(&Value, Buffer, sizeof(Value));
-            if (Value > RT25_MTU)
+            if (Value > Adapter->MaxFrame - RT25_ETH_HEADER)
                 return NDIS_STATUS_INVALID_DATA;
 
             Adapter->Lookahead = Value;

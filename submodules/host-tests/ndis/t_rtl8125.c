@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT host-native tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     RTL8125/RTL8126 chip table, descriptors, link, multicast hash and checksums
+ * PURPOSE:     RTL8125/RTL8126 chip table, descriptors, link, hashing, checksums and counters
  * COPYRIGHT:   Copyright 2026 The LiberNT contributors
  */
 
@@ -15,6 +15,7 @@
 typedef uint8_t UCHAR;
 typedef uint16_t USHORT;
 typedef uint32_t ULONG;
+typedef uint64_t ULONG64;
 typedef UCHAR BOOLEAN;
 typedef ULONG *PULONG;
 typedef void VOID;
@@ -96,10 +97,44 @@ TestLinkSpeed(void)
 static void
 TestAdvertise(void)
 {
-    assert(Rt25MultiGigAdvertise(0x0000, 1000) == 0x0000);
-    assert(Rt25MultiGigAdvertise(0x0000, 2500) == RT25_AN_10GBT_ADV_2500);
-    assert(Rt25MultiGigAdvertise(0x0000, 5000) == (RT25_AN_10GBT_ADV_2500 | RT25_AN_10GBT_ADV_5000));
-    assert(Rt25MultiGigAdvertise(0x1001 | RT25_AN_10GBT_ADV_5000, 2500) == (0x1001 | RT25_AN_10GBT_ADV_2500));
+    RT25_ADVERTISEMENT Current = { 0x0001 | RT25_ADVERTISE_10_100, RT25_CTRL1000_HALF | 0x1000, 0x1001 }, Result;
+
+    /* Auto on an RTL8126: everything up to 5G, symmetric pause; unrelated bits survive. */
+    assert(Rt25LinkAdvertisement(RT25_SPEED_AUTO, 5000, RT25_FLOW_BOTH, &Current, &Result));
+    assert(Result.Advertise == (0x0001 | RT25_ADVERTISE_10_100 | RT25_ADVERTISE_PAUSE));
+    assert(Result.Ctrl1000 == (0x1000 | RT25_CTRL1000_FULL));
+    assert(Result.MultiGig == (0x1001 | RT25_AN_10GBT_ADV_2500 | RT25_AN_10GBT_ADV_5000));
+
+    assert(Rt25LinkAdvertisement(RT25_SPEED_AUTO, 2500, RT25_FLOW_OFF, &Current, &Result));
+    assert(Result.Advertise == (0x0001 | RT25_ADVERTISE_10_100));
+    assert(Result.MultiGig == (0x1001 | RT25_AN_10GBT_ADV_2500));
+
+    /* A fixed speed advertises only that mode. */
+    assert(Rt25LinkAdvertisement(RT25_SPEED_100_FULL, 5000, RT25_FLOW_OFF, &Current, &Result));
+    assert(Result.Advertise == (0x0001 | RT25_ADVERTISE_100_FULL));
+    assert(Result.Ctrl1000 == 0x1000 && Result.MultiGig == 0x1001);
+
+    assert(Rt25LinkAdvertisement(RT25_SPEED_1000_FULL, 5000, RT25_FLOW_RX, &Current, &Result));
+    assert(Result.Advertise == (0x0001 | RT25_ADVERTISE_PAUSE | RT25_ADVERTISE_ASYM_PAUSE));
+    assert(Result.Ctrl1000 == (0x1000 | RT25_CTRL1000_FULL) && Result.MultiGig == 0x1001);
+
+    assert(Rt25LinkAdvertisement(RT25_SPEED_5000_FULL, 5000, RT25_FLOW_TX, &Current, &Result));
+    assert(Result.Advertise == (0x0001 | RT25_ADVERTISE_ASYM_PAUSE));
+    assert(Result.MultiGig == (0x1001 | RT25_AN_10GBT_ADV_5000));
+
+    assert(Rt25LinkAdvertisement(RT25_SPEED_10_HALF, 2500, RT25_FLOW_OFF, &Current, &Result));
+    assert(Result.Advertise == (0x0001 | RT25_ADVERTISE_10_HALF));
+
+    /* An RTL8125 cannot do 5G, and unknown values are refused. */
+    assert(!Rt25LinkAdvertisement(RT25_SPEED_5000_FULL, 2500, RT25_FLOW_OFF, &Current, &Result));
+    assert(!Rt25LinkAdvertisement(5, 5000, RT25_FLOW_OFF, &Current, &Result));
+    assert(!Rt25LinkAdvertisement(7, 5000, RT25_FLOW_OFF, &Current, &Result));
+
+    assert(Rt25PauseFromStatus(0, 1, 2, 3, 0) == 0);
+    assert(Rt25PauseFromStatus(RT25_PHYSTATUS_TX_PAUSE, 1, 2, 3, 0) == 1);
+    assert(Rt25PauseFromStatus(RT25_PHYSTATUS_RX_PAUSE, 1, 2, 3, 0) == 2);
+    assert(Rt25PauseFromStatus(RT25_PHYSTATUS_TX_PAUSE | RT25_PHYSTATUS_RX_PAUSE | RT25_PHYSTATUS_LINK,
+                               1, 2, 3, 0) == 3);
 }
 
 static void
@@ -113,8 +148,8 @@ TestDescriptors(void)
     assert(Rt25NextIndex(0) == 1);
     assert(Rt25NextIndex(Last) == 0);
 
-    assert(Rt25RxArmFlags(0) == (RT25_DESC_OWN | RT25_BUFFER_SIZE));
-    assert(Rt25RxArmFlags(Last) == (RT25_DESC_OWN | RT25_DESC_EOR | RT25_BUFFER_SIZE));
+    assert(Rt25RxArmFlags(0, 2048) == (RT25_DESC_OWN | 2048));
+    assert(Rt25RxArmFlags(Last, 9216) == (RT25_DESC_OWN | RT25_DESC_EOR | 9216));
 
     assert(Rt25TxFlags(3, 60) == (RT25_DESC_OWN | RT25_DESC_FS | RT25_DESC_LS | 60));
     assert(Rt25TxFlags(Last, 1514) == (RT25_DESC_OWN | RT25_DESC_EOR | RT25_DESC_FS | RT25_DESC_LS | 1514));
@@ -126,17 +161,75 @@ TestDescriptors(void)
 static void
 TestReceiveLength(void)
 {
-    ULONG Whole = RT25_DESC_FS | RT25_DESC_LS;
+    ULONG Whole = RT25_DESC_FS | RT25_DESC_LS, Size = Rt25ReceiveSize(RT25_MAX_FRAME);
 
-    assert(Rt25RxFrameLength(Whole | 64) == 60);
-    assert(Rt25RxFrameLength(Whole | RT25_DESC_EOR | 1518) == 1514);
-    assert(Rt25RxFrameLength(Whole | RT25_DESC_OWN | 64) == 0);
-    assert(Rt25RxFrameLength(RT25_DESC_FS | 64) == 0);
-    assert(Rt25RxFrameLength(RT25_DESC_LS | 64) == 0);
-    assert(Rt25RxFrameLength(Whole | RT25_RX_DESC_RES | 64) == 0);
-    assert(Rt25RxFrameLength(Whole | 17) == 0);
-    assert(Rt25RxFrameLength(Whole | 18) == 14);
-    assert(Rt25RxFrameLength(Whole | (RT25_RECEIVE_SIZE + 1)) == 0);
+    assert(Rt25RxFrameLength(Whole | 64, Size) == 60);
+    assert(Rt25RxFrameLength(Whole | RT25_DESC_EOR | 1518, Size) == 1514);
+    /* A tagged full-size frame still fits. */
+    assert(Rt25RxFrameLength(Whole | 1522, Size) == 1518);
+    assert(Rt25RxFrameLength(Whole | RT25_DESC_OWN | 64, Size) == 0);
+    assert(Rt25RxFrameLength(RT25_DESC_FS | 64, Size) == 0);
+    assert(Rt25RxFrameLength(RT25_DESC_LS | 64, Size) == 0);
+    assert(Rt25RxFrameLength(Whole | RT25_RX_DESC_RES | 64, Size) == 0);
+    assert(Rt25RxFrameLength(Whole | 17, Size) == 0);
+    assert(Rt25RxFrameLength(Whole | 18, Size) == 14);
+    assert(Rt25RxFrameLength(Whole | (Size + 1), Size) == 0);
+    assert(Rt25RxFrameLength(Whole | 9018, Rt25ReceiveSize(RT25_JUMBO_FRAME)) == 9014);
+}
+
+static void
+TestJumboSizes(void)
+{
+    assert(Rt25MaxFrameFromJumbo(0) == RT25_MAX_FRAME);
+    assert(Rt25MaxFrameFromJumbo(1500) == RT25_MAX_FRAME);
+    assert(Rt25MaxFrameFromJumbo(4088) == 4088);
+    assert(Rt25MaxFrameFromJumbo(9014) == 9014);
+    assert(Rt25MaxFrameFromJumbo(16128) == RT25_MAX_FRAME);
+
+    /* Standard frames keep the 1536-byte limit and 2 KiB buffers. */
+    assert(Rt25ReceiveSize(1514) == 1536 && Rt25BufferSize(1514) == 2048);
+    assert(Rt25ReceiveSize(4088) == 4096 && Rt25BufferSize(4088) == 4096);
+    assert(Rt25ReceiveSize(9014) == 9024 && Rt25BufferSize(9014) == RT25_MAX_BUFFER_SIZE);
+    assert(Rt25BufferSize(RT25_JUMBO_FRAME) <= RT25_DESC_LENGTH_MASK);
+    /* The adapter's chunk array must hold a full ring of the largest buffers. */
+    assert((RT25_RING_SIZE + (0x10000 / RT25_MAX_BUFFER_SIZE) - 1) / (0x10000 / RT25_MAX_BUFFER_SIZE) <= 64);
+}
+
+static void
+TestTally(void)
+{
+    static const UCHAR Multicast[6] = { 0x01, 0x00, 0x5E, 0x00, 0x00, 0xFB };
+    static const UCHAR Broadcast[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    static const UCHAR Unicast[6] = { 0x02, 0x11, 0x22, 0x33, 0x44, 0x55 };
+    RT25_TALLY Tally;
+    RT25_TALLY_TOTALS Totals;
+
+    assert(offsetof(RT25_TALLY, RxErrors) == 24);
+    assert(offsetof(RT25_TALLY, RxMissed) == 28);
+    assert(offsetof(RT25_TALLY, TxOneCollision) == 32);
+    assert(offsetof(RT25_TALLY, RxUnicast) == 40);
+    assert(offsetof(RT25_TALLY, RxMulticast) == 56);
+    assert(offsetof(RT25_TALLY, TxUnderrun) == 62);
+
+    memset(&Totals, 0, sizeof(Totals));
+    memset(&Tally, 0, sizeof(Tally));
+    Tally.TxErrors = 3;
+    Tally.RxErrors = 5;
+    Tally.RxMissed = 0xFFFF;
+    Tally.AlignErrors = 2;
+    Tally.TxOneCollision = 7;
+    Tally.TxMultiCollision = 1;
+    Tally.TxAborted = 4;
+    Tally.TxUnderrun = 6;
+    Rt25AccumulateTally(&Totals, &Tally);
+    Rt25AccumulateTally(&Totals, &Tally);
+    assert(Totals.TxErrors == 6 && Totals.RxErrors == 10 && Totals.RxMissed == 0x1FFFE);
+    assert(Totals.AlignErrors == 4 && Totals.TxOneCollision == 14 && Totals.TxMultiCollision == 2);
+    assert(Totals.TxAborted == 8 && Totals.TxUnderrun == 12);
+
+    assert(Rt25CastType(Unicast) == RT25_CAST_UNICAST);
+    assert(Rt25CastType(Multicast) == RT25_CAST_MULTICAST);
+    assert(Rt25CastType(Broadcast) == RT25_CAST_BROADCAST);
 }
 
 static void
@@ -377,6 +470,8 @@ main(void)
     TestAdvertise();
     TestDescriptors();
     TestReceiveLength();
+    TestJumboSizes();
+    TestTally();
     TestReceiveConfig();
     TestOcpCommand();
     TestMulticastHash();

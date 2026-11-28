@@ -57,6 +57,7 @@ Rt25PowerDown(
     Magic = (Adapter->EnabledWakePatterns & NDIS_PM_WOL_MAGIC_PACKET_ENABLED) != 0;
     LinkChange = (Adapter->WakeUpFlags & NDIS_PM_WAKE_ON_LINK_CHANGE_ENABLED) != 0;
 
+    Rt25UpdateTally(Adapter);
     Rt25QuiesceHardware(Adapter);
     Rt25ReclaimTransmit(Adapter);
     if (Magic || LinkChange)
@@ -73,6 +74,7 @@ Rt25PowerDown(
     Adapter->MediaConnectState = MediaConnectStateUnknown;
     Adapter->MediaDuplexState = MediaDuplexStateUnknown;
     Adapter->LinkSpeed = NDIS_LINK_SPEED_UNKNOWN;
+    Adapter->PauseFunctions = NdisPauseFunctionsUnknown;
     NdisReleaseSpinLock(&Adapter->PhyLock);
 }
 

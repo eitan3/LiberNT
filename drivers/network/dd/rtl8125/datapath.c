@@ -28,7 +28,7 @@ Rt25ArmReceive(
     Rt25SetDescriptorAddress(Descriptor, Adapter->RxBuffers[Index].PhysicalAddress);
     Descriptor->Vlan = 0;
     KeMemoryBarrier();
-    Descriptor->Flags = Rt25RxArmFlags(Index);
+    Descriptor->Flags = Rt25RxArmFlags(Index, Adapter->BufferSize);
     KeMemoryBarrier();
 }
 
@@ -84,11 +84,11 @@ static
 NDIS_STATUS
 Rt25AllocateChunks(
     _In_ PRT25_ADAPTER Adapter,
-    _Out_writes_(RT25_CHUNKS) PRT25_CHUNK Chunks)
+    _Out_writes_(RT25_MAX_CHUNKS) PRT25_CHUNK Chunks)
 {
     ULONG i;
 
-    for (i = 0; i < RT25_CHUNKS; i++)
+    for (i = 0; i < Adapter->ChunkCount; i++)
     {
         NdisMAllocateSharedMemory(Adapter->MiniportHandle, RT25_CHUNK_SIZE, TRUE,
                                   &Chunks[i].VirtualAddress, &Chunks[i].PhysicalAddress);
@@ -105,11 +105,11 @@ static
 VOID
 Rt25FreeChunks(
     _In_ PRT25_ADAPTER Adapter,
-    _Inout_updates_(RT25_CHUNKS) PRT25_CHUNK Chunks)
+    _Inout_updates_(RT25_MAX_CHUNKS) PRT25_CHUNK Chunks)
 {
     ULONG i;
 
-    for (i = 0; i < RT25_CHUNKS; i++)
+    for (i = 0; i < RT25_MAX_CHUNKS; i++)
     {
         if (Chunks[i].VirtualAddress)
         {
@@ -145,10 +145,22 @@ Rt25AllocateDatapath(
     PRT25_CHUNK Chunk;
     ULONG i, Offset;
 
+    /* Buffers never straddle a chunk, so each one is physically contiguous. */
+    Adapter->ReceiveSize = Rt25ReceiveSize(Adapter->MaxFrame);
+    Adapter->BufferSize = Rt25BufferSize(Adapter->MaxFrame);
+    Adapter->BuffersPerChunk = RT25_CHUNK_SIZE / Adapter->BufferSize;
+    Adapter->ChunkCount = (RT25_RING_SIZE + Adapter->BuffersPerChunk - 1) / Adapter->BuffersPerChunk;
+
     Adapter->RxRing = Rt25AllocateRing(Adapter, &Adapter->RxRingPhysical);
     Adapter->TxRing = Rt25AllocateRing(Adapter, &Adapter->TxRingPhysical);
     if (!Adapter->RxRing || !Adapter->TxRing)
         return NDIS_STATUS_RESOURCES;
+
+    NdisMAllocateSharedMemory(Adapter->MiniportHandle, RT25_TALLY_BYTES, FALSE,
+                              (PVOID *)&Adapter->TallyVirtual, &Adapter->TallyPhysical);
+    if (!Adapter->TallyVirtual)
+        return NDIS_STATUS_RESOURCES;
+    NdisZeroMemory(Adapter->TallyVirtual, RT25_TALLY_BYTES);
 
     if (Rt25AllocateChunks(Adapter, Adapter->RxChunks) != NDIS_STATUS_SUCCESS ||
         Rt25AllocateChunks(Adapter, Adapter->TxChunks) != NDIS_STATUS_SUCCESS)
@@ -171,13 +183,13 @@ Rt25AllocateDatapath(
 
     for (i = 0; i < RT25_RING_SIZE; i++)
     {
-        Offset = (i % RT25_BUFFERS_PER_CHUNK) * RT25_BUFFER_SIZE;
+        Offset = (i % Adapter->BuffersPerChunk) * Adapter->BufferSize;
 
-        Chunk = &Adapter->RxChunks[i / RT25_BUFFERS_PER_CHUNK];
+        Chunk = &Adapter->RxChunks[i / Adapter->BuffersPerChunk];
         RxBuffer = &Adapter->RxBuffers[i];
         RxBuffer->VirtualAddress = (PUCHAR)Chunk->VirtualAddress + Offset;
         RxBuffer->PhysicalAddress = (ULONG64)Chunk->PhysicalAddress.QuadPart + Offset;
-        RxBuffer->Mdl = NdisAllocateMdl(Adapter->MiniportHandle, RxBuffer->VirtualAddress, RT25_BUFFER_SIZE);
+        RxBuffer->Mdl = NdisAllocateMdl(Adapter->MiniportHandle, RxBuffer->VirtualAddress, Adapter->BufferSize);
         if (!RxBuffer->Mdl)
             return NDIS_STATUS_RESOURCES;
 
@@ -186,7 +198,7 @@ Rt25AllocateDatapath(
         if (!RxBuffer->NetBufferList)
             return NDIS_STATUS_RESOURCES;
 
-        Chunk = &Adapter->TxChunks[i / RT25_BUFFERS_PER_CHUNK];
+        Chunk = &Adapter->TxChunks[i / Adapter->BuffersPerChunk];
         TxBuffer = &Adapter->TxBuffers[i];
         TxBuffer->VirtualAddress = (PUCHAR)Chunk->VirtualAddress + Offset;
         TxBuffer->PhysicalAddress = (ULONG64)Chunk->PhysicalAddress.QuadPart + Offset;
@@ -228,6 +240,13 @@ Rt25FreeDatapath(
 
     Rt25FreeChunks(Adapter, Adapter->RxChunks);
     Rt25FreeChunks(Adapter, Adapter->TxChunks);
+
+    if (Adapter->TallyVirtual)
+    {
+        NdisMFreeSharedMemory(Adapter->MiniportHandle, RT25_TALLY_BYTES, FALSE,
+                              Adapter->TallyVirtual, Adapter->TallyPhysical);
+        Adapter->TallyVirtual = NULL;
+    }
 
     if (Adapter->RxRing)
     {
@@ -322,7 +341,7 @@ Rt25PollReceive(
 
         KeMemoryBarrier();
         Adapter->RxNext = Rt25NextIndex(Index);
-        Length = Rt25RxFrameLength(Flags);
+        Length = Rt25RxFrameLength(Flags, Adapter->ReceiveSize);
         if (Length == 0 || !Indicate)
         {
             if (Length == 0)
@@ -353,6 +372,16 @@ Rt25PollReceive(
         Count++;
         Adapter->RxPackets++;
         Adapter->RxBytes += Length;
+        switch (Rt25CastType(RxBuffer->VirtualAddress))
+        {
+            case RT25_CAST_MULTICAST:
+                Adapter->RxMulticast++;
+                break;
+
+            case RT25_CAST_BROADCAST:
+                Adapter->RxBroadcast++;
+                break;
+        }
     }
 
     if (Count)
@@ -427,6 +456,10 @@ Rt25ReclaimTransmit(
 
         Adapter->TxPackets++;
         Adapter->TxBytes += Adapter->TxBuffers[Index].Length;
+        if (Adapter->TxBuffers[Index].Cast == RT25_CAST_MULTICAST)
+            Adapter->TxMulticast++;
+        else if (Adapter->TxBuffers[Index].Cast == RT25_CAST_BROADCAST)
+            Adapter->TxBroadcast++;
         Adapter->TxBuffers[Index].Length = 0;
         Adapter->TxTail = Rt25NextIndex(Index);
         Adapter->TxFree++;
@@ -577,7 +610,7 @@ Rt25SendNetBufferLists(
              NetBuffer = NET_BUFFER_NEXT_NB(NetBuffer))
         {
             Length = NET_BUFFER_DATA_LENGTH(NetBuffer);
-            if (Length < RT25_ETH_HEADER || Length > RT25_MAX_FRAME)
+            if (Length < RT25_ETH_HEADER || Length > Adapter->MaxFrame)
                 Status = NDIS_STATUS_INVALID_LENGTH;
             Count++;
         }
@@ -601,10 +634,11 @@ Rt25SendNetBufferLists(
                      NetBuffer = NET_BUFFER_NEXT_NB(NetBuffer), Index = Rt25NextIndex(Index))
                 {
                     Status = Rt25CopyNetBuffer(NetBuffer, Adapter->TxBuffers[Index].VirtualAddress,
-                                               RT25_BUFFER_SIZE, &Length);
+                                               Adapter->BufferSize, &Length);
                     if (Status != NDIS_STATUS_SUCCESS)
                         break;
 
+                    Adapter->TxBuffers[Index].Cast = Rt25CastType(Adapter->TxBuffers[Index].VirtualAddress);
                     Adapter->TxBuffers[Index].Options =
                         Rt25TxChecksumOptions(Adapter->TxBuffers[Index].VirtualAddress, Length, Requested);
                     Padded = Rt25TxPaddedLength(Length);
