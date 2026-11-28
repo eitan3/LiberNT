@@ -8,6 +8,9 @@
 #pragma once
 
 #define LIBER_DOCK_MAX_ITEMS 32
+#define LIBER_DOCK_ORDER_MAX 64
+#define LIBER_DOCK_DRAG_START 6
+#define LIBER_DOCK_ORDER_KEY L"Software\\LiberNT\\Shell\\Dock"
 #define LIBER_DOCK_PAD_X     8
 #define LIBER_DOCK_PAD_Y     ((LIBER_DOCK_HEIGHT - LIBER_DOCK_CELL) / 2)
 #define LIBER_CLASSIC_PAD    ((LIBER_TASKBAR_CLASSIC - LIBER_CLASSIC_CELL) / 2)
@@ -54,6 +57,9 @@ BOOL LiberDock_IsTaskWindow(HWND hwnd);
 VOID LiberDock_Layout(const RECT *prcMonitor, UINT dpi, UINT cells, int trayWidthDip, const LIBER_DOCK_METRICS *pMetrics,
                       LIBER_DOCK_LAYOUT *pLayout);
 BOOL LiberDock_SameApp(LPCWSTR pszTarget, LPCWSTR pszImage);
+UINT LiberDock_MergeOrder(LPCWSTR const *pFirst, UINT cFirst, LPCWSTR const *pThen, UINT cThen, LPCWSTR *pOut, UINT cMax);
+VOID LiberDock_SortByOrder(LPCWSTR const *pKeys, UINT cKeys, LPCWSTR const *pOrder, UINT cOrder, UINT *pPermutation);
+UINT LiberDock_DropSlot(const RECT *pCells, UINT cCells, LONG x);
 VOID LiberDock_AppName(LPCWSTR pszPath, LPWSTR pszName, UINT cchName);
 #define LIBER_PREVIEW_THUMB_W 200
 #define LIBER_PREVIEW_THUMB_H 120

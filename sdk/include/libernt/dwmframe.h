@@ -267,7 +267,6 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
 #define DWM_LWA_ALPHA    0x00000002u
 
 /* Compositor-owned attributes carried in the unused high LayerFlags bits. */
-/* Liber window chrome: elevation shadow, and the DWM_LIBER_EDGE_* outline drawn DWM_LIBER_FRAME_OUTSET px outside */
 #define DWM_WINDOW_LIBER_EDGE_SHIFT 20
 #define DWM_WINDOW_LIBER_EDGE_MASK  0x00300000u
 #define DWM_WINDOW_LIBER_FRAME      0x00800000u
@@ -322,6 +321,7 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
 #define DWM_PROP_GPU_OUTPUT           L"ReactOS.Dwm.GpuOutput"
 #define DWM_PROP_LIBER_MATERIAL       L"LiberNT.Dwm.Material"
 #define DWM_PROP_LIBER_MATERIAL_TINT  L"LiberNT.Dwm.MaterialTint"
+#define DWM_PROP_LIBER_DARK_FRAME     L"LiberNT.Dwm.DarkFrame"
 
 /* Liber material kinds are LIBER_MATERIAL_KIND + 1, so 0 means no material. */
 #define DWM_LIBER_MATERIAL_NONE       0u
@@ -348,7 +348,6 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
 #define DWM_LIBER_MATERIAL_ALPHA(Packed)     (((ULONG)(Packed) >> 16) & 0xFFu)
 #define DWM_LIBER_MATERIAL_MASK              0x80FF7F7Fu
 
-/* Liber window geometry and motion, shared by win32k, the compositor and their tests */
 #define DWM_CORNER_RADIUS_LIBER_96    12u
 #define DWM_LIBER_ANIM_MINIMIZE_MS    300u
 #define DWM_LIBER_ANIM_RESTORE_MS     340u
@@ -368,6 +367,32 @@ DwmLiberOpenFromRect(const RECT *Window, RECT *From)
     From->top = Window->top + Dy;
     From->right = Window->right - Dx;
     From->bottom = Window->bottom - Dy;
+}
+
+#define DWM_LIBER_ANIM_CLOSE_MS       200u
+#define DWM_LIBER_ANIM_CLOSE_SCALE    94u
+
+static __inline void
+DwmLiberCloseRect(const RECT *Window, ULONG Progress, ULONG Scale, RECT *Shown)
+{
+    LONG Cx = Window->right - Window->left, Cy = Window->bottom - Window->top;
+    ULONG Step = (Scale == 0 || Progress >= Scale) ? 1u : Progress;
+    ULONG Range = (Scale == 0 || Progress >= Scale) ? 1u : Scale;
+    LONG Dx = (LONG)(((LONGLONG)Cx * (100 - DWM_LIBER_ANIM_CLOSE_SCALE) * Step) / (200LL * Range));
+    LONG Dy = (LONG)(((LONGLONG)Cy * (100 - DWM_LIBER_ANIM_CLOSE_SCALE) * Step) / (200LL * Range));
+
+    Shown->left = Window->left + Dx;
+    Shown->top = Window->top + Dy;
+    Shown->right = Window->right - Dx;
+    Shown->bottom = Window->bottom - Dy;
+}
+
+static __inline ULONG
+DwmLiberCloseAlpha(ULONG Progress, ULONG Scale)
+{
+    if (Scale == 0 || Progress >= Scale)
+        return 0u;
+    return (ULONG)(255u - ((ULONGLONG)Progress * 255u) / Scale);
 }
 
 static __inline ULONG
@@ -398,7 +423,6 @@ DwmLiberFrameEdge(ULONG LayerFlags)
 #define DWM_LIBER_CAPTION_BUTTON_CY   28
 #define DWM_LIBER_CAPTION_BUTTON_R    4
 
-/* Index 0 is the close button at the right edge; the others follow to its left */
 static __inline void
 DwmLiberCaptionButtonRect(LONG WindowWidth, LONG CaptionHeight, ULONG Dpi, ULONG Index, RECT *Button)
 {

@@ -433,7 +433,7 @@ void CLiberCalendar::Place()
     UINT dpi = m_Surface.Dpi();
     POINT pt;
 
-    LiberShell_PlaceFlyout(&m_Anchor, ScaleToDpi(LIBER_CAL_WIDTH, dpi), ScaleToDpi(size.cy, dpi), FALSE, &pt);
+    LiberShell_PlaceFlyout(&m_Anchor, ScaleToDpi(LIBER_CAL_WIDTH, dpi), ScaleToDpi(size.cy, dpi), LIBER_FLYOUT_RIGHT, &pt);
     m_Surface.SetPosition(pt.x, pt.y, LIBER_CAL_WIDTH, size.cy);
     m_Surface.RequestLayout();
     m_NotifSurface.SetPosition(pt.x, pt.y - ScaleToDpi(LIBER_CAL_GAP + notifSize.cy, dpi), LIBER_CAL_WIDTH,

@@ -1154,7 +1154,7 @@ DwmGpuComposeBeginMeasured(const BYTE *BackdropPixels,
 }
 
 BOOL
-DwmGpuComposeBegin(ULONG BackdropColor, const BYTE *BackdropPixels,
+DwmGpuComposeBegin(ULONG BackdropColor, const BYTE *BackdropPixels, const BYTE *MicaPixels,
                     BOOL RefreshBackdrop, const RECT *Damage, ULONG DamageCount)
 {
     RECT Bounds = {0, 0, 0, 0};
@@ -1163,7 +1163,7 @@ DwmGpuComposeBegin(ULONG BackdropColor, const BYTE *BackdropPixels,
     if (DwmD3dIsActive())
     {
         DPT_SCOPE Trace = DptBegin(&g_DwmPresentTrace, DPT_BEGIN);
-        BOOL Result = DwmD3dBegin(BackdropColor, BackdropPixels, RefreshBackdrop, Damage, DamageCount);
+        BOOL Result = DwmD3dBegin(BackdropColor, BackdropPixels, MicaPixels, RefreshBackdrop, Damage, DamageCount);
         DptEnd(&g_DwmPresentTrace, Trace, Result, 0);
         return Result;
     }

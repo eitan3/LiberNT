@@ -6,6 +6,7 @@
  */
 
 #include <windows.h>
+#include <math.h>
 
 #include "experience.h"
 
@@ -41,6 +42,23 @@ VOID LiberExperience_SetDimShade(COLORREF shade)
 
     if (ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"DimShade", 0xFFFFFFFF) != value)
         RegSetKeyValueW(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"DimShade", REG_DWORD, &value, sizeof(value));
+}
+
+static VOID WriteDword(LPCWSTR value, DWORD data)
+{
+    if (ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, value, ~data) != data)
+        RegSetKeyValueW(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, value, REG_DWORD, &data, sizeof(data));
+}
+
+VOID LiberExperience_SetGlassTint(double hue, double tint)
+{
+    double wrapped = fmod(hue, 360.0);
+
+    if (wrapped < 0.0)
+        wrapped += 360.0;
+    tint = tint < 0.0 ? 0.0 : tint > 2.5 ? 2.5 : tint;
+    WriteDword(L"GlassHue", (DWORD)(wrapped * 100.0 + 0.5) % 36000);
+    WriteDword(L"GlassTint", (DWORD)(tint * 1000.0 + 0.5));
 }
 
 DWORD LiberExperience_TaskbarStyle(VOID)

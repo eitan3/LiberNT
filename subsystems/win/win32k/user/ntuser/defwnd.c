@@ -6,6 +6,7 @@
  */
 
 #include <win32k.h>
+#include <libernt/winsnap.h>
 #include <windowsx.h>
 
 DBG_DEFAULT_CHANNEL(UserDefwnd);
@@ -1177,7 +1178,7 @@ IntDefWindowProc(
                   }
 #endif
 
-                  if (snapped == otherEdge)
+                  if (snapped != HTNOWHERE && snapped != HTTOP && UserSnapIsLeft(snapped) == (otherEdge == HTLEFT))
                      co_IntUnsnapWindow(topWnd);
                   else
                      co_IntSnapWindow(topWnd, edge);

@@ -238,7 +238,7 @@ BOOL CLiberOverflow::Open(const RECT *prcAnchor)
     SIZE size = m_Root->Measure(available);
     UINT dpi = m_Surface.Dpi();
     POINT pt;
-    LiberShell_PlaceFlyout(prcAnchor, ScaleToDpi(LIBER_OVERFLOW_WIDTH, dpi), ScaleToDpi(size.cy, dpi), FALSE, &pt);
+    LiberShell_PlaceFlyout(prcAnchor, ScaleToDpi(LIBER_OVERFLOW_WIDTH, dpi), ScaleToDpi(size.cy, dpi), LIBER_FLYOUT_RIGHT, &pt);
     m_Surface.SetPosition(pt.x, pt.y, LIBER_OVERFLOW_WIDTH, size.cy);
     LiberShell_SampleBackdrop(&m_Surface, &m_Tokens, FALSE);
     m_Surface.RequestLayout();

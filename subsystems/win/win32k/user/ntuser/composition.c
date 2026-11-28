@@ -81,7 +81,26 @@ typedef struct _REDIRECT_ENTRY
     ULONG        TransFromAlpha;
     ULONG        TransToAlpha;
     RECTL        TransDamage;
+    BOOL         Ghost;        /* no window: owns only the FRONT of a closing window */
 } REDIRECT_ENTRY;
+
+#define COMPOSITION_MAX_GHOSTS 8
+
+/* The last frame of a closed Liber window. Its REDIRECT_ENTRY keeps the
+ * window's SurfaceId and FRONT generation, so DWM goes on reading the view or
+ * shared texture it already holds until the ghost is freed. */
+typedef struct _COMPOSITION_GHOST
+{
+    ULONG    Slot;         /* 1 + g_Redirects index, or 0 when unused       */
+    LONGLONG Start;        /* first frame that showed the ghost, or 0       */
+    RECTL    Rect;         /* where the window was shown when it closed     */
+    ULONG    Alpha;
+    DWM_WIN  Frame;
+    ULONG    Below[DWM_MAX_SURFACES / 32];
+} COMPOSITION_GHOST;
+
+C_ASSERT(DWM_MAX_SURFACES % 32 == 0);
+C_ASSERT(COMPOSITION_MAX_WINDOWS <= DWM_MAX_SURFACES);
 
 #define COMPOSITION_ANIM_SCALE          65536
 #define COMPOSITION_ANIM_MINIMIZE_100NS (200LL * 10000LL)
@@ -100,6 +119,8 @@ static volatile LONG   g_CompositionFullDamage = FALSE;
 static RECTL           g_CompositionPositionDamage;
 static BOOL            g_CompositionPositionDamageValid = FALSE;
 static DWM_WIN         g_DwmFrameWindows[DWM_MAX_WINDOWS];
+static ULONG           g_DwmFrameWindowCount;
+static COMPOSITION_GHOST g_Ghosts[COMPOSITION_MAX_GHOSTS];
 static RECTL           g_DwmFrameBlurRects[DWM_MAX_BLUR_RECTS];
 /* GETFRAME hands DWM shared FRONT handles that it imports after returning to
  * user mode. Keep those surfaces alive until DWM finishes this frame and
@@ -206,7 +227,8 @@ IntCompositionIsFrameAtom(_In_ ATOM Atom)
             Atom == AtomDwmCaptionRow ||
             Atom == AtomDwmCaptionState ||
             Atom == AtomDwmLiberMaterial ||
-            Atom == AtomDwmLiberMaterialTint);
+            Atom == AtomDwmLiberMaterialTint ||
+            Atom == AtomDwmLiberDarkFrame);
 }
 
 static ULONG
@@ -989,7 +1011,7 @@ IntCompositionAlloc(_In_ PWND Wnd)
 
     for (i = 0; i < COMPOSITION_MAX_WINDOWS; i++)
     {
-        if (g_Redirects[i].Wnd == NULL)
+        if (g_Redirects[i].Wnd == NULL && !g_Redirects[i].Ghost)
         {
             RtlZeroMemory(&g_Redirects[i], sizeof(REDIRECT_ENTRY));
             g_Redirects[i].Wnd = Wnd;
@@ -1173,6 +1195,42 @@ IntCompositionFreeSurface(_Inout_ PWND_REDIRECT r, _In_ BOOL PreserveDx)
     r->FrontHeld = FALSE;
     r->FrontScaled = FALSE;
     r->FrontOffset.x = r->FrontOffset.y = 0;
+}
+
+static VOID
+IntCompositionFreeGhost(_Inout_ COMPOSITION_GHOST *Ghost, _In_ BOOL Wake)
+{
+    REDIRECT_ENTRY *Entry;
+
+    ASSERT(UserIsEnteredExclusive());
+    ASSERT(Ghost->Slot != 0 && Ghost->Slot <= g_RedirectHighWater);
+    Entry = &g_Redirects[Ghost->Slot - 1];
+    ASSERT(Entry->Ghost && Entry->Wnd == NULL && g_RedirectWnds[Ghost->Slot - 1] == NULL);
+    ASSERT(Entry->Redirect.psurf == NULL && Entry->Redirect.hbmp == NULL &&
+           Entry->Redirect.BackSection == NULL && Entry->Redirect.DxReadyEvent == NULL &&
+           Entry->Redirect.DxGlobalShare == 0 && Entry->BlurRects == NULL);
+    ASSERT(!Entry->Redirect.FrontHeld && Entry->AnimFlags == 0 && !Entry->TransActive);
+    if (IntCompositionAccumulatePositionDamage(&Ghost->Rect) && Wake)
+        IntCompositionMarkDamage(FALSE);
+    IntCompositionFreeSurface(&Entry->Redirect, FALSE);
+    RtlZeroMemory(Entry, sizeof(*Entry));
+    RtlZeroMemory(Ghost, sizeof(*Ghost));
+}
+
+static VOID
+IntCompositionFreeGhosts(VOID)
+{
+    ULONG Index;
+
+    for (Index = 0; Index < ARRAYSIZE(g_Ghosts); ++Index)
+    {
+        if (g_Ghosts[Index].Slot != 0)
+            IntCompositionFreeGhost(&g_Ghosts[Index], TRUE);
+    }
+#if DBG
+    for (Index = 0; Index < g_RedirectHighWater; ++Index)
+        ASSERT(!g_Redirects[Index].Ghost);
+#endif
 }
 
 #if DBG
@@ -2172,6 +2230,7 @@ IntCompositionOnDisplayChangeBegin(VOID)
     if (!gbCompositionEnabled)
         return;
 
+    IntCompositionFreeGhosts();
     for (i = 0; i < g_RedirectHighWater; i++)
     {
         REDIRECT_ENTRY *e = &g_Redirects[i];
@@ -2350,6 +2409,130 @@ IntCompositionLiberOpen(_In_ PWND Wnd)
     UserSetProp(Wnd, AtomDwmTransitionFromRB, (HANDLE)(ULONG_PTR)DWM_TRANSITION_POINT(From.right, From.bottom), FALSE);
     UserSetProp(Wnd, AtomDwmTransition, (HANDLE)(ULONG_PTR)DWM_TRANSITION_PACK(Seq, 0, 255, DWM_LIBER_ANIM_OPEN_MS),
                 FALSE);
+}
+
+VOID
+IntCompositionLiberClose(_In_ PWND Wnd)
+{
+    COMPOSITION_GHOST *Ghost = NULL;
+    REDIRECT_ENTRY *e;
+    PWND_REDIRECT r;
+    WND_REDIRECT Front;
+    const DWM_WIN *Shown = NULL;
+    ULONG Slot, Index;
+
+    ASSERT(Wnd != NULL);
+    ASSERT(UserIsEnteredExclusive());
+    if (!g_bLiberExperience || !gbCompositionEnabled || !g_DwmAttached || !gspv.animationinfo.iMinAnimate)
+        return;
+    if ((Wnd->style & (WS_CHILD | WS_MINIMIZE | WS_CAPTION | WS_VISIBLE)) != (WS_CAPTION | WS_VISIBLE) ||
+        Wnd->fnid == FNID_MENU || !IntCompositionIsCompositable(Wnd) || IntCompositionHasNoRedirectionBitmap(Wnd))
+        return;
+    e = IntCompositionFind(Wnd);
+    if (e == NULL || e->Minimized)
+        return;
+    ASSERT(e->Wnd == Wnd && !e->Ghost);
+    r = &e->Redirect;
+    if (!r->FrontValid || r->psurfFront == NULL || r->hbmpFront == NULL || r->BaseUpdateId == 0 ||
+        (r->FrontSection == NULL && r->FrontGlobalShare == 0) || r->DxReadyEvent != NULL || r->DxGlobalShare != 0)
+        return;
+
+    Slot = (ULONG)(e - g_Redirects);
+    ASSERT(Slot < g_RedirectHighWater && g_RedirectWnds[Slot] == Wnd);
+    ASSERT(g_DwmFrameWindowCount <= DWM_MAX_WINDOWS);
+    for (Index = 0; Index < g_DwmFrameWindowCount; ++Index)
+    {
+        if (g_DwmFrameWindows[Index].SurfaceId == Slot)
+        {
+            Shown = &g_DwmFrameWindows[Index];
+            break;
+        }
+    }
+    if (Shown == NULL || Shown->Generation != r->Generation || Shown->BaseUpdateId != r->BaseUpdateId ||
+        Shown->BaseGlobalShare != r->FrontGlobalShare || Shown->DxGlobalShare != 0 ||
+        Shown->AnimFlags == DWM_ANIM_MINIMIZE || Shown->AnimFlags == DWM_ANIM_RESTORE)
+        return;
+    for (Index = 0; Index < ARRAYSIZE(g_Ghosts); ++Index)
+    {
+        if (g_Ghosts[Index].Slot == 0)
+        {
+            Ghost = &g_Ghosts[Index];
+            break;
+        }
+    }
+    if (Ghost == NULL)
+        return;
+
+    RtlZeroMemory(Ghost, sizeof(*Ghost));
+    for (Index = 0; &g_DwmFrameWindows[Index] != Shown; ++Index)
+    {
+        ULONG Below = g_DwmFrameWindows[Index].SurfaceId;
+
+        ASSERT(Below < COMPOSITION_MAX_WINDOWS && Below != Slot);
+        Ghost->Below[Below / 32] |= 1u << (Below % 32);
+    }
+    Ghost->Frame = *Shown;
+    if (Shown->AnimFlags != 0)
+    {
+        Ghost->Rect.left = Shown->AnimX;
+        Ghost->Rect.top = Shown->AnimY;
+        Ghost->Rect.right = Shown->AnimX + Shown->AnimCx;
+        Ghost->Rect.bottom = Shown->AnimY + Shown->AnimCy;
+    }
+    else
+    {
+        Ghost->Rect.left = Shown->x;
+        Ghost->Rect.top = Shown->y;
+        Ghost->Rect.right = Shown->x + Shown->cx;
+        Ghost->Rect.bottom = Shown->y + Shown->cy;
+    }
+    Ghost->Alpha = (Shown->LayerFlags & DWM_LWA_ALPHA) ? Shown->Alpha : 255;
+    ASSERT(Ghost->Alpha <= 255);
+    Ghost->Frame.Damaged = 0;
+    Ghost->Frame.BasePreviousUpdateId = Ghost->Frame.BaseUpdateId;
+    RECTL_vSetEmptyRect(&Ghost->Frame.BaseDirtyRect);
+    Ghost->Frame.BlurRectBase = 0;
+    Ghost->Frame.BlurRectCount = 0;
+    if (!(Ghost->Frame.BlurFlags & DWM_BLUR_REGION_ENTIRE_WINDOW))
+        Ghost->Frame.BlurFlags = 0;
+
+    IntCompositionCancelAnimation(e);
+    if (e->WindowRectValid)
+    {
+        IntCompositionDamageHeld(r, &e->WindowRect);
+        IntCompositionAccumulatePositionDamage(&e->WindowRect);
+    }
+    IntCompositionAccumulatePositionDamage(&Ghost->Rect);
+
+    RtlZeroMemory(&Front, sizeof(Front));
+    Front.psurfFront = r->psurfFront;
+    Front.hbmpFront = r->hbmpFront;
+    Front.FrontSection = r->FrontSection;
+    Front.FrontView = r->FrontView;
+    Front.FrontViewSize = r->FrontViewSize;
+    Front.FrontGlobalShare = r->FrontGlobalShare;
+    Front.Generation = r->Generation;
+    Front.BaseGeneration = r->BaseGeneration;
+    Front.BaseUpdateId = r->BaseUpdateId;
+    Front.BasePreviousUpdateId = r->BaseUpdateId;
+    Front.FrontValid = TRUE;
+    Front.FrontCx = r->FrontCx;
+    Front.FrontCy = r->FrontCy;
+    Front.rcFrontClient = r->rcFrontClient;
+    r->psurfFront = NULL;
+    r->hbmpFront = NULL;
+    r->FrontSection = NULL;
+    r->FrontView = NULL;
+    r->FrontGlobalShare = 0;
+    IntCompositionFreeSurface(r, FALSE);
+    IntCompositionFreeBlur(e);
+    RtlZeroMemory(e, sizeof(*e));
+    e->Redirect = Front;
+    e->Ghost = TRUE;
+    g_RedirectWnds[Slot] = NULL;
+    Ghost->Slot = Slot + 1;
+    ASSERT(IntCompositionFind(Wnd) == NULL);
+    IntCompositionMarkDamage(FALSE);
 }
 
 VOID
@@ -3272,6 +3455,95 @@ IntCompositionExportDxLayer(
     _Inout_ PWND_REDIRECT Redirect,
     _Out_ PRECTL Visible);
 
+static VOID
+IntCompositionExpireGhosts(_In_ LONGLONG Now)
+{
+    ULONG Index;
+
+    ASSERT(UserIsEnteredExclusive());
+    for (Index = 0; Index < ARRAYSIZE(g_Ghosts); ++Index)
+    {
+        COMPOSITION_GHOST *Ghost = &g_Ghosts[Index];
+
+        if (Ghost->Slot == 0)
+            continue;
+        ASSERT(Ghost->Start == 0 || Now >= Ghost->Start);
+        if (!g_bLiberExperience || !gspv.animationinfo.iMinAnimate ||
+            (Ghost->Start != 0 && Now - Ghost->Start >= (LONGLONG)DWM_LIBER_ANIM_CLOSE_MS * 10000LL))
+        {
+            IntCompositionFreeGhost(Ghost, FALSE);
+        }
+    }
+}
+
+static ULONG
+IntCompositionEmitGhosts(_In_ ULONG Count, _In_ LONGLONG Now, _Inout_ PRECTL Damage, _Inout_ PBOOL Running)
+{
+    const LONGLONG Duration = (LONGLONG)DWM_LIBER_ANIM_CLOSE_MS * 10000LL;
+    ULONG Index;
+
+    ASSERT(UserIsEnteredExclusive());
+    ASSERT(Count <= DWM_MAX_WINDOWS && g_DwmFrameSurfaceRefCount <= Count);
+    for (Index = 0; Index < ARRAYSIZE(g_Ghosts); ++Index)
+    {
+        COMPOSITION_GHOST *Ghost = &g_Ghosts[Index];
+        REDIRECT_ENTRY *Entry;
+        PDWM_WIN Frame;
+        LONGLONG Elapsed;
+        ULONG Progress, Position = 0, Scan;
+        RECT Rect;
+
+        if (Ghost->Slot == 0)
+            continue;
+        ASSERT(Ghost->Slot <= g_RedirectHighWater);
+        Entry = &g_Redirects[Ghost->Slot - 1];
+        ASSERT(Entry->Ghost && Entry->Wnd == NULL && Entry->Redirect.psurfFront != NULL &&
+               Entry->Redirect.Generation == Ghost->Frame.Generation &&
+               Entry->Redirect.FrontGlobalShare == Ghost->Frame.BaseGlobalShare &&
+               Ghost->Frame.SurfaceId == Ghost->Slot - 1);
+        *Running = TRUE;
+        if (Ghost->Start == 0)
+            Ghost->Start = Now;
+        Elapsed = Now - Ghost->Start;
+        ASSERT(Elapsed >= 0 && Elapsed < Duration);
+        if (Count >= DWM_MAX_WINDOWS)
+            continue;
+        Progress = IntCompositionEase((ULONG)((Elapsed * COMPOSITION_ANIM_SCALE) / Duration), FALSE);
+        ASSERT(Progress <= COMPOSITION_ANIM_SCALE);
+        for (Scan = 0; Scan < Count; ++Scan)
+        {
+            ULONG Below = g_DwmFrameWindows[Scan].SurfaceId;
+
+            ASSERT(Below < COMPOSITION_MAX_WINDOWS && Below != Ghost->Slot - 1);
+            if (Ghost->Below[Below / 32] & (1u << (Below % 32)))
+                Position = Scan + 1;
+        }
+        RtlMoveMemory(&g_DwmFrameWindows[Position + 1], &g_DwmFrameWindows[Position],
+                      (SIZE_T)(Count - Position) * sizeof(DWM_WIN));
+        Frame = &g_DwmFrameWindows[Position];
+        *Frame = Ghost->Frame;
+        DwmLiberCloseRect((const RECT *)&Ghost->Rect, Progress, COMPOSITION_ANIM_SCALE, &Rect);
+        ASSERT(Rect.left >= Ghost->Rect.left && Rect.right <= Ghost->Rect.right &&
+               Rect.top >= Ghost->Rect.top && Rect.bottom <= Ghost->Rect.bottom);
+        Frame->AnimFlags = DWM_ANIM_MOVE;
+        Frame->AnimX = Rect.left;
+        Frame->AnimY = Rect.top;
+        Frame->AnimCx = max(Rect.right - Rect.left, 1);
+        Frame->AnimCy = max(Rect.bottom - Rect.top, 1);
+        Frame->Alpha = (Ghost->Alpha * DwmLiberCloseAlpha(Progress, COMPOSITION_ANIM_SCALE)) / 255;
+        Frame->LayerFlags |= DWM_LWA_ALPHA;
+        if (Entry->Redirect.FrontGlobalShare != 0)
+        {
+            SURFACE_ShareLockByPointer(Entry->Redirect.psurfFront);
+            g_DwmFrameSurfaceRefs[g_DwmFrameSurfaceRefCount++] = Entry->Redirect.psurfFront;
+        }
+        RECTL_bUnionRect(Damage, Damage, &Ghost->Rect);
+        ++Count;
+    }
+    ASSERT(Count <= DWM_MAX_WINDOWS && g_DwmFrameSurfaceRefCount <= Count);
+    return Count;
+}
+
 /*
  * NtUserDwmGetFrame (ONEPARAM_ROUTINE_DWMGETFRAME): hand the user-mode dwm.exe
  * one frame. Fills the dwm-provided buffer with [header][DWM_WIN...][pixels]:
@@ -3289,7 +3561,7 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
     PWND pwndDesktop, pwndChild;
     PPDEVOBJ ppdev;
     SIZEL sizl = {0, 0};
-    ULONG count = 0, blurRectCount = 0, n = 0, i, OutputBytes;
+    ULONG count = 0, blurRectCount = 0, n = 0, i, OutputBytes, LiberFade;
     LONGLONG now = (LONGLONG)KeQueryInterruptTime();
     LONG dirty, fullDamage;
     BOOL DeferredDamage = FALSE;
@@ -3335,6 +3607,7 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
      * reads. A removed window absent from this frame can now release an old
      * publication even when its old-tuple acknowledgement raced destruction. */
     IntCompositionDrainDxPublications(g_DwmProcess, TRUE);
+    IntCompositionExpireGhosts(now);
 
     pwndDesktop = UserGetDesktopWindow();
     if (pwndDesktop == NULL || ScreenDeviceContext == NULL)
@@ -3755,6 +4028,7 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
                 IntCompositionStartTransition(e, w, Request, now);
             }
         }
+        LiberFade = 255;
         g_DwmFrameWindows[count].AnimFlags = 0;
         g_DwmFrameWindows[count].AnimX = 0;
         g_DwmFrameWindows[count].AnimY = 0;
@@ -3777,12 +4051,7 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
                 {
                     ULONG Travel = AnimFlags == DWM_ANIM_MINIMIZE ? e->AnimProgress
                                                                   : COMPOSITION_ANIM_SCALE - e->AnimProgress;
-                    ULONG Fade = DwmLiberMinimizeAlpha(Travel, COMPOSITION_ANIM_SCALE);
-                    if (Fade < 255)
-                    {
-                        g_DwmFrameWindows[count].Alpha = (g_DwmFrameWindows[count].Alpha * Fade) / 255;
-                        g_DwmFrameWindows[count].LayerFlags |= DWM_LWA_ALPHA;
-                    }
+                    LiberFade = DwmLiberMinimizeAlpha(Travel, COMPOSITION_ANIM_SCALE);
                 }
                 g_DwmFrameWindows[count].AnimFlags = AnimFlags;
                 g_DwmFrameWindows[count].AnimX = rcAnim.left;
@@ -3842,8 +4111,8 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
             {
                 lf |= DWM_WINDOW_ACTIVE;
             }
-            if (AtomDwmDarkMode != 0 &&
-                UserGetProp(w, AtomDwmDarkMode, FALSE) != NULL)
+            if ((AtomDwmDarkMode != 0 && UserGetProp(w, AtomDwmDarkMode, FALSE) != NULL) ||
+                (AtomDwmLiberDarkFrame != 0 && UserGetProp(w, AtomDwmLiberDarkFrame, FALSE) != NULL))
             {
                 lf |= DWM_WINDOW_DARK;
             }
@@ -3871,6 +4140,12 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
             {
                 g_DwmFrameWindows[count].Alpha =
                     (g_DwmFrameWindows[count].Alpha * TransAlpha) / 255;
+                g_DwmFrameWindows[count].LayerFlags |= DWM_LWA_ALPHA;
+            }
+            ASSERT(LiberFade <= 255);
+            if (LiberFade < 255)
+            {
+                g_DwmFrameWindows[count].Alpha = (g_DwmFrameWindows[count].Alpha * LiberFade) / 255;
                 g_DwmFrameWindows[count].LayerFlags |= DWM_LWA_ALPHA;
             }
         }
@@ -3992,6 +4267,8 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
     }
 
     IntCompositionUnlockDevice(ppdev);
+    count = IntCompositionEmitGhosts(count, now, &rcDmg, &AnimRunning);
+    g_DwmFrameWindowCount = count;
 
     /* A deferred backing needs another compositor pass. Resource contention
      * wakes DWM immediately. An incomplete paint tree only retains the dirty
@@ -4134,6 +4411,8 @@ IntCompositionDwmTeardown(VOID)
     g_DwmScreenMirror = FALSE;
     IntCompositionWakeFlushWaiters();
     IntCompositionReleaseFrameSurfaces();
+    IntCompositionFreeGhosts();
+    g_DwmFrameWindowCount = 0;
     (VOID)IntCompositionReleaseGpuOutputs(TRUE);
     /* Damage raised from the GDI finish path holds this same PDEV lock while
      * reading/signaling g_DwmWakeEvent. Clear it before dropping the object
@@ -4416,7 +4695,7 @@ IntCompositionDwmOpenSurface(_In_ PVOID pUser)
         return STATUS_INVALID_PARAMETER;
 
     e = &g_Redirects[req.SurfaceId];
-    if (e->Wnd == NULL ||
+    if ((e->Wnd == NULL && !e->Ghost) ||
         e->Redirect.Generation != req.Generation ||
         e->Redirect.FrontSection == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -5912,6 +6191,7 @@ IntCompositionSetEnabled(_In_ BOOL bEnable)
     {
         ULONG i;
         DceUnredirectAllDCs();
+        IntCompositionFreeGhosts();
         for (i = 0; i < COMPOSITION_MAX_WINDOWS; i++)
         {
             if (g_Redirects[i].Wnd != NULL)

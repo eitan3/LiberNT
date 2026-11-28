@@ -203,22 +203,32 @@ static void TestFlyoutOrigin()
     RECT monitor = { 0, 0, 1600, 900 }, tray = { 1317, 838, 1588, 886 }, dock = { 543, 832, 1057, 892 };
     POINT pt;
 
-    LiberShell_FlyoutOrigin(&monitor, 96, &tray, 384, 474, FALSE, &pt);
+    LiberShell_FlyoutOrigin(&monitor, 96, &tray, 384, 474, LIBER_FLYOUT_RIGHT, &pt);
     ok(pt.x == 1588 - 384 && pt.y == 900 - 80 - 474, "control center sits above the reserved taskbar at %ld,%ld\n",
        pt.x, pt.y);
-    LiberShell_FlyoutOrigin(&monitor, 96, &dock, 660, 700, TRUE, &pt);
+    LiberShell_FlyoutOrigin(&monitor, 96, &dock, 660, 700, LIBER_FLYOUT_MONITOR_CENTER, &pt);
     ok(pt.x == (1600 - 660) / 2 && pt.y == 900 - 80 - 700, "Start is centered at %ld,%ld\n", pt.x, pt.y);
 
     RECT edge = { 1500, 838, 1600, 886 };
-    LiberShell_FlyoutOrigin(&monitor, 96, &edge, 384, 474, FALSE, &pt);
+    LiberShell_FlyoutOrigin(&monitor, 96, &edge, 384, 474, LIBER_FLYOUT_RIGHT, &pt);
     ok(pt.x == 1600 - 12 - 384, "kept 12 px from the right edge: %ld\n", pt.x);
     RECT left = { 0, 838, 50, 886 };
-    LiberShell_FlyoutOrigin(&monitor, 96, &left, 384, 474, FALSE, &pt);
+    LiberShell_FlyoutOrigin(&monitor, 96, &left, 384, 474, LIBER_FLYOUT_RIGHT, &pt);
     ok(pt.x == 12, "kept 12 px from the left edge: %ld\n", pt.x);
-    LiberShell_FlyoutOrigin(&monitor, 96, &tray, 384, 2000, FALSE, &pt);
+    LiberShell_FlyoutOrigin(&monitor, 96, &tray, 384, 2000, LIBER_FLYOUT_RIGHT, &pt);
     ok(pt.y == 12, "a tall flyout stays below the top inset: %ld\n", pt.y);
-    LiberShell_FlyoutOrigin(&monitor, 144, &tray, 576, 600, FALSE, &pt);
+    LiberShell_FlyoutOrigin(&monitor, 144, &tray, 576, 600, LIBER_FLYOUT_RIGHT, &pt);
     ok(pt.y == 900 - 120 - 600, "gap and reserve scale with DPI: %ld\n", pt.y);
+
+    RECT cell = { 100, 832, 148, 880 };
+    LiberShell_FlyoutOrigin(&monitor, 96, &cell, 216, 180, LIBER_FLYOUT_ANCHOR_CENTER, &pt);
+    ok(pt.x == 124 - 108, "a preview is centered on its dock icon: %ld\n", pt.x);
+    RECT farLeft = { 12, 832, 60, 880 };
+    LiberShell_FlyoutOrigin(&monitor, 96, &farLeft, 216, 180, LIBER_FLYOUT_ANCHOR_CENTER, &pt);
+    ok(pt.x == 12, "a preview near the left edge keeps the inset: %ld\n", pt.x);
+    RECT start = { 12, 832, 60, 880 };
+    LiberShell_FlyoutOrigin(&monitor, 96, &start, 660, 700, LIBER_FLYOUT_ANCHOR_LEFT, &pt);
+    ok(pt.x == 12, "Start opens at the left of a left-aligned taskbar: %ld\n", pt.x);
 }
 
 static void TestCalendarGrid()
@@ -739,8 +749,43 @@ static void TestPreviewHelpers()
     ok(size.cx == 200 && size.cy == 1, "a sliver keeps at least one pixel\n");
 }
 
+static void TestDockOrder()
+{
+    LPCWSTR order[] = { L"C:\\Apps\\Paint.exe", L"C:\\Apps\\Notepad.exe" };
+    LPCWSTR keys[] = { L"c:\\apps\\notepad.exe", L"C:\\Apps\\Calc.exe", L"", L"C:\\Apps\\Paint.exe" };
+    LPCWSTR merged[8];
+    UINT permutation[4];
+
+    UINT count = LiberDock_MergeOrder(order, 2, keys, 4, merged, 8);
+    ok(count == 3 && !lstrcmpW(merged[0], order[0]) && !lstrcmpW(merged[1], order[1]) &&
+           !lstrcmpW(merged[2], L"C:\\Apps\\Calc.exe"),
+       "known apps keep their place, a new one goes last, empty and duplicate keys are skipped: %u\n", count);
+    ok(LiberDock_MergeOrder(order, 2, keys, 4, merged, 2) == 2, "the merge stops at the limit\n");
+
+    LiberDock_SortByOrder(keys, 4, merged, 3, permutation);
+    ok(permutation[0] == 3 && permutation[1] == 0 && permutation[2] == 1 && permutation[3] == 2,
+       "entries follow the order, an unknown one stays last: %u %u %u %u\n", permutation[0], permutation[1],
+       permutation[2], permutation[3]);
+    LiberDock_SortByOrder(keys, 4, NULL, 0, permutation);
+    ok(permutation[0] == 0 && permutation[1] == 1 && permutation[2] == 2 && permutation[3] == 3,
+       "without an order the enumeration order is kept\n");
+
+    LPCWSTR moved[] = { L"C:\\Apps\\Notepad.exe", L"C:\\Apps\\Paint.exe" };
+    count = LiberDock_MergeOrder(moved, 2, merged, 3, merged + 4, 4);
+    ok(count == 3 && !lstrcmpW(merged[4], moved[0]) && !lstrcmpW(merged[5], moved[1]) &&
+           !lstrcmpW(merged[6], L"C:\\Apps\\Calc.exe"),
+       "a dragged order goes first and closed apps keep their place after it\n");
+
+    RECT cells[3] = { { 0, 0, 48, 48 }, { 50, 0, 98, 48 }, { 100, 0, 148, 48 } };
+    ok(LiberDock_DropSlot(cells, 3, -20) == 0 && LiberDock_DropSlot(cells, 3, 23) == 0 &&
+           LiberDock_DropSlot(cells, 3, 24) == 1 && LiberDock_DropSlot(cells, 3, 130) == 2 &&
+           LiberDock_DropSlot(cells, 3, 900) == 2,
+       "a drag lands on the cell whose center it has not passed\n");
+}
+
 START_TEST(Dock)
 {
+    TestDockOrder();
     LiberDock_Metrics(LIBER_TASKBAR_STYLE_CAPSULE, FALSE, FALSE, &g_Capsule);
     TestStyles();
     TestLumaGrid();

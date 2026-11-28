@@ -71,6 +71,7 @@ VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens)
                                     CurrentAccent(),
                                     (LiberUI::SurfaceTint)LiberExperience_SurfaceTint() };
     pTokens->Build(params);
+    LiberExperience_SetGlassTint(pTokens->Params().AccentColor.H, pTokens->Tint());
     if (pTokens->IsDark())
         LiberExperience_SetDimShade(LiberShell_DimShade(pTokens->Color(LIBER_COLOR_SURFACE_BASE)));
 }
@@ -474,14 +475,26 @@ static int ScreenDpi(VOID)
 }
 
 VOID LiberShell_FlyoutOrigin(const RECT *prcMonitor, UINT dpi, const RECT *prcAnchor, int widthPx, int heightPx,
-                             BOOL bCenter, POINT *pptTopLeft)
+                             LIBER_FLYOUT_PLACE place, POINT *pptTopLeft)
 {
     int inset = LiberUI::ScaleToDpi(LIBER_FLYOUT_INSET, dpi);
 
-    if (bCenter)
-        pptTopLeft->x = prcMonitor->left + (prcMonitor->right - prcMonitor->left - widthPx) / 2;
-    else
-        pptTopLeft->x = prcAnchor->right - widthPx;
+    ATLASSERT(prcMonitor && prcAnchor && pptTopLeft && place <= LIBER_FLYOUT_ANCHOR_LEFT);
+    switch (place)
+    {
+        case LIBER_FLYOUT_MONITOR_CENTER:
+            pptTopLeft->x = prcMonitor->left + (prcMonitor->right - prcMonitor->left - widthPx) / 2;
+            break;
+        case LIBER_FLYOUT_ANCHOR_CENTER:
+            pptTopLeft->x = prcAnchor->left + (prcAnchor->right - prcAnchor->left - widthPx) / 2;
+            break;
+        case LIBER_FLYOUT_ANCHOR_LEFT:
+            pptTopLeft->x = prcAnchor->left;
+            break;
+        default:
+            pptTopLeft->x = prcAnchor->right - widthPx;
+            break;
+    }
     if (pptTopLeft->x + widthPx > prcMonitor->right - inset)
         pptTopLeft->x = prcMonitor->right - inset - widthPx;
     if (pptTopLeft->x < prcMonitor->left + inset)
@@ -491,13 +504,14 @@ VOID LiberShell_FlyoutOrigin(const RECT *prcMonitor, UINT dpi, const RECT *prcAn
         pptTopLeft->y = prcMonitor->top + inset;
 }
 
-VOID LiberShell_PlaceFlyout(const RECT *prcAnchor, int widthPx, int heightPx, BOOL bCenter, POINT *pptTopLeft)
+VOID LiberShell_PlaceFlyout(const RECT *prcAnchor, int widthPx, int heightPx, LIBER_FLYOUT_PLACE place,
+                            POINT *pptTopLeft)
 {
     MONITORINFO mi = { sizeof(mi) };
 
     if (!GetMonitorInfoW(MonitorFromRect(prcAnchor, MONITOR_DEFAULTTONEAREST), &mi))
         SetRect(&mi.rcMonitor, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
-    LiberShell_FlyoutOrigin(&mi.rcMonitor, (UINT)ScreenDpi(), prcAnchor, widthPx, heightPx, bCenter, pptTopLeft);
+    LiberShell_FlyoutOrigin(&mi.rcMonitor, (UINT)ScreenDpi(), prcAnchor, widthPx, heightPx, place, pptTopLeft);
 }
 
 static ULONGLONG DayNumber(const SYSTEMTIME *pTime)

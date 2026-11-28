@@ -7,7 +7,7 @@
 
 #pragma once
 
-/* FIXME: the Windows 11 corner threshold is not measured; 48 px at 96 DPI approximates it */
+/* FIXME: corner zone not measured on Windows 11; 48 px at 96 DPI is a guess */
 #define USER_SNAP_CORNER_96            48u
 
 static __inline BOOL
@@ -96,12 +96,10 @@ UserSnapEdgeFromRect(UINT Side, const RECT *Window, const RECT *Work)
 {
     if (Side != HTLEFT && Side != HTRIGHT)
         return Side;
-    if (Window->bottom - Window->top >= Work->bottom - Work->top)
+    if ((LONGLONG)(Window->bottom - Window->top) * 4 > (LONGLONG)(Work->bottom - Work->top) * 3)
         return Side;
-    if (Window->top <= Work->top)
+    if ((LONGLONG)Window->top + Window->bottom < (LONGLONG)Work->top + Work->bottom)
         return Side == HTLEFT ? HTTOPLEFT : HTTOPRIGHT;
-    if (Window->bottom >= Work->bottom)
-        return Side == HTLEFT ? HTBOTTOMLEFT : HTBOTTOMRIGHT;
-    return Side;
+    return Side == HTLEFT ? HTBOTTOMLEFT : HTBOTTOMRIGHT;
 }
 

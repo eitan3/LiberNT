@@ -25,7 +25,7 @@ void DwmD3dScene(const DWM_WIN *Windows, ULONG Count, const RECTL *BlurRects,
                  BOOL RefreshBackdrop, ULONG BlurRadius, const RECT *ShadowMargins);
 void DwmD3dPrepareWindow(const DWM_WIN *Window, ULONG Index);
 BOOL DwmD3dNeedsSurfacePixels(const DWM_WIN *Window);
-BOOL DwmD3dBegin(ULONG BackdropColor, const BYTE *BackdropPixels,
+BOOL DwmD3dBegin(ULONG BackdropColor, const BYTE *BackdropPixels, const BYTE *MicaPixels,
                  BOOL RefreshBackdrop, const RECT *Damage, ULONG DamageCount);
 BOOL DwmD3dWindow(const DWM_WIN *Window, const BYTE *Pixels, LONG OriginX, LONG OriginY);
 BOOL DwmD3dBlurRect(const RECT *Rect, ULONG Radius);
