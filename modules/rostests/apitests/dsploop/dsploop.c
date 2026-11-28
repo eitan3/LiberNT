@@ -87,6 +87,54 @@ EndpointOfDspPcm(
     return Found;
 }
 
+#define DSPLOOP_VISITED_PARTS 32
+
+/* The parts a walk entered, by their global ids */
+typedef struct _VISITED_PARTS
+{
+    LPWSTR Ids[DSPLOOP_VISITED_PARTS];
+    UINT Count;
+} VISITED_PARTS;
+
+static
+void
+VisitedFree(
+    VISITED_PARTS *Visited)
+{
+    UINT I;
+
+    for (I = 0; I < Visited->Count; ++I)
+        CoTaskMemFree(Visited->Ids[I]);
+    Visited->Count = 0;
+}
+
+/* Whether a part was entered before; recorded when it was not */
+static
+BOOL
+VisitedPart(
+    VISITED_PARTS *Visited,
+    IPart *Part)
+{
+    LPWSTR Id = NULL;
+    UINT I;
+
+    if (FAILED(IPart_GetGlobalId(Part, &Id)) || !Id)
+        return FALSE;
+    for (I = 0; I < Visited->Count; ++I)
+    {
+        if (!wcscmp(Visited->Ids[I], Id))
+        {
+            CoTaskMemFree(Id);
+            return TRUE;
+        }
+    }
+    if (Visited->Count < DSPLOOP_VISITED_PARTS)
+        Visited->Ids[Visited->Count++] = Id;
+    else
+        CoTaskMemFree(Id);
+    return FALSE;
+}
+
 /*
  * The level the driver answers, from the KS volume node of the endpoint's topology (N14-17, ruling (a)):
  * IAudioEndpointVolume::GetMasterVolumeLevel answers the scalar last set, as user mode maps it to
@@ -94,18 +142,26 @@ EndpointOfDspPcm(
  * node's step is the driver's (INTELDSP_VOLUME_STEP, 1 dB) and the stream runs at the step nearest
  * the request (-8.00 dB). The node's KSPROPERTY_AUDIO_VOLUMELEVEL answers that level, in 1/65536
  * decibels, as the tray reads it: through the topology's control interface, the node part's
- * IKsControl. The node is found by its subtype, walking upstream from the endpoint's connector.
- * A topology without control interfaces (mmdevapi's today, FD-01/02) answers E_NOINTERFACE, and
- * the caller falls back to the endpoint's scalar with a line.
+ * IKsControl. The node is found by its subtype along the signal path from the endpoint's connector:
+ * through the part a connector is connected to (the endpoint's connector to the filter's pin, a
+ * bridge pin's to the next filter's) and the parts the signal reaches from a part, outgoing of a
+ * render endpoint's connector and incoming to a capture endpoint's (the render topology's volume
+ * node is downstream of the endpoint's connector: the wave pin, the DAC node, the bridge pin, the
+ * topology's pin, the node). Each part is entered once.
+ * A part without a control interface answers E_NOINTERFACE, and the caller falls back to the
+ * endpoint's scalar with a line.
  */
 static
 HRESULT
 NodePartOfSubtype(
     IPart *Part,
     REFGUID Subtype,
+    BOOL Incoming,
     UINT Depth,
+    VISITED_PARTS *Visited,
     _Out_ IPart **Found)
 {
+    IConnector *Connector = NULL, *Peer = NULL;
     IPartsList *List = NULL;
     IPart *Next;
     PartType Type;
@@ -114,7 +170,7 @@ NodePartOfSubtype(
     HRESULT hr;
 
     *Found = NULL;
-    if (Depth > DSPLOOP_TOPOLOGY_DEPTH)
+    if (Depth > DSPLOOP_TOPOLOGY_DEPTH || VisitedPart(Visited, Part))
         return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
     hr = IPart_GetPartType(Part, &Type);
     if (SUCCEEDED(hr) && Type == Subunit && SUCCEEDED(IPart_GetSubType(Part, &Id)) && IsEqualGUID(&Id, Subtype))
@@ -123,16 +179,32 @@ NodePartOfSubtype(
         *Found = Part;
         return S_OK;
     }
-    hr = IPart_EnumPartsIncoming(Part, &List);
+    /* a connector leads on to the part it is connected to */
+    if (SUCCEEDED(IPart_QueryInterface(Part, &IID_IConnector, (void **)&Connector)))
+    {
+        if (SUCCEEDED(IConnector_GetConnectedTo(Connector, &Peer)) &&
+            SUCCEEDED(IConnector_QueryInterface(Peer, &IID_IPart, (void **)&Next)))
+        {
+            hr = NodePartOfSubtype(Next, Subtype, Incoming, Depth + 1, Visited, Found);
+            IPart_Release(Next);
+        }
+        if (Peer)
+            IConnector_Release(Peer);
+        IConnector_Release(Connector);
+        if (*Found)
+            return S_OK;
+    }
+    /* and a part to the parts the signal reaches from it */
+    hr = Incoming ? IPart_EnumPartsIncoming(Part, &List) : IPart_EnumPartsOutgoing(Part, &List);
     if (FAILED(hr))
-        return hr;
+        return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
     if (SUCCEEDED(IPartsList_GetCount(List, &Count)))
     {
         for (I = 0; I < Count && *Found == NULL; I++)
         {
             if (SUCCEEDED(IPartsList_GetPart(List, I, &Next)))
             {
-                hr = NodePartOfSubtype(Next, Subtype, Depth + 1, Found);
+                hr = NodePartOfSubtype(Next, Subtype, Incoming, Depth + 1, Visited, Found);
                 IPart_Release(Next);
             }
         }
@@ -141,7 +213,7 @@ NodePartOfSubtype(
     return *Found != NULL ? S_OK : HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
 }
 
-/* A KS property of the node of a subtype, read through the node part's control interface */
+/* A KS property of the node of a subtype, read through the node part's control interface: the node is the part's */
 static
 HRESULT
 ReadNodeProperty(
@@ -155,41 +227,44 @@ ReadNodeProperty(
     IConnector *Connector = NULL;
     IPart *Part = NULL, *Node = NULL;
     IKsControl *Control = NULL;
-    KSP_NODE Request;
-    UINT NodeId = 0;
+    VISITED_PARTS Visited;
+    KSPROPERTY Request;
+    DataFlow Flow = In;
     ULONG Returned = 0;
     HRESULT hr;
 
+    ZeroMemory(&Visited, sizeof(Visited));
     hr = IMMDevice_Activate(Device, &IID_IDeviceTopology, CLSCTX_INPROC_SERVER, NULL, (void **)&Topology);
-    if (FAILED(hr))
-        return hr;
-    hr = IDeviceTopology_GetConnector(Topology, 0, &Connector);
     if (SUCCEEDED(hr))
     {
-        hr = IConnector_QueryInterface(Connector, &IID_IPart, (void **)&Part);
-        IConnector_Release(Connector);
+        hr = IDeviceTopology_GetConnector(Topology, 0, &Connector);
+        if (SUCCEEDED(hr))
+            hr = IConnector_GetDataFlow(Connector, &Flow);
+        if (SUCCEEDED(hr))
+            hr = IConnector_QueryInterface(Connector, &IID_IPart, (void **)&Part);
+        if (Connector)
+            IConnector_Release(Connector);
+        IDeviceTopology_Release(Topology);
     }
-    IDeviceTopology_Release(Topology);
     if (SUCCEEDED(hr))
     {
-        hr = NodePartOfSubtype(Part, Subtype, 0, &Node);
+        /* the signal leaves a render endpoint's connector (its data flow is in) and enters a capture endpoint's */
+        hr = NodePartOfSubtype(Part, Subtype, Flow == Out, 0, &Visited, &Node);
         IPart_Release(Part);
     }
+    VisitedFree(&Visited);
     if (SUCCEEDED(hr))
     {
-        hr = IPart_GetLocalId(Node, &NodeId);
-        if (SUCCEEDED(hr))
-            hr = IPart_Activate(Node, CLSCTX_INPROC_SERVER, &IID_IKsControl, (void **)&Control);
+        hr = IPart_Activate(Node, CLSCTX_INPROC_SERVER, &IID_IKsControl, (void **)&Control);
         IPart_Release(Node);
     }
     if (SUCCEEDED(hr))
     {
         ZeroMemory(&Request, sizeof(Request));
-        Request.Property.Set = AudioPropertySet;
-        Request.Property.Id = PropertyId;
-        Request.Property.Flags = KSPROPERTY_TYPE_GET;
-        Request.NodeId = NodeId;
-        hr = Control->lpVtbl->KsProperty(Control, &Request.Property, sizeof(Request), Value, Bytes, &Returned);
+        Request.Set = AudioPropertySet;
+        Request.Id = PropertyId;
+        Request.Flags = KSPROPERTY_TYPE_GET;
+        hr = Control->lpVtbl->KsProperty(Control, &Request, sizeof(Request), Value, Bytes, &Returned);
         if (hr != S_OK || Returned != Bytes)
             hr = FAILED(hr) ? hr : E_UNEXPECTED;
         Control->lpVtbl->Release(Control);
