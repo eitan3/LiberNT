@@ -71,7 +71,8 @@ static int Failures;
 #define HOP_LOG             8
 #define HOP_LOCK            9
 #define HOP_UNLOCK          10
-#define HOP_COUNT           11
+#define HOP_DSPPOWERGATING  11
+#define HOP_COUNT           12
 #define HARNESS_OPS_BOOTED  ((1u << HOP_COUNT) - 1)
 
 typedef struct _HARNESS
@@ -79,6 +80,9 @@ typedef struct _HARNESS
     UINT64 Signature;
     FAKE_DSP* Dsp;
     FWLOAD_CONTEXT* Ctx;
+    /* the operations the context was given: the table, without the power gating when NoGating asks for the driver built before it */
+    FWLOAD_OPS Ops;
+    BOOLEAN NoGating;
     UINT8* Virtual;
     SIZE_T Bytes;
     FWLOAD_DMA_SEGMENT Segment[8];
@@ -273,6 +277,19 @@ HUnlock(
         FakeDspOps()->Unlock(H->Dsp);
 }
 
+/* The platform's power gating of the DSP: the model's power event in the order beside the registers', and the window decodes from the moment the gating is taken off */
+static
+VOID
+HDspPowerGating(
+    PVOID Context,
+    BOOLEAN AllowGating)
+{
+    HARNESS* H = HarnessEnter(Context, HOP_DSPPOWERGATING, "DspPowerGating");
+
+    if (H != NULL)
+        FakeDspGating(H->Dsp, AllowGating);
+}
+
 /* The driver's shape: one const table of functions, and the harness reaches them as the context of every call */
 static const FWLOAD_OPS HarnessOps =
 {
@@ -286,7 +303,8 @@ static const FWLOAD_OPS HarnessOps =
     HStreamRelease,
     HLog,
     HLock,
-    HUnlock
+    HUnlock,
+    HDspPowerGating
 };
 
 /* The bus driver's interrupt service routine: the DSP callback under the interrupt lock, as hda_interrupt calls it */
@@ -344,12 +362,15 @@ HarnessBootPlatform(
     Dma.BdlBytes = H->BdlCapacity * sizeof(FWLOAD_BDL_ENTRY);
     Dma.EntryBoundary = H->EntryBoundary;
     Dma.StreamTag = (UINT8)H->StreamTag;
-    FwloadInitContext(H->Ctx, &HarnessOps, H, Platform, Image, &Dma, &H->Timeouts);
+    H->Ops = HarnessOps;
+    if (H->NoGating)
+        H->Ops.DspPowerGating = NULL;
+    FwloadInitContext(H->Ctx, &H->Ops, H, Platform, Image, &Dma, &H->Timeouts);
     /* the driver keeps one context for the device and re-initializes it in place for every boot (R4): nothing of the boot before survives it */
     CHECK_EQ(H->Ctx->State, FwloadStateOff);
     CHECK_EQ(H->Ctx->Status, FwloadOk);
     CHECK(!H->Ctx->Cancel && !H->Ctx->InterruptStorm && !H->Ctx->InterruptsEnabled && !H->Ctx->UseInterrupts &&
-        !H->Ctx->StreamSubmitted && !H->Ctx->SubsystemOn && !H->Ctx->CoreOn);
+        !H->Ctx->StreamSubmitted && !H->Ctx->SubsystemOn && !H->Ctx->CoreOn && !H->Ctx->GatingDisabled);
     CHECK_EQ(H->Ctx->InterruptCount, 0);
     CHECK_EQ(H->Ctx->StormCount, 0);
     H->Delays = 0;
@@ -724,14 +745,17 @@ CheckHappyPath(
     CHECK_STR(H->Logs[1], "ROM ready for the firmware");
     CHECK_STR(H->Logs[2], "firmware entered");
     CHECK_STR(H->Logs[3], "FW_READY received");
-    /* the boot polls: the three enables are masked right after the power-up and again at ROM ready, when the interrupt pointer can first name its register, and never set */
-    CHECK_EQ(H->Dsp->PowerOrderCount, 6);
-    CHECK_EQ(H->Dsp->PowerOrder[0], FAKE_POWER_GPROCEN_ON);
-    CHECK_EQ(H->Dsp->PowerOrder[1], FAKE_POWER_SUBSYSTEM_ON);
-    CHECK_EQ(H->Dsp->PowerOrder[2], FAKE_POWER_INTERRUPTS_OFF);
-    CHECK_EQ(H->Dsp->PowerOrder[3], FAKE_POWER_CORE_ON);
-    CHECK_EQ(H->Dsp->PowerOrder[4], FAKE_POWER_INTERRUPTS_OFF);
-    CHECK_EQ(H->Dsp->PowerOrder[5], FAKE_POWER_STREAM_RELEASE);
+    /* the boot polls: the three enables are masked right after the power-up and again at ROM ready, when the interrupt pointer can first name its register, and never set; the platform's power gating of the DSP comes off before the first register write and is allowed again as the boot's last step (N15) */
+    CHECK_EQ(H->Dsp->PowerOrderCount, 8);
+    CHECK_EQ(H->Dsp->PowerOrder[0], FAKE_POWER_GATING_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[1], FAKE_POWER_GPROCEN_ON);
+    CHECK_EQ(H->Dsp->PowerOrder[2], FAKE_POWER_SUBSYSTEM_ON);
+    CHECK_EQ(H->Dsp->PowerOrder[3], FAKE_POWER_INTERRUPTS_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[4], FAKE_POWER_CORE_ON);
+    CHECK_EQ(H->Dsp->PowerOrder[5], FAKE_POWER_INTERRUPTS_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[6], FAKE_POWER_STREAM_RELEASE);
+    CHECK_EQ(H->Dsp->PowerOrder[7], FAKE_POWER_GATING_ON);
+    CHECK(!H->Ctx->GatingDisabled);
     CHECK(!FakeDspPowerEventSeen(H->Dsp, FAKE_POWER_CORE_OFF));
     CHECK_EQ(H->Dsp->InterruptEnable, 0);
     CHECK_EQ(H->Dsp->HostIpcEnable, 0);
@@ -740,7 +764,7 @@ CheckHappyPath(
     CHECK_EQ(H->Ctx->InterruptCount, 0);
     CheckBootWrites(H, 2);
 
-    /* power down from ready: the interrupts, core, subsystem, GPROCEN, and nothing else */
+    /* power down from ready: the interrupts, core, subsystem, GPROCEN, and nothing else; the boot allowed the gating again, so the power-down does not ask twice */
     Status = FwloadPowerDown(H->Ctx);
     CHECK_EQ(Status, FwloadOk);
     CHECK_EQ(H->Ctx->State, FwloadStateOff);
@@ -748,14 +772,14 @@ CheckHappyPath(
     CHECK_EQ(H->Ctx->PowerDownFrom, FwloadStateReady);
     CHECK_EQ(H->Ctx->Status, FwloadOk);
     CHECK_EQ(H->Ctx->CleanupStatus, FwloadOk);
-    CHECK_EQ(H->Dsp->PowerOrderCount, 10);
-    CHECK_EQ(H->Dsp->PowerOrder[6], FAKE_POWER_INTERRUPTS_OFF);
-    CHECK_EQ(H->Dsp->PowerOrder[7], FAKE_POWER_CORE_OFF);
-    CHECK_EQ(H->Dsp->PowerOrder[8], FAKE_POWER_SUBSYSTEM_OFF);
-    CHECK_EQ(H->Dsp->PowerOrder[9], FAKE_POWER_GPROCEN_OFF);
+    CHECK_EQ(H->Dsp->PowerOrderCount, 12);
+    CHECK_EQ(H->Dsp->PowerOrder[8], FAKE_POWER_INTERRUPTS_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[9], FAKE_POWER_CORE_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[10], FAKE_POWER_SUBSYSTEM_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[11], FAKE_POWER_GPROCEN_OFF);
     CHECK((H->Dsp->CoreControl & 0x100) == 0);
     CHECK((H->Dsp->SubsystemControl & 0x01000000) == 0);
-    CHECK((H->Dsp->PpControl & FWLOAD_PPCTL_GPROCEN) == 0);
+    CHECK((H->Dsp->PpControl & (FWLOAD_PPCTL_GPROCEN | FWLOAD_PPCTL_PIE)) == 0);
     CHECK_EQ(H->Dsp->InterruptEnable, 0);
     CHECK_EQ(H->Dsp->HostIpcEnable, 0);
     CHECK_EQ(H->Dsp->IpcControl, 0);
@@ -1554,11 +1578,15 @@ CheckInterruptService(
     CHECK_EQ(H->Dsp->InterruptEnable, 1);
     CHECK_EQ(H->Dsp->HostIpcEnable, 1);
     CHECK_EQ(H->Dsp->IpcControl, 3);
-    CHECK_EQ(H->Dsp->PowerOrderCount, 6);
-    CHECK_EQ(H->Dsp->PowerOrder[2], FAKE_POWER_INTERRUPTS_OFF);
-    CHECK_EQ(H->Dsp->PowerOrder[3], FAKE_POWER_CORE_ON);
-    CHECK_EQ(H->Dsp->PowerOrder[4], FAKE_POWER_INTERRUPTS_OFF);
-    CHECK_EQ(H->Dsp->PowerOrder[5], FAKE_POWER_STREAM_RELEASE);
+    /* the gating off first and allowed again last, as in every boot */
+    CHECK_EQ(H->Dsp->PowerOrderCount, 8);
+    CHECK_EQ(H->Dsp->PowerOrder[0], FAKE_POWER_GATING_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[1], FAKE_POWER_GPROCEN_ON);
+    CHECK_EQ(H->Dsp->PowerOrder[3], FAKE_POWER_INTERRUPTS_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[4], FAKE_POWER_CORE_ON);
+    CHECK_EQ(H->Dsp->PowerOrder[5], FAKE_POWER_INTERRUPTS_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[6], FAKE_POWER_STREAM_RELEASE);
+    CHECK_EQ(H->Dsp->PowerOrder[7], FAKE_POWER_GATING_ON);
     /* the two masks and the enable: three writes each */
     CHECK_EQ(H->Dsp->InterruptWritesLocked, 9);
     CHECK_EQ(H->Dsp->InterruptWritesUnlocked, 0);
@@ -2290,6 +2318,218 @@ CheckBusBound(void)
     Queried.Size = sizeof(ADSP_BUS_INTERFACE);
     Queried.TriggerDSP = NULL;
     CHECK(!IntcDspBusComplete(&Queried));
+
+    /* (N15 c) the bus's two registers: the member changes bit 1 of CGCTL (0x48) and bit 2 of PGCTL (0x44) alone, in both directions, through the rule the bus itself compiles (dspgating.h) */
+    FakeBusInit(&Bus, 2, TRUE);
+    CHECK_EQ(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    /* (f) a bus made without the member, as one built before it: the member is empty and the driver's binding says so */
+    CHECK(Queried.Size >= RTL_SIZEOF_THROUGH_FIELD(ADSP_BUS_INTERFACE, SetDspPowerGating));
+    CHECK(Queried.SetDspPowerGating == NULL);
+    CHECK(!IntcDspBusPowerGating(&Queried));
+    FakeBusPowerGatingEnable(&Bus);
+    RtlZeroMemory(&Queried, sizeof(Queried));
+    CHECK_EQ(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    CHECK(IntcDspBusPowerGating(&Queried));
+    /* as the bus's start leaves them: the TCSEL low bits clear, so ADSPPGD clear, the controller's clock gate set, the DSP's clear */
+    Bus.Config.Pgctl = 0x1234FF78;
+    Bus.Config.Cgctl = 0x9ABC00C1;
+    CHECK_EQ(Queried.SetDspPowerGating(Queried.Context, FALSE), STATUS_SUCCESS);
+    CHECK_EQ(Bus.Config.Pgctl, 0x1234FF78 | HDA_PGCTL_ADSPPGD);
+    CHECK_EQ(Bus.Config.Cgctl, 0x9ABC00C1 & ~HDA_CGCTL_ADSPDCGE);
+    CHECK_EQ(Bus.GatingCalls, 1);
+    CHECK_EQ(Bus.GatingAllowCalls, 0);
+    /* allowed again: bit 1 of 0x48 set, bit 2 of 0x44 cleared, and nothing else */
+    Bus.Config.Pgctl = 0x1234FF7C;
+    Bus.Config.Cgctl = 0x9ABC00C3;
+    CHECK_EQ(Queried.SetDspPowerGating(Queried.Context, TRUE), STATUS_SUCCESS);
+    CHECK_EQ(Bus.Config.Pgctl, 0x1234FF7C & ~HDA_PGCTL_ADSPPGD);
+    CHECK_EQ(Bus.Config.Cgctl, 0x9ABC00C3 | HDA_CGCTL_ADSPDCGE);
+    CHECK_EQ(Bus.GatingCalls, 2);
+    CHECK_EQ(Bus.GatingAllowCalls, 1);
+    /* (f) the member empty with the size saying it is there, and a bus whose structure ends before it: neither binds, and no boot is tried on it (intcdsp.c IntcDspBoot) */
+    Queried.SetDspPowerGating = NULL;
+    CHECK(!IntcDspBusPowerGating(&Queried));
+    FakeBusInit(&Bus, 2, TRUE);
+    FakeBusPowerGatingEnable(&Bus);
+    FakeBusTruncate(&Bus, RTL_SIZEOF_THROUGH_FIELD(ADSP_BUS_INTERFACE, DetachDmaBuffer));
+    RtlZeroMemory(&Queried, sizeof(Queried));
+    CHECK_EQ(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    CHECK(IntcDspBusStreams(&Queried));
+    CHECK(!IntcDspBusPowerGating(&Queried));
+}
+
+/*
+ * The platform's power gating of the DSP around a boot (N15, the first boot on silicon, image p5e3: every BAR4
+ * read all ones, before and after the power-up). (a) the order at a boot: the gating off, then the global
+ * processing enable, then the subsystem's power request, and no read reaches a gated window; (b) the gating
+ * allowed again after a successful boot, after a failed one and after a cancelled one, as the way out's last
+ * step, and never taken off when the operation is absent; (d) the processing capabilities' interrupt enable
+ * (PIE) is set with GPROCEN only under the boot's interrupt policy, and both are cleared at the power-down;
+ * (e) a DSP that answers all ones fails at the power-up with its own status, after the CPA wait, the gating
+ * allowed again.
+ */
+static
+void
+CheckPowerGating(
+    HARNESS* H,
+    const SOF_RI_IMAGE* Image)
+{
+    FAKE_DSP_FAULTS Faults;
+    UINT32 Count, Index;
+
+    /* (a) a DSP the platform gates: the window decodes from the moment the gating is taken off, before the first register write */
+    Faults = *FakeDspDefaultFaults();
+    Faults.WindowGated = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    CHECK(H->Dsp->Gated);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK(!H->Dsp->Gated && !H->Ctx->GatingDisabled);
+    CHECK_EQ(H->Dsp->GatedReads, 0);
+    CHECK_EQ(H->Dsp->GatedWrites, 0);
+    CHECK_EQ(H->Dsp->PowerOrderCount, 8);
+    CHECK_EQ(H->Dsp->PowerOrder[0], FAKE_POWER_GATING_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[1], FAKE_POWER_GPROCEN_ON);
+    CHECK_EQ(H->Dsp->PowerOrder[2], FAKE_POWER_SUBSYSTEM_ON);
+    CHECK_EQ(H->Dsp->PowerOrder[7], FAKE_POWER_GATING_ON);
+    /* the writes in that order: the processing enable first, the subsystem's power request second; the gating came before them in the power order */
+    CHECK(H->Dsp->WriteCount >= 2 && H->Dsp->WriteLog[0].Bar == FWLOAD_BAR_PP && H->Dsp->WriteLog[0].Offset == FWLOAD_PP_OFFSET_PPCTL &&
+        (H->Dsp->WriteLog[0].Value & FWLOAD_PPCTL_GPROCEN));
+    CHECK(H->Dsp->WriteLog[1].Bar == FWLOAD_BAR_DSP && H->Dsp->WriteLog[1].Offset == FwloadPlatformForDevice(FWLOAD_DEV_ARL_S)->SubsystemControl &&
+        (H->Dsp->WriteLog[1].Value & 0x00010000));
+    CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
+
+    /* (b) a successful boot allowed the gating again as its last step: the power-down from ready does not ask twice */
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK(!H->Ctx->GatingDisabled);
+    CHECK_EQ(H->Dsp->PowerOrderCount, 12);
+    CHECK_EQ(H->Dsp->PowerOrder[11], FAKE_POWER_GPROCEN_OFF);
+
+    /* a failed boot, the firmware that never announces itself: the way out ends with the processing enable off and the gating allowed again */
+    Faults = *FakeDspDefaultFaults();
+    Faults.NeverFwReady = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadTimeoutFwReady);
+    CHECK_EQ(H->Ctx->State, FwloadStateFailed);
+    CHECK_EQ(H->Ctx->CleanupStatus, FwloadOk);
+    CHECK(!H->Ctx->GatingDisabled);
+    Count = H->Dsp->PowerOrderCount;
+    CHECK(Count >= 3);
+    CHECK_EQ(H->Dsp->PowerOrder[0], FAKE_POWER_GATING_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[Count - 1], FAKE_POWER_GATING_ON);
+    CHECK_EQ(H->Dsp->PowerOrder[Count - 2], FAKE_POWER_GPROCEN_OFF);
+    /* the power-down of the failed context masks the enables and clears the processing enable once more, and asks for the gating no more */
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK(H->Dsp->PowerOrderCount > Count);
+    CHECK_EQ(H->Dsp->PowerOrder[H->Dsp->PowerOrderCount - 1], FAKE_POWER_GPROCEN_OFF);
+    for (Index = Count; Index < H->Dsp->PowerOrderCount; Index++)
+        CHECK(H->Dsp->PowerOrder[Index] != FAKE_POWER_GATING_ON && H->Dsp->PowerOrder[Index] != FAKE_POWER_GATING_OFF);
+
+    /* a cancelled boot: the same way out */
+    HarnessBoot(H, Image, NULL);
+    H->CancelAfterDelays = 1;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadCancelled);
+    H->CancelAfterDelays = 0;
+    CHECK(!H->Ctx->GatingDisabled);
+    Count = H->Dsp->PowerOrderCount;
+    CHECK_EQ(H->Dsp->PowerOrder[Count - 1], FAKE_POWER_GATING_ON);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+
+    /* a ROM that never comes ready, three attempts: the two events of every boot and the retries' fit the model's order log */
+    Faults = *FakeDspDefaultFaults();
+    Faults.NeverRomReady = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadTimeoutRomStatus);
+    CHECK(!H->Ctx->GatingDisabled);
+    Count = H->Dsp->PowerOrderCount;
+    CHECK_EQ(Count, 17);
+    CHECK_EQ(H->Dsp->PowerOrder[Count - 1], FAKE_POWER_GATING_ON);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+
+    /* (f) the operation absent, a driver built without it: nothing is taken off and nothing allowed again; a gated DSP stays all ones and fails at the power-up, a DSP that is not gated boots as before */
+    H->NoGating = TRUE;
+    Faults = *FakeDspDefaultFaults();
+    Faults.WindowGated = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    CHECK(H->Ctx->Ops->DspPowerGating == NULL);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadDspWindowDead);
+    CHECK(H->Dsp->Gated && H->Dsp->GatedReads >= 2 && H->Dsp->GatedWrites >= 1);
+    CHECK(!H->Ctx->GatingDisabled);
+    CHECK(!FakeDspPowerEventSeen(H->Dsp, FAKE_POWER_GATING_OFF));
+    /* the power-down of the all-ones context meets the enable that never reads masked: the cleanup's timeout, as on the owner's machine */
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadInterruptTimeout);
+    HarnessBoot(H, Image, NULL);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK(!H->Ctx->GatingDisabled);
+    CHECK(!FakeDspPowerEventSeen(H->Dsp, FAKE_POWER_GATING_OFF));
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    H->NoGating = FALSE;
+
+    /* (d) the interrupt enable of the processing capabilities: not set while the boot polls */
+    HarnessBoot(H, Image, NULL);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Dsp->PpControl, FWLOAD_PPCTL_GPROCEN);
+    CHECK(!H->Ctx->InterruptsEnabled);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Dsp->PpControl & (FWLOAD_PPCTL_GPROCEN | FWLOAD_PPCTL_PIE), 0);
+    /* set with the processing enable under the boot's interrupt policy, and both cleared at the power-down */
+    HarnessBoot(H, Image, NULL);
+    H->Ctx->UseInterrupts = TRUE;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK(H->Ctx->InterruptsEnabled);
+    CHECK_EQ(H->Dsp->PpControl, FWLOAD_PPCTL_GPROCEN | FWLOAD_PPCTL_PIE);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Dsp->PpControl & (FWLOAD_PPCTL_GPROCEN | FWLOAD_PPCTL_PIE), 0);
+    /* a failed boot under the policy clears both too */
+    Faults = *FakeDspDefaultFaults();
+    Faults.NeverFwReady = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    H->Ctx->UseInterrupts = TRUE;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadTimeoutFwReady);
+    CHECK(!H->Ctx->GatingDisabled && !H->Ctx->InterruptsEnabled);
+    CHECK_EQ(H->Dsp->PpControl & (FWLOAD_PPCTL_GPROCEN | FWLOAD_PPCTL_PIE), 0);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+
+    /* (e) a DSP whose window answers all ones whatever the gating: the power-up fails with its own status after the CPA wait, the cleanup meets the all-ones enable too, and the gating is allowed again */
+    Faults = *FakeDspDefaultFaults();
+    Faults.WindowDead = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadDspWindowDead);
+    CHECK_EQ(H->Ctx->Status, FwloadDspWindowDead);
+    CHECK_EQ(H->Ctx->State, FwloadStateFailed);
+    CHECK_EQ(H->Ctx->FailedState, FwloadStatePoweringUp);
+    CHECK(H->Dsp->Gated && H->Dsp->GatedReads >= 2 && H->Dsp->GatedWrites >= 1);
+    CHECK_EQ(H->Ctx->CleanupStatus, FwloadInterruptTimeout);
+    CHECK(!H->Ctx->GatingDisabled);
+    Count = H->Dsp->PowerOrderCount;
+    CHECK_EQ(H->Dsp->PowerOrder[0], FAKE_POWER_GATING_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[1], FAKE_POWER_GPROCEN_ON);
+    CHECK_EQ(H->Dsp->PowerOrder[Count - 1], FAKE_POWER_GATING_ON);
+    CHECK_EQ(H->Dsp->PowerOrder[Count - 2], FAKE_POWER_GPROCEN_OFF);
+    CHECK_EQ(H->Dsp->UnexpectedAccesses, 0);
+    /* the power-down of the all-ones context meets the enable that never reads masked: the cleanup's timeout, and the state is off */
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadInterruptTimeout);
+    CHECK_EQ(H->Ctx->State, FwloadStateOff);
+    /* the same status from the SPA bits that do not read back as written, with the power up and the window decoding */
+    Faults = *FakeDspDefaultFaults();
+    Faults.SpaDropped = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadDspWindowDead);
+    CHECK_EQ(H->Ctx->FailedState, FwloadStatePoweringUp);
+    CHECK(!H->Ctx->GatingDisabled);
+    CHECK_EQ(H->Dsp->PowerOrder[H->Dsp->PowerOrderCount - 1], FAKE_POWER_GATING_ON);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    /* and from the core's control word alone: the ROM init's core power-up refuses it, the request written and nothing else; no attempt follows, and the cleanup's own power-down of the all-ones word is the power-up timeout */
+    Faults = *FakeDspDefaultFaults();
+    Faults.CoreWindowDead = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadDspWindowDead);
+    CHECK_EQ(H->Ctx->FailedState, FwloadStateRomInit);
+    CHECK_EQ(H->Ctx->Attempt, 1);
+    CHECK_EQ(H->Dsp->RomRequests, 1);
+    CHECK(!H->Ctx->GatingDisabled);
+    CHECK_EQ(H->Ctx->CleanupStatus, FwloadTimeoutPowerUp);
+    CHECK_EQ(H->Dsp->PowerOrder[H->Dsp->PowerOrderCount - 1], FAKE_POWER_GATING_ON);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
 }
 
 static
@@ -2512,15 +2752,16 @@ CheckNames(
 {
     UINT32 Index, Other;
 
-    for (Index = 0; Index <= (UINT32)FwloadOutOfMemory; Index++)
+    for (Index = 0; Index <= (UINT32)FwloadDspWindowDead; Index++)
     {
         CHECK(FwloadStatusName((FWLOAD_STATUS)Index)[0] != 0);
-        for (Other = Index + 1; Other <= (UINT32)FwloadOutOfMemory; Other++)
+        for (Other = Index + 1; Other <= (UINT32)FwloadDspWindowDead; Other++)
             CHECK(strcmp(FwloadStatusName((FWLOAD_STATUS)Index), FwloadStatusName((FWLOAD_STATUS)Other)) != 0);
     }
     for (Index = 0; Index <= (UINT32)FwloadStateFailed; Index++)
         CHECK(FwloadStateName((FWLOAD_STATE)Index)[0] != 0);
     CHECK_STR(FwloadStatusName(FwloadOk), "ok");
+    CHECK_STR(FwloadStatusName(FwloadDspWindowDead), "the DSP's window does not answer");
     CHECK_STR(FwloadStatusName(FwloadRomError), "ROM error");
     CHECK_STR(FwloadStatusName(FwloadFwCrash), "firmware crash");
     CHECK_STR(FwloadStatusName(FwloadVersionMismatch), "version mismatch");
@@ -2661,7 +2902,7 @@ CheckOpsContext(
 
     /* a boot hands the harness to every operation it makes */
     HarnessBoot(H, Image, NULL);
-    CHECK(H->Ctx->Ops == &HarnessOps && H->Ctx->OpsContext == H);
+    CHECK(H->Ctx->Ops == &H->Ops && memcmp(&H->Ops, &HarnessOps, sizeof(HarnessOps)) == 0);
     CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
     CHECK_EQ(H->OpsSeen, HARNESS_OPS_BOOTED);
     /* a boot without the harness stops before its first operation */
@@ -2692,6 +2933,7 @@ CheckOpsContext(
         HarnessOps.Log(Bad[Index], "refused");
         HarnessOps.Lock(Bad[Index]);
         HarnessOps.Unlock(Bad[Index]);
+        HarnessOps.DspPowerGating(Bad[Index], FALSE);
     }
     ContextFaultsExpected = 0;
     CHECK_EQ(ContextFaults - Before, 2 * HOP_COUNT);
@@ -2728,6 +2970,7 @@ main(
     CheckNotificationStorm(&H, Image);
     CheckRetry(&H, Image);
     CheckCancellation(&H, Image);
+    CheckPowerGating(&H, Image);
     CheckBadPayload(&H, Data, Image);
     CheckDma(&H, Data, Image);
     CheckBusBound();

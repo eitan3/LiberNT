@@ -80,6 +80,8 @@ extern "C" {
 #define FWLOAD_PPCTL_GPROCEN        0x40000000UL
 #define FWLOAD_PPCTL_PIE            0x80000000UL
 #define FWLOAD_PP_OFFSET_PPCTL      0x04
+/* What a DSP window that does not decode answers to every read: all ones (the platform still power-gates the DSP) */
+#define FWLOAD_WINDOW_DEAD          0xFFFFFFFFUL
 
 /* Code-loader stream: Linux hda.h FW_CL_STREAM_NUMBER and HDA_CL_STREAM_FORMAT */
 #define FWLOAD_CL_STREAM_TAG        1
@@ -257,7 +259,9 @@ typedef enum _FWLOAD_STATUS
     FwloadBadState,
     FwloadInterruptStorm,
     FwloadInterruptTimeout,
-    FwloadOutOfMemory
+    FwloadOutOfMemory,
+    /* the DSP's window answers all ones, or the power bits it was asked for did not land: the DSP is not there */
+    FwloadDspWindowDead
 } FWLOAD_STATUS;
 
 typedef enum _FWLOAD_STATE
@@ -505,6 +509,13 @@ typedef struct _FWLOAD_OPS
     VOID (*Log)(PVOID Context, const char* Text);
     VOID (*Lock)(PVOID Context);
     VOID (*Unlock)(PVOID Context);
+    /*
+     * Optional: the platform's clock and power gating of the DSP, two bits of PCI config space only the bus
+     * reaches. FALSE keeps the DSP powered (taken off before a boot touches the DSP, as Linux's hda_dsp_pre_fw_run
+     * does), TRUE lets the platform gate it again (on every way out of FwloadBoot). NULL: the library behaves as
+     * it did without it, and nothing is written.
+     */
+    VOID (*DspPowerGating)(PVOID Context, BOOLEAN AllowGating);
 } FWLOAD_OPS, *PFWLOAD_OPS;
 
 /* What the firmware answered after FW_READY */
@@ -570,6 +581,8 @@ struct _FWLOAD_CONTEXT
     BOOLEAN Cancel;
     BOOLEAN StreamSubmitted;
     BOOLEAN InterruptsEnabled;
+    /* the DSP's power gating was taken off for this boot and not allowed again yet: read on every way out, so that a failed or cancelled boot cannot leave it off */
+    BOOLEAN GatingDisabled;
     /* the boot's policy: FALSE, the default, polls every wait and keeps the IPC interrupts masked from the power-up to the power-down; TRUE enables them once the ROM acknowledged, as Linux does */
     BOOLEAN UseInterrupts;
     /* the interrupt guard tripped: the service routine stopped claiming the line and every wait ends with FwloadInterruptStorm */

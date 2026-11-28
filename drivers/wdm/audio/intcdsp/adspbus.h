@@ -76,6 +76,8 @@ typedef _Must_inspect_result_ NTSTATUS(*PADSP_SET_DMA_ENGINE_STATE)(_In_ PVOID C
 typedef _Must_inspect_result_ NTSTATUS(*PADSP_GET_STREAM_POSITION_REGISTER)(_In_ PVOID Context, _In_ HANDLE Handle, _Out_ PULONG* Position);
 typedef void(*PADSP_GET_WALL_CLOCK_REGISTER)(_In_ PVOID Context, _Out_ PULONG* Wallclock);
 typedef _Must_inspect_result_ NTSTATUS(*PADSP_STREAM_NOTIFICATION_EVENT)(_In_ PVOID Context, _In_ HANDLE Handle, _In_ PKEVENT NotificationEvent);
+/* Appended after version 3 (drivers/wdm/audio/hdaudbus/adsp.h, dspgating.h): the platform's clock and power gating of the DSP, two bits of PCI config space that only the bus reaches; FALSE keeps the DSP powered around a boot, TRUE lets the platform gate it again. A bus built before it reports a shorter structure and one that has it may leave it empty: without it no firmware is booted (IntcDspBusPowerGating), since on silicon a gated DSP answers all ones to every read */
+typedef _Must_inspect_result_ NTSTATUS(*PADSP_SET_DSP_POWER_GATING)(_In_ PVOID Context, _In_ BOOLEAN AllowGating);
 
 typedef struct _ADSP_BUS_INTERFACE
 {
@@ -111,6 +113,7 @@ typedef struct _ADSP_BUS_INTERFACE
     PADSP_STREAM_NOTIFICATION_EVENT RegisterNotificationEvent;
     PADSP_STREAM_NOTIFICATION_EVENT UnregisterNotificationEvent;
     PADSP_DETACH_DMA_BUFFER DetachDmaBuffer;
+    PADSP_SET_DSP_POWER_GATING SetDspPowerGating;
 } ADSP_BUS_INTERFACE, *PADSP_BUS_INTERFACE;
 
 /* Whether the interface a query returned carries one appended member: a bus built before it reports a shorter structure, and one that has it may leave it empty */
@@ -125,6 +128,15 @@ IntcDspBusComplete(
 /* Whether the interface carries the members a PCM stream needs: the buffer with its notifications, the stream's state and the period events; FALSE leaves streams refused with a line at the first open */
 BOOLEAN
 IntcDspBusStreams(
+    _In_ const ADSP_BUS_INTERFACE* Bus);
+
+/*
+ * Whether the interface carries the member a firmware boot needs: the DSP's power gating,
+ * without which the boot is refused with a line and the DSP left alone; FALSE for a bus
+ * built before it and for one that has it but leaves it empty
+ */
+BOOLEAN
+IntcDspBusPowerGating(
     _In_ const ADSP_BUS_INTERFACE* Bus);
 
 /* The highest address the code-loader buffer may occupy: the whole range for a controller that addresses 64 bits, the first 4 GiB for any other */

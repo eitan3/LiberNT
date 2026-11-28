@@ -27,6 +27,14 @@ IntcDspBusStreams(
         INTCDSP_BUS_HAS(Bus, RegisterNotificationEvent) && INTCDSP_BUS_HAS(Bus, DetachDmaBuffer) && Bus->DetachDmaBuffer != NULL;
 }
 
+BOOLEAN
+IntcDspBusPowerGating(
+    _In_ const ADSP_BUS_INTERFACE* Bus)
+{
+    /* the last member of the interface: a bus that reports through it has room for it, and one without it cannot keep a gated DSP answering */
+    return INTCDSP_BUS_HAS(Bus, SetDspPowerGating);
+}
+
 UINT64
 IntcDspDmaHighBound(
     _In_ const ADSP_BUS_INTERFACE* Bus)

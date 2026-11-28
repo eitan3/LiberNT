@@ -596,6 +596,12 @@ IntcDspBoot(
                    Dev->AdspBar.Base.Base, Dev->AdspBar.Len, INTCDSP_BAR4_MIN_BYTES, Dev->Ppcap);
         return STATUS_SUCCESS;
     }
+    /* the platform's power gating of the DSP comes off around every boot through the bus (fwboot.c FwloadBoot): a bus without the member cannot take it off, and on silicon a gated DSP answers all ones to every read, so the DSP is left alone rather than booted to a certain failure */
+    if (!IntcDspBusPowerGating(&Dev->Bus))
+    {
+        IntcDspLog("ADSP bus interface version %u, size %u: no DSP power gating; the DSP is left alone\n", Dev->Bus.Version, Dev->Bus.Size);
+        return STATUS_SUCCESS;
+    }
 
     /* the buffer is the device's, made at start with the image (R1-03); an image this boot read for the first time makes it now, and it stays for the hardware */
     NtStatus = IntcDspDmaBufferAllocate(Dev);
@@ -645,6 +651,8 @@ IntcDspBoot(
     Dma.StreamFormat = FWLOAD_CL_STREAM_FORMAT;
     FwloadDefaultTimeouts(&Timeouts);
     FwloadInitContext(&Dev->Fw, IntcDspOpsTable(), Dev, Platform, &Dev->Image.Ri, &Dma, &Timeouts);
+    /* the boot's interrupt policy is the driver's setting: the DSP-to-host interrupt enable (PPCTL PIE) is set with the global processing enable only when the driver asked for interrupts (fwboot.c FwloadBoot) */
+    Dev->Fw.UseInterrupts = Dev->UseInterrupts != 0;
 
     NtStatus = Dev->Bus.SetDSPPowerState(Dev->Bus.Context, PowerDeviceD0);
     if (!NT_SUCCESS(NtStatus))
@@ -673,6 +681,9 @@ IntcDspBoot(
                FwloadStatusName(Dev->Fw.Status), Dev->Fw.RomStatus, FwloadFsrStateName(Dev->Fw.RomStatus & FWLOAD_FSR_STATE_MASK),
                Dev->Fw.RomError, FwloadRomErrorName(Dev->Fw.RomError), Dev->Fw.LastIpcStatus, Dev->Fw.LastIpcPrimary, Dev->Fw.LastIpcExtension, Dev->Fw.Attempt,
                Dev->Fw.InterruptCount, FwloadStatusName(Dev->Fw.CleanupStatus), Dev->Adspcs);
+    /* the boot's last step allowed the platform's power gating of the DSP again: whether the DSP's window still answers is a silicon fact the next log must carry */
+    if (Status == FwloadOk)
+        IntcDspLog("after the boot (gating allowed again): ADSPCS 0x%08x\n", Dev->Adspcs);
     /* the registers as the service routine found them at the first interrupt, before it masked anything; no line when no interrupt came, which is what a poll-only boot expects */
     if (Dev->Fw.InterruptCount != 0)
     {
@@ -755,7 +766,7 @@ IntcDspEvtDevicePrepareHardware(
         Dev->Bus.InterfaceReference(Dev->Bus.Context);
     Dev->BusValid = TRUE;
 
-    Status = Dev->Bus.GetResources(Dev->Bus.Context, &Dev->HdaBar, &Dev->AdspBar, &Dev->Ppcap, &Dev->Nhlt, NULL);
+    Status = Dev->Bus.GetResources(Dev->Bus.Context, &Dev->HdaBar, &Dev->AdspBar, &Dev->Ppcap, &Dev->Nhlt, &Dev->PciConfig);
     if (!NT_SUCCESS(Status))
     {
         IntcDspLog("GetResources: 0x%08lx\n", Status);

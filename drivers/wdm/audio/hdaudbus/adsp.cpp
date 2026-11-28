@@ -1,6 +1,7 @@
 #include "driver.h"
 #define ADSP_DECL 1
 #include "adsp.h"
+#include "dspgating.h"
 #include "sof-tplg.h"
 
 NTSTATUS ADSPGetResources(_In_ PVOID _context, _PCI_BAR* hdaBar, _PCI_BAR* adspBar, PVOID *ppcap, PNHLT_INFO nhltInfo, BUS_INTERFACE_STANDARD* pciConfig) {
@@ -585,6 +586,43 @@ NTSTATUS ADSPUnregisterNotificationEvent(_In_ PVOID _context, _In_ HANDLE Handle
 	return hdac_stream_unregister_event(stream, NotificationEvent) ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
 }
 
+/* The platform's clock and power gating of the DSP (dspgating.h): a read-modify-write of the two registers through the PCI bus interface the FDO holds, the clock gate first and the power gate last, as Linux's hda_dsp_ctrl_clock_power_gating orders them; the bus does it itself because the FDO's config space is the bus's to reach, and a word that does not read or write whole ends the call with nothing more written */
+NTSTATUS ADSPSetDspPowerGating(_In_ PVOID _context, _In_ BOOLEAN AllowGating) {
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+	HDA_DSP_GATING Gating;
+	PBUS_INTERFACE_STANDARD pci;
+	ULONG Bytes;
+
+	if (!_context)
+		return STATUS_NO_SUCH_DEVICE;
+	if (!devData->FdoContext) {
+		return STATUS_NO_SUCH_DEVICE;
+	}
+	pci = &devData->FdoContext->BusInterface;
+	if (!pci->GetBusData || !pci->SetBusData) {
+		return STATUS_NOT_SUPPORTED;
+	}
+	RtlZeroMemory(&Gating, sizeof(Gating));
+	Bytes = pci->GetBusData(pci->Context, PCI_WHICHSPACE_CONFIG, &Gating.Cgctl, HDA_PCIREG_CGCTL, sizeof(Gating.Cgctl));
+	if (Bytes != sizeof(Gating.Cgctl)) {
+		return STATUS_DEVICE_PROTOCOL_ERROR;
+	}
+	Bytes = pci->GetBusData(pci->Context, PCI_WHICHSPACE_CONFIG, &Gating.Pgctl, HDA_PCIREG_PGCTL, sizeof(Gating.Pgctl));
+	if (Bytes != sizeof(Gating.Pgctl)) {
+		return STATUS_DEVICE_PROTOCOL_ERROR;
+	}
+	HdaDspPowerGatingValues(AllowGating ? 1 : 0, Gating.Pgctl, Gating.Cgctl, &Gating);
+	Bytes = pci->SetBusData(pci->Context, PCI_WHICHSPACE_CONFIG, &Gating.Cgctl, HDA_PCIREG_CGCTL, sizeof(Gating.Cgctl));
+	if (Bytes != sizeof(Gating.Cgctl)) {
+		return STATUS_DEVICE_PROTOCOL_ERROR;
+	}
+	Bytes = pci->SetBusData(pci->Context, PCI_WHICHSPACE_CONFIG, &Gating.Pgctl, HDA_PCIREG_PGCTL, sizeof(Gating.Pgctl));
+	if (Bytes != sizeof(Gating.Pgctl)) {
+		return STATUS_DEVICE_PROTOCOL_ERROR;
+	}
+	return STATUS_SUCCESS;
+}
+
 ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
 	ADSP_BUS_INTERFACE busInterface;
 	RtlZeroMemory(&busInterface, sizeof(ADSP_BUS_INTERFACE));
@@ -626,6 +664,7 @@ ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
 	busInterface.GetWallClockRegister = ADSPGetWallClockRegister;
 	busInterface.RegisterNotificationEvent = ADSPRegisterNotificationEvent;
 	busInterface.UnregisterNotificationEvent = ADSPUnregisterNotificationEvent;
+	busInterface.SetDspPowerGating = ADSPSetDspPowerGating;
 
 	return busInterface;
 }

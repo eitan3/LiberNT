@@ -13,6 +13,27 @@
 #endif
 #include "fake_bus.h"
 
+/* The bus's member for the DSP's power gating (N15): the same rule over the model's two words that adsp.cpp applies to the controller's config space */
+static NTSTATUS FakeBusPowerGating(PVOID Context, BOOLEAN AllowGating)
+{
+    PFAKE_BUS Bus = (PFAKE_BUS)Context;
+
+    if (Bus == NULL)
+        return STATUS_NO_SUCH_DEVICE;
+    Bus->GatingCalls++;
+    if (AllowGating)
+        Bus->GatingAllowCalls++;
+    HdaDspPowerGatingValues(AllowGating ? 1 : 0, Bus->Config.Pgctl, Bus->Config.Cgctl, &Bus->Config);
+    return STATUS_SUCCESS;
+}
+
+VOID
+FakeBusPowerGatingEnable(
+    PFAKE_BUS Bus)
+{
+    Bus->Interface.SetDspPowerGating = FakeBusPowerGating;
+}
+
 #ifndef FAKE_BUS_KERNEL
 /* The bus whose MDLs the host's stubs of the kernel's free act on: the last made, which in a harness is the stream manager's */
 static FAKE_BUS* FakeBusMdlOwner;

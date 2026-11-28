@@ -59,6 +59,8 @@ typedef _Must_inspect_result_ NTSTATUS (*PADSP_SET_DMA_ENGINE_STATE) (_In_ PVOID
 typedef _Must_inspect_result_ NTSTATUS (*PADSP_GET_STREAM_POSITION_REGISTER) (_In_ PVOID _context, _In_ HANDLE Handle, _Out_ PULONG* Position);
 typedef VOID (*PADSP_GET_WALL_CLOCK_REGISTER) (_In_ PVOID _context, _Out_ PULONG* Wallclock);
 typedef _Must_inspect_result_ NTSTATUS (*PADSP_STREAM_NOTIFICATION_EVENT) (_In_ PVOID _context, _In_ HANDLE Handle, _In_ PKEVENT NotificationEvent);
+/* Appended for the DSP driver's firmware boot: the platform's clock and power gating of the DSP, two bits of PCI config space (dspgating.h) that only the bus reaches, as it owns the FDO. AllowGating FALSE keeps the DSP powered around a boot (CGCTL ADSPDCGE cleared, PGCTL ADSPPGD set), TRUE lets the platform gate it again (the reverse); the link's own L1 policy is not touched. A driver built before it reads the structure through DetachDmaBuffer; one that needs it asks by size, and a bus that has it may leave it empty */
+typedef _Must_inspect_result_ NTSTATUS (*PADSP_SET_DSP_POWER_GATING) (_In_ PVOID _context, _In_ BOOLEAN AllowGating);
 
 typedef struct _ADSP_BUS_INTERFACE
 {
@@ -111,6 +113,8 @@ typedef struct _ADSP_BUS_INTERFACE
     PADSP_STREAM_NOTIFICATION_EVENT             UnregisterNotificationEvent;
     /* Appended for version 3: the buffer detached, not freed; a driver built before it reads the structure through UnregisterNotificationEvent, and one that needs it asks for version 3, which the framework grants only with a bus of that version */
     PADSP_DETACH_DMA_BUFFER                     DetachDmaBuffer;
+    /* Appended after version 3 (dspgating.h): a driver built before it reads the structure through DetachDmaBuffer, and one that needs it asks by size */
+    PADSP_SET_DSP_POWER_GATING                  SetDspPowerGating;
 } ADSP_BUS_INTERFACE, * PADSP_BUS_INTERFACE;
 
 #ifndef ADSP_DECL

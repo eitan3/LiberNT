@@ -963,6 +963,52 @@ CheckPollTakesLock(
     CHECK_EQ(H->LockWaits, 0);
 }
 
+/*
+ * (i31) The processing capabilities' interrupt enable, PPCTL PIE (N15): the
+ * boot sets it with the global processing enable only under the boot's
+ * interrupt policy (FWLOAD_CONTEXT.UseInterrupts, which the driver wires
+ * from its own setting), the transport's exchanges under interrupts leave
+ * it as the boot left it, and the power-down clears it. A boot that polled
+ * leaves it clear, and the transport's interrupt mode cannot reach the host
+ * line through it: on silicon that is the UseInterrupts = 1 that never
+ * interrupted. This harness's table carries no gating operation, so every
+ * boot here is the library without it.
+ */
+static
+void
+CheckInterruptPie(
+    HARNESS* H,
+    const SOF_RI_IMAGE* Image)
+{
+    SOFIPC_REQUEST Request;
+
+    /* the boot polled: PIE clear while the transport runs in interrupt mode, and clear at the power-down */
+    HarnessStart(H, Image, NULL);
+    HarnessAttach(H, NULL, TRUE);
+    CHECK_EQ(H->Dsp->PpControl & FWLOAD_PPCTL_PIE, 0);
+    HarnessRequest(&Request, SofIpcClassPipeline, Ipc4TransportSelfTest[0].Primary, 0);
+    CHECK_EQ(SofIpcRequest(&H->Ipc, &Request), SofIpcOk);
+    CHECK_EQ(H->Dsp->PpControl & FWLOAD_PPCTL_PIE, 0);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Dsp->PpControl & (FWLOAD_PPCTL_GPROCEN | FWLOAD_PPCTL_PIE), 0);
+
+    /* the boot under the interrupt policy: set before the subsystem's power request, set through the exchanges, cleared at the power-down */
+    HarnessBoot(H, Image, NULL);
+    H->Ctx->UseInterrupts = TRUE;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Dsp->PpControl, FWLOAD_PPCTL_GPROCEN | FWLOAD_PPCTL_PIE);
+    HarnessAttach(H, NULL, TRUE);
+    H->InterruptsPerDelay = 1;
+    HarnessRequest(&Request, SofIpcClassPipeline, Ipc4TransportSelfTest[0].Primary, 0);
+    CHECK_EQ(SofIpcRequest(&H->Ipc, &Request), SofIpcOk);
+    CHECK_EQ(H->Ipc.InterruptCount, 1);
+    CHECK_EQ(H->Dsp->PpControl, FWLOAD_PPCTL_GPROCEN | FWLOAD_PPCTL_PIE);
+    H->InterruptsPerDelay = 0;
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Dsp->PpControl & (FWLOAD_PPCTL_GPROCEN | FWLOAD_PPCTL_PIE), 0);
+    CHECK_EQ(FakeDspIpcErrors(H->Dsp), 0);
+}
+
 /* (f) Interrupt mode: the enables are set, the service routine masks on every interrupt and the passive path sets them again after each exchange; the loader's storm guard trips and the next request is refused */
 static
 void
@@ -6080,6 +6126,7 @@ main(
     CheckNotifications(H, &Parsed);
     CheckPollTakesLock(H, &Parsed);
     CheckInterruptMode(H, &Parsed);
+    CheckInterruptPie(H, &Parsed);
     CheckTwoCallers(H, &Parsed);
     CheckLargeConfig(H, &Parsed);
     CheckPollPolicy(H, &Parsed);

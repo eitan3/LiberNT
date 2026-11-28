@@ -106,6 +106,9 @@
 #define FAKE_POWER_SUBSYSTEM_ON   6
 #define FAKE_POWER_CORE_ON        7
 #define FAKE_POWER_GPROCEN_ON     8
+/* The platform's power gating of the DSP (N15): taken off before the boot's first register write, allowed again on the boot's way out */
+#define FAKE_POWER_GATING_OFF     9
+#define FAKE_POWER_GATING_ON      10
 
 /* Progress events the model records with their time */
 #define FAKE_EVENT_SUBSYSTEM_ON  1
@@ -164,6 +167,14 @@ typedef struct _FAKE_DSP_FAULTS
     BOOLEAN NotifyDuringRequest;
     BOOLEAN NotifyBesideReply;
     BOOLEAN MemoryWriteFails;
+    /* the platform power-gates the DSP, as on the owner's machine at the first boot (image p5e3): every BAR4 read answers all ones and every BAR4 write is dropped until the gating is taken off, and the window decodes from then on */
+    BOOLEAN WindowGated;
+    /* the window never decodes: all ones to every BAR4 read whatever the gating, a DSP that is not there */
+    BOOLEAN WindowDead;
+    /* the core's control word alone answers all ones while the rest decodes: the core power-up's own all-ones check */
+    BOOLEAN CoreWindowDead;
+    /* the subsystem's power request does not stick: the SPA bit reads back clear though the power comes up */
+    BOOLEAN SpaDropped;
 } FAKE_DSP_FAULTS, *PFAKE_DSP_FAULTS;
 
 typedef struct _FAKE_DSP_EVENT
@@ -290,8 +301,13 @@ typedef struct _FAKE_DSP
     UINT64 FwReadyAt;
     UINT32 UnstableCpaReads;
     UINT32 PowerEvents;
-    UINT32 PowerOrder[16];
+    /* every power event of a boot with its three ROM attempts and its power-down fits: the gating adds two to every boot */
+    UINT32 PowerOrder[32];
     UINT32 PowerOrderCount;
+    /* the window that does not decode (Faults.WindowGated, Faults.WindowDead): all ones to every BAR4 read and no write landing while it is gated, with the counts */
+    BOOLEAN Gated;
+    UINT32 GatedReads;
+    UINT32 GatedWrites;
     /* the interrupt pointer: how often it was read, and how often while the subsystem was powered down */
     UINT32 InterruptPointerReads;
     UINT32 InterruptPointerReadsUnpowered;
@@ -385,6 +401,8 @@ FakeDspModuleFind(
 /* Whether a message is pending in the model's registers */
 BOOLEAN FakeDspMessagePending(const FAKE_DSP* Dsp);
 BOOLEAN FakeDspPowerEventSeen(const FAKE_DSP* Dsp, UINT32 Event);
+/* The platform's power gating of the DSP as the loader's operation has it (FakeDspGating is what the harness's operation calls): a power event in the order beside the registers', and the window decodes from the moment the gating is taken off, unless the DSP is not there at all */
+VOID FakeDspGating(PFAKE_DSP Dsp, BOOLEAN AllowGating);
 UINT32 FakeDspEventTime(const FAKE_DSP* Dsp, UINT32 Event);
 UINT32 FakeDspWriteCount(const FAKE_DSP* Dsp, UINT32 Bar, UINT32 Offset);
 const FAKE_DSP_WRITE* FakeDspWriteFind(const FAKE_DSP* Dsp, UINT32 Bar, UINT32 Offset, UINT32 ValueMask);

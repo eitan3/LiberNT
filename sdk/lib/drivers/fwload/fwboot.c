@@ -12,6 +12,10 @@
  * hda-ctrl.c (hda_dsp_ctrl_ppcap_enable); the register offsets and bit positions are the
  * platform table of fwload.h (mtl.h), the ROM status layout and error codes come from hda.h
  * and the firmware configuration query from ipc4-loader.c (sof_ipc4_query_fw_configuration).
+ * The platform's power gating of the DSP around a boot is the behaviour of hda-ctrl.c
+ * (hda_dsp_ctrl_clock_power_gating, hda_dsp_ctrl_ppcap_int_enable) as hda.c calls it
+ * (hda_dsp_pre_fw_run, hda_dsp_post_fw_run): the bus takes it off and allows it again through
+ * the optional DspPowerGating operation, and PPCTL PIE follows the caller's interrupt policy.
  * All of them were studied under LICENSING.md rule 7: the code, names and comments are ours.
  */
 
@@ -210,14 +214,22 @@ FwloadSubsystemPowerUp(
     const FWLOAD_CONTEXT* Context)
 {
     FWLOAD_STATUS Status;
+    UINT32 Raw;
 
     FwloadUpdate(Context, FWLOAD_BAR_DSP, Context->Platform->SubsystemControl,
         FWLOAD_SUBSYSTEM_SPA, FWLOAD_SUBSYSTEM_SPA);
     Status = FwloadSettle(Context);
     if (Status != FwloadOk)
         return Status;
-    return FwloadWaitMask(Context, Context->Platform->SubsystemControl,
+    Status = FwloadWaitMask(Context, Context->Platform->SubsystemControl,
         FWLOAD_SUBSYSTEM_CPA, FWLOAD_SUBSYSTEM_CPA, Context->Timeouts.PowerUpUs, FwloadTimeoutPowerUp);
+    if (Status != FwloadOk)
+        return Status;
+    /* all ones is not a powered DSP: a window that does not decode, the platform's power gating still on, answers all ones to every read and so carries the CPA bit set without any acknowledgement; and the SPA bits are the ones written, or the write did not land */
+    Raw = FwloadRead(Context, FWLOAD_BAR_DSP, Context->Platform->SubsystemControl);
+    if (Raw == FWLOAD_WINDOW_DEAD || (Raw & FWLOAD_SUBSYSTEM_SPA) != FWLOAD_SUBSYSTEM_SPA)
+        return FwloadDspWindowDead;
+    return FwloadOk;
 }
 
 static
@@ -244,16 +256,27 @@ FwloadCorePowerUp(
 {
     UINT32 Control = Context->Platform->CoreControl;
     FWLOAD_STATUS Status;
+    UINT32 Raw;
 
-    if (FwloadRead(Context, FWLOAD_BAR_DSP, Control) & FWLOAD_CORE_CPA)
+    Raw = FwloadRead(Context, FWLOAD_BAR_DSP, Control);
+    /* an all-ones control word says powered like every other bit it says: it is a window that does not decode (FwloadSubsystemPowerUp) */
+    if (Raw == FWLOAD_WINDOW_DEAD)
+        return FwloadDspWindowDead;
+    if (Raw & FWLOAD_CORE_CPA)
         return FwloadOk;
     FwloadUpdate(Context, FWLOAD_BAR_DSP, Control, FWLOAD_CORE_OWNER_HOST, FWLOAD_CORE_OWNER_HOST);
     FwloadUpdate(Context, FWLOAD_BAR_DSP, Control, FWLOAD_CORE_SPA, FWLOAD_CORE_SPA);
     Status = FwloadSettle(Context);
     if (Status != FwloadOk)
         return Status;
-    return FwloadWaitMask(Context, Control, FWLOAD_CORE_CPA,
+    Status = FwloadWaitMask(Context, Control, FWLOAD_CORE_CPA,
         FWLOAD_CORE_CPA, Context->Timeouts.PowerUpUs, FwloadTimeoutPowerUp);
+    if (Status != FwloadOk)
+        return Status;
+    Raw = FwloadRead(Context, FWLOAD_BAR_DSP, Control);
+    if (Raw == FWLOAD_WINDOW_DEAD || (Raw & FWLOAD_CORE_SPA) != FWLOAD_CORE_SPA)
+        return FwloadDspWindowDead;
+    return FwloadOk;
 }
 
 static
@@ -769,7 +792,19 @@ FwloadQueryFwConfig(
     return FwloadOk;
 }
 
-/* Everything the boot switched on goes off again, in the order of mtl_power_down_dsp and the suspend path of hda-dsp.c */
+/* The DSP's power gating allowed again, as Linux's hda_dsp_post_fw_run has it once the firmware runs: only when this boot took it off (the flag, not the state, says so), and the operation may be absent */
+static
+VOID
+FwloadGatingAllow(
+    FWLOAD_CONTEXT* Context)
+{
+    if (!Context->GatingDisabled)
+        return;
+    Context->GatingDisabled = FALSE;
+    Context->Ops->DspPowerGating(Context->OpsContext, TRUE);
+}
+
+/* Everything the boot switched on goes off again, in the order of mtl_power_down_dsp and the suspend path of hda-dsp.c; the platform's power gating of the DSP, which the boot took off first, is allowed again last, whichever way the boot ended */
 static
 FWLOAD_STATUS
 FwloadPowerOff(
@@ -800,7 +835,9 @@ FwloadPowerOff(
             Status = Result;
         Context->SubsystemOn = FALSE;
     }
-    FwloadUpdate(Context, FWLOAD_BAR_PP, FWLOAD_PP_OFFSET_PPCTL, FWLOAD_PPCTL_GPROCEN, 0);
+    /* the global processing enable and the DSP-to-host interrupt enable both go off, whatever the boot's policy set */
+    FwloadUpdate(Context, FWLOAD_BAR_PP, FWLOAD_PP_OFFSET_PPCTL, FWLOAD_PPCTL_GPROCEN | FWLOAD_PPCTL_PIE, 0);
+    FwloadGatingAllow(Context);
     Context->State = FwloadStateOff;
     return Status;
 }
@@ -932,7 +969,8 @@ FwloadStatusName(
         "cancelled", "power-up timeout", "ROM init timeout", "ROM status timeout", "base firmware timeout",
         "FW_READY timeout", "IPC reply timeout", "clock stalled", "ROM error", "firmware crash", "ABI mismatch", "version mismatch",
         "IPC error", "bad IPC reply", "too many DMA fragments", "DMA buffer too small",
-        "hardware fault", "bad state", "interrupt storm", "interrupt enable timeout", "out of memory"
+        "hardware fault", "bad state", "interrupt storm", "interrupt enable timeout", "out of memory",
+        "the DSP's window does not answer"
     };
 
     if ((UINT32)Status >= sizeof(Names) / sizeof(Names[0]))
@@ -1090,7 +1128,15 @@ FwloadBoot(
 
     Context->State = FwloadStatePoweringUp;
     Context->SubsystemOn = TRUE;
-    FwloadUpdate(Context, FWLOAD_BAR_PP, FWLOAD_PP_OFFSET_PPCTL, FWLOAD_PPCTL_GPROCEN, FWLOAD_PPCTL_GPROCEN);
+    /* the platform's clock and power gating of the DSP comes off before anything reaches the DSP, so that its window decodes: Linux's hda_dsp_pre_fw_run; the operation is optional, and the flag it sets is what every way out reads (FwloadGatingAllow), so a failed or cancelled boot cannot leave it off */
+    if (Context->Ops->DspPowerGating != NULL)
+    {
+        Context->Ops->DspPowerGating(Context->OpsContext, FALSE);
+        Context->GatingDisabled = TRUE;
+    }
+    /* the processing capabilities' global enable for the DSP, and with it the DSP-to-host interrupt enable (PPCTL PIE, which Linux sets at its probe, hda_dsp_ctrl_ppcap_int_enable) when the caller asked for interrupts: without it no DSP interrupt reaches the host; the boot polls without it */
+    FwloadUpdate(Context, FWLOAD_BAR_PP, FWLOAD_PP_OFFSET_PPCTL, FWLOAD_PPCTL_GPROCEN | FWLOAD_PPCTL_PIE,
+        FWLOAD_PPCTL_GPROCEN | (Context->UseInterrupts ? FWLOAD_PPCTL_PIE : 0));
     Status = FwloadSubsystemPowerUp(Context);
     if (Status != FwloadOk)
         return FwloadFail(Context, Context->State, Status);
@@ -1109,7 +1155,9 @@ FwloadBoot(
     for (Context->Attempt = 1;; Context->Attempt++)
     {
         Status = FwloadRomInit(Context);
-        if (Status == FwloadOk || Status == FwloadCancelled || Context->Attempt >= Context->Timeouts.BootAttempts)
+        /* a window that does not answer is not a transient the next attempt would cure: its status is the boot's, and the power-down between the attempts, which would time out on the all-ones word, does not replace it */
+        if (Status == FwloadOk || Status == FwloadCancelled || Status == FwloadDspWindowDead ||
+            Context->Attempt >= Context->Timeouts.BootAttempts)
             break;
         FwloadLog(Context, "ROM init attempt failed");
         Status2 = FwloadInterruptsEnable(Context, FALSE);
@@ -1155,6 +1203,8 @@ FwloadBoot(
     if (Context->Cancel)
         return FwloadFail(Context, Context->State, FwloadCancelled);
 
+    /* the firmware runs with the platform's gating allowed again, as after Linux's hda_dsp_post_fw_run; the power-down takes it off for the next boot */
+    FwloadGatingAllow(Context);
     Context->State = FwloadStateReady;
     Context->BootUs = FwloadNow(Context) - Context->BootUs;
     return FwloadOk;

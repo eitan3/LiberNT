@@ -108,6 +108,8 @@ typedef struct _INTCDSP_DEVICE
     PCI_BAR AdspBar;
     PVOID Ppcap;
     NHLT_INFO Nhlt;
+    /* the controller's PCI config space as the bus hands it out (GetResources): read only, for the DSP's power gating lines */
+    BUS_INTERFACE_STANDARD PciConfig;
     ULONG BootDsp;
     UINT32 PpCapHeader;
     UINT32 PpCtl;

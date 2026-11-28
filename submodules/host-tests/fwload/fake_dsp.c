@@ -1106,6 +1106,12 @@ FakeDspRead32Raw(
     const FWLOAD_PLATFORM* Platform = Dsp->Platform;
 
     FakeDspAdvance(Dsp);
+    /* a window that does not decode answers all ones to every read of the DSP's bar */
+    if (Bar == FWLOAD_BAR_DSP && Dsp->Gated)
+    {
+        Dsp->GatedReads++;
+        return 0xFFFFFFFFUL;
+    }
     if (Bar == FWLOAD_BAR_DSP)
     {
         if (Offset == Platform->SubsystemControl)
@@ -1124,6 +1130,8 @@ FakeDspRead32Raw(
         }
         if (Offset == Platform->CoreControl)
         {
+            if (Dsp->Faults.CoreWindowDead)
+                return 0xFFFFFFFFUL;
             /* the loader reads the control register while it writes the owner bits; only the poll after the power request counts */
             if (Dsp->CoreSpaAt != 0 && Dsp->FirstCoreCpaPollAt == 0)
                 Dsp->FirstCoreCpaPollAt = Dsp->Clock;
@@ -1213,6 +1221,12 @@ FakeDspWrite32Raw(
     SOFIPC4_MSG Request;
 
     FakeDspAdvance(Dsp);
+    /* a write into a window that does not decode does not land, and is not one the model saw */
+    if (Bar == FWLOAD_BAR_DSP && Dsp->Gated)
+    {
+        Dsp->GatedWrites++;
+        return;
+    }
     FakeDspWriteLog(Dsp, Bar, Offset, Value);
     if (FakeDspIsInterruptEnable(Dsp, Bar, Offset))
     {
@@ -1246,7 +1260,8 @@ FakeDspWrite32Raw(
                 FakeDspPower(Dsp, FAKE_POWER_SUBSYSTEM_OFF);
                 FakeDspSchedule(Dsp, Dsp->Clock + Dsp->Faults.SubsystemPowerUs, FAKE_EVENT_SUBSYSTEM_OFF, 0);
             }
-            Dsp->SubsystemControl = (Value & ~FAKE_DSP_SUBSYSTEM_CPA) | (Dsp->SubsystemControl & FAKE_DSP_SUBSYSTEM_CPA);
+            Dsp->SubsystemControl = Dsp->Faults.SpaDropped ? (Value & ~(FAKE_DSP_SUBSYSTEM_CPA | FAKE_DSP_SUBSYSTEM_SPA)) |
+                (Dsp->SubsystemControl & FAKE_DSP_SUBSYSTEM_CPA) : (Value & ~FAKE_DSP_SUBSYSTEM_CPA) | (Dsp->SubsystemControl & FAKE_DSP_SUBSYSTEM_CPA);
             return;
         }
         if (Offset == Platform->CoreControl)
@@ -1602,6 +1617,19 @@ FakeDspInit(
     Dsp->Faults = Faults != NULL ? *Faults : FakeDspDefaults;
     Dsp->Platform = Platform;
     Dsp->RomStatus = FWLOAD_FSR_INIT;
+    /* the window does not decode until the platform's power gating is taken off, or never */
+    Dsp->Gated = Dsp->Faults.WindowGated || Dsp->Faults.WindowDead;
+}
+
+VOID
+FakeDspGating(
+    PFAKE_DSP Dsp,
+    BOOLEAN AllowGating)
+{
+    FakeDspPower(Dsp, AllowGating ? FAKE_POWER_GATING_ON : FAKE_POWER_GATING_OFF);
+    /* the platform gates a DSP that is idle, not one that is being booted or running: once the gating is off the window decodes from here on, unless the DSP is not there */
+    if (!AllowGating && !Dsp->Faults.WindowDead)
+        Dsp->Gated = FALSE;
 }
 
 const FWLOAD_OPS*

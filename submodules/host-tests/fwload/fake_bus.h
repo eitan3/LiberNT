@@ -9,6 +9,7 @@
 #define FAKE_BUS_H
 
 #include <adspbus.h>
+#include <dspgating.h>
 
 /* The stream pools of the fake: the tags each direction hands out, 1 upward; a test narrows them to exhaust one */
 #define FAKE_BUS_STREAMS            8
@@ -109,7 +110,16 @@ typedef struct _FAKE_BUS
     UINT32 Counts[FAKE_BUS_EVENT_LAST + 1];
     UINT32 PowerStates;
     DEVICE_POWER_STATE LastPowerState;
+    /* the controller's PCI config space as the fake models it: the two words of the DSP's power gating (dspgating.h), and what the bus's member did to them */
+    HDA_DSP_GATING Config;
+    UINT32 GatingCalls;
+    UINT32 GatingAllowCalls;
 } FAKE_BUS, *PFAKE_BUS;
+
+/* A bus of the current interface: the member that takes the platform's power gating of the DSP off and allows it again, a read-modify-write of the two modelled words through the rule the bus itself compiles (dspgating.h HdaDspPowerGatingValues); a bus made without it has the member empty, as a bus built before it has */
+VOID
+FakeBusPowerGatingEnable(
+    _Inout_ PFAKE_BUS Bus);
 
 /* A bus of the given version of the interface; version 2 reports the DMA capability Dma64Bit and, when the size says so, the stream members; every pool has FAKE_BUS_STREAMS streams */
 VOID
