@@ -354,6 +354,27 @@ DwmLiberWindowCornerRadius(ULONG Dpi)
     return DWM_CORNER_RADIUS_LIBER_96 * (Dpi ? Dpi : 96u) / 96u;
 }
 
+#define DWM_LIBER_CAPTION_BUTTON_CX   40
+#define DWM_LIBER_CAPTION_BUTTON_CY   28
+#define DWM_LIBER_CAPTION_BUTTON_R    4
+
+/* Index 0 is the close button at the right edge; the others follow to its left */
+static __inline void
+DwmLiberCaptionButtonRect(LONG WindowWidth, LONG CaptionHeight, ULONG Dpi, ULONG Index, RECT *Button)
+{
+    LONG Cx = (LONG)(DWM_LIBER_CAPTION_BUTTON_CX * (Dpi ? Dpi : 96u) / 96u);
+    LONG Cy = (LONG)(DWM_LIBER_CAPTION_BUTTON_CY * (Dpi ? Dpi : 96u) / 96u);
+    LONG Inset;
+
+    if (Cy > CaptionHeight)
+        Cy = CaptionHeight > 0 ? CaptionHeight : 0;
+    Inset = (CaptionHeight - Cy) / 2;
+    Button->right = WindowWidth - Inset - (LONG)Index * Cx;
+    Button->left = Button->right - Cx;
+    Button->top = Inset;
+    Button->bottom = Inset + Cy;
+}
+
 static __inline ULONG
 DwmLiberMinimizeAlpha(ULONG Progress, ULONG Scale)
 {

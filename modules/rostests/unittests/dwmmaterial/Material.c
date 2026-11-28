@@ -195,6 +195,22 @@ static void TestWindowMotion(void)
        "minimize 300 ms, restore 340 ms, maximize and snap 300 ms\n");
 }
 
+static void TestCaptionButtons(void)
+{
+    RECT rc;
+
+    DwmLiberCaptionButtonRect(800, 40, 96, 0, &rc);
+    ok(rc.left == 754 && rc.top == 6 && rc.right == 794 && rc.bottom == 34,
+       "the close button is 40x28 with equal top and right insets: %ld,%ld,%ld,%ld\n", rc.left, rc.top, rc.right, rc.bottom);
+    DwmLiberCaptionButtonRect(800, 40, 96, 2, &rc);
+    ok(rc.left == 674 && rc.right == 714 && rc.top == 6, "the minimize button sits two buttons to the left\n");
+    DwmLiberCaptionButtonRect(800, 20, 96, 0, &rc);
+    ok(rc.top == 0 && rc.bottom == 20 && rc.right == 800, "a short caption clamps the button height\n");
+    DwmLiberCaptionButtonRect(1200, 60, 144, 0, &rc);
+    ok(rc.right - rc.left == 60 && rc.bottom - rc.top == 42 && rc.top == 9 && rc.right == 1191,
+       "buttons scale with the DPI\n");
+}
+
 START_TEST(Material)
 {
     TestPacking();
@@ -204,4 +220,5 @@ START_TEST(Material)
     TestDim();
     TestFade();
     TestWindowMotion();
+    TestCaptionButtons();
 }
