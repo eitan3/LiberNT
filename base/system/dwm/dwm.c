@@ -230,6 +230,27 @@ static DWM_SHADOW_KERNEL g_shadowWide;
 static DWM_SHADOW_KERNEL g_shadowActiveTight;
 static DWM_SHADOW_KERNEL g_shadowInactiveTight;
 static DWM_SHADOW_KERNEL g_shadowLiberKernels[2][2];
+
+typedef struct _DWM_MICA_CACHE
+{
+    ULONG *Bits;
+    float *Scratch;
+    SIZE_T ScratchCount;
+    LONG Width;
+    LONG Height;
+    BOOL Valid;
+} DWM_MICA_CACHE;
+
+static DWM_MICA_CACHE g_mica;
+static DWM_LIBER_TINT_SOURCE g_micaSource = { DWM_LIBER_TINT_HUE, 0.0 };
+
+static const ULONG *
+DwmMicaBits(void)
+{
+    assert(!g_mica.Valid || (g_mica.Bits != NULL && g_mica.Width == g_W && g_mica.Height == g_H));
+    return g_mica.Valid && g_mica.Width == g_W && g_mica.Height == g_H ? g_mica.Bits : NULL;
+}
+
 static ULONG *g_shadowCoverWide;
 static ULONG *g_shadowCoverTight;
 static LONG g_shadowCoverWidth;
@@ -3096,7 +3117,7 @@ DwmBlendGlassSpan(ULONG * __restrict Dest, const ULONG * __restrict Base,
 static ULONG
 DwmFrameMaterial(ULONG Source, ULONG Under, const DWM_WIN *Window,
                  ULONG BackdropKey, ULONG ColorizationKey,
-                 const ULONG *Wallpaper)
+                 const ULONG *Wallpaper, const DWM_LIBER_MICA *Mica)
 {
     ULONG Near = DwmChannelDistance(Source, BackdropKey);
     ULONG Other = DwmChannelDistance(Source, ColorizationKey);
@@ -3107,6 +3128,11 @@ DwmFrameMaterial(ULONG Source, ULONG Under, const DWM_WIN *Window,
     {
         Near = Other;
         Key = ColorizationKey;
+    }
+    if (Mica != NULL && Wallpaper != NULL)
+    {
+        Weight = DwmMaterialWeight(Source, Key);
+        return Weight != 0 ? DwmLiberMicaPixel(Source, Key, Weight, *Wallpaper, Mica) : Source;
     }
     if (Near == 0 && Wallpaper != NULL &&
         (Window->BackdropType == DWM_BACKDROP_MAIN ||
@@ -3143,7 +3169,7 @@ DwmBlendFrameBand(ULONG *Dest, const ULONG *Under, const ULONG *Source,
                   const DWM_WIN *Window,
                   BOOL UseBackdrop, ULONG BackdropKey, ULONG ColorizationKey,
                   ULONG Frame, const ULONG *const *Buttons, ULONG WindowAlpha,
-                  const ULONG *Edge, LONG EdgeInset)
+                  const ULONG *Edge, LONG EdgeInset, const DWM_LIBER_MICA *Mica)
 {
     LONG Index;
     ULONG Button;
@@ -3180,13 +3206,13 @@ DwmBlendFrameBand(ULONG *Dest, const ULONG *Under, const ULONG *Source,
             Out = s & 0x00FFFFFFu;
             if (UseBackdrop)
                 Out = DwmFrameMaterial(Out, Under[Index], Window, BackdropKey, ColorizationKey,
-                                       Wallpaper != NULL ? &Wallpaper[Index] : NULL);
+                                       Wallpaper != NULL ? &Wallpaper[Index] : NULL, Mica);
         }
         else
         {
             if (UseBackdrop)
                 f = DwmFrameMaterial(f, Under[Index], Window, BackdropKey, ColorizationKey,
-                                     Wallpaper != NULL ? &Wallpaper[Index] : NULL);
+                                     Wallpaper != NULL ? &Wallpaper[Index] : NULL, Mica);
 
             Red = ((s >> 16) & 0xFFu) + ((f >> 16) & 0xFFu) * Inverse / 255u;
             Green = ((s >> 8) & 0xFFu) + ((f >> 8) & 0xFFu) * Inverse / 255u;
@@ -3245,6 +3271,8 @@ DwmBlitWindow(ULONG *comp, LONG scrW,
     BOOL edgeLeft, edgeTop, edgeRight, edgeBottom;
     const ULONG *edgeLine = NULL;
     LONG edgeLines;
+    DWM_LIBER_MICA mica;
+    const DWM_LIBER_MICA *useMica = NULL;
 
     if (w->cx <= 0 || w->cy <= 0 ||
         (ULONG)w->cx > ((ULONG)-1) / sizeof(ULONG) ||
@@ -3265,6 +3293,11 @@ DwmBlitWindow(ULONG *comp, LONG scrW,
     r1 = (bottom > clipB) ? (LONG)(clipB - wy) : w->cy;
     if (r1 <= r0) return;
     edgeLines = useFrame ? DwmClientTopEdge(pix, w, &edgeLine) : 0;
+    if (useBackdrop && DwmLiberWindowMica(w, &mica) && DwmMicaBits() != NULL)
+    {
+        useMica = &mica;
+        wallpaper = DwmMicaBits();
+    }
 
     if (useKey)
     {
@@ -3557,7 +3590,13 @@ next_segment:
 
             d = backdropBase != NULL && x >= directStart && x < directEnd ?
                 baserow[x] : dstrow[x];
-            if (materialPixel &&
+            if (useMica != NULL)
+            {
+                assert(wallpaperrow != NULL);
+                if (materialWeight != 0)
+                    s = DwmLiberMicaPixel(s & 0x00FFFFFFu, materialKey, materialWeight, wallpaperrow[x], useMica);
+            }
+            else if (materialPixel &&
                 (w->BackdropType == DWM_BACKDROP_MAIN ||
                  w->BackdropType == DWM_BACKDROP_TABBED) &&
                 wallpaperrow != NULL)
@@ -3641,7 +3680,7 @@ next_segment:
                               bandEnd[band] - bandStart[band], srcx0 + bandStart[band], r,
                               w, useBackdrop,
                               backdropKey, colorizationKey, frameKey,
-                              frameButtons, frameAlpha, topEdge, cornerRows);
+                              frameButtons, frameAlpha, topEdge, cornerRows, useMica);
             x = bandEnd[band];
             band++;
             goto next_segment;
@@ -3983,6 +4022,8 @@ DwmBlitScaled(ULONG *comp, LONG scrW,
     ULONG lastColor = 0xFFFFFFFFu, lastKey = 0, lastWeight = 0;
     BOOL useFrame = material != NULL && (material->LayerFlags & DWM_WINDOW_FRAME_ALPHA) != 0;
     ULONG frameKey = 0, button;
+    DWM_LIBER_MICA mica;
+    const ULONG *micaBits = material != NULL && DwmLiberWindowMica(material, &mica) ? DwmMicaBits() : NULL;
     RECTL frameInterior = { 0, 0, 0, 0 };
     const ULONG *frameButtons[DWM_CAPTION_BUTTONS] = { NULL };
 
@@ -4191,6 +4232,11 @@ DwmBlitScaled(ULONG *comp, LONG scrW,
                     lastColor = s;
                     lastKey = Key;
                     lastWeight = Weight;
+                }
+                if (Weight != 0 && micaBits != NULL)
+                {
+                    s = DwmLiberMicaPixel(s, Key, Weight, micaBits[(SIZE_T)y * scrW + x], &mica);
+                    Weight = 0;
                 }
                 if (Weight != 0 && glassRow != NULL && sx1 - sx0 <= stepX)
                 {
@@ -4579,6 +4625,50 @@ static void   *g_backdropBits;
 static BYTE   *g_buf;
 static ULONG   g_bufSize;
 
+static void
+DwmMicaRefresh(void)
+{
+    DWM_LIBER_MICA_SCHEDULE Schedule;
+    SIZE_T Pixels, Scratch;
+    LARGE_INTEGER Start, End;
+
+    g_mica.Valid = FALSE;
+    DwmLiberReadTintSource(&g_micaSource);
+    if (g_backdropBits == NULL || g_W <= 0 || g_H <= 0)
+        return;
+    DwmLiberMicaSchedule(g_shadowDpi > 0 ? (ULONG)g_shadowDpi : 96, &Schedule);
+    Pixels = (SIZE_T)g_W * (SIZE_T)g_H;
+    Scratch = DwmLiberMicaScratchCount(g_W, g_H, Schedule.Factor);
+    if (g_mica.Width != g_W || g_mica.Height != g_H || g_mica.ScratchCount < Scratch)
+    {
+        if (g_mica.Bits != NULL)
+            VirtualFree(g_mica.Bits, 0, MEM_RELEASE);
+        if (g_mica.Scratch != NULL)
+            VirtualFree(g_mica.Scratch, 0, MEM_RELEASE);
+        g_mica.Bits = VirtualAlloc(NULL, Pixels * sizeof(ULONG), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        g_mica.Scratch = VirtualAlloc(NULL, Scratch * sizeof(float), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        g_mica.ScratchCount = g_mica.Scratch != NULL ? Scratch : 0;
+        g_mica.Width = g_mica.Bits != NULL ? g_W : 0;
+        g_mica.Height = g_mica.Bits != NULL ? g_H : 0;
+        if (g_mica.Bits == NULL || g_mica.Scratch == NULL)
+            return;
+    }
+    QueryPerformanceCounter(&Start);
+    g_mica.Valid = DwmLiberMicaBuild((const ULONG *)g_backdropBits, g_W, g_H, (ULONG)g_W * sizeof(ULONG), &Schedule,
+                                     g_mica.Scratch, g_mica.ScratchCount, g_mica.Bits);
+    QueryPerformanceCounter(&End);
+    if (g_frameStats && g_qpcPerSecond != 0)
+    {
+        char Message[128];
+
+        _snprintf(Message, sizeof(Message) - 1, "DWM: mica wallpaper %ldx%ld factor %lu built in %llu us\n",
+                  g_W, g_H, Schedule.Factor,
+                  ((ULONGLONG)(End.QuadPart - Start.QuadPart) * 1000000ull) / g_qpcPerSecond);
+        Message[sizeof(Message) - 1] = 0;
+        DwmLog(Message);
+    }
+}
+
 static BOOL
 DwmCreateSurfaces(HDC hdcScreen, LONG W, LONG H)
 {
@@ -4685,6 +4775,7 @@ DwmCreateSurfaces(HDC hdcScreen, LONG W, LONG H)
     g_hdcBackdrop = hdcBackdropNew;
     g_hbmBackdrop = hbmBackdropNew;
     g_backdropBits = backdropBitsNew;
+    g_mica.Valid = FALSE;
 
     g_W = W;
     g_H = H;
@@ -5118,6 +5209,7 @@ DwmComposeLoop(HANDLE hStopEvent)
             {
                 DwmLiberApplyMaterial(&wins[i]);
                 DwmSettingsApplyWindow(&Settings, &wins[i]);
+                DwmLiberClassifyMica(&wins[i]);
             }
 
             cl = pl; ct = pt; cr = pr; cb = pb;
@@ -5180,8 +5272,11 @@ DwmComposeLoop(HANDLE hStopEvent)
                         GdiFlush();
                         if (dim.Enabled)
                             DwmLiberDimBackdrop((ULONG *)g_backdropBits, g_W, g_H, g_W * sizeof(ULONG), dim.Shade);
+                        DwmMicaRefresh();
                     }
                 }
+                for (i = 0; i < hdr->Count; ++i)
+                    DwmLiberApplyMica(&wins[i], DwmMicaBits(), g_W, g_H, g_originX, g_originY, &g_micaSource);
 
                 QueryPerformanceCounter(&statFrameStart);
                 g_framePrepareTicks = g_frameStats ?
@@ -5218,7 +5313,7 @@ DwmComposeLoop(HANDLE hStopEvent)
                                         hdr->BlurRectCount, g_originX, g_originY,
                                         refreshBackdrop, DwmMaxBlurReach(), &gpuShadowMargins);
                     gpuFrame = DwmGpuComposeBegin(GetSysColor(COLOR_DESKTOP),
-                                                       g_backdropBits, refreshBackdrop,
+                                                       g_backdropBits, (const BYTE *)DwmMicaBits(), refreshBackdrop,
                                                        gpuDamage, gpuDamageCount);
 
                     DwmStatCounter(&statBackdropEnd);

@@ -22,4 +22,5 @@ DWORD LiberExperience_Accent(VOID);
 DWORD LiberExperience_TaskbarStyle(VOID);
 BOOL LiberExperience_TaskbarLeft(VOID);
 VOID LiberExperience_SetDimShade(COLORREF shade);
+VOID LiberExperience_SetGlassTint(double hue, double tint);
 BOOL LiberExperience_UiFont(LPWSTR pszFamily, DWORD cchFamily);

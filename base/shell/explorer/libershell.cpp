@@ -71,6 +71,7 @@ VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens)
                                     CurrentAccent(),
                                     (LiberUI::SurfaceTint)LiberExperience_SurfaceTint() };
     pTokens->Build(params);
+    LiberExperience_SetGlassTint(pTokens->Params().AccentColor.H, pTokens->Tint());
     if (pTokens->IsDark())
         LiberExperience_SetDimShade(LiberShell_DimShade(pTokens->Color(LIBER_COLOR_SURFACE_BASE)));
 }

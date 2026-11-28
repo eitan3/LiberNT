@@ -135,3 +135,105 @@ DwmLiberFrameEdgeCoverage(
     _In_ ULONG Radius,
     _Out_ ULONG *Outline,
     _Out_ ULONG *Bevel);
+
+#define DWM_LIBER_MICA_BOXES      3
+#define DWM_LIBER_MICA_FACTOR_MAX 32
+#define DWM_LIBER_MICA_SAMPLES    10
+#define DWM_LIBER_TINT_HUE        260.0
+
+typedef struct _DWM_LIBER_MICA_SCHEDULE
+{
+    ULONG Factor;
+    ULONG Radius[DWM_LIBER_MICA_BOXES];
+} DWM_LIBER_MICA_SCHEDULE, *PDWM_LIBER_MICA_SCHEDULE;
+
+VOID
+DwmLiberMicaSchedule(
+    _In_ ULONG Dpi,
+    _Out_ PDWM_LIBER_MICA_SCHEDULE Schedule);
+
+double
+DwmLiberMicaVariance(
+    _In_ const DWM_LIBER_MICA_SCHEDULE *Schedule);
+
+SIZE_T
+DwmLiberMicaScratchCount(
+    _In_ LONG Width,
+    _In_ LONG Height,
+    _In_ ULONG Factor);
+
+BOOLEAN
+DwmLiberMicaBuild(
+    _In_ const ULONG *Wallpaper,
+    _In_ LONG Width,
+    _In_ LONG Height,
+    _In_ ULONG Stride,
+    _In_ const DWM_LIBER_MICA_SCHEDULE *Schedule,
+    _Inout_ float *Scratch,
+    _In_ SIZE_T ScratchCount,
+    _Out_ ULONG *Output);
+
+typedef struct _DWM_LIBER_TINT_SOURCE
+{
+    double Hue;
+    double Tint;
+} DWM_LIBER_TINT_SOURCE, *PDWM_LIBER_TINT_SOURCE;
+
+VOID
+DwmLiberReadTintSource(
+    _Out_ PDWM_LIBER_TINT_SOURCE Source);
+
+COLORREF
+DwmLiberOklchToRgb(
+    _In_ double L,
+    _In_ double C,
+    _In_ double H);
+
+typedef struct _DWM_LIBER_MICA
+{
+    ULONG Tint;
+    ULONG Alpha;
+    ULONG Saturation;
+} DWM_LIBER_MICA, *PDWM_LIBER_MICA;
+
+VOID
+DwmLiberMicaTint(
+    _In_ BOOLEAN Dark,
+    _In_ double BackdropLuma,
+    _In_ const DWM_LIBER_TINT_SOURCE *Source,
+    _Out_ PDWM_LIBER_MICA Mica);
+
+double
+DwmLiberMicaLuma(
+    _In_ const ULONG *Bits,
+    _In_ LONG Width,
+    _In_ LONG Height,
+    _In_ ULONG Stride,
+    _In_ const RECT *Rect);
+
+BOOLEAN
+DwmLiberClassifyMica(
+    _Inout_ DWM_WIN *Window);
+
+VOID
+DwmLiberApplyMica(
+    _Inout_ DWM_WIN *Window,
+    _In_opt_ const ULONG *MicaBits,
+    _In_ LONG Width,
+    _In_ LONG Height,
+    _In_ LONG OriginX,
+    _In_ LONG OriginY,
+    _In_ const DWM_LIBER_TINT_SOURCE *Source);
+
+BOOLEAN
+DwmLiberWindowMica(
+    _In_ const DWM_WIN *Window,
+    _Out_ PDWM_LIBER_MICA Mica);
+
+ULONG
+DwmLiberMicaPixel(
+    _In_ ULONG Source,
+    _In_ ULONG Key,
+    _In_ ULONG Weight,
+    _In_ ULONG Base,
+    _In_ const DWM_LIBER_MICA *Mica);

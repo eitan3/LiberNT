@@ -12,6 +12,7 @@
 #include <dxgi1_2.h>
 #include <d3dkmthk.h>
 #include <d3dcompiler.h>
+#include <assert.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -35,6 +36,7 @@ extern "C" {
 #include "presenttrace.h"
 #include "dxsurface.h"
 #include "framebuttons.h"
+#include "libermaterial.h"
 }
 #include <dwmoverlay.h>
 
@@ -132,6 +134,7 @@ struct Constants
     FLOAT FrameKey[4], FrameClient[4], FrameButtons[4], SourceOrigin[4];
     FLOAT Taps[33][4];
     FLOAT SourceScale[4];
+    FLOAT MicaTint[4], MicaParams[4];
 };
 
 struct ConstantBuffer
@@ -201,7 +204,8 @@ struct Compositor
     /* ClientCopies fences the copies Begin makes of new client publications.
      * A copy made after that fence cannot be released early. */
     BOOL CopyingClients, ClientCopiesFenced, ClientCopiesUnfenced;
-    Texture Canvas, Backdrop, PointerImage, PointerInvert;
+    Texture Canvas, Backdrop, Mica, PointerImage, PointerInvert;
+    BOOL MicaValid;
     ID3D11Texture2D *BackBuffer, *Mirror;
     Surface Surfaces[DWM_MAX_WINDOWS * 2];
     ClientSource ClientSources[DWM_MAX_WINDOWS * 2];
@@ -1711,6 +1715,9 @@ BOOL DrawLayer(const DWM_WIN *Window, const BYTE *Pixels, BOOL Client, LONG Orig
         return FALSE;
     BOOL Glass = Window->BackdropType == DWM_BACKDROP_TRANSIENT && Window->BackdropRegion != 0 &&
         Window->BackdropOpacity < 255 && (!Client || Window->BackdropRegion == DWM_BACKDROP_REGION_WINDOW);
+    DWM_LIBER_MICA MicaInfo = {};
+    BOOL Mica = State.MicaValid && (!Client || Window->BackdropRegion == DWM_BACKDROP_REGION_WINDOW) &&
+        DwmLiberWindowMica(Window, &MicaInfo);
     RECT Capture = {};
     BlurTarget *Blur = NULL;
     if (Glass)
@@ -1786,10 +1793,23 @@ BOOL DrawLayer(const DWM_WIN *Window, const BYTE *Pixels, BOOL Client, LONG Orig
     Data.CaptureRect[3] = (FLOAT)(Capture.bottom - Capture.top);
     if (Blur != NULL)
         SetSampleExtent(Data, Blur->Result, Blur->Width, Blur->Height);
+    if (Mica)
+    {
+        assert(!Glass && State.Mica.View != NULL);
+        Data.CaptureRect[2] = (FLOAT)State.Width;
+        Data.CaptureRect[3] = (FLOAT)State.Height;
+        SetSampleExtent(Data, State.Mica, State.Width, State.Height);
+        Data.MicaTint[0] = ((MicaInfo.Tint >> 16) & 0xFFu) / 255.0f;
+        Data.MicaTint[1] = ((MicaInfo.Tint >> 8) & 0xFFu) / 255.0f;
+        Data.MicaTint[2] = (MicaInfo.Tint & 0xFFu) / 255.0f;
+        Data.MicaTint[3] = MicaInfo.Alpha / 255.0f;
+        Data.MicaParams[0] = 1.0f;
+        Data.MicaParams[1] = MicaInfo.Saturation / 256.0f;
+    }
     SetColor(Data.Brush, Window->BackdropColor);
     SetColor(Data.Colorization, Window->BackdropColorization);
     SetColor(Data.ColorKey, Window->ColorKey);
-    Data.Flags[0] = (FLOAT)Glass;
+    Data.Flags[0] = (FLOAT)(Glass || Mica);
     Data.Flags[1] = Window->BackdropRegion == DWM_BACKDROP_REGION_WINDOW;
     BOOL Premultiplied = !!(Window->LayerFlags & DWM_WINDOW_PREMULTIPLIED_ALPHA) ||
         (Client && !!(Window->LayerFlags & DWM_WINDOW_DX_PREMULTIPLIED_ALPHA));
@@ -1800,13 +1820,13 @@ BOOL DrawLayer(const DWM_WIN *Window, const BYTE *Pixels, BOOL Client, LONG Orig
     Data.Extra[3] = (FLOAT)Premultiplied;
     BOOL Blend = Alpha < 1.0f || Data.SourceSize[3] != 0 || Data.Flags[2] != 0 || Premultiplied;
     /* An opaque layer without glass or colour key is its source unchanged. */
-    Shader Program = !Blend && !Glass && !Frame && Data.Flags[3] == 0 ? Copy : Shader::Window;
+    Shader Program = !Blend && !Glass && !Mica && !Frame && Data.Flags[3] == 0 ? Copy : Shader::Window;
     return Draw(State.Canvas,
                 Program,
                 ClipDraw(Bounds),
                 Data,
                 Image->View,
-                Blur ? Blur->Result.View : NULL,
+                Blur ? Blur->Result.View : Mica ? State.Mica.View : NULL,
                 Blend,
                 Premultiplied,
                 Buttons);
@@ -1950,6 +1970,8 @@ DwmD3dShutdown(void)
     for (ULONG Index = 0; Index < ARRAYSIZE(State.FrameAtlases); ++Index)
         State.FrameAtlases[Index].Image.Reset();
     State.Backdrop.Reset();
+    State.Mica.Reset();
+    State.MicaValid = FALSE;
     State.Canvas.Reset();
     State.PointerImage.Reset();
     State.PointerInvert.Reset();
@@ -2015,6 +2037,8 @@ DwmD3dResize(LONG Width, LONG Height)
     for (ULONG Index = 0; Index < ARRAYSIZE(State.FrameAtlases); ++Index)
         State.FrameAtlases[Index].Image.Reset();
     State.Backdrop.Reset();
+    State.Mica.Reset();
+    State.MicaValid = FALSE;
     State.Canvas.Reset();
     State.PointerImage.Reset();
     State.PointerInvert.Reset();
@@ -2400,7 +2424,7 @@ SelectOccluder(void)
 }
 
 BOOL
-DwmD3dBegin(ULONG BackdropColor, const BYTE *BackdropPixels, BOOL RefreshBackdrop,
+DwmD3dBegin(ULONG BackdropColor, const BYTE *BackdropPixels, const BYTE *MicaPixels, BOOL RefreshBackdrop,
             const RECT *Damage, ULONG DamageCount)
 {
     if (!State.Active || !FinishGpuReads())
@@ -2483,6 +2507,7 @@ DwmD3dBegin(ULONG BackdropColor, const BYTE *BackdropPixels, BOOL RefreshBackdro
     SetColor(Data.Brush, BackdropColor);
     if (!Draw(State.Canvas, Solid, State.Draw, Data))
         return FALSE;
+    State.MicaValid = FALSE;
     if (BackdropPixels == NULL)
         return TRUE;
     if (State.Backdrop.Resource == NULL)
@@ -2502,6 +2527,24 @@ DwmD3dBegin(ULONG BackdropColor, const BYTE *BackdropPixels, BOOL RefreshBackdro
         if (!Success)
             return FALSE;
     }
+    if (MicaPixels != NULL && (State.Mica.Resource == NULL || RefreshBackdrop))
+    {
+        DPT_SCOPE Trace = DptBegin(&g_DwmPresentTrace, DPT_CPU_UPLOAD);
+        BOOL Success;
+        if (State.Mica.Resource == NULL)
+        {
+            Success = CreateTexture(State.Mica, State.Width, State.Height, FALSE, MicaPixels, State.Width * 4);
+        }
+        else
+        {
+            State.Context->UpdateSubresource(State.Mica.Resource, 0, NULL, MicaPixels, State.Width * 4, 0);
+            Success = Result(State.Device->GetDeviceRemovedReason(), "Mica update");
+        }
+        DptEnd(&g_DwmPresentTrace, Trace, Success, Success ? (ULONGLONG)State.Width * State.Height * sizeof(ULONG) : 0);
+        if (!Success)
+            return FALSE;
+    }
+    State.MicaValid = MicaPixels != NULL && State.Mica.View != NULL;
     Data.SourceSize[2] = 1;
     return Draw(State.Canvas, Copy, State.Draw, Data, State.Backdrop.View);
 }

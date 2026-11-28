@@ -451,6 +451,295 @@ static void TestCloseMotion(void)
        "a degenerate window does not invert\n");
 }
 
+static BOOLEAN ChannelsNear(ULONG A, ULONG B, ULONG Tolerance)
+{
+    ULONG Shift;
+
+    for (Shift = 0; Shift <= 16; Shift += 8)
+    {
+        LONG Delta = (LONG)((A >> Shift) & 0xFF) - (LONG)((B >> Shift) & 0xFF);
+        if ((ULONG)(Delta < 0 ? -Delta : Delta) > Tolerance)
+            return FALSE;
+    }
+    return TRUE;
+}
+
+static ULONG PixelOf(COLORREF Color)
+{
+    return ((ULONG)GetRValue(Color) << 16) | ((ULONG)GetGValue(Color) << 8) | GetBValue(Color);
+}
+
+static void TestMicaSchedule(void)
+{
+    static const ULONG Dpis[] = { 96, 120, 144, 192, 288 };
+    DWM_LIBER_MICA_SCHEDULE Schedule;
+    UINT Index, Box;
+
+    ok(LiberMaterials[LIBER_MATERIAL_MICA].Blur == 90 && LiberMaterials[LIBER_MATERIAL_MICA].K == 1.0f,
+       "mica is blur 90 with k 1\n");
+    DwmLiberMicaSchedule(96, &Schedule);
+    ok(Schedule.Factor == 16 && Schedule.Radius[0] == 5 && Schedule.Radius[1] == 5 && Schedule.Radius[2] == 5,
+       "96 DPI mica blurs a 1/16 copy with three 11 px boxes: %lu %lu %lu %lu\n", Schedule.Factor,
+       Schedule.Radius[0], Schedule.Radius[1], Schedule.Radius[2]);
+    for (Index = 0; Index < ARRAYSIZE(Dpis); ++Index)
+    {
+        double Sigma = 90.0 * Dpis[Index] / 96.0, Reached;
+
+        DwmLiberMicaSchedule(Dpis[Index], &Schedule);
+        Reached = sqrt(DwmLiberMicaVariance(&Schedule));
+        ok(fabs(Reached - Sigma) / Sigma < 0.05, "%lu DPI reaches sigma %f for %f\n", Dpis[Index], Reached, Sigma);
+        ok(Schedule.Factor <= DWM_LIBER_MICA_FACTOR_MAX && (Schedule.Factor & (Schedule.Factor - 1)) == 0 &&
+               Sigma / Schedule.Factor >= 4.0,
+           "%lu DPI keeps at least 4 low-resolution pixels of sigma: factor %lu\n", Dpis[Index], Schedule.Factor);
+        for (Box = 1; Box < DWM_LIBER_MICA_BOXES; ++Box)
+            ok(Schedule.Radius[Box] >= Schedule.Radius[Box - 1] && Schedule.Radius[Box] - Schedule.Radius[0] <= 1,
+               "%lu DPI box %u differs from the first by at most one step\n", Dpis[Index], Box);
+    }
+    DwmLiberMicaSchedule(0, &Schedule);
+    ok(Schedule.Factor == 16, "DPI 0 means 96\n");
+    ok(DwmLiberMicaScratchCount(1280, 800, 16) == 80 * 50 * 6 && DwmLiberMicaScratchCount(17, 1, 16) == 2 * 6 &&
+           DwmLiberMicaScratchCount(0, 10, 16) == 0,
+       "scratch holds two RGB grids of the rounded-up low-resolution size\n");
+}
+
+static void TestMicaBuild(void)
+{
+    static ULONG Wallpaper[256 * 48], Output[256 * 48];
+    static float Scratch[16 * 3 * 6];
+    DWM_LIBER_MICA_SCHEDULE Schedule;
+    SIZE_T Count;
+    UINT Index;
+    LONG X;
+    BOOLEAN Monotonic = TRUE, Symmetric = TRUE;
+
+    DwmLiberMicaSchedule(96, &Schedule);
+    Count = DwmLiberMicaScratchCount(256, 48, Schedule.Factor);
+    ok(Count <= ARRAYSIZE(Scratch), "test scratch is large enough: %lu\n", (ULONG)Count);
+
+    for (Index = 0; Index < ARRAYSIZE(Wallpaper); ++Index)
+        Wallpaper[Index] = 0x00204060;
+    ok(DwmLiberMicaBuild(Wallpaper, 100, 30, 256 * sizeof(ULONG), &Schedule, Scratch, Count, Output),
+       "a uniform wallpaper builds\n");
+    ok(Output[0] == 0xFF204060 && Output[99] == 0xFF204060 && Output[29 * 100 + 57] == 0xFF204060,
+       "a uniform wallpaper stays uniform and opaque: %08lX %08lX\n", Output[0], Output[29 * 100 + 57]);
+
+    for (Index = 0; Index < ARRAYSIZE(Wallpaper); ++Index)
+        Wallpaper[Index] = (Index % 256) < 128 ? 0 : 0x00FFFFFF;
+    ok(DwmLiberMicaBuild(Wallpaper, 256, 48, 256 * sizeof(ULONG), &Schedule, Scratch, Count, Output),
+       "a step wallpaper builds\n");
+    for (X = 1; X < 256; ++X)
+        Monotonic = Monotonic && (Output[20 * 256 + X] & 0xFF) >= (Output[20 * 256 + X - 1] & 0xFF);
+    for (X = 0; X < 128; ++X)
+        Symmetric = Symmetric && abs((LONG)(Output[X] & 0xFF) + (LONG)(Output[255 - X] & 0xFF) - 255) <= 2;
+    ok(Monotonic, "the blurred step rises monotonically\n");
+    ok(Symmetric, "the blurred step is symmetric around the edge\n");
+    ok(abs((LONG)(Output[256 + 97] & 0xFF) - 93) <= 8,
+       "30.5 px left of the edge the step reaches Phi(-30.5/90): %lu\n", Output[256 + 97] & 0xFF);
+    ok((Output[0] & 0xFF) > 0 && (Output[0] & 0xFF) < 30 && (Output[47 * 256 + 255] & 0xFF) > 225,
+       "the 90 px blur reaches the far ends: %lu %lu\n", Output[0] & 0xFF, Output[47 * 256 + 255] & 0xFF);
+    ok(Output[20 * 256 + 100] == Output[40 * 256 + 100], "a vertical step leaves columns uniform\n");
+
+    ok(!DwmLiberMicaBuild(Wallpaper, 256, 48, 256 * sizeof(ULONG), &Schedule, Scratch, Count - 1, Output),
+       "too small a scratch is refused\n");
+    ok(!DwmLiberMicaBuild(Wallpaper, 256, 48, 255 * sizeof(ULONG), &Schedule, Scratch, Count, Output),
+       "too small a stride is refused\n");
+    ok(!DwmLiberMicaBuild(NULL, 256, 48, 256 * sizeof(ULONG), &Schedule, Scratch, Count, Output),
+       "no wallpaper is refused\n");
+}
+
+static void TestMicaTint(void)
+{
+    DWM_LIBER_TINT_SOURCE Neutral = { DWM_LIBER_TINT_HUE, 0.0 }, Soft = { 255.0, 1.0 };
+    DWM_LIBER_MICA Mica, Other;
+
+    ok(DwmLiberOklchToRgb(1.0, 0.0, 0.0) == RGB(255, 255, 255) && DwmLiberOklchToRgb(0.0, 0.0, 0.0) == RGB(0, 0, 0),
+       "OKLCH white and black\n");
+    ok(ChannelsNear(DwmLiberOklchToRgb(0.627955, 0.257683, 29.2339), RGB(255, 0, 0), 1) &&
+           ChannelsNear(DwmLiberOklchToRgb(0.519752, 0.176858, 142.4953), RGB(0, 128, 0), 1),
+       "OKLCH red and green: %06lX %06lX\n", DwmLiberOklchToRgb(0.627955, 0.257683, 29.2339),
+       DwmLiberOklchToRgb(0.519752, 0.176858, 142.4953));
+    ok(GetRValue(DwmLiberOklchToRgb(0.7, 0.4, 150.0)) == 0 && GetGValue(DwmLiberOklchToRgb(0.7, 0.4, 150.0)) > 200,
+       "out-of-gamut channels are clipped one by one: %06lX\n", DwmLiberOklchToRgb(0.7, 0.4, 150.0));
+
+    DwmLiberMicaTint(TRUE, 0.0, &Neutral, &Mica);
+    ok(Mica.Alpha == 184 && Mica.Saturation == 384, "dark mica on a black wallpaper is 0.72 opaque: %lu %lu\n",
+       Mica.Alpha, Mica.Saturation);
+    ok(ChannelsNear(Mica.Tint, PixelOf(DwmLiberOklchToRgb(0.33, 0.008, 260.0)), 1),
+       "dark mica on black is oklch(0.33 0.008 260): %06lX\n", Mica.Tint);
+    DwmLiberMicaTint(TRUE, 1.0, &Neutral, &Mica);
+    ok(Mica.Alpha == 219, "dark mica on a white wallpaper is 0.86 opaque: %lu\n", Mica.Alpha);
+    DwmLiberMicaTint(FALSE, 0.0, &Neutral, &Mica);
+    ok(abs((LONG)Mica.Alpha - 230) <= 1 && Mica.Saturation == 435, "light mica on black is 0.9 opaque: %lu %lu\n", Mica.Alpha,
+       Mica.Saturation);
+    DwmLiberMicaTint(FALSE, 1.0, &Neutral, &Mica);
+    ok(Mica.Alpha == 189, "light mica on white is 0.74 opaque: %lu\n", Mica.Alpha);
+    ok(ChannelsNear(Mica.Tint, PixelOf(DwmLiberOklchToRgb(0.992, 0.006, 260.0)), 1),
+       "light mica on white is oklch(0.992 0.006 260): %06lX\n", Mica.Tint);
+    DwmLiberMicaTint(FALSE, 0.5, &Neutral, &Mica);
+    ok(Mica.Alpha == 209, "the alpha follows the backdrop luminance linearly: %lu\n", Mica.Alpha);
+    DwmLiberMicaTint(FALSE, 2.0, &Neutral, &Other);
+    DwmLiberMicaTint(FALSE, 1.0, &Neutral, &Mica);
+    ok(Other.Alpha == Mica.Alpha && Other.Tint == Mica.Tint, "luminance above 1 is clamped\n");
+    DwmLiberMicaTint(TRUE, -1.0, &Neutral, &Other);
+    DwmLiberMicaTint(TRUE, 0.0, &Neutral, &Mica);
+    ok(Other.Alpha == Mica.Alpha && Other.Tint == Mica.Tint, "luminance below 0 is clamped\n");
+    DwmLiberMicaTint(TRUE, 0.0, &Soft, &Mica);
+    ok(ChannelsNear(Mica.Tint, PixelOf(DwmLiberOklchToRgb(0.33, 0.019, 255.0)), 1) &&
+           GetBValue(DwmLiberOklchToRgb(0.33, 0.019, 255.0)) > GetRValue(DwmLiberOklchToRgb(0.33, 0.019, 255.0)),
+       "a soft surface tint adds c1 chroma at the accent hue: %06lX\n", Mica.Tint);
+}
+
+static void TestMicaLuma(void)
+{
+    static ULONG Bits[40 * 20];
+    RECT Rect;
+    UINT Index;
+
+    for (Index = 0; Index < ARRAYSIZE(Bits); ++Index)
+        Bits[Index] = (Index % 40) < 20 ? 0xFFFFFFFF : 0xFF000000;
+    SetRect(&Rect, 0, 0, 20, 20);
+    ok(fabs(DwmLiberMicaLuma(Bits, 40, 20, 40 * sizeof(ULONG), &Rect) - 1.0) < 1e-9, "white is 1\n");
+    SetRect(&Rect, 20, 0, 40, 20);
+    ok(DwmLiberMicaLuma(Bits, 40, 20, 40 * sizeof(ULONG), &Rect) == 0.0, "black is 0\n");
+    SetRect(&Rect, 0, 0, 40, 20);
+    ok(fabs(DwmLiberMicaLuma(Bits, 40, 20, 40 * sizeof(ULONG), &Rect) - 0.5) < 1e-9,
+       "10 x 10 samples split evenly across the window\n");
+    SetRect(&Rect, -100, -5, 20, 10);
+    ok(fabs(DwmLiberMicaLuma(Bits, 40, 20, 40 * sizeof(ULONG), &Rect) - 1.0) < 1e-9,
+       "an offscreen part is clipped away\n");
+    SetRect(&Rect, 50, 0, 60, 10);
+    ok(DwmLiberMicaLuma(Bits, 40, 20, 40 * sizeof(ULONG), &Rect) == 0.5, "an offscreen window reads 0.5\n");
+    SetRect(&Rect, 0, 0, 3, 2);
+    ok(fabs(DwmLiberMicaLuma(Bits, 40, 20, 40 * sizeof(ULONG), &Rect) - 1.0) < 1e-9, "a tiny window samples itself\n");
+    for (Index = 0; Index < ARRAYSIZE(Bits); ++Index)
+        Bits[Index] = 0xFF00FF00;
+    SetRect(&Rect, 0, 0, 40, 20);
+    ok(fabs(DwmLiberMicaLuma(Bits, 40, 20, 40 * sizeof(ULONG), &Rect) - 0.7152) < 1e-9, "Rec. 709 luminance\n");
+}
+
+static void MicaFrame(DWM_WIN *Window)
+{
+    ZeroMemory(Window, sizeof(*Window));
+    Window->x = 10;
+    Window->y = 5;
+    Window->cx = 20;
+    Window->cy = 10;
+    Window->LayerFlags = DWM_WINDOW_LIBER_FRAME | DWM_WINDOW_DARK;
+    Window->BackdropType = DWM_BACKDROP_TRANSIENT;
+    Window->BackdropRegion = DWM_BACKDROP_REGION_NONCLIENT;
+    Window->BackdropOpacity = 222;
+    Window->BackdropColor = RGB(28, 32, 40);
+    Window->BackdropColorization = RGB(39, 43, 51);
+}
+
+static void TestMicaWindow(void)
+{
+    static ULONG Bits[40 * 20];
+    DWM_LIBER_TINT_SOURCE Source = { 200.0, 1.0 };
+    DWM_LIBER_MICA Mica, Expected;
+    DWM_WIN Window, Before;
+    UINT Index;
+
+    for (Index = 0; Index < ARRAYSIZE(Bits); ++Index)
+        Bits[Index] = 0xFFFFFFFF;
+
+    MicaFrame(&Window);
+    Window.LayerFlags &= ~DWM_WINDOW_LIBER_FRAME;
+    Before = Window;
+    ok(!DwmLiberClassifyMica(&Window) && !memcmp(&Window, &Before, sizeof(Window)),
+       "a classic frame keeps its transient glass\n");
+    DwmLiberApplyMica(&Window, Bits, 40, 20, 0, 0, &Source);
+    ok(!memcmp(&Window, &Before, sizeof(Window)) && !DwmLiberWindowMica(&Window, &Mica),
+       "and is never given mica\n");
+
+    MicaFrame(&Window);
+    Window.BackdropOpacity = 255;
+    ok(!DwmLiberClassifyMica(&Window), "an opaque theme material is not mica\n");
+    MicaFrame(&Window);
+    Window.BackdropRegion = 0;
+    ok(!DwmLiberClassifyMica(&Window), "a frame without a backdrop region is not mica\n");
+    MicaFrame(&Window);
+    Window.BackdropType = DWM_BACKDROP_NONE;
+    ok(!DwmLiberClassifyMica(&Window), "a frame with no system backdrop is not mica\n");
+    MicaFrame(&Window);
+    Window.LiberMaterial = DWM_LIBER_MATERIAL_PACK(LIBER_MATERIAL_THICK + 1, FALSE, 0, 0, 0, 0x80);
+    ok(!DwmLiberClassifyMica(&Window) && Window.BackdropType == DWM_BACKDROP_TRANSIENT,
+       "a window's own Liber material wins\n");
+
+    MicaFrame(&Window);
+    ok(DwmLiberClassifyMica(&Window), "a Liber frame with transient non-client glass becomes mica\n");
+    ok(Window.BackdropType == DWM_BACKDROP_MAIN && DWM_LIBER_MATERIAL_KIND(Window.LiberMaterial) ==
+           LIBER_MATERIAL_MICA + 1 && Window.BackdropRegion == DWM_BACKDROP_REGION_NONCLIENT &&
+           Window.BackdropColor == RGB(28, 32, 40),
+       "it keeps its key and region on the main backdrop\n");
+    Before = Window;
+    ok(!DwmLiberClassifyMica(&Window) && !memcmp(&Window, &Before, sizeof(Window)), "classifying again is a no-op\n");
+
+    DwmLiberApplyMica(&Window, Bits, 40, 20, 0, 0, &Source);
+    DwmLiberMicaTint(TRUE, 1.0, &Source, &Expected);
+    ok(Window.BackdropColor == RGB(39, 43, 51) && Window.BackdropColorization == RGB(39, 43, 51),
+       "an inactive mica frame measures from its inactive key\n");
+    ok(DwmLiberWindowMica(&Window, &Mica), "the classified frame resolves as mica\n");
+    ok(Mica.Tint == Expected.Tint && Mica.Alpha == Expected.Alpha && Mica.Saturation == 384,
+       "its tint comes from the wallpaper under it: %06lX/%06lX %lu/%lu %lu\n", Mica.Tint, Expected.Tint, Mica.Alpha,
+       Expected.Alpha, Mica.Saturation);
+
+    for (Index = 0; Index < ARRAYSIZE(Bits); ++Index)
+        Bits[Index] = (Index % 40) < 20 ? 0xFFFFFFFF : 0xFF000000;
+    Window.x = 100;
+    Window.y = 100;
+    DwmLiberApplyMica(&Window, Bits, 40, 20, 100, 100, &Source);
+    DwmLiberWindowMica(&Window, &Mica);
+    ok(Mica.Alpha == Expected.Alpha, "the sample follows the composition origin\n");
+    Window.x = 110;
+    DwmLiberApplyMica(&Window, Bits, 40, 20, 100, 100, &Source);
+    DwmLiberMicaTint(TRUE, 0.5, &Source, &Expected);
+    DwmLiberWindowMica(&Window, &Mica);
+    ok(Mica.Alpha == Expected.Alpha, "moving the window over darker wallpaper changes its tint: %lu %lu\n", Mica.Alpha,
+       Expected.Alpha);
+
+    MicaFrame(&Window);
+    Window.LayerFlags |= DWM_WINDOW_ACTIVE;
+    DwmLiberClassifyMica(&Window);
+    DwmLiberApplyMica(&Window, Bits, 40, 20, 0, 0, &Source);
+    ok(Window.BackdropColor == RGB(28, 32, 40) && Window.BackdropColorization == RGB(28, 32, 40),
+       "an active mica frame measures from its active key\n");
+    Window.LayerFlags &= ~DWM_WINDOW_DARK;
+    ok(DwmLiberWindowMica(&Window, &Mica) && Mica.Saturation == 435, "a light frame uses the light saturation\n");
+    DwmLiberApplyMica(&Window, NULL, 40, 20, 0, 0, &Source);
+    ok(Window.BackdropRegion == 0 && !DwmLiberWindowMica(&Window, &Mica),
+       "without a mica wallpaper the frame shows its own pixels\n");
+
+    MicaFrame(&Window);
+    Window.BackdropType = DWM_BACKDROP_MAIN;
+    ok(DwmLiberClassifyMica(&Window) && Window.BackdropType == DWM_BACKDROP_MAIN,
+       "an app's DWMSBT_MAINWINDOW frame is mica in the Liber experience\n");
+}
+
+static void TestMicaPixel(void)
+{
+    DWM_LIBER_MICA Mica = { 0x102030, 128, 256 };
+    ULONG Key = 0x1C2028;
+
+    ok(DwmLiberMicaPixel(Key, Key, 255, 0x404040, &Mica) == 0x283038,
+       "the key becomes the tint over the wallpaper: %06lX\n", DwmLiberMicaPixel(Key, Key, 255, 0x404040, &Mica));
+    ok(DwmLiberMicaPixel(Key + 0x101010, Key, 255, 0x404040, &Mica) == 0x384048,
+       "a pixel near the key keeps its difference as light\n");
+    ok(DwmLiberMicaPixel(0x123456, Key, 0, 0x404040, &Mica) == 0x123456, "weight 0 leaves the pixel alone\n");
+    ok(DwmLiberMicaPixel(Key, Key, 128, 0x404040, &Mica) == 0x222830,
+       "a partial weight moves halfway: %06lX\n", DwmLiberMicaPixel(Key, Key, 128, 0x404040, &Mica));
+    Mica.Alpha = 0;
+    ok(DwmLiberMicaPixel(0, 0, 255, 0x804020, &Mica) == 0x804020, "saturation 1 keeps the wallpaper\n");
+    Mica.Saturation = 512;
+    ok(DwmLiberMicaPixel(0, 0, 255, 0x804020, &Mica) == 0xB53500,
+       "saturation 2 doubles the distance from the luminance and clips: %06lX\n",
+       DwmLiberMicaPixel(0, 0, 255, 0x804020, &Mica));
+    ok(DwmLiberMicaPixel(0xFFFFFF, 0, 255, 0xFFFFFF, &Mica) == 0xFFFFFF, "channels clip at white\n");
+    Mica.Alpha = 255;
+    Mica.Tint = 0x00FF00;
+    ok(DwmLiberMicaPixel(0x101010, 0x101010, 255, 0xFF0000, &Mica) == 0x00FF00, "an opaque tint hides the wallpaper\n");
+}
+
 START_TEST(Material)
 {
     TestPacking();
@@ -466,4 +755,10 @@ START_TEST(Material)
     TestCaptionButtons();
     TestFrameShadow();
     TestFrameEdge();
+    TestMicaSchedule();
+    TestMicaBuild();
+    TestMicaTint();
+    TestMicaLuma();
+    TestMicaWindow();
+    TestMicaPixel();
 }

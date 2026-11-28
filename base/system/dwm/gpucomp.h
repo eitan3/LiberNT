@@ -68,7 +68,7 @@ BOOL DwmGpuComposeIsActive(void);
 /* Starts with cached wallpaper. NULL damage requests a full redraw; several
  * rectangles may be repaired separately. Buffer preservation follows the
  * selected backend's actual swap contract. */
-BOOL DwmGpuComposeBegin(ULONG BackdropColor, const BYTE *BackdropPixels,
+BOOL DwmGpuComposeBegin(ULONG BackdropColor, const BYTE *BackdropPixels, const BYTE *MicaPixels,
                         BOOL RefreshBackdrop, const RECT *Damage, ULONG DamageCount);
 
 /* Describe the scene before Begin so damage can include blur dependencies. */
