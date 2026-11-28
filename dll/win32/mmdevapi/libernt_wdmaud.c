@@ -860,10 +860,11 @@ static void get_device_display_name(EDataFlow flow, DWORD index, WCHAR *name, UI
 
     if (caps_name && caps_name[0])
         lstrcpynW(name, caps_name, name_len);
+    /* no name from the driver: the endpoint is not named by the wave device's index, which changes with the devices present (FD-02) */
     else if (flow == eCapture)
-        swprintf(name, name_len, L"ReactOS WDMAUD Capture %lu", index);
+        swprintf(name, name_len, L"ReactOS WDMAUD Capture");
     else
-        swprintf(name, name_len, L"ReactOS WDMAUD Render %lu", index);
+        swprintf(name, name_len, L"ReactOS WDMAUD Render");
 }
 
 static unsigned int align_uint(unsigned int value, unsigned int align)
