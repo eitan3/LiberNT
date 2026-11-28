@@ -5403,7 +5403,7 @@ FAST486_OPCODE_HANDLER(Fast486OpcodeCmps)
     else DataSize = OperandSize ? sizeof(ULONG) : sizeof(USHORT);
 
     /* Calculate the mask and sign flag */
-    SignFlag = 1 << ((DataSize * 8) - 1);
+    SignFlag = 1UL << ((DataSize * 8) - 1);
     DataMask = SignFlag | (SignFlag - 1);
 
     /* Read from the first source operand */
@@ -5752,7 +5752,7 @@ FAST486_OPCODE_HANDLER(Fast486OpcodeScas)
     else DataSize = OperandSize ? sizeof(ULONG) : sizeof(USHORT);
 
     /* Calculate the mask and sign flag */
-    SignFlag = 1 << ((DataSize * 8) - 1);
+    SignFlag = 1UL << ((DataSize * 8) - 1);
     DataMask = SignFlag | (SignFlag - 1);
 
     /* Read from the source operand */

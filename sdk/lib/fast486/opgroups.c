@@ -42,7 +42,7 @@ Fast486ArithmeticOperation(PFAST486_STATE State,
                            UCHAR Bits)
 {
     ULONG Result;
-    ULONG SignFlag = 1 << (Bits - 1);
+    ULONG SignFlag = 1UL << (Bits - 1);
     ULONG MaxValue = (SignFlag - 1) | SignFlag;
 
     /* Make sure the values don't exceed the maximum for their size */
@@ -166,7 +166,7 @@ Fast486RotateOperation(PFAST486_STATE State,
                        UCHAR Bits,
                        UCHAR Count)
 {
-    ULONG HighestBit = 1 << (Bits - 1);
+    ULONG HighestBit = 1UL << (Bits - 1);
     ULONG MaxValue = HighestBit | (HighestBit - 1);
     ULONG Result = 0;
 

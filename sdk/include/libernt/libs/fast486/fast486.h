@@ -53,7 +53,7 @@
 #define FAST486_CR0_AM  (1 << 18)
 #define FAST486_CR0_NW  (1 << 29)
 #define FAST486_CR0_CD  (1 << 30)
-#define FAST486_CR0_PG  (1 << 31)
+#define FAST486_CR0_PG  (1UL << 31)
 
 #define FAST486_DR4_B0 (1 << 0)
 #define FAST486_DR4_B1 (1 << 1)
