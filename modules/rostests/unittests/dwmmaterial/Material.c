@@ -423,6 +423,34 @@ static void TestOpenMotion(void)
     ok(from.left == from.right, "an empty window stays empty\n");
 }
 
+static void TestCloseMotion(void)
+{
+    RECT window = { 100, 200, 900, 800 }, shown, from;
+
+    DwmLiberCloseRect(&window, 0, 65536, &shown);
+    ok(EqualRect(&shown, &window), "a closing window starts at its own rectangle\n");
+    DwmLiberCloseRect(&window, 32768, 65536, &shown);
+    ok(shown.left == 112 && shown.top == 209 && shown.right == 888 && shown.bottom == 791,
+       "halfway it is at 97%% around its center: %ld,%ld,%ld,%ld\n", shown.left, shown.top, shown.right, shown.bottom);
+    DwmLiberCloseRect(&window, 65536, 65536, &shown);
+    ok(shown.left == 124 && shown.top == 218 && shown.right == 876 && shown.bottom == 782,
+       "it ends at 94%% of its size around its center\n");
+    DwmLiberCloseRect(&window, 90000, 65536, &from);
+    ok(EqualRect(&from, &shown), "progress past the end stays at the end\n");
+    DwmLiberCloseRect(&window, 5, 0, &from);
+    ok(EqualRect(&from, &shown), "a zero range ends the motion\n");
+    ok(DwmLiberCloseAlpha(0, 65536) == 255 && DwmLiberCloseAlpha(32768, 65536) == 128 &&
+           DwmLiberCloseAlpha(65536, 65536) == 0 && DwmLiberCloseAlpha(70000, 65536) == 0 &&
+           DwmLiberCloseAlpha(1, 0) == 0,
+       "a closing window fades from opaque to transparent: %lu\n", DwmLiberCloseAlpha(32768, 65536));
+    ok(DWM_LIBER_ANIM_CLOSE_MS == 200 && DWM_LIBER_ANIM_CLOSE_SCALE == 94, "the close takes 200 ms to 94%%\n");
+    window.right = window.left;
+    window.bottom = window.top + 1;
+    DwmLiberCloseRect(&window, 65536, 65536, &shown);
+    ok(shown.left == shown.right && shown.top == window.top && shown.bottom == window.bottom,
+       "a degenerate window does not invert\n");
+}
+
 START_TEST(Material)
 {
     TestPacking();
@@ -434,6 +462,7 @@ START_TEST(Material)
     TestWindowMotion();
     TestSnapZones();
     TestOpenMotion();
+    TestCloseMotion();
     TestCaptionButtons();
     TestFrameShadow();
     TestFrameEdge();

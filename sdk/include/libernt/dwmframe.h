@@ -369,6 +369,32 @@ DwmLiberOpenFromRect(const RECT *Window, RECT *From)
     From->bottom = Window->bottom - Dy;
 }
 
+#define DWM_LIBER_ANIM_CLOSE_MS       200u
+#define DWM_LIBER_ANIM_CLOSE_SCALE    94u
+
+static __inline void
+DwmLiberCloseRect(const RECT *Window, ULONG Progress, ULONG Scale, RECT *Shown)
+{
+    LONG Cx = Window->right - Window->left, Cy = Window->bottom - Window->top;
+    ULONG Step = (Scale == 0 || Progress >= Scale) ? 1u : Progress;
+    ULONG Range = (Scale == 0 || Progress >= Scale) ? 1u : Scale;
+    LONG Dx = (LONG)(((LONGLONG)Cx * (100 - DWM_LIBER_ANIM_CLOSE_SCALE) * Step) / (200LL * Range));
+    LONG Dy = (LONG)(((LONGLONG)Cy * (100 - DWM_LIBER_ANIM_CLOSE_SCALE) * Step) / (200LL * Range));
+
+    Shown->left = Window->left + Dx;
+    Shown->top = Window->top + Dy;
+    Shown->right = Window->right - Dx;
+    Shown->bottom = Window->bottom - Dy;
+}
+
+static __inline ULONG
+DwmLiberCloseAlpha(ULONG Progress, ULONG Scale)
+{
+    if (Scale == 0 || Progress >= Scale)
+        return 0u;
+    return (ULONG)(255u - ((ULONGLONG)Progress * 255u) / Scale);
+}
+
 static __inline ULONG
 DwmLiberWindowCornerRadius(ULONG Dpi)
 {
