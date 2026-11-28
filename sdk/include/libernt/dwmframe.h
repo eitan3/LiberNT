@@ -354,6 +354,8 @@ DwmLiberWindowCornerRadius(ULONG Dpi)
     return DWM_CORNER_RADIUS_LIBER_96 * (Dpi ? Dpi : 96u) / 96u;
 }
 
+#define DWM_LIBER_MATERIAL_ULTRATHIN  1u
+
 #define DWM_LIBER_CAPTION_BUTTON_CX   40
 #define DWM_LIBER_CAPTION_BUTTON_CY   28
 #define DWM_LIBER_CAPTION_BUTTON_R    4

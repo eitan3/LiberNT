@@ -11,6 +11,7 @@
 #include <math.h>
 
 #include "libermaterial.h"
+#include <libernt/winsnap.h>
 
 static BOOLEAN Resolve(ULONG Packed, ULONG Tint, ULONG Dpi, PDWM_LIBER_MATERIAL_INFO Info)
 {
@@ -211,6 +212,63 @@ static void TestCaptionButtons(void)
        "buttons scale with the DPI\n");
 }
 
+static POINT
+Pt(LONG x, LONG y)
+{
+    POINT p;
+    p.x = x;
+    p.y = y;
+    return p;
+}
+
+static void TestSnapZones(void)
+{
+    RECT work = { 0, 0, 1920, 1004 }, pos, win;
+
+    ok(UserSnapZone(&work, Pt(0, 500), 96) == HTLEFT, "the left edge snaps a half\n");
+    ok(UserSnapZone(&work, Pt(1919, 500), 96) == HTRIGHT, "the right edge snaps a half\n");
+    ok(UserSnapZone(&work, Pt(900, 0), 96) == HTTOP, "the top edge maximizes\n");
+    ok(UserSnapZone(&work, Pt(900, 500), 96) == HTNOWHERE, "the middle does nothing\n");
+    ok(UserSnapZone(&work, Pt(0, 10), 96) == HTTOPLEFT && UserSnapZone(&work, Pt(10, 0), 96) == HTTOPLEFT,
+       "both sides of the top-left corner snap a quarter\n");
+    ok(UserSnapZone(&work, Pt(1919, 47), 96) == HTTOPRIGHT && UserSnapZone(&work, Pt(1919, 48), 96) == HTRIGHT,
+       "the corner zone is 48 px at 96 DPI\n");
+    ok(UserSnapZone(&work, Pt(1919, 71), 144) == HTTOPRIGHT, "and scales with DPI\n");
+    ok(UserSnapZone(&work, Pt(0, 1003), 96) == HTBOTTOMLEFT && UserSnapZone(&work, Pt(1919, 1060), 96) == HTBOTTOMRIGHT,
+       "the bottom corners snap a quarter, below the work area too\n");
+
+    ok(UserSnapZoneHeld(&work, HTTOPLEFT, Pt(10, 50), 96, 12), "a quarter holds within the slack\n");
+    ok(!UserSnapZoneHeld(&work, HTTOPLEFT, Pt(10, 70), 96, 12), "and drops past it\n");
+    ok(UserSnapZoneHeld(&work, HTTOPLEFT, Pt(55, 5), 96, 12), "a top-left quarter holds along the top edge\n");
+    ok(UserSnapZoneHeld(&work, HTBOTTOMRIGHT, Pt(1910, 950), 96, 12), "a bottom-right quarter holds\n");
+    ok(!UserSnapZoneHeld(&work, HTBOTTOMRIGHT, Pt(1900, 950), 96, 12), "until it leaves the side\n");
+    ok(UserSnapZoneHeld(&work, HTLEFT, Pt(12, 500), 96, 12) && !UserSnapZoneHeld(&work, HTLEFT, Pt(13, 500), 96, 12),
+       "a half keeps the 12 px slack\n");
+    ok(UserSnapZoneHeld(&work, HTTOP, Pt(500, 12), 96, 12) && !UserSnapZoneHeld(&work, HTNOWHERE, Pt(0, 0), 96, 12),
+       "the top edge holds and nothing armed holds nothing\n");
+
+    UserSnapRect(&work, HTTOPLEFT, 960, 502, &pos);
+    ok(pos.left == 0 && pos.top == 0 && pos.right == 960 && pos.bottom == 502, "top-left quarter\n");
+    UserSnapRect(&work, HTBOTTOMRIGHT, 960, 502, &pos);
+    ok(pos.left == 960 && pos.top == 502 && pos.right == 1920 && pos.bottom == 1004, "bottom-right quarter\n");
+    UserSnapRect(&work, HTRIGHT, 960, 1004, &pos);
+    ok(pos.left == 960 && pos.top == 0 && pos.bottom == 1004, "right half\n");
+    pos = work;
+    UserSnapRect(&pos, HTBOTTOMLEFT, 960, 502, &pos);
+    ok(pos.left == 0 && pos.top == 502 && pos.right == 960 && pos.bottom == 1004, "the work area may be the output\n");
+
+    UserSnapRect(&work, HTTOPRIGHT, 960, 502, &win);
+    ok(UserSnapEdgeFromRect(HTRIGHT, &win, &work) == HTTOPRIGHT, "a top quarter reads back\n");
+    UserSnapRect(&work, HTBOTTOMLEFT, 960, 502, &win);
+    ok(UserSnapEdgeFromRect(HTLEFT, &win, &work) == HTBOTTOMLEFT, "a bottom quarter reads back\n");
+    UserSnapRect(&work, HTLEFT, 960, 1004, &win);
+    ok(UserSnapEdgeFromRect(HTLEFT, &win, &work) == HTLEFT, "a half reads back as a half\n");
+    ok(UserSnapEdgeFromRect(HTNOWHERE, &win, &work) == HTNOWHERE, "an unsnapped window stays unsnapped\n");
+    ok(UserSnapIsQuarter(HTBOTTOMRIGHT) && !UserSnapIsQuarter(HTRIGHT) && UserSnapIsLeft(HTBOTTOMLEFT) &&
+           !UserSnapIsLeft(HTTOPRIGHT),
+       "edge classification\n");
+}
+
 START_TEST(Material)
 {
     TestPacking();
@@ -220,5 +278,6 @@ START_TEST(Material)
     TestDim();
     TestFade();
     TestWindowMotion();
+    TestSnapZones();
     TestCaptionButtons();
 }

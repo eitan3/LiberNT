@@ -257,7 +257,7 @@ IntCompositionCornerRadius(_In_ PWND Wnd)
     DWORD Flags = 0;
     BOOL ClassicFrame;
 
-    if ((Wnd->style & (WS_MINIMIZE | WS_MAXIMIZE)) || IntGetWindowSnapEdge(Wnd) != HTNOWHERE)
+    if ((Wnd->style & (WS_MINIMIZE | WS_MAXIMIZE)) || IntIsWindowSnapped(Wnd))
         return 0;
     if (Radius != 0 && Radius <= 64)
         return (ULONG)Radius;

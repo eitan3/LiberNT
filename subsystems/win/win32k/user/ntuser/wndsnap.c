@@ -7,6 +7,7 @@
  */
 
 #include <win32k.h>
+#include <libernt/winsnap.h>
 
 DBG_DEFAULT_CHANNEL(UserWinpos);
 
@@ -22,6 +23,7 @@ DBG_DEFAULT_CHANNEL(UserWinpos);
 #define SNAP_PREVIEW_ORIGIN_HALF  10
 #define SNAP_PREVIEW_FILL         RGB(176, 214, 244)
 #define SNAP_PREVIEW_BORDER       RGB(94, 150, 214)
+#define SNAP_PREVIEW_LIBER_PIXEL  0x80808080u
 
 static struct
 {
@@ -47,6 +49,32 @@ IntSnapPreviewWindow(VOID)
     return pwnd;
 }
 
+static BOOL
+IntSnapPreviewPaintGlass(HDC hdc, LONG cx, LONG cy)
+{
+    ULONG Pixel = SNAP_PREVIEW_LIBER_PIXEL;
+    HBITMAP hbm, hbmOld;
+    HDC hdcMem;
+    BOOL Done = FALSE;
+
+    hbm = GreCreateBitmap(1, 1, 1, 32, &Pixel);
+    if (hbm == NULL)
+        return FALSE;
+    hdcMem = NtGdiCreateCompatibleDC(hdc);
+    if (hdcMem != NULL)
+    {
+        hbmOld = NtGdiSelectBitmap(hdcMem, hbm);
+        if (hbmOld != NULL)
+        {
+            Done = NtGdiStretchBlt(hdc, 0, 0, cx, cy, hdcMem, 0, 0, 1, 1, SRCCOPY, CLR_INVALID);
+            NtGdiSelectBitmap(hdcMem, hbmOld);
+        }
+        GreDeleteObject(hdcMem);
+    }
+    GreDeleteObject(hbm);
+    return Done;
+}
+
 static VOID
 IntSnapPreviewPaint(PWND pwnd)
 {
@@ -60,6 +88,12 @@ IntSnapPreviewPaint(PWND pwnd)
     hdc = UserGetWindowDC(pwnd);
     if (hdc == NULL)
         return;
+
+    if (g_bLiberExperience && IntSnapPreviewPaintGlass(hdc, cx, cy))
+    {
+        UserReleaseDC(pwnd, hdc, FALSE);
+        return;
+    }
 
     hbrFill = IntGdiCreateSolidBrush(SNAP_PREVIEW_FILL);
     hbrBorder = IntGdiCreateSolidBrush(SNAP_PREVIEW_BORDER);
@@ -121,6 +155,15 @@ co_IntSnapPreviewCreate(PWND pwndDrag, const RECT *prc)
     }
 
     IntSetLayeredWindowAttributes(pwnd, 0, SNAP_PREVIEW_ALPHA, LWA_ALPHA);
+    if (g_bLiberExperience && AtomDwmLiberMaterial != 0 && AtomDwmCornerRadius != 0)
+    {
+        ULONG Dpi = (gpsi && gpsi->dmLogPixels) ? gpsi->dmLogPixels : 96;
+        ULONG Material = DWM_LIBER_MATERIAL_PACK(DWM_LIBER_MATERIAL_ULTRATHIN, FALSE, DWM_LIBER_LAYER_SHELL, 0,
+                                                 DWM_LIBER_EDGE_GLASS, 0);
+        ASSERT((Material & ~DWM_LIBER_MATERIAL_MASK) == 0);
+        UserSetProp(pwnd, AtomDwmLiberMaterial, (HANDLE)(ULONG_PTR)Material, FALSE);
+        UserSetProp(pwnd, AtomDwmCornerRadius, (HANDLE)(ULONG_PTR)DwmLiberWindowCornerRadius(Dpi), FALSE);
+    }
     gSnapPreview.hwnd = UserHMGetHandle(pwnd);
     return pwnd;
 }
@@ -238,10 +281,7 @@ GetSnapActivationPoint(PWND Wnd, POINT pt)
         return HTNOWHERE;
     UserSystemParametersInfo(SPI_GETWORKAREA, 0, &wa, 0); /* FIXME: MultiMon of PWND */
 
-    if (pt.x <= wa.left) return HTLEFT;
-    if (pt.x >= wa.right-1) return HTRIGHT;
-    if (pt.y <= wa.top) return HTTOP; /* Maximize */
-    return HTNOWHERE;
+    return UserSnapZone(&wa, pt, (gpsi && gpsi->dmLogPixels) ? gpsi->dmLogPixels : 96);
 }
 
 BOOL
@@ -254,17 +294,7 @@ IsPointHoldingSnapEdge(UINT Edge, POINT pt)
 
     UserSystemParametersInfo(SPI_GETWORKAREA, 0, &wa, 0); /* FIXME: MultiMon of PWND */
 
-    switch (Edge)
-    {
-    case HTLEFT:
-        return pt.x <= wa.left + SNAP_RELEASE_SLACK;
-    case HTRIGHT:
-        return pt.x >= wa.right - 1 - SNAP_RELEASE_SLACK;
-    case HTTOP:
-        return pt.y <= wa.top + SNAP_RELEASE_SLACK;
-    }
-
-    return FALSE;
+    return UserSnapZoneHeld(&wa, Edge, pt, (gpsi && gpsi->dmLogPixels) ? gpsi->dmLogPixels : 96, SNAP_RELEASE_SLACK);
 }
 
 /* Windows 10 (1903?)
@@ -279,9 +309,21 @@ NtUserIsWindowArranged(HWND hWnd)
 UINT FASTCALL
 IntGetWindowSnapEdge(PWND Wnd)
 {
-    if (Wnd->ExStyle2 & WS_EX2_VERTICALLYMAXIMIZEDLEFT) return HTLEFT;
-    if (Wnd->ExStyle2 & WS_EX2_VERTICALLYMAXIMIZEDRIGHT) return HTRIGHT;
-    return HTNOWHERE;
+    UINT Side;
+    RECT wa;
+
+    if (Wnd->ExStyle2 & WS_EX2_VERTICALLYMAXIMIZEDLEFT)
+        Side = HTLEFT;
+    else if (Wnd->ExStyle2 & WS_EX2_VERTICALLYMAXIMIZEDRIGHT)
+        Side = HTRIGHT;
+    else
+        return HTNOWHERE;
+    /* FIXME: Windows 11 keeps a quarter snap in state LiberNT has no field for, so it is read back
+     * from the window rect, and a minimized quarter restores as a half */
+    if (Wnd->style & WS_MINIMIZE)
+        return Side;
+    UserSystemParametersInfo(SPI_GETWORKAREA, 0, &wa, 0); /* FIXME: MultiMon of PWND */
+    return UserSnapEdgeFromRect(Side, &Wnd->rcWindow, &wa);
 }
 
 VOID FASTCALL
@@ -295,7 +337,10 @@ co_IntCalculateSnapPosition(PWND Wnd, UINT Edge, OUT RECT *Pos)
     width = Pos->right - Pos->left;
     width = min(min(max(width / 2, mint.x), maxt.x), width);
     height = Pos->bottom - Pos->top;
-    height = min(max(height, mint.y), maxt.y);
+    if (UserSnapIsQuarter(Edge))
+        height = min(min(max(height / 2, mint.y), maxt.y), height);
+    else
+        height = min(max(height, mint.y), maxt.y);
 
     switch (Edge)
     {
@@ -303,15 +348,18 @@ co_IntCalculateSnapPosition(PWND Wnd, UINT Edge, OUT RECT *Pos)
         height = min(Pos->bottom - Pos->top, maxs.y);
         break;
     case HTLEFT:
-        Pos->right = Pos->left + width;
-        break;
     case HTRIGHT:
-        Pos->left = Pos->right - width;
+    case HTTOPLEFT:
+    case HTTOPRIGHT:
+    case HTBOTTOMLEFT:
+    case HTBOTTOMRIGHT:
         break;
     default:
         ERR("Unexpected snap edge %#x\n", Edge);
+        Pos->bottom = Pos->top + height;
+        return;
     }
-    Pos->bottom = Pos->top + height;
+    UserSnapRect(Pos, Edge, width, height, Pos);
 }
 
 VOID FASTCALL
@@ -377,9 +425,13 @@ IntSetSnapEdge(PWND Wnd, UINT Edge)
         style = 0;
         break;
     case HTLEFT:
+    case HTTOPLEFT:
+    case HTBOTTOMLEFT:
         style = WS_EX2_VERTICALLYMAXIMIZEDLEFT;
         break;
     case HTRIGHT:
+    case HTTOPRIGHT:
+    case HTBOTTOMRIGHT:
         style = WS_EX2_VERTICALLYMAXIMIZEDRIGHT;
         break;
     default:
