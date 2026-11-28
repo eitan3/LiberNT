@@ -564,6 +564,15 @@ IntcDspAudioInterfaceReference(
     UNREFERENCED_PARAMETER(Context);
 }
 
+/* The drain of the pending teardowns (N8-02): the manager's public poll, the pending count as its answer */
+static
+UINT32
+IntcDspAudioTeardownPoll(
+    _In_ PVOID Context)
+{
+    return IntcDspStreamsTeardownPoll(&IntcDspAudioDevice(Context)->Streams);
+}
+
 /* The interface of one child: the routines in the order of the structure, the child's PDO context as theirs */
 static
 VOID
@@ -591,6 +600,7 @@ IntcDspAudioInterfaceFill(
     Interface->CloseStream = IntcDspAudioCloseStream;
     Interface->GetControl = IntcDspAudioGetControl;
     Interface->SetControl = IntcDspAudioSetControl;
+    Interface->TeardownPoll = IntcDspAudioTeardownPoll;
 }
 
 static

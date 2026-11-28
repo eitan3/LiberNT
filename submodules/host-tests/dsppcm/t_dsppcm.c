@@ -677,6 +677,7 @@ typedef enum _FAKE_KIND
     KCloseStream,
     KGetControl,
     KSetControl,
+    KTeardownPoll,
     KKindCount
 } FAKE_KIND;
 
@@ -751,6 +752,7 @@ static NTSTATUS FakeFreeBuffer(PVOID Context, HANDLE Stream, PMDL Mdl, ULONG Byt
 static NTSTATUS FakeCloseStream(PVOID Context, HANDLE Stream) { return FakeRecord(KCloseStream, Context, Stream); }
 static NTSTATUS FakeGetControl(PVOID Context, ULONG EndpointIndex, INTELDSP_CONTROL Control, PLONG Value) { G->A[KGetControl] = EndpointIndex; G->Control[KGetControl] = Control; if (NT_SUCCESS(FakeRecord(KGetControl, Context, NULL))) *Value = -1234; return G->Result[KGetControl]; }
 static NTSTATUS FakeSetControl(PVOID Context, ULONG EndpointIndex, INTELDSP_CONTROL Control, LONG Value) { G->A[KSetControl] = EndpointIndex; G->Control[KSetControl] = Control; G->B[KSetControl] = (ULONG)Value; return FakeRecord(KSetControl, Context, NULL); }
+static UINT32 FakeTeardownPoll(PVOID Context) { FakeRecord(KTeardownPoll, Context, NULL); return G->A[KTeardownPoll]; }
 
 static
 VOID
@@ -776,6 +778,7 @@ FakeInit(
     F->Iface.CloseStream = FakeCloseStream;
     F->Iface.GetControl = FakeGetControl;
     F->Iface.SetControl = FakeSetControl;
+    F->Iface.TeardownPoll = FakeTeardownPoll;
     F->Mdl = (PMDL)0x1111u;
     F->Bytes = 32768;
     F->Offset = 0;
@@ -934,7 +937,10 @@ CheckForwarding(
     CHECK_EQ(Position.PlayOffset, 100);
     CHECK_EQ(Position.WriteOffset, 116);
     CHECK_EQ(F.Calls[KGetPositionRegister], 1);
-    CHECK_EQ(FakeTotalCalls(), 1);
+    CHECK_EQ(FakeTotalCalls(), 2);
+    /* the position property drains the pending teardowns first (N8-02): the poll asked once per reading, with the interface's context, whatever it answered */
+    CHECK_EQ(F.Calls[KTeardownPoll], 1);
+    CHECK(F.Context[KTeardownPoll] == (PVOID)0x5A5A5A5Au);
     F.RegisterValue = 990;
     Status = DsppcmStreamPosition(I, Stream, 1000, 16, FALSE, &Position);
     CHECK_EQ(Position.PlayOffset, 990);
@@ -957,8 +963,9 @@ CheckForwarding(
     F.RegisterValue = 500;
     Status = DsppcmStreamPosition(I, Stream, 0, 16, FALSE, &Position);
     CHECK(Status == STATUS_INVALID_PARAMETER);
-    /* the six readings before asked the register; this one did not */
+    /* the six readings before asked the register, the poll six times; a stream without a buffer asks neither */
     CHECK_EQ(F.Calls[KGetPositionRegister], 6);
+    CHECK_EQ(F.Calls[KTeardownPoll], 6);
     F.Register = NULL;
     Status = DsppcmStreamPosition(I, Stream, 1000, 16, FALSE, &Position);
     CHECK(Status == STATUS_DEVICE_NOT_READY);
@@ -1041,7 +1048,7 @@ CheckPositionWrap(
         Status = DsppcmStreamPosition(I, (HANDLE)0x11u, Buffer, Fifo, FALSE, &Position);
         CHECK(Status == STATUS_SUCCESS);
         CHECK_EQ(F.Calls[KGetPositionRegister], 1);
-        CHECK_EQ(FakeTotalCalls(), 1);
+        CHECK_EQ(FakeTotalCalls(), 2);
         DsppcmPositionFromValue(0xFFFFFFFFu, Buffer, Fifo, FALSE, &Direct);
         CHECK(Position.PlayOffset == Direct.PlayOffset && Position.WriteOffset == Direct.WriteOffset);
     }
