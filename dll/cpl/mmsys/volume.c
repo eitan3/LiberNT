@@ -4,271 +4,263 @@
  * PURPOSE:         ReactOS Multimedia Control Panel
  * PROGRAMMER:      Thomas Weidenmueller <w3seek@reactos.com>
  *                  Johannes Anderwald <janderwald@reactos.com>
- *                  Dmitry Chapyshev <dmitry@reactos.org>
+ *                  Dmitry Chapyshev <dmitry.chapyshev@reactos.org>
  */
 
+#define COBJMACROS
 #include "mmsys.h"
 
 #include <shellapi.h>
+#include <objbase.h>
+#include <initguid.h>
+#include <mmdeviceapi.h>
+#include <endpointvolume.h>
 
+/*
+ * The Volume tab is the default render endpoint's, the one the tray
+ * controls (N14-01): its endpoint volume, the slider the level in
+ * 1/VOLUME_MAX of the scalar the tray moves in 1/100, the checkbox its
+ * mute. Not mixer device 0's, which on a machine with more than one audio
+ * device is whichever the kernel mixer listed first.
+ */
+
+/* posted by the control-change callback when the level or the mute moved elsewhere (the tray, the hot keys) */
+#define WM_VOLUME_CHANGED   (WM_APP + 1)
+
+static const PROPERTYKEY DeviceFriendlyNameKey =
+    { { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } }, 14 };
+
+typedef struct _VOLUME_CALLBACK
+{
+    IAudioEndpointVolumeCallback INotify;
+    LONG References;
+    HWND Window;
+} VOLUME_CALLBACK, *PVOLUME_CALLBACK;
 
 typedef struct _GLOBAL_DATA
 {
-    HMIXER hMixer;
+    BOOL bComInit;
+    IMMDeviceEnumerator *Enumerator;
+    IMMDevice *Device;
+    IAudioEndpointVolume *Volume;
+    IAudioEndpointVolumeCallback *Callback;
+
     HICON hIconMuted;
     HICON hIconUnMuted;
     HICON hIconNoHW;
     HICON hIconSpeakImg;
 
-    LONG muteVal;
-    DWORD muteControlID;
+    BOOL muteVal;
 
-    DWORD volumeControlID;
-    DWORD volumeChannels;
-    DWORD volumeMinimum;
-    DWORD volumeMaximum;
-    DWORD volumeStep;
-
-    DWORD maxVolume;
-    PMIXERCONTROLDETAILS_UNSIGNED volumeInitialValues;
-    PMIXERCONTROLDETAILS_UNSIGNED volumePreviousValues;
-    PMIXERCONTROLDETAILS_UNSIGNED volumeCurrentValues;
+    /* the level and the mute the page found, put back on Cancel */
+    float initialLevel;
+    BOOL initialMute;
 
 } GLOBAL_DATA, *PGLOBAL_DATA;
 
-
-VOID
-GetMuteControl(PGLOBAL_DATA pGlobalData)
+static
+HRESULT WINAPI
+VolumeCallback_QueryInterface(IAudioEndpointVolumeCallback *iface, REFIID riid, void **ppv)
 {
-    MIXERLINEW mxln;
-    MIXERCONTROLW mxc;
-    MIXERLINECONTROLSW mxlctrl;
+    PVOLUME_CALLBACK Notify = (PVOLUME_CALLBACK)iface;
 
-    if (pGlobalData->hMixer == NULL)
-        return;
-
-    mxln.cbStruct = sizeof(MIXERLINEW);
-    mxln.dwComponentType = MIXERLINE_COMPONENTTYPE_DST_SPEAKERS;
-
-    if (mixerGetLineInfoW((HMIXEROBJ)pGlobalData->hMixer, &mxln, MIXER_OBJECTF_HMIXER | MIXER_GETLINEINFOF_COMPONENTTYPE)
-        != MMSYSERR_NOERROR)
-        return;
-
-    mxlctrl.cbStruct = sizeof(MIXERLINECONTROLSW);
-    mxlctrl.dwLineID = mxln.dwLineID;
-    mxlctrl.dwControlType = MIXERCONTROL_CONTROLTYPE_MUTE;
-    mxlctrl.cControls = 1;
-    mxlctrl.cbmxctrl = sizeof(MIXERCONTROLW);
-    mxlctrl.pamxctrl = &mxc;
-
-    if (mixerGetLineControlsW((HMIXEROBJ)pGlobalData->hMixer, &mxlctrl, MIXER_OBJECTF_HMIXER | MIXER_GETLINECONTROLSF_ONEBYTYPE)
-        != MMSYSERR_NOERROR)
-        return;
-
-    pGlobalData->muteControlID = mxc.dwControlID;
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IAudioEndpointVolumeCallback))
+    {
+        *ppv = &Notify->INotify;
+        InterlockedIncrement(&Notify->References);
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
 }
 
+static ULONG WINAPI
+VolumeCallback_AddRef(IAudioEndpointVolumeCallback *iface)
+{
+    return InterlockedIncrement(&((PVOLUME_CALLBACK)iface)->References);
+}
 
+static ULONG WINAPI
+VolumeCallback_Release(IAudioEndpointVolumeCallback *iface)
+{
+    PVOLUME_CALLBACK Notify = (PVOLUME_CALLBACK)iface;
+    ULONG References = InterlockedDecrement(&Notify->References);
+
+    if (!References)
+        HeapFree(GetProcessHeap(), 0, Notify);
+    return References;
+}
+
+/* the notification's own values are not trusted for the page: the page reads the endpoint again on its own thread */
+static HRESULT WINAPI
+VolumeCallback_OnNotify(IAudioEndpointVolumeCallback *iface, PAUDIO_VOLUME_NOTIFICATION_DATA pNotify)
+{
+    UNREFERENCED_PARAMETER(pNotify);
+    PostMessageW(((PVOLUME_CALLBACK)iface)->Window, WM_VOLUME_CHANGED, 0, 0);
+    return S_OK;
+}
+
+static IAudioEndpointVolumeCallbackVtbl g_VolumeCallbackVtbl = {
+    VolumeCallback_QueryInterface,
+    VolumeCallback_AddRef,
+    VolumeCallback_Release,
+    VolumeCallback_OnNotify
+};
+
+static
+IAudioEndpointVolumeCallback *
+CreateVolumeCallback(HWND Window)
+{
+    PVOLUME_CALLBACK Notify = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*Notify));
+
+    if (!Notify)
+        return NULL;
+    Notify->INotify.lpVtbl = &g_VolumeCallbackVtbl;
+    Notify->References = 1;
+    Notify->Window = Window;
+    return &Notify->INotify;
+}
+
+static
+VOID
+UpdateMuteControls(
+    HWND hwndDlg,
+    PGLOBAL_DATA pGlobalData)
+{
+    SendDlgItemMessageW(hwndDlg, IDC_MUTE_CHECKBOX, BM_SETCHECK, (WPARAM)(pGlobalData->muteVal ? BST_CHECKED : BST_UNCHECKED), 0);
+    SendDlgItemMessageW(hwndDlg, IDC_MUTE_ICON, STM_SETIMAGE, IMAGE_ICON,
+                        (LPARAM)(pGlobalData->muteVal ? pGlobalData->hIconMuted : pGlobalData->hIconUnMuted));
+}
+
+static
 VOID
 GetMuteState(PGLOBAL_DATA pGlobalData)
 {
-    MIXERCONTROLDETAILS_BOOLEAN mxcdMute;
-    MIXERCONTROLDETAILS mxcd;
+    BOOL bMute = FALSE;
 
-    if (pGlobalData->hMixer == NULL)
-        return;
-
-    mxcd.cbStruct = sizeof(MIXERCONTROLDETAILS);
-    mxcd.dwControlID = pGlobalData->muteControlID;
-    mxcd.cChannels = 1;
-    mxcd.cMultipleItems = 0;
-    mxcd.cbDetails = sizeof(MIXERCONTROLDETAILS_BOOLEAN);
-    mxcd.paDetails = &mxcdMute;
-
-    if (mixerGetControlDetailsW((HMIXEROBJ)pGlobalData->hMixer, &mxcd, MIXER_OBJECTF_HMIXER | MIXER_GETCONTROLDETAILSF_VALUE)
-        != MMSYSERR_NOERROR)
-        return;
-
-    pGlobalData->muteVal = mxcdMute.fValue;
+    if (SUCCEEDED(IAudioEndpointVolume_GetMute(pGlobalData->Volume, &bMute)))
+        pGlobalData->muteVal = bMute;
 }
 
-
+static
 VOID
 SwitchMuteState(PGLOBAL_DATA pGlobalData)
 {
-    MIXERCONTROLDETAILS_BOOLEAN mxcdMute;
-    MIXERCONTROLDETAILS mxcd;
-
-    mxcd.cbStruct = sizeof(MIXERCONTROLDETAILS);
-    mxcd.dwControlID = pGlobalData->muteControlID;
-    mxcd.cChannels = 1;
-    mxcd.cMultipleItems = 0;
-    mxcd.cbDetails = sizeof(MIXERCONTROLDETAILS_BOOLEAN);
-    mxcd.paDetails = &mxcdMute;
-
-    mxcdMute.fValue = !pGlobalData->muteVal;
-    if (mixerSetControlDetails((HMIXEROBJ)pGlobalData->hMixer, &mxcd, MIXER_OBJECTF_HMIXER | MIXER_SETCONTROLDETAILSF_VALUE)
-        != MMSYSERR_NOERROR)
-        return;
-
-    pGlobalData->muteVal = mxcdMute.fValue;
+    if (SUCCEEDED(IAudioEndpointVolume_SetMute(pGlobalData->Volume, !pGlobalData->muteVal, NULL)))
+        GetMuteState(pGlobalData);
 }
 
-
-VOID
-GetVolumeControl(PGLOBAL_DATA pGlobalData)
+/* the level the page reads now, as the slider's position */
+static
+DWORD
+VolumePosition(PGLOBAL_DATA pGlobalData)
 {
-    MIXERLINEW mxln;
-    MIXERCONTROLW mxc;
-    MIXERLINECONTROLSW mxlc;
+    float fLevel = 0.0f;
 
-    if (pGlobalData->hMixer == NULL)
-        return;
-
-    mxln.cbStruct = sizeof(MIXERLINEW);
-    mxln.dwComponentType = MIXERLINE_COMPONENTTYPE_DST_SPEAKERS;
-    if (mixerGetLineInfoW((HMIXEROBJ)pGlobalData->hMixer, &mxln, MIXER_OBJECTF_HMIXER | MIXER_GETLINEINFOF_COMPONENTTYPE)
-        != MMSYSERR_NOERROR)
-        return;
-
-    pGlobalData->volumeChannels = mxln.cChannels;
-
-    mxlc.cbStruct = sizeof(MIXERLINECONTROLSW);
-    mxlc.dwLineID = mxln.dwLineID;
-    mxlc.dwControlType = MIXERCONTROL_CONTROLTYPE_VOLUME;
-    mxlc.cControls = 1;
-    mxlc.cbmxctrl = sizeof(MIXERCONTROLW);
-    mxlc.pamxctrl = &mxc;
-    if (mixerGetLineControlsW((HMIXEROBJ)pGlobalData->hMixer, &mxlc, MIXER_OBJECTF_HMIXER | MIXER_GETLINECONTROLSF_ONEBYTYPE)
-        != MMSYSERR_NOERROR)
-        return;
-
-    pGlobalData->volumeMinimum = mxc.Bounds.dwMinimum;
-    pGlobalData->volumeMaximum = mxc.Bounds.dwMaximum;
-    pGlobalData->volumeControlID = mxc.dwControlID;
-    pGlobalData->volumeStep = (pGlobalData->volumeMaximum - pGlobalData->volumeMinimum) / (VOLUME_MAX - VOLUME_MIN);
-
-    pGlobalData->volumeInitialValues = HeapAlloc(GetProcessHeap(),
-                                                 0,
-                                                 mxln.cChannels * sizeof(MIXERCONTROLDETAILS_UNSIGNED));
-    if (pGlobalData->volumeInitialValues == NULL)
-        return;
-
-    pGlobalData->volumePreviousValues = HeapAlloc(GetProcessHeap(),
-                                                  0,
-                                                  mxln.cChannels * sizeof(MIXERCONTROLDETAILS_UNSIGNED));
-    if (pGlobalData->volumePreviousValues == NULL)
-        return;
-
-    pGlobalData->volumeCurrentValues = HeapAlloc(GetProcessHeap(),
-                                                 0,
-                                                 mxln.cChannels * sizeof(MIXERCONTROLDETAILS_UNSIGNED));
-    if (pGlobalData->volumeCurrentValues == NULL)
-        return;
+    if (FAILED(IAudioEndpointVolume_GetMasterVolumeLevelScalar(pGlobalData->Volume, &fLevel)))
+        return VOLUME_MIN;
+    return (DWORD)(fLevel * (float)VOLUME_MAX + 0.5f);
 }
 
-
-VOID
-GetVolumeValue(
-    PGLOBAL_DATA pGlobalData,
-    BOOL bInit)
-{
-    MIXERCONTROLDETAILS mxcd;
-    DWORD i;
-
-    if (pGlobalData->hMixer == NULL)
-        return;
-
-    mxcd.cbStruct = sizeof(MIXERCONTROLDETAILS);
-    mxcd.dwControlID = pGlobalData->volumeControlID;
-    mxcd.cChannels = pGlobalData->volumeChannels;
-    mxcd.cMultipleItems = 0;
-    mxcd.cbDetails = sizeof(MIXERCONTROLDETAILS_UNSIGNED);
-    mxcd.paDetails = pGlobalData->volumePreviousValues;
-
-    if (mixerGetControlDetailsW((HMIXEROBJ)pGlobalData->hMixer, &mxcd, MIXER_OBJECTF_HMIXER | MIXER_GETCONTROLDETAILSF_VALUE)
-        != MMSYSERR_NOERROR)
-        return;
-
-    pGlobalData->maxVolume = 0;
-    for (i = 0; i < pGlobalData->volumeChannels; i++)
-    {
-        pGlobalData->volumeCurrentValues[i].dwValue = pGlobalData->volumePreviousValues[i].dwValue;
-
-        if (pGlobalData->volumePreviousValues[i].dwValue > pGlobalData->maxVolume)
-            pGlobalData->maxVolume = pGlobalData->volumePreviousValues[i].dwValue;
-
-        if (bInit)
-            pGlobalData->volumeInitialValues[i].dwValue = pGlobalData->volumeCurrentValues[i].dwValue;
-    }
-}
-
-
+static
 VOID
 SetVolumeValue(PGLOBAL_DATA pGlobalData,
                DWORD dwPosition)
 {
-    MIXERCONTROLDETAILS mxcd;
-    DWORD dwVolume, i;
-
-    if (pGlobalData->hMixer == NULL)
-        return;
-
-    if (dwPosition == VOLUME_MIN)
-        dwVolume = pGlobalData->volumeMinimum;
-    else if (dwPosition == VOLUME_MAX)
-        dwVolume = pGlobalData->volumeMaximum;
-    else
-        dwVolume = (dwPosition * pGlobalData->volumeStep) + pGlobalData->volumeMinimum;
-
-    for (i = 0; i < pGlobalData->volumeChannels; i++)
-    {
-        if (pGlobalData->volumePreviousValues[i].dwValue == pGlobalData->maxVolume)
-        {
-            pGlobalData->volumeCurrentValues[i].dwValue = dwVolume;
-        }
-        else
-        {
-            pGlobalData->volumeCurrentValues[i].dwValue =
-                pGlobalData->volumePreviousValues[i].dwValue * dwVolume / pGlobalData->maxVolume;
-        }
-    }
-
-    mxcd.cbStruct = sizeof(MIXERCONTROLDETAILS);
-    mxcd.dwControlID = pGlobalData->volumeControlID;
-    mxcd.cChannels = pGlobalData->volumeChannels;
-    mxcd.cMultipleItems = 0;
-    mxcd.cbDetails = sizeof(MIXERCONTROLDETAILS_UNSIGNED);
-    mxcd.paDetails = pGlobalData->volumeCurrentValues;
-
-    if (mixerSetControlDetails((HMIXEROBJ)pGlobalData->hMixer, &mxcd, MIXER_OBJECTF_HMIXER | MIXER_SETCONTROLDETAILSF_VALUE)
-        != MMSYSERR_NOERROR)
-        return;
+    IAudioEndpointVolume_SetMasterVolumeLevelScalar(pGlobalData->Volume, (float)dwPosition / (float)VOLUME_MAX, NULL);
 }
-
 
 static
 VOID
-RestoreVolumeValue(
-    PGLOBAL_DATA pGlobalData)
+RestoreVolumeValue(PGLOBAL_DATA pGlobalData)
 {
-    MIXERCONTROLDETAILS mxcd;
-
-    if (pGlobalData->hMixer == NULL)
-        return;
-
-    mxcd.cbStruct = sizeof(MIXERCONTROLDETAILS);
-    mxcd.dwControlID = pGlobalData->volumeControlID;
-    mxcd.cChannels = pGlobalData->volumeChannels;
-    mxcd.cMultipleItems = 0;
-    mxcd.cbDetails = sizeof(MIXERCONTROLDETAILS_UNSIGNED);
-    mxcd.paDetails = pGlobalData->volumeInitialValues;
-
-    mixerSetControlDetails((HMIXEROBJ)pGlobalData->hMixer,
-                           &mxcd,
-                           MIXER_OBJECTF_HMIXER | MIXER_SETCONTROLDETAILSF_VALUE);
+    IAudioEndpointVolume_SetMasterVolumeLevelScalar(pGlobalData->Volume, pGlobalData->initialLevel, NULL);
+    IAudioEndpointVolume_SetMute(pGlobalData->Volume, pGlobalData->initialMute, NULL);
 }
 
+static
+VOID
+CloseEndpoint(PGLOBAL_DATA pGlobalData)
+{
+    if (pGlobalData->Callback)
+    {
+        IAudioEndpointVolume_UnregisterControlChangeNotify(pGlobalData->Volume, pGlobalData->Callback);
+        IAudioEndpointVolumeCallback_Release(pGlobalData->Callback);
+        pGlobalData->Callback = NULL;
+    }
+    if (pGlobalData->Volume)
+    {
+        IAudioEndpointVolume_Release(pGlobalData->Volume);
+        pGlobalData->Volume = NULL;
+    }
+    if (pGlobalData->Device)
+    {
+        IMMDevice_Release(pGlobalData->Device);
+        pGlobalData->Device = NULL;
+    }
+    if (pGlobalData->Enumerator)
+    {
+        IMMDeviceEnumerator_Release(pGlobalData->Enumerator);
+        pGlobalData->Enumerator = NULL;
+    }
+}
+
+/* opens the default render endpoint and its volume, and registers the callback; the device's friendly name, or its id, into Name */
+static
+BOOL
+OpenDefaultEndpoint(
+    PGLOBAL_DATA pGlobalData,
+    HWND hwndDlg,
+    LPWSTR Name,
+    SIZE_T Chars)
+{
+    IPropertyStore *pProps = NULL;
+    PROPVARIANT FriendlyName;
+    LPWSTR pszId = NULL;
+
+    Name[0] = L'\0';
+    if (FAILED(CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_INPROC_SERVER,
+                                &IID_IMMDeviceEnumerator, (void **)&pGlobalData->Enumerator)))
+    {
+        return FALSE;
+    }
+
+    /* the role the tray asks of the default render device (trayflyouts.cpp), the applet's own as the second */
+    if (FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(pGlobalData->Enumerator, eRender, eMultimedia, &pGlobalData->Device)) &&
+        FAILED(IMMDeviceEnumerator_GetDefaultAudioEndpoint(pGlobalData->Enumerator, eRender, eConsole, &pGlobalData->Device)))
+    {
+        return FALSE;
+    }
+
+    if (FAILED(IMMDevice_Activate(pGlobalData->Device, &IID_IAudioEndpointVolume, CLSCTX_INPROC_SERVER, NULL,
+                                  (void **)&pGlobalData->Volume)))
+    {
+        return FALSE;
+    }
+
+    pGlobalData->Callback = CreateVolumeCallback(hwndDlg);
+    if (pGlobalData->Callback == NULL ||
+        FAILED(IAudioEndpointVolume_RegisterControlChangeNotify(pGlobalData->Volume, pGlobalData->Callback)))
+    {
+        return FALSE;
+    }
+
+    PropVariantInit(&FriendlyName);
+    if (SUCCEEDED(IMMDevice_OpenPropertyStore(pGlobalData->Device, STGM_READ, &pProps)))
+    {
+        IPropertyStore_GetValue(pProps, &DeviceFriendlyNameKey, &FriendlyName);
+        IPropertyStore_Release(pProps);
+    }
+    if (FriendlyName.vt == VT_LPWSTR && FriendlyName.pwszVal)
+        StringCchCopyW(Name, Chars, FriendlyName.pwszVal);
+    PropVariantClear(&FriendlyName);
+    if (Name[0] == L'\0' && SUCCEEDED(IMMDevice_GetId(pGlobalData->Device, &pszId)))
+    {
+        StringCchCopyW(Name, Chars, pszId);
+        CoTaskMemFree(pszId);
+    }
+    return TRUE;
+}
 
 static
 VOID
@@ -301,9 +293,8 @@ GetSystrayVolumeIconState(VOID)
 VOID
 InitVolumeControls(HWND hwndDlg, PGLOBAL_DATA pGlobalData)
 {
-    UINT NumMixers;
-    MIXERCAPSW mxc;
-    WCHAR szNoDevices[256];
+    WCHAR szDeviceName[256], szNoDevices[256];
+    BOOL bOpened = FALSE;
 
     LoadStringW(hApplet, IDS_NO_DEVICES, szNoDevices, _countof(szNoDevices));
 
@@ -311,57 +302,43 @@ InitVolumeControls(HWND hwndDlg, PGLOBAL_DATA pGlobalData)
     SendDlgItemMessageW(hwndDlg, IDC_VOLUME_TRACKBAR, TBM_SETTICFREQ, VOLUME_TICFREQ, 0);
     SendDlgItemMessageW(hwndDlg, IDC_VOLUME_TRACKBAR, TBM_SETPAGESIZE, 0, VOLUME_PAGESIZE);
 
-    NumMixers = mixerGetNumDevs();
-    if (!NumMixers)
+    pGlobalData->bComInit = SUCCEEDED(CoInitializeEx(NULL, COINIT_APARTMENTTHREADED));
+    if (pGlobalData->bComInit)
+        bOpened = OpenDefaultEndpoint(pGlobalData, hwndDlg, szDeviceName, _countof(szDeviceName));
+    if (bOpened)
     {
-        EnableWindow(GetDlgItem(hwndDlg, IDC_VOLUME_TRACKBAR), FALSE);
-        EnableWindow(GetDlgItem(hwndDlg, IDC_VOLUME_LOW),      FALSE);
-        EnableWindow(GetDlgItem(hwndDlg, IDC_VOLUME_HIGH),     FALSE);
-        EnableWindow(GetDlgItem(hwndDlg, IDC_MUTE_CHECKBOX),   FALSE);
-        EnableWindow(GetDlgItem(hwndDlg, IDC_ICON_IN_TASKBAR), FALSE);
-        EnableWindow(GetDlgItem(hwndDlg, IDC_ADVANCED_BTN),    FALSE);
-        EnableWindow(GetDlgItem(hwndDlg, IDC_SPEAKER_VOL_BTN), FALSE);
-        EnableWindow(GetDlgItem(hwndDlg, IDC_ADVANCED2_BTN),   FALSE);
-        SendDlgItemMessageW(hwndDlg, IDC_MUTE_ICON, STM_SETIMAGE, IMAGE_ICON, (LPARAM)pGlobalData->hIconNoHW);
-        SetDlgItemTextW(hwndDlg, IDC_DEVICE_NAME, szNoDevices);
-        return;
+        CheckDlgButton(hwndDlg,
+                       IDC_ICON_IN_TASKBAR,
+                       GetSystrayVolumeIconState() ? BST_CHECKED : BST_UNCHECKED);
+
+        GetMuteState(pGlobalData);
+        UpdateMuteControls(hwndDlg, pGlobalData);
+        pGlobalData->initialMute = pGlobalData->muteVal;
+        if (SUCCEEDED(IAudioEndpointVolume_GetMasterVolumeLevelScalar(pGlobalData->Volume, &pGlobalData->initialLevel)))
+        {
+            SendDlgItemMessageW(hwndDlg, IDC_DEVICE_NAME, WM_SETTEXT, 0, (LPARAM)szDeviceName);
+            SendDlgItemMessageW(hwndDlg, IDC_VOLUME_TRACKBAR, TBM_SETPOS, (WPARAM)TRUE, (LPARAM)VolumePosition(pGlobalData));
+            return;
+        }
     }
 
-    if (mixerOpen(&pGlobalData->hMixer, 0, PtrToUlong(hwndDlg), 0, MIXER_OBJECTF_MIXER | CALLBACK_WINDOW) != MMSYSERR_NOERROR)
+    /* no default render endpoint, or its volume would not open or read: nothing to move */
+    CloseEndpoint(pGlobalData);
+    if (pGlobalData->bComInit)
     {
-        MessageBoxW(hwndDlg, L"Cannot open mixer", NULL, MB_OK);
-        return;
+        CoUninitialize();
+        pGlobalData->bComInit = FALSE;
     }
-
-    ZeroMemory(&mxc, sizeof(MIXERCAPSW));
-    if (mixerGetDevCapsW(PtrToUint(pGlobalData->hMixer), &mxc, sizeof(MIXERCAPSW)) != MMSYSERR_NOERROR)
-    {
-        MessageBoxW(hwndDlg, L"mixerGetDevCaps failed", NULL, MB_OK);
-        return;
-    }
-
-    CheckDlgButton(hwndDlg,
-                   IDC_ICON_IN_TASKBAR,
-                   GetSystrayVolumeIconState() ? BST_CHECKED : BST_UNCHECKED);
-
-    GetMuteControl(pGlobalData);
-    GetMuteState(pGlobalData);
-    if (pGlobalData->muteVal)
-    {
-        SendDlgItemMessageW(hwndDlg, IDC_MUTE_CHECKBOX, BM_SETCHECK, (WPARAM)BST_CHECKED, 0);
-        SendDlgItemMessageW(hwndDlg, IDC_MUTE_ICON, STM_SETIMAGE, IMAGE_ICON, (LPARAM)pGlobalData->hIconMuted);
-    }
-    else
-    {
-        SendDlgItemMessageW(hwndDlg, IDC_MUTE_CHECKBOX, BM_SETCHECK, (WPARAM)BST_UNCHECKED, 0);
-        SendDlgItemMessageW(hwndDlg, IDC_MUTE_ICON, STM_SETIMAGE, IMAGE_ICON, (LPARAM)pGlobalData->hIconUnMuted);
-    }
-
-    GetVolumeControl(pGlobalData);
-    GetVolumeValue(pGlobalData, TRUE);
-
-    SendDlgItemMessageW(hwndDlg, IDC_DEVICE_NAME, WM_SETTEXT, 0, (LPARAM)mxc.szPname);
-    SendDlgItemMessageW(hwndDlg, IDC_VOLUME_TRACKBAR, TBM_SETPOS, (WPARAM)TRUE, (LPARAM)(pGlobalData->maxVolume - pGlobalData->volumeMinimum) / pGlobalData->volumeStep);
+    EnableWindow(GetDlgItem(hwndDlg, IDC_VOLUME_TRACKBAR), FALSE);
+    EnableWindow(GetDlgItem(hwndDlg, IDC_VOLUME_LOW),      FALSE);
+    EnableWindow(GetDlgItem(hwndDlg, IDC_VOLUME_HIGH),     FALSE);
+    EnableWindow(GetDlgItem(hwndDlg, IDC_MUTE_CHECKBOX),   FALSE);
+    EnableWindow(GetDlgItem(hwndDlg, IDC_ICON_IN_TASKBAR), FALSE);
+    EnableWindow(GetDlgItem(hwndDlg, IDC_ADVANCED_BTN),    FALSE);
+    EnableWindow(GetDlgItem(hwndDlg, IDC_SPEAKER_VOL_BTN), FALSE);
+    EnableWindow(GetDlgItem(hwndDlg, IDC_ADVANCED2_BTN),   FALSE);
+    SendDlgItemMessageW(hwndDlg, IDC_MUTE_ICON, STM_SETIMAGE, IMAGE_ICON, (LPARAM)pGlobalData->hIconNoHW);
+    SetDlgItemTextW(hwndDlg, IDC_DEVICE_NAME, szNoDevices);
 }
 
 VOID
@@ -397,25 +374,13 @@ VolumeDlgProc(HWND hwndDlg,
 
     switch (uMsg)
     {
-        case MM_MIXM_LINE_CHANGE:
+        case WM_VOLUME_CHANGED:
         {
+            if (!pGlobalData->Volume)
+                break;
             GetMuteState(pGlobalData);
-            if (pGlobalData->muteVal)
-            {
-                SendDlgItemMessageW(hwndDlg, IDC_MUTE_CHECKBOX, BM_SETCHECK, (WPARAM)BST_CHECKED, 0);
-                SendDlgItemMessageW(hwndDlg, IDC_MUTE_ICON, STM_SETIMAGE, IMAGE_ICON, (LPARAM)pGlobalData->hIconMuted);
-            }
-            else
-            {
-                SendDlgItemMessageW(hwndDlg, IDC_MUTE_CHECKBOX, BM_SETCHECK, (WPARAM)BST_UNCHECKED, 0);
-                SendDlgItemMessageW(hwndDlg, IDC_MUTE_ICON, STM_SETIMAGE, IMAGE_ICON, (LPARAM)pGlobalData->hIconUnMuted);
-            }
-            break;
-        }
-        case MM_MIXM_CONTROL_CHANGE:
-        {
-            GetVolumeValue(pGlobalData, FALSE);
-            SendDlgItemMessageW(hwndDlg, IDC_VOLUME_TRACKBAR, TBM_SETPOS, (WPARAM)TRUE, (LPARAM)(pGlobalData->maxVolume - pGlobalData->volumeMinimum) / pGlobalData->volumeStep);
+            UpdateMuteControls(hwndDlg, pGlobalData);
+            SendDlgItemMessageW(hwndDlg, IDC_VOLUME_TRACKBAR, TBM_SETPOS, (WPARAM)TRUE, (LPARAM)VolumePosition(pGlobalData));
             break;
         }
         case WM_INITDIALOG:
@@ -469,14 +434,7 @@ VolumeDlgProc(HWND hwndDlg,
                     if (HIWORD(wParam) == BN_CLICKED)
                     {
                         SwitchMuteState(pGlobalData);
-                        if (pGlobalData->muteVal)
-                        {
-                            SendDlgItemMessageW(hwndDlg, IDC_MUTE_ICON, STM_SETIMAGE, IMAGE_ICON, (LPARAM)pGlobalData->hIconMuted);
-                        }
-                        else
-                        {
-                            SendDlgItemMessageW(hwndDlg, IDC_MUTE_ICON, STM_SETIMAGE, IMAGE_ICON, (LPARAM)pGlobalData->hIconUnMuted);
-                        }
+                        UpdateMuteControls(hwndDlg, pGlobalData);
 
                         PropSheet_Changed(GetParent(hwndDlg), hwndDlg);
                     }
@@ -526,10 +484,9 @@ VolumeDlgProc(HWND hwndDlg,
         case WM_DESTROY:
             if (pGlobalData)
             {
-                HeapFree(GetProcessHeap(), 0, pGlobalData->volumeCurrentValues);
-                HeapFree(GetProcessHeap(), 0, pGlobalData->volumePreviousValues);
-                HeapFree(GetProcessHeap(), 0, pGlobalData->volumeInitialValues);
-                mixerClose(pGlobalData->hMixer);
+                CloseEndpoint(pGlobalData);
+                if (pGlobalData->bComInit)
+                    CoUninitialize();
 
                 if (pGlobalData->hIconSpeakImg)
                     DestroyIcon(pGlobalData->hIconSpeakImg);
@@ -555,7 +512,8 @@ VolumeDlgProc(HWND hwndDlg,
                     break;
 
                 case PSN_RESET:
-                    RestoreVolumeValue(pGlobalData);
+                    if (pGlobalData->Volume)
+                        RestoreVolumeValue(pGlobalData);
                     break;
             }
             return TRUE;
