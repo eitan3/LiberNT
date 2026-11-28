@@ -2,6 +2,7 @@
 #define STANDALONE
 #include <apitest.h>
 
+extern void func_ThreadLastSystemCall(void);
 extern void func_NtNotifyChangeKey(void);
 extern void func__snprintf(void);
 extern void func__snwprintf(void);
@@ -95,6 +96,7 @@ extern void func_NtDuplicateToken(void);
 extern void func_NtFilterToken(void);
 extern void func_NtFlushInstructionCache(void);
 extern void func_NtFreeVirtualMemory(void);
+extern void func_NtGetContextThread(void);
 extern void func_NtImpersonateAnonymousToken(void);
 extern void func_NtInitializeRegistry(void);
 extern void func_NtLoadUnloadKey(void);
@@ -131,6 +133,7 @@ extern void func_NtQueryObjectName(void);
 extern void func_NtQueryOpenSubKeys(void);
 extern void func_NtQuerySection(void);
 extern void func_NtQuerySectionImageNoExecute(void);
+extern void func_NtQuerySecurityAttributesToken(void);
 extern void func_NtQuerySecurityObject(void);
 extern void func_NtSetSecurityObjectStatus(void);
 extern void func_PipeMailslotSecurity(void);
@@ -151,6 +154,7 @@ extern void func_NtSetInformationFile(void);
 extern void func_NtSetInformationProcess(void);
 extern void func_NtSetInformationThread(void);
 extern void func_NtSetInformationToken(void);
+extern void func_NtSetTimerEx(void);
 extern void func_NtSetValueKey(void);
 extern void func_NtSetVolumeInformationFile(void);
 extern void func_NtStartProfile(void);
@@ -170,6 +174,7 @@ extern void func_RtlCaptureContext(void);
 extern void func_RtlComputePrivatizedDllName_U(void);
 extern void func_RtlConditionVariable(void);
 extern void func_RtlCopyMappedMemory(void);
+extern void func_RtlCreateProcessReflection(void);
 extern void func_RtlCreateServiceSid(void);
 extern void func_RtlCriticalSection(void);
 extern void func_RtlCurrentTransaction(void);
@@ -185,6 +190,7 @@ extern void func_RtlExitUserProcess(void);
 extern void func_RtlFirstFreeAce(void);
 extern void func_RtlGenerate8dot3Name(void);
 extern void func_RtlGetFullPathName_U(void);
+extern void func_RtlGetFullPathName_UEx(void);
 extern void func_RtlGetFullPathName_Ustr(void);
 extern void func_RtlGetFullPathName_UstrEx(void);
 extern void func_RtlGetLengthWithoutLastFullDosOrNtPathElement(void);
@@ -252,6 +258,7 @@ extern void func_StackOverflow(void);
 extern void func_ThreadStackRelease(void);
 extern void func_ScanfSecure(void);
 extern void func_StackProbe(void);
+extern void func_SystemProcessExtension(void);
 extern void func_SystemTimeAtBoot(void);
 extern void func_TimerResolution(void);
 extern void func_SehHandlerLocals(void);
@@ -272,6 +279,7 @@ extern void func_RtlCheckPortableOperatingSystem(void);
 
 const struct test winetest_testlist[] =
 {
+    { "ThreadLastSystemCall", func_ThreadLastSystemCall },
     { "NtNotifyChangeKey", func_NtNotifyChangeKey },
     // CRT tests from ../crt
     { "_snprintf", func__snprintf },
@@ -364,6 +372,7 @@ const struct test winetest_testlist[] =
     { "NtFilterToken",                  func_NtFilterToken },
     { "NtFlushInstructionCache",        func_NtFlushInstructionCache },
     { "NtFreeVirtualMemory",            func_NtFreeVirtualMemory },
+    { "NtGetContextThread",             func_NtGetContextThread },
     { "NtImpersonateAnonymousToken",    func_NtImpersonateAnonymousToken },
     { "NtInitializeRegistry",           func_NtInitializeRegistry },
     { "NtLoadUnloadKey",                func_NtLoadUnloadKey },
@@ -399,6 +408,7 @@ const struct test winetest_testlist[] =
     { "NtQueryOpenSubKeys",             func_NtQueryOpenSubKeys },
     { "NtQuerySection",                 func_NtQuerySection },
     { "NtQuerySectionImageNoExecute",   func_NtQuerySectionImageNoExecute },
+    { "NtQuerySecurityAttributesToken", func_NtQuerySecurityAttributesToken },
     { "NtQuerySecurityObject",          func_NtQuerySecurityObject },
     { "NtSetSecurityObjectStatus",      func_NtSetSecurityObjectStatus },
     { "PipeMailslotSecurity",           func_PipeMailslotSecurity },
@@ -419,6 +429,7 @@ const struct test winetest_testlist[] =
     { "NtSetInformationProcess",        func_NtSetInformationProcess },
     { "NtSetInformationThread",         func_NtSetInformationThread },
     { "NtSetInformationToken",          func_NtSetInformationToken },
+    { "NtSetTimerEx",                   func_NtSetTimerEx },
     { "NtSetValueKey",                  func_NtSetValueKey},
     { "NtSetVolumeInformationFile",     func_NtSetVolumeInformationFile },
     { "NtStartProfile",                 func_NtStartProfile },
@@ -438,6 +449,7 @@ const struct test winetest_testlist[] =
     { "RtlComputePrivatizedDllName_U",  func_RtlComputePrivatizedDllName_U },
     { "RtlConditionVariable",           func_RtlConditionVariable },
     { "RtlCopyMappedMemory",            func_RtlCopyMappedMemory },
+    { "RtlCreateProcessReflection",     func_RtlCreateProcessReflection },
     { "RtlCreateServiceSid",            func_RtlCreateServiceSid },
     { "RtlCriticalSection",             func_RtlCriticalSection },
     { "RtlCurrentTransaction",          func_RtlCurrentTransaction },
@@ -455,6 +467,7 @@ const struct test winetest_testlist[] =
     { "RtlFirstFreeAce",                func_RtlFirstFreeAce },
     { "RtlGenerate8dot3Name",           func_RtlGenerate8dot3Name },
     { "RtlGetFullPathName_U",           func_RtlGetFullPathName_U },
+    { "RtlGetFullPathName_UEx",         func_RtlGetFullPathName_UEx },
     { "RtlGetFullPathName_Ustr",        func_RtlGetFullPathName_Ustr },
     { "RtlGetFullPathName_UstrEx",      func_RtlGetFullPathName_UstrEx },
     { "RtlGetLengthWithoutLastFullDosOrNtPathElement", func_RtlGetLengthWithoutLastFullDosOrNtPathElement },
@@ -518,6 +531,7 @@ const struct test winetest_testlist[] =
     { "StackOverflow",                  func_StackOverflow },
     { "ScanfSecure",                    func_ScanfSecure },
     { "StackProbe",                     func_StackProbe },
+    { "SystemProcessExtension",         func_SystemProcessExtension },
     { "SystemTimeAtBoot",               func_SystemTimeAtBoot },
     { "TimerResolution",                func_TimerResolution },
     { "SehHandlerLocals",               func_SehHandlerLocals },

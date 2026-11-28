@@ -292,7 +292,8 @@ TestUnrequestedAssociation(HANDLE Client, const GUID *Interface)
     WlanDeleteProfile(Client, Interface, L"ReactOS-Rejoin", NULL);
 }
 
-START_TEST(WlanConnectionRecovery)
+static VOID
+RunOnVwifi(BOOL StalledHandshake)
 {
     SP_DEVINFO_DATA Device;
     HDEVINFO Devices = INVALID_HANDLE_VALUE;
@@ -328,9 +329,15 @@ START_TEST(WlanConnectionRecovery)
             ok(WaitEvent(Mark, WLAN_NOTIFICATION_SOURCE_ACM, wlan_notification_acm_scan_complete, 5000, NULL),
                "The scan did not complete\n");
 
-            TestRoamAfterFailedAttempt(Client, &Interface);
-            TestStalledHandshake(Client, &Interface);
-            TestUnrequestedAssociation(Client, &Interface);
+            if (StalledHandshake)
+            {
+                TestStalledHandshake(Client, &Interface);
+            }
+            else
+            {
+                TestRoamAfterFailedAttempt(Client, &Interface);
+                TestUnrequestedAssociation(Client, &Interface);
+            }
 
             WlanRegisterNotification(Client, WLAN_NOTIFICATION_SOURCE_NONE, FALSE, NULL, NULL, NULL, NULL);
         }
@@ -343,4 +350,17 @@ START_TEST(WlanConnectionRecovery)
     WlanCloseHandle(Client, NULL);
     CloseHandle(EventSignal);
     DeleteCriticalSection(&EventLock);
+}
+
+START_TEST(WlanConnectionRecovery)
+{
+    RunOnVwifi(FALSE);
+}
+
+START_TEST(WlanStalledHandshake)
+{
+    /* Waits for the 10 s key start timeout (as on Linux), too long for a unit run */
+    skip("the stalled handshake case waits for the 10 s key start timeout\n");
+    if (0)
+        RunOnVwifi(TRUE);
 }

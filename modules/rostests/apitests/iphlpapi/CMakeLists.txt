@@ -7,13 +7,16 @@ list(APPEND SOURCE
     GetIpNetEntry2.c
     GetNetworkParams.c
     GetOwnerModuleFromTcpEntry.c
+    GetOwnerModuleFromUdp6Entry.c
     GetOwnerModuleFromUdpEntry.c
+    IcmpEchoTimeChange.c
     icmp.c
     icmp_echo.c
     icmp6_echo.c
     InitializeIpInterfaceEntry.c
     NotifyIpInterfaceChange.c
     SendARP.c
+    TcpTableAccepted.c
     UnicastIpAddressChange.c
     UnicastIpAddressTimeChange.c
     testlist.c)

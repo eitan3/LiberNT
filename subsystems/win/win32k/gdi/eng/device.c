@@ -21,16 +21,70 @@ static PGRAPHICS_DEVICE gpGraphicsDeviceLast = NULL;
 static HSEMAPHORE ghsemGraphicsDeviceList;
 static ULONG giDevNum = 1;
 
+typedef struct _GRAPHICS_DEVICE_NOTIFY
+{
+    LIST_ENTRY ListEntry;
+    PGRAPHICS_DEVICE pGraphicsDevice;
+    PVOID NotificationEntry;
+    BOOLEAN bRemoved;
+} GRAPHICS_DEVICE_NOTIFY, *PGRAPHICS_DEVICE_NOTIFY;
+
+static PDRIVER_OBJECT gpGraphicsDriverObject;
+static LIST_ENTRY gGraphicsDeviceNotifyList;
+static LIST_ENTRY gGraphicsDeviceNotifyRetired;
+
+static const GUID GraphicsDeviceQueryRemove =
+    { 0xcb3a4006, 0x46f0, 0x11d0, { 0xb0, 0x8f, 0x00, 0x60, 0x97, 0x13, 0x05, 0x3f } };
+static const GUID GraphicsDeviceRemoveComplete =
+    { 0xcb3a4008, 0x46f0, 0x11d0, { 0xb0, 0x8f, 0x00, 0x60, 0x97, 0x13, 0x05, 0x3f } };
+
 CODE_SEG("INIT")
 NTSTATUS
 NTAPI
-InitDeviceImpl(VOID)
+InitDeviceImpl(
+    _In_ PDRIVER_OBJECT DriverObject)
 {
     ghsemGraphicsDeviceList = EngCreateSemaphore();
     if (!ghsemGraphicsDeviceList)
         return STATUS_INSUFFICIENT_RESOURCES;
 
+    gpGraphicsDriverObject = DriverObject;
+    InitializeListHead(&gGraphicsDeviceNotifyList);
+    InitializeListHead(&gGraphicsDeviceNotifyRetired);
     return STATUS_SUCCESS;
+}
+
+VOID
+NTAPI
+FreeDeviceImpl(VOID)
+{
+    ASSERT(gpGraphicsDeviceFirst == NULL);
+    ASSERT(IsListEmpty(&gGraphicsDeviceNotifyList));
+    if (ghsemGraphicsDeviceList)
+    {
+        EngDeleteSemaphore(ghsemGraphicsDeviceList);
+        ghsemGraphicsDeviceList = NULL;
+    }
+}
+
+static const WCHAR gszDisconnectedDisplayNtName[] = L"\\Device\\DisconnectedDisplay";
+
+/* The disconnected display is the only graphics device that has no video device object */
+static
+BOOLEAN
+EngpIsDisconnectedGraphicsDevice(
+    _In_ PGRAPHICS_DEVICE pGraphicsDevice)
+{
+    return pGraphicsDevice->DeviceObject == NULL;
+}
+
+static
+BOOLEAN
+EngpIsConsoleSession(VOID)
+{
+    PUSER_SESSION DisplaySession = ReadPointerAcquire((PVOID volatile *)&gpDisplaySession);
+
+    return DisplaySession != NULL && DisplaySession == UserGetCurrentSession();
 }
 
 static
@@ -43,6 +97,9 @@ EngpHasVgaDriver(
     NTSTATUS Status;
     ULONG cbValue;
     HKEY hkey;
+
+    if (EngpIsDisconnectedGraphicsDevice(pGraphicsDevice))
+        return FALSE;
 
     /* Open the key for the adapters */
     Status = RegOpenKey(L"\\Registry\\Machine\\HARDWARE\\DEVICEMAP\\VIDEO", &hkey);
@@ -197,11 +254,49 @@ EngpIsGraphicsDeviceRegistered(
 
 static
 VOID
+EngpReleaseRetiredNotifications(VOID)
+{
+    PGRAPHICS_DEVICE_NOTIFY pNotify;
+
+    ASSERT(!UserIsEntered());
+    for (;;)
+    {
+        pNotify = NULL;
+        EngAcquireSemaphore(ghsemGraphicsDeviceList);
+        if (!IsListEmpty(&gGraphicsDeviceNotifyRetired))
+            pNotify = CONTAINING_RECORD(RemoveHeadList(&gGraphicsDeviceNotifyRetired), GRAPHICS_DEVICE_NOTIFY, ListEntry);
+        EngReleaseSemaphore(ghsemGraphicsDeviceList);
+        if (!pNotify)
+            break;
+        ASSERT(pNotify->pGraphicsDevice == NULL);
+        IoUnregisterPlugPlayNotificationEx(pNotify->NotificationEntry);
+        ExFreePoolWithTag(pNotify, GDITAG_GDEVICE);
+    }
+}
+
+static
+VOID
 EngpFreeGraphicsDevice(
     _In_ PGRAPHICS_DEVICE pGraphicsDevice)
 {
+    PGRAPHICS_DEVICE_NOTIFY pNotify;
     PDEVMODEINFO pdminfo, pdmiNext;
+    PLIST_ENTRY pEntry;
     ULONG i;
+
+    EngAcquireSemaphore(ghsemGraphicsDeviceList);
+    for (pEntry = gGraphicsDeviceNotifyList.Flink; pEntry != &gGraphicsDeviceNotifyList; pEntry = pEntry->Flink)
+    {
+        pNotify = CONTAINING_RECORD(pEntry, GRAPHICS_DEVICE_NOTIFY, ListEntry);
+        if (pNotify->pGraphicsDevice == pGraphicsDevice)
+        {
+            RemoveEntryList(&pNotify->ListEntry);
+            pNotify->pGraphicsDevice = NULL;
+            InsertTailList(&gGraphicsDeviceNotifyRetired, &pNotify->ListEntry);
+            break;
+        }
+    }
+    EngReleaseSemaphore(ghsemGraphicsDeviceList);
 
     for (pdminfo = pGraphicsDevice->pdevmodeInfo; pdminfo; pdminfo = pdmiNext)
     {
@@ -216,9 +311,232 @@ EngpFreeGraphicsDevice(
     if (pGraphicsDevice->pvMonDev)
         ExFreePoolWithTag(pGraphicsDevice->pvMonDev, GDITAG_GDEVICE);
 
-    ObDereferenceObject(pGraphicsDevice->FileObject);
+    if (pGraphicsDevice->PhysDeviceHandle)
+        ObDereferenceObject(pGraphicsDevice->PhysDeviceHandle);
+    ASSERT(EngpIsDisconnectedGraphicsDevice(pGraphicsDevice) == (pGraphicsDevice->FileObject == NULL));
+    if (pGraphicsDevice->FileObject != NULL)
+        ObDereferenceObject(pGraphicsDevice->FileObject);
     ExFreePoolWithTag(pGraphicsDevice->pDiplayDrivers, GDITAG_DRVSUP);
     ExFreePoolWithTag(pGraphicsDevice, GDITAG_GDEVICE);
+}
+
+static
+NTSTATUS
+NTAPI
+EngpGraphicsDeviceNotification(
+    _In_ PVOID NotificationStructure,
+    _Inout_opt_ PVOID Context)
+{
+    PTARGET_DEVICE_REMOVAL_NOTIFICATION pNotification = NotificationStructure;
+    PGRAPHICS_DEVICE_NOTIFY pNotify = Context;
+    PGRAPHICS_DEVICE pGraphicsDevice;
+    WCHAR szWinDeviceName[CCHDEVICENAME / 2] = L"";
+    BOOLEAN bQueryRemove;
+    BOOLEAN bRemove = FALSE;
+
+    bQueryRemove = IsEqualGUID(&pNotification->Event, &GraphicsDeviceQueryRemove);
+    if (!pNotify || (!bQueryRemove && !IsEqualGUID(&pNotification->Event, &GraphicsDeviceRemoveComplete)))
+        return STATUS_SUCCESS;
+
+    UserEnterExclusive();
+    EngAcquireSemaphore(ghsemGraphicsDeviceList);
+    pGraphicsDevice = pNotify->pGraphicsDevice;
+    if (pGraphicsDevice)
+        RtlCopyMemory(szWinDeviceName, pGraphicsDevice->szWinDeviceName, sizeof(szWinDeviceName));
+    if (pGraphicsDevice && gppdevDetached && gpmdev && gpmdev->ppdevGlobal->pGraphicsDevice == pGraphicsDevice)
+    {
+        TRACE("Moving the desktop off the removed graphics device %S\n", szWinDeviceName);
+        if (!bQueryRemove)
+            pNotify->bRemoved = TRUE;
+        UserQueueDisplayDetach();
+    }
+    else if (pGraphicsDevice &&
+        !(pGraphicsDevice->StateFlags & (DISPLAY_DEVICE_ATTACHED_TO_DESKTOP | DISPLAY_DEVICE_PRIMARY_DEVICE)) &&
+        pGraphicsDevice != gpPrimaryGraphicsDevice &&
+        pGraphicsDevice != gpVgaGraphicsDevice &&
+        !pGraphicsDevice->pVgaDevice &&
+        !PDEVOBJ_bGraphicsDeviceInUse(pGraphicsDevice))
+    {
+        TRACE("Removing graphics device %S (%S)\n", szWinDeviceName, pGraphicsDevice->szNtDeviceName);
+        EngpUnlinkGraphicsDevice(pGraphicsDevice);
+        bRemove = TRUE;
+    }
+    EngReleaseSemaphore(ghsemGraphicsDeviceList);
+    UserLeave();
+
+    if (bRemove)
+    {
+        EngpFreeGraphicsDevice(pGraphicsDevice);
+        EngpReleaseRetiredNotifications();
+        return STATUS_SUCCESS;
+    }
+
+    if (pGraphicsDevice && bQueryRemove)
+    {
+        TRACE("Graphics device %S is in use\n", szWinDeviceName);
+        return STATUS_UNSUCCESSFUL;
+    }
+
+    if (pGraphicsDevice)
+        ERR("Graphics device %S was removed while in use\n", szWinDeviceName);
+    return STATUS_SUCCESS;
+}
+
+VOID
+NTAPI
+EngpReleaseAllGraphicsDevices(VOID)
+{
+    PGRAPHICS_DEVICE pGraphicsDevice;
+
+    for (;;)
+    {
+        EngAcquireSemaphore(ghsemGraphicsDeviceList);
+        pGraphicsDevice = gpGraphicsDeviceFirst;
+        if (pGraphicsDevice)
+            EngpUnlinkGraphicsDevice(pGraphicsDevice);
+        EngReleaseSemaphore(ghsemGraphicsDeviceList);
+        if (!pGraphicsDevice)
+            break;
+
+        EngpFreeGraphicsDevice(pGraphicsDevice);
+    }
+    gpPrimaryGraphicsDevice = NULL;
+    gpVgaGraphicsDevice = NULL;
+    EngpReleaseRetiredNotifications();
+}
+
+VOID
+NTAPI
+EngpReleaseRemovedGraphicsDevices(VOID)
+{
+    PGRAPHICS_DEVICE_NOTIFY pNotify;
+    PGRAPHICS_DEVICE pGraphicsDevice;
+    PLIST_ENTRY pEntry;
+
+    for (;;)
+    {
+        pGraphicsDevice = NULL;
+        EngAcquireSemaphore(ghsemGraphicsDeviceList);
+        for (pEntry = gGraphicsDeviceNotifyList.Flink; pEntry != &gGraphicsDeviceNotifyList; pEntry = pEntry->Flink)
+        {
+            pNotify = CONTAINING_RECORD(pEntry, GRAPHICS_DEVICE_NOTIFY, ListEntry);
+            if (pNotify->bRemoved &&
+                !(pNotify->pGraphicsDevice->StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) &&
+                !PDEVOBJ_bGraphicsDeviceInUse(pNotify->pGraphicsDevice))
+            {
+                pGraphicsDevice = pNotify->pGraphicsDevice;
+                EngpUnlinkGraphicsDevice(pGraphicsDevice);
+                break;
+            }
+        }
+        EngReleaseSemaphore(ghsemGraphicsDeviceList);
+        if (!pGraphicsDevice)
+            break;
+
+        TRACE("Releasing removed graphics device %S\n", pGraphicsDevice->szWinDeviceName);
+        EngpFreeGraphicsDevice(pGraphicsDevice);
+    }
+
+    ASSERT(UserIsEnteredExclusive());
+    UserLeave();
+    EngpReleaseRetiredNotifications();
+    UserEnterExclusive();
+}
+
+static
+VOID
+EngpRegisterGraphicsDeviceNotification(
+    _In_ PGRAPHICS_DEVICE pGraphicsDevice)
+{
+    PGRAPHICS_DEVICE_NOTIFY pNotify;
+    NTSTATUS Status;
+
+    pNotify = ExAllocatePoolZero(NonPagedPool, sizeof(*pNotify), GDITAG_GDEVICE);
+    if (!pNotify)
+        return;
+
+    pNotify->pGraphicsDevice = pGraphicsDevice;
+    Status = IoRegisterPlugPlayNotification(EventCategoryTargetDeviceChange,
+                                            0,
+                                            pGraphicsDevice->FileObject,
+                                            gpGraphicsDriverObject,
+                                            EngpGraphicsDeviceNotification,
+                                            pNotify,
+                                            &pNotify->NotificationEntry);
+    if (!NT_SUCCESS(Status))
+    {
+        TRACE("No removal notification for %S: 0x%08lx\n", pGraphicsDevice->szNtDeviceName, Status);
+        ExFreePoolWithTag(pNotify, GDITAG_GDEVICE);
+        return;
+    }
+
+    EngAcquireSemaphore(ghsemGraphicsDeviceList);
+    InsertTailList(&gGraphicsDeviceNotifyList, &pNotify->ListEntry);
+    EngReleaseSemaphore(ghsemGraphicsDeviceList);
+}
+
+/* TODO: INFO_NEEDED the device name and description Windows 11 reports for the disconnected display of a non-console session */
+static
+NTSTATUS
+EngpRegisterDisconnectedGraphicsDevice(VOID)
+{
+    static const WCHAR DisplayDrivers[] = L"discdd\0";
+    static const WCHAR Description[] = L"Disconnected Display";
+    PGRAPHICS_DEVICE pGraphicsDevice, pRegistered;
+    PWSTR pwsz;
+
+    ASSERT(!EngpIsConsoleSession());
+
+    if (EngpIsGraphicsDeviceRegistered(gszDisconnectedDisplayNtName))
+        return STATUS_SUCCESS;
+
+    pGraphicsDevice = ExAllocatePoolZero(PagedPool, sizeof(GRAPHICS_DEVICE), GDITAG_GDEVICE);
+    if (!pGraphicsDevice)
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    /* REG_MULTI_SZ driver list (its literal adds the final terminator), then the description */
+    pwsz = ExAllocatePoolWithTag(PagedPool, sizeof(DisplayDrivers) + sizeof(Description), GDITAG_DRVSUP);
+    if (!pwsz)
+    {
+        ExFreePoolWithTag(pGraphicsDevice, GDITAG_GDEVICE);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlCopyMemory(pwsz, DisplayDrivers, sizeof(DisplayDrivers));
+    pGraphicsDevice->pDiplayDrivers = pwsz;
+    pGraphicsDevice->pwszDescription = pwsz + ARRAYSIZE(DisplayDrivers);
+    RtlCopyMemory(pGraphicsDevice->pwszDescription, Description, sizeof(Description));
+    RtlStringCbCopyW(pGraphicsDevice->szNtDeviceName, sizeof(pGraphicsDevice->szNtDeviceName), gszDisconnectedDisplayNtName);
+    ASSERT(EngpIsDisconnectedGraphicsDevice(pGraphicsDevice));
+
+    EngAcquireSemaphore(ghsemGraphicsDeviceList);
+    for (pRegistered = gpGraphicsDeviceFirst; pRegistered; pRegistered = pRegistered->pNextGraphicsDevice)
+    {
+        if (EngpIsDisconnectedGraphicsDevice(pRegistered))
+            break;
+    }
+    if (pRegistered)
+    {
+        /* Another thread of this session registered it first */
+        EngReleaseSemaphore(ghsemGraphicsDeviceList);
+        ExFreePoolWithTag(pGraphicsDevice->pDiplayDrivers, GDITAG_DRVSUP);
+        ExFreePoolWithTag(pGraphicsDevice, GDITAG_GDEVICE);
+        return STATUS_SUCCESS;
+    }
+    RtlStringCbPrintfW(pGraphicsDevice->szWinDeviceName,
+                       sizeof(pGraphicsDevice->szWinDeviceName),
+                       L"\\\\.\\DISPLAY%d",
+                       (int)giDevNum);
+    EngpLinkGraphicsDevice(pGraphicsDevice);
+    giDevNum++;
+    if (!gpPrimaryGraphicsDevice)
+    {
+        pGraphicsDevice->StateFlags |= DISPLAY_DEVICE_PRIMARY_DEVICE;
+        gpPrimaryGraphicsDevice = pGraphicsDevice;
+    }
+    EngReleaseSemaphore(ghsemGraphicsDeviceList);
+
+    TRACE("Registered the disconnected display as %S\n", pGraphicsDevice->szWinDeviceName);
+    return STATUS_SUCCESS;
 }
 
 /* Goal of this function is to:
@@ -239,6 +557,10 @@ EngpUpdateGraphicsDeviceList(VOID)
     PGRAPHICS_DEVICE pGraphicsDevice, pNewPrimaryGraphicsDevice = NULL;
     ULONG cbValue;
     HKEY hkey;
+
+    /* Services and other sessions without the console have no access to the video driver; they draw to a disconnected display */
+    if (!EngpIsConsoleSession())
+        return EngpRegisterDisconnectedGraphicsDevice();
 
     /* Open the key for the adapters */
     Status = RegOpenKey(L"\\Registry\\Machine\\HARDWARE\\DEVICEMAP\\VIDEO", &hkey);
@@ -347,6 +669,17 @@ EngpUpdateGraphicsDeviceList(VOID)
              pGraphicsDevice;
              pGraphicsDevice = pGraphicsDevice->pNextGraphicsDevice)
         {
+            if (!EngpHasVgaDriver(pGraphicsDevice) &&
+                EngpIsDisplayAttached(pGraphicsDevice))
+            {
+                pNewPrimaryGraphicsDevice = pGraphicsDevice;
+                break;
+            }
+        }
+        for (pGraphicsDevice = gpGraphicsDeviceFirst;
+             pGraphicsDevice && !pNewPrimaryGraphicsDevice;
+             pGraphicsDevice = pGraphicsDevice->pNextGraphicsDevice)
+        {
             if (!EngpHasVgaDriver(pGraphicsDevice))
             {
                 pNewPrimaryGraphicsDevice = pGraphicsDevice;
@@ -391,6 +724,9 @@ EngpGetRegistryHandleFromDeviceMap(
     ULONG cbSize;
     NTSTATUS Status;
 
+    if (EngpIsDisconnectedGraphicsDevice(pGraphicsDevice))
+        return NULL;
+
     /* Open the device map registry key */
     Status = RegOpenKey(KEY_VIDEO, &hKey);
     if (!NT_SUCCESS(Status))
@@ -401,12 +737,17 @@ EngpGetRegistryHandleFromDeviceMap(
 
     /* Query the registry path */
     cbSize = sizeof(szDeviceKey);
-    RegQueryValue(hKey,
-                  pGraphicsDevice->szNtDeviceName,
-                  REG_SZ,
-                  szDeviceKey,
-                  &cbSize);
+    Status = RegQueryValue(hKey,
+                           pGraphicsDevice->szNtDeviceName,
+                           REG_SZ,
+                           szDeviceKey,
+                           &cbSize);
     ZwClose(hKey);
+    if (!NT_SUCCESS(Status))
+    {
+        ERR("No device map entry for %S: status 0x%08x\n", pGraphicsDevice->szNtDeviceName, Status);
+        return NULL;
+    }
 
     /* Open the registry key */
     Status = RegOpenKey(szDeviceKey, &hKey);
@@ -450,6 +791,9 @@ EngpGetDisplayDriverParameters(
 #undef READ
         {0}
     };
+
+    if (EngpIsDisconnectedGraphicsDevice(pGraphicsDevice))
+        return STATUS_SUCCESS;
 
     hKey = EngpGetRegistryHandleFromDeviceMap(pGraphicsDevice);
     if (!hKey)
@@ -565,6 +909,8 @@ VideoPortCallout(
 
         case VideoDxgkMonitorEventCallout:
         {
+            if (CallbackParams->PhysDisp)
+                InterlockedExchange(&((PGRAPHICS_DEVICE)CallbackParams->PhysDisp)->lMonitorEvent, 1);
             UserQueueDisplayConfigurationUpdate();
             CallbackParams->Status = STATUS_SUCCESS;
             break;
@@ -832,6 +1178,31 @@ EngpReferenceMonitorDevice(
     return bFound;
 }
 
+/* Session 0 shares the adapters it draws on; any other session asks the device whether it may use it */
+static
+BOOLEAN
+EngpUseGraphicsDeviceInSession(
+    _In_ PDEVICE_OBJECT DeviceObject)
+{
+    VIDEO_DEVICE_SESSION_STATUS SessionStatus;
+    ULONG ulReturn = 0;
+    DWORD Error;
+
+    if (ReadPointerAcquire((PVOID volatile *)&gpDisplaySession) == NULL)
+        return TRUE;
+
+    SessionStatus.bEnable = TRUE;
+    SessionStatus.bSuccess = FALSE;
+    Error = EngDeviceIoControl((HANDLE)DeviceObject,
+                               IOCTL_VIDEO_USE_DEVICE_IN_SESSION,
+                               &SessionStatus,
+                               sizeof(SessionStatus),
+                               &SessionStatus,
+                               sizeof(SessionStatus),
+                               &ulReturn);
+    return Error == ERROR_SUCCESS && ulReturn >= sizeof(SessionStatus) && SessionStatus.bSuccess;
+}
+
 PGRAPHICS_DEVICE
 NTAPI
 EngpRegisterGraphicsDevice(
@@ -871,6 +1242,14 @@ EngpRegisterGraphicsDevice(
     if (!NT_SUCCESS(Status))
     {
         ERR("Could not open device %wZ, 0x%lx\n", pustrDeviceName, Status);
+        ExFreePoolWithTag(pGraphicsDevice, GDITAG_GDEVICE);
+        return NULL;
+    }
+
+    if (!EngpUseGraphicsDeviceInSession(pDeviceObject))
+    {
+        TRACE("%wZ belongs to another session\n", pustrDeviceName);
+        ObDereferenceObject(pFileObject);
         ExFreePoolWithTag(pGraphicsDevice, GDITAG_GDEVICE);
         return NULL;
     }
@@ -926,6 +1305,8 @@ EngpRegisterGraphicsDevice(
     // if (Win32kCallbacks.bACPI)
     // if (Win32kCallbacks.DualviewFlags & ???)
     pGraphicsDevice->PhysDeviceHandle = Win32kCallbacks.pPhysDeviceObject;
+    if (pGraphicsDevice->PhysDeviceHandle)
+        ObReferenceObject(pGraphicsDevice->PhysDeviceHandle);
 
     /* Copy the device name */
     RtlStringCbCopyNW(pGraphicsDevice->szNtDeviceName,
@@ -946,6 +1327,8 @@ EngpRegisterGraphicsDevice(
     {
         ERR("Could not allocate string buffer\n");
         ASSERT(FALSE); // FIXME
+        if (pGraphicsDevice->PhysDeviceHandle)
+            ObDereferenceObject(pGraphicsDevice->PhysDeviceHandle);
         ExFreePoolWithTag(pGraphicsDevice, GDITAG_GDEVICE);
         return NULL;
     }
@@ -977,6 +1360,8 @@ EngpRegisterGraphicsDevice(
 
     /* Unlock loader */
     EngReleaseSemaphore(ghsemGraphicsDeviceList);
+
+    EngpRegisterGraphicsDeviceNotification(pGraphicsDevice);
 
     /* HACK: already in graphic mode; display wallpaper on this new display */
     if (ScreenDeviceContext)

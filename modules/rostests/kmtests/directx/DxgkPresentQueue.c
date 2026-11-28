@@ -300,6 +300,34 @@ DxgkPresentQueueTestDmaGeometry(VOID)
 }
 
 static VOID
+DxgkPresentQueueTestBindingCreatesOpen(VOID)
+{
+    ok_bool_true(DxgkPresentCoreBindingCreatesOpen(FALSE, TRUE), "the CDD device creates the open of a surface the graphics kernel made without a device");
+    ok_bool_false(DxgkPresentCoreBindingCreatesOpen(TRUE, TRUE), "a surface with a creating device is only opened by the CDD device");
+    ok_bool_false(DxgkPresentCoreBindingCreatesOpen(FALSE, FALSE), "another device only opens a surface the graphics kernel made");
+    ok_bool_false(DxgkPresentCoreBindingCreatesOpen(TRUE, FALSE), "another device only opens a surface with a creating device");
+}
+
+static VOID
+DxgkPresentQueueTestPostComposition(VOID)
+{
+    RECT SrcRect, DstRect;
+
+    ok_bool_true(DxgkPresentCorePostCompositionRects(1920, 1080, &SrcRect, &DstRect), "a committed mode is described");
+    ok_eq_long(SrcRect.left, 0L);
+    ok_eq_long(SrcRect.top, 0L);
+    ok_eq_long(SrcRect.right, 1920L);
+    ok_eq_long(SrcRect.bottom, 1080L);
+    ok_eq_long(DstRect.left, 0L);
+    ok_eq_long(DstRect.top, 0L);
+    ok_eq_long(DstRect.right, 1920L);
+    ok_eq_long(DstRect.bottom, 1080L);
+    ok_bool_false(DxgkPresentCorePostCompositionRects(0, 1080, &SrcRect, &DstRect), "no width, no post-composition");
+    ok_bool_false(DxgkPresentCorePostCompositionRects(1920, 0, &SrcRect, &DstRect), "no height, no post-composition");
+    ok_bool_false(DxgkPresentCorePostCompositionRects(0x80000000UL, 1080, &SrcRect, &DstRect), "a width beyond a RECT is refused");
+}
+
+static VOID
 DxgkPresentQueueTestContract(VOID)
 {
     static const RECT SourceSubRects[] =
@@ -759,6 +787,8 @@ START_TEST(DxgkPresentQueue)
     DxgkPresentQueueTestExecutionOrder();
     DxgkPresentQueueTestDmaGeometry();
     DxgkPresentQueueTestContract();
+    DxgkPresentQueueTestBindingCreatesOpen();
+    DxgkPresentQueueTestPostComposition();
     DxgkPresentQueueTestBltRects();
     DxgkPresentQueueTestLimits();
 

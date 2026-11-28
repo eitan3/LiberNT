@@ -105,6 +105,15 @@ FORCEINLINE BOOLEAN DxgkHotPlugWorkCoreSourceHasOwnPrimary(_In_ ULONG SourceId, 
     return SourceId != 0 && SourceId != DesktopSourceId && SourceId < NumSources && SourceId < MaxSourcePrimaries;
 }
 
+/* A connector change is taken only by a worker that can drain it; before start completes it stays pending for the
+ * start path to queue again. */
+FORCEINLINE BOOLEAN DxgkHotPlugWorkCoreTakeConnectorChange(_Inout_ volatile LONG *Pending, _In_ BOOLEAN AdapterStarted)
+{
+    if (!AdapterStarted)
+        return FALSE;
+    return InterlockedExchange(Pending, 0) != 0;
+}
+
 FORCEINLINE BOOLEAN DxgkHotPlugWorkCoreCanAcquireLevel3AfterRundown(_In_ volatile const LONG *Active)
 {
     return *Active == 0;
@@ -132,6 +141,18 @@ FORCEINLINE ULONG DxgkHotPlugWorkCoreRetryDelayMs(_In_ ULONG RetryCount)
     while (RetryCount-- != 0 && DelayMs < DXGK_HOTPLUG_RETRY_MAX_MS)
         DelayMs = min(DelayMs * 2, DXGK_HOTPLUG_RETRY_MAX_MS);
     return DelayMs;
+}
+
+/* A rebuild tells the session of a display change once per monitor connection, and otherwise only when the
+ * committed paths or the desktop size changed; an adapter with no output left keeps its desktop mode silently. */
+FORCEINLINE BOOLEAN DxgkHotPlugWorkCoreNotifiesDisplayChange(
+    _In_ BOOLEAN VidPnCommitted,
+    _In_ BOOLEAN MonitorArrived,
+    _In_ BOOLEAN DesktopSized,
+    _In_ BOOLEAN PathsChanged,
+    _In_ BOOLEAN SizeChanged)
+{
+    return VidPnCommitted && (MonitorArrived || (DesktopSized && (PathsChanged || SizeChanged)));
 }
 
 #endif /* _DXGK_HOTPLUG_WORK_CORE_H_ */

@@ -13,6 +13,7 @@
 PRTL_ATOM_TABLE gAtomTable = NULL;
 static PUSER_SESSION gpUserSessions = NULL;
 PUSER_SESSION gpDisplaySession = NULL;
+BOOLEAN gbConsoleSession = FALSE;
 
 /* FUNCTIONS *******************************************************************/
 
@@ -70,11 +71,69 @@ UserCreateSession(ULONG SessionId, PUSER_SESSION *Session)
         return STATUS_INSUFFICIENT_RESOURCES;
 
     NewSession->SessionId = SessionId;
+    KeInitializeSpinLock(&NewSession->DesktopThreadLock);
     KeInitializeEvent(&NewSession->DesktopThreadStarted, SynchronizationEvent, FALSE);
+    InitializeListHead(&NewSession->DesktopsToDestroy);
     NewSession->Next = gpUserSessions;
     WritePointerRelease((PVOID volatile *)&gpUserSessions, NewSession);
     *Session = NewSession;
     return STATUS_SUCCESS;
+}
+
+VOID FASTCALL
+UserBeginSessionsEnd(VOID)
+{
+    PUSER_SESSION Session;
+
+    ASSERT(UserIsEnteredExclusive());
+    for (Session = ReadPointerAcquire((PVOID volatile *)&gpUserSessions); Session; Session = Session->Next)
+        Session->Ending = TRUE;
+}
+
+VOID FASTCALL
+UserReleaseSessions(VOID)
+{
+    PUSER_SESSION Session;
+
+    for (Session = ReadPointerAcquire((PVOID volatile *)&gpUserSessions); Session; Session = Session->Next)
+    {
+        ASSERT(Session->Ending);
+        ResetCsrApiPort(Session);
+        ResetCsrProcess(Session);
+        if (Session->DesktopSwitchEvent)
+        {
+            ObDereferenceObject(Session->DesktopSwitchEvent);
+            Session->DesktopSwitchEvent = NULL;
+            Session->DesktopSwitchEventHandle = NULL;
+        }
+        if (Session->WinStaDir)
+        {
+            ZwClose(Session->WinStaDir);
+            Session->WinStaDir = NULL;
+        }
+    }
+}
+
+VOID FASTCALL
+FreeSessionImpl(VOID)
+{
+    PUSER_SESSION Session;
+
+    WritePointerRelease((PVOID volatile *)&gpDisplaySession, NULL);
+    while ((Session = gpUserSessions) != NULL)
+    {
+        ASSERT(Session->Ending);
+        ASSERT(Session->CsrProcess == NULL && Session->CsrApiPort == NULL);
+        ASSERT(Session->WinStaDir == NULL && Session->DesktopSwitchEvent == NULL);
+        WritePointerRelease((PVOID volatile *)&gpUserSessions, Session->Next);
+        RtlFreeUnicodeString(&Session->WinStaDirName);
+        ExFreePoolWithTag(Session, TAG_SESSION);
+    }
+    if (gAtomTable)
+    {
+        RtlDestroyAtomTable(gAtomTable);
+        gAtomTable = NULL;
+    }
 }
 
 PUNICODE_STRING FASTCALL
@@ -117,19 +176,25 @@ UserIsCsrProcess(PEPROCESS Process)
     return FALSE;
 }
 
-BOOLEAN FASTCALL
-UserIsDesktopThread(PTHREADINFO pti)
+PUSER_SESSION FASTCALL
+UserGetDesktopThreadSession(PTHREADINFO pti)
 {
     PUSER_SESSION Session;
 
     if (!pti)
-        return FALSE;
+        return NULL;
     for (Session = ReadPointerAcquire((PVOID volatile *)&gpUserSessions); Session; Session = Session->Next)
     {
         if (Session->DesktopThread == pti)
-            return TRUE;
+            return Session;
     }
-    return FALSE;
+    return NULL;
+}
+
+BOOLEAN FASTCALL
+UserIsDesktopThread(PTHREADINFO pti)
+{
+    return UserGetDesktopThreadSession(pti) != NULL;
 }
 
 PTHREADINFO FASTCALL
@@ -138,6 +203,29 @@ UserGetDesktopThread(VOID)
     PUSER_SESSION Session = UserGetCurrentSession();
 
     return Session ? Session->DesktopThread : NULL;
+}
+
+VOID FASTCALL
+UserSetDesktopThread(PUSER_SESSION Session, PTHREADINFO pti)
+{
+    KIRQL OldIrql;
+
+    ASSERT(pti == NULL || pti == PsGetCurrentThreadWin32Thread());
+    KeAcquireSpinLock(&Session->DesktopThreadLock, &OldIrql);
+    ASSERT((Session->DesktopThread == NULL) != (pti == NULL));
+    WritePointerRelease((PVOID volatile *)&Session->DesktopThread, pti);
+    KeReleaseSpinLock(&Session->DesktopThreadLock, OldIrql);
+}
+
+VOID FASTCALL
+UserWakeDesktopThread(PUSER_SESSION Session)
+{
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&Session->DesktopThreadLock, &OldIrql);
+    if (Session->DesktopThread != NULL)
+        KeSetEvent(Session->DesktopThread->pEventQueueServer, IO_NO_INCREMENT, FALSE);
+    KeReleaseSpinLock(&Session->DesktopThreadLock, OldIrql);
 }
 
 BOOLEAN FASTCALL

@@ -6,6 +6,7 @@
  */
 
 #include "k32_api.h"
+#include <appmodel.h>
 
 LONG
 WINAPI
@@ -41,4 +42,23 @@ GetPackagePathByFullName(
         return ERROR_INVALID_PARAMETER;
 
     return APPMODEL_ERROR_NO_PACKAGE;
+}
+
+LONG
+WINAPI
+GetPackageApplicationIds(
+    _In_ PACKAGE_INFO_REFERENCE packageInfoReference,
+    _Inout_ UINT32 *bufferLength,
+    _Out_writes_bytes_opt_(*bufferLength) BYTE *buffer,
+    _Out_opt_ UINT32 *count)
+{
+    UNREFERENCED_PARAMETER(bufferLength);
+    UNREFERENCED_PARAMETER(buffer);
+    UNREFERENCED_PARAMETER(count);
+
+    if (!packageInfoReference)
+        return ERROR_INVALID_PARAMETER;
+
+    /* TODO: resolve package references once a package repository exists */
+    return ERROR_INVALID_PARAMETER;
 }

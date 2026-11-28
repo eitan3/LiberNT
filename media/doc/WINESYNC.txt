@@ -69,6 +69,7 @@ dll/win32/activeds            # Synced to Wine-11.14
 dll/win32/activeds.tlb        # Synced to Wine-11.14
 dll/win32/actxprxy            # Synced to Wine-11.14
 dll/win32/advpack             # Synced to Wine-11.14
+dll/win32/appxdeploymentclient # Synced to Wine-11.13
 dll/win32/atl                 # Synced to Wine-11.14
 dll/win32/atl80               # Synced to Wine-11.14
 dll/win32/atl100              # Synced to Wine-11.14
@@ -110,6 +111,7 @@ dll/win32/gdiplus             # Synced to Wine-11.14
 dll/win32/hhctrl.ocx          # Synced to Wine-11.14
 dll/win32/hlink               # Synced to Wine-11.14
 dll/win32/hnetcfg             # Synced to Wine-11.14
+dll/win32/httpapi             # Forked from Wine-11.14
 dll/win32/iccvid              # Synced to Wine-11.14
 dll/win32/ieframe             # Synced to Wine-11.14
 dll/win32/ieproxy             # Synced to Wine-11.14
@@ -339,6 +341,7 @@ dll/cpl/inetcpl               # Synced to Wine-11.14
 dll/cpl/joy                   # Synced to Wine-11.14
 
 win32ss/printing/monitors/localmon/ui/  # Synced to Wine-11.14 (known there as /dlls/localui)
+drivers/network/http                    # Forked from Wine-11.14 (known there as /dlls/http.sys)
 
 ReactOS shares the following programs with Winehq.
 

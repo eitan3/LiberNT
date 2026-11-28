@@ -1350,7 +1350,7 @@ static void check_vm_full_memory(const BYTE *data, SIZE_T file_size, const struc
     ok(found == !!expected_size, "Found %u owned descriptors, expected %u\n", found, !!expected_size);
 }
 
-static void test_vm_full_memory(void)
+static void test_vm_full_memory(ULONG first, ULONG last)
 {
     static const unsigned changing_pairs[] = {2, 4, 8};
     static const unsigned restore_at[] = {2, 5, 6};
@@ -1364,7 +1364,7 @@ static void test_vm_full_memory(void)
     BOOL ret, failing;
 
     GetSystemInfo(&system_info);
-    for (mode = 0; mode < 18; ++mode)
+    for (mode = first; mode <= last; ++mode)
     {
         winetest_push_context("vm_full[%lu]", mode);
         memset(&info, 0, sizeof(info));
@@ -1651,11 +1651,6 @@ START_TEST(minidump)
     int argc;
     char **argv;
     argc = winetest_get_mainargs(&argv);
-    if (argc == 3 && !strcmp(argv[2], "full-memory"))
-    {
-        test_vm_full_memory();
-        return;
-    }
     if (argc == 4 && !strcmp(argv[2], "exception"))
     {
         generate_child_exception(argv[3]);
@@ -1667,8 +1662,31 @@ START_TEST(minidump)
 
     test_minidump_contents();
     test_current_process();
+#ifndef __REACTOS__
     test_callback();
     test_vm_read();
-    test_vm_full_memory();
     test_exception();
+#endif
+}
+
+#ifdef __REACTOS__
+START_TEST(minidump_cb)
+{
+    if ((pSetThreadDescription = (void *)GetProcAddress(GetModuleHandleW(L"kernel32"), "SetThreadDescription")))
+        pSetThreadDescription(GetCurrentThread(), main_thread_name);
+
+    test_callback();
+    test_vm_read();
+    test_exception();
+}
+#endif
+
+START_TEST(minidump_full)
+{
+    test_vm_full_memory(0, 11);
+}
+
+START_TEST(minidump_retry)
+{
+    test_vm_full_memory(12, 17);
 }

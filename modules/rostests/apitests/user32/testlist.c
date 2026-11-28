@@ -2,6 +2,7 @@
 #define STANDALONE
 #include <apitest.h>
 
+extern void func_TouchProximity(void);
 extern void func_RegisterTouchWindow(void);
 extern void func_AltTabHook(void);
 extern void func_AnimatedCursor(void);
@@ -9,6 +10,7 @@ extern void func_AttachThreadInput(void);
 extern void func_BoolReturnValues(void);
 extern void func_CalculatePopupWindowPosition(void);
 extern void func_CallbackNesting(void);
+extern void func_ChangeDisplaySettingsReset(void);
 extern void func_CharFuncs(void);
 extern void func_CloseWindow(void);
 extern void func_ComboBox(void);
@@ -18,6 +20,18 @@ extern void func_CopyImage_Icon(void);
 extern void func_CursorPresentation(void);
 extern void func_CreateDialog(void);
 extern void func_CreateStructHook(void);
+extern void func_DesktopCloseWindows(void);
+extern void func_DisplayChangeBroadcast(void);
+extern void func_DisplayChangeDesktops(void);
+extern void func_DisplayChangeMaximized(void);
+extern void func_DisplayDeviceAttach(void);
+extern void func_DisplayDeviceRemoval(void);
+extern void func_DisplayTopology(void);
+extern void func_ForegroundLastInput(void);
+extern void func_RemoteDisplayAdapter(void);
+extern void func_RemoteDisplayModeRemoval(void);
+extern void func_RemoteDisplayContent(void);
+extern void func_RemoteDisplayResize(void);
 extern void func_CreateIconFromResourceEx(void);
 extern void func_CoveredWindow(void);
 extern void func_CreateWindowEx(void);
@@ -147,6 +161,7 @@ extern void func_WindowRegionFrame(void);
 extern void func_ShellWindowQueries(void);
 extern void func_ShellWindowZOrder(void);
 extern void func_ShowWindow(void);
+extern void func_SwitchDesktopActivate(void);
 extern void func_SwitchToThisWindow(void);
 extern void func_SystemParametersInfo(void);
 extern void func_TopmostBand(void);
@@ -170,6 +185,7 @@ extern void func_wsprintfApi(void);
 
 const struct test winetest_testlist[] =
 {
+    { "TouchProximity", func_TouchProximity },
     { "RegisterTouchWindow", func_RegisterTouchWindow },
     { "AltTabHook", func_AltTabHook },
     { "AnimatedCursor", func_AnimatedCursor },
@@ -177,6 +193,7 @@ const struct test winetest_testlist[] =
     { "BoolReturnValues", func_BoolReturnValues },
     { "CalculatePopupWindowPosition", func_CalculatePopupWindowPosition },
     { "CallbackNesting", func_CallbackNesting },
+    { "ChangeDisplaySettingsReset", func_ChangeDisplaySettingsReset },
     { "CharFuncs", func_CharFuncs },
     { "CloseWindow", func_CloseWindow },
     { "ComboBox", func_ComboBox },
@@ -186,6 +203,18 @@ const struct test winetest_testlist[] =
     { "CursorPresentation", func_CursorPresentation },
     { "CreateDialog", func_CreateDialog },
     { "CreateStructHook", func_CreateStructHook },
+    { "DesktopCloseWindows", func_DesktopCloseWindows },
+    { "DisplayChangeBroadcast", func_DisplayChangeBroadcast },
+    { "DisplayChangeDesktops", func_DisplayChangeDesktops },
+    { "DisplayChangeMaximized", func_DisplayChangeMaximized },
+    { "DisplayDeviceAttach", func_DisplayDeviceAttach },
+    { "DisplayDeviceRemoval", func_DisplayDeviceRemoval },
+    { "DisplayTopology", func_DisplayTopology },
+    { "ForegroundLastInput", func_ForegroundLastInput },
+    { "RemoteDisplayAdapter", func_RemoteDisplayAdapter },
+    { "RemoteDisplayModeRemoval", func_RemoteDisplayModeRemoval },
+    { "RemoteDisplayContent", func_RemoteDisplayContent },
+    { "RemoteDisplayResize", func_RemoteDisplayResize },
     { "CreateIconFromResourceEx", func_CreateIconFromResourceEx },
     { "CoveredWindow", func_CoveredWindow },
     { "CreateWindowEx", func_CreateWindowEx },
@@ -315,6 +344,7 @@ const struct test winetest_testlist[] =
     { "ShellWindowQueries", func_ShellWindowQueries },
     { "ShellWindowZOrder", func_ShellWindowZOrder },
     { "ShowWindow", func_ShowWindow },
+    { "SwitchDesktopActivate", func_SwitchDesktopActivate },
     { "SwitchToThisWindow", func_SwitchToThisWindow },
     { "SystemMenu", func_SystemMenu },
     { "SystemParametersInfo", func_SystemParametersInfo },

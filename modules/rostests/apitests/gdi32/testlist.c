@@ -6,7 +6,9 @@ extern void func_AddFontMemResourceEx(void);
 extern void func_AddFontResource(void);
 extern void func_AddFontResourceEx(void);
 extern void func_AlphaBlend(void);
+extern void func_ArabicJoining(void);
 extern void func_BeginPath(void);
+extern void func_BrushOrgState(void);
 extern void func_CjkFaceNames(void);
 extern void func_CombineRgn(void);
 extern void func_CombineTransform(void);
@@ -28,6 +30,7 @@ extern void func_EngReleaseSemaphore(void);
 extern void func_EnumFontFamilies(void);
 extern void func_FontFolder(void);
 extern void func_FontLinkBaseline(void);
+extern void func_FontLinkCjk(void);
 extern void func_ExcludeClipRect(void);
 extern void func_ExtCreatePen(void);
 extern void func_ExtCreateRegion(void);
@@ -97,7 +100,9 @@ const struct test winetest_testlist[] =
     { "AddFontResource", func_AddFontResource },
     { "AddFontResourceEx", func_AddFontResourceEx },
     { "AlphaBlend", func_AlphaBlend },
+    { "ArabicJoining", func_ArabicJoining },
     { "BeginPath", func_BeginPath },
+    { "BrushOrgState", func_BrushOrgState },
     { "CjkFaceNames", func_CjkFaceNames },
     { "CombineRgn", func_CombineRgn },
     { "CombineTransform", func_CombineTransform },
@@ -119,6 +124,7 @@ const struct test winetest_testlist[] =
     { "EnumFontFamilies", func_EnumFontFamilies },
     { "FontFolder", func_FontFolder },
     { "FontLinkBaseline", func_FontLinkBaseline },
+    { "FontLinkCjk", func_FontLinkCjk },
     { "ExcludeClipRect", func_ExcludeClipRect },
     { "ExtCreatePen", func_ExtCreatePen },
     { "ExtCreateRegion", func_ExtCreateRegion },

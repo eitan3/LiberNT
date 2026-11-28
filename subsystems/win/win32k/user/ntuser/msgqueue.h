@@ -121,7 +121,8 @@ enum internal_event_message
     WM_ASYNC_SHOWWINDOW = 0x80000000,
     WM_ASYNC_SETWINDOWPOS,
     WM_ASYNC_SETACTIVEWINDOW,
-    WM_ASYNC_DESTROYWINDOW
+    WM_ASYNC_DESTROYWINDOW,
+    WM_ASYNC_UPDATEMAXIMIZED
 };
 
 #define POSTEVENT_DAW 4
@@ -168,6 +169,7 @@ VOID FASTCALL MsqCleanupThreadCallbacks(PTHREADINFO);
 VOID FASTCALL MsqCleanupThreadMsgs(PTHREADINFO);
 VOID FASTCALL MsqDestroyMessageQueue(_In_ PTHREADINFO pti);
 CODE_SEG("INIT") NTSTATUS NTAPI MsqInitializeImpl(VOID);
+VOID NTAPI MsqFreeImpl(VOID);
 BOOLEAN FASTCALL co_MsqDispatchOneSentMessage(_In_ PTHREADINFO pti);
 NTSTATUS FASTCALL
 co_MsqWaitForNewMessages(PTHREADINFO pti, PWND WndFilter,
@@ -188,6 +190,7 @@ co_IntSendMessageTimeout(HWND hWnd,
                       ULONG_PTR *uResult);
 
 BOOL FASTCALL UserSendNotifyMessage( HWND hWnd,UINT Msg,WPARAM wParam,LPARAM lParam );
+BOOL FASTCALL UserSendNotifyMessageToDesktop( PWND DesktopWindow,UINT Msg,WPARAM wParam,LPARAM lParam );
 LRESULT FASTCALL co_IntSendMessageNoWait(HWND hWnd,
                         UINT Msg,
                         WPARAM wParam,

@@ -268,9 +268,12 @@ UserProcessDestroy(PEPROCESS Process)
     UserSetProcessWindowStation(NULL);
 
     if (gppiInputProvider == ppiCurrent) gppiInputProvider = NULL;
+    if (gppiLastInput == ppiCurrent) gppiLastInput = NULL;
 
     if (ppiCurrent->hdeskStartup)
     {
+        /* A process that created its startup desktop holds it protected from close, as CreateDesktop returned it */
+        IntSetDesktopHandleProtection(ppiCurrent->hdeskStartup, FALSE);
         ZwClose(ppiCurrent->hdeskStartup);
         ppiCurrent->hdeskStartup = NULL;
     }
@@ -982,12 +985,16 @@ ExitThreadCallback(PETHREAD Thread)
 
     ptiCurrent->TIF_flags |= TIF_INCLEANUP;
     ptiCurrent->pClientInfo->dwTIFlags = ptiCurrent->TIF_flags;
+    if (ptiCurrent == ptiRawInput)
+        ptiRawInput = NULL;
     IntCompositionEndThreadPaints(ptiCurrent);
 
     ppiCurrent = ptiCurrent->ppi;
     ASSERT(ppiCurrent);
 
     IsRemoveAttachThread(ptiCurrent);
+
+    co_UserEndDesktopThread(ptiCurrent);
 
     if (gpwlList)
     {
@@ -1189,14 +1196,44 @@ DriverUnload(IN PDRIVER_OBJECT DriverObject)
 {
     // TODO: Do more cleanup!
 
+    UserEnterExclusive();
+    UserBeginSessionsEnd();
+    IntReleaseSessionCursors();
+    IntReleaseInputDesktop();
+    DceEmptyCache();
+    UserLeave();
+
+    GDIOBJ_vDeleteSessionObjects(GDIObjType_DC_TYPE);
+    if (gpmdev != NULL)
+    {
+        MDEVOBJ_vDestroy(gpmdev);
+        gpmdev = NULL;
+    }
+    if (gppdevDetached != NULL)
+    {
+        PDEVOBJ_vRelease(gppdevDetached);
+        gppdevDetached = NULL;
+    }
+    EngpReleaseAllGraphicsDevices();
+    GDIOBJ_vDeleteSessionObjects(GDIObjType_DEF_TYPE);
+    FreeDcImpl();
+    FreePaletteImpl();
     FreeFontSupport();
     IntCompositionUnload();
-    if (gpDisplaySession)
-    {
-        ResetCsrApiPort(gpDisplaySession);
-        ResetCsrProcess(gpDisplaySession);
-    }
+    UserReleaseSessions();
     IntWin32PowerManagementCleanup();
+    MsqFreeImpl();
+    GDIOBJ_vFreeHandleTable();
+    FreeLDEVImpl();
+    FreePDEVImpl();
+    FreeDeviceImpl();
+    WddmBridgeCleanup();
+    FreeSafeSemaphoreImpl();
+    FreeInputImpl();
+    FreeTimerImpl();
+    FreeSessionImpl();
+    gpsi = NULL;
+    UserDestroyGlobalHeap();
 }
 
 // Return on failure
@@ -1327,7 +1364,7 @@ DriverEntry(
     NT_ROF(InitSafeSemaphoreImpl());
     NT_ROF(InitPDEVImpl());
     NT_ROF(InitLDEVImpl());
-    NT_ROF(InitDeviceImpl());
+    NT_ROF(InitDeviceImpl(DriverObject));
     NT_ROF(InitDcImpl());
     USERLOCK_AND_ROF(InitUserImpl());
     NT_ROF(InitWindowStationImpl());

@@ -8,12 +8,14 @@ extern void func_EditImeContext(void);
 extern void func_ImageListApi(void);
 extern void func_ListViewActivate(void);
 extern void func_ListViewGroups(void);
+extern void func_ListViewRedrawHeader(void);
 extern void func_ListViewSnapToGrid(void);
 extern void func_ListViewWorkAreas(void);
 extern void func_LoadIconWithScaleDown(void);
 extern void func_OwnerDrawButtonCues(void);
 extern void func_propsheetv6(void);
 extern void func_PropSheetRecalc(void);
+extern void func_PropSheetTitle(void);
 extern void func_TabControlKeys(void);
 extern void func_StatusBarResize(void);
 extern void func_SysLinkIdealSize(void);
@@ -32,12 +34,14 @@ const struct test winetest_testlist[] =
     { "ImageListApi", func_ImageListApi },
     { "ListViewActivate", func_ListViewActivate },
     { "ListViewGroups", func_ListViewGroups },
+    { "ListViewRedrawHeader", func_ListViewRedrawHeader },
     { "ListViewSnapToGrid", func_ListViewSnapToGrid },
     { "ListViewWorkAreas", func_ListViewWorkAreas },
     { "LoadIconWithScaleDown", func_LoadIconWithScaleDown },
     { "OwnerDrawButtonCues", func_OwnerDrawButtonCues },
     { "propsheetv6", func_propsheetv6 },
     { "PropSheetRecalc", func_PropSheetRecalc },
+    { "PropSheetTitle", func_PropSheetTitle },
     { "TabControlKeys", func_TabControlKeys },
     { "StatusBarResize", func_StatusBarResize },
     { "SysLinkIdealSize", func_SysLinkIdealSize },

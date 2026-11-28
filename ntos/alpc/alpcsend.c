@@ -176,7 +176,11 @@ AlpcpReplyToMessage(
             (Message->PortMessage.ClientId.UniqueProcess == Header->ClientId.UniqueProcess) &&
             (Message->PortMessage.ClientId.UniqueThread == Header->ClientId.UniqueThread))
         {
-            if (!Message->WaitingThread && !Message->SenderProcess && AlpcpReclaimCanceledMessage(Message))
+            if (AlpcpReclaimCanceledMessage(Message) &&
+                !Message->WaitingThread &&
+                !(Message->State & (ALPC_MSG_STATE_IMPERSONATING |
+                                    ALPC_MSG_STATE_ACCEPT_IN_PROGRESS |
+                                    ALPC_MSG_STATE_REPLY_IN_PROGRESS)))
             {
                 AlpcpFreeMessage(Message);
             }
@@ -515,13 +519,23 @@ AlpcpReturnMessageToQueue(
         AlpcpReleasePortLock(Port);
         return STATUS_PORT_DISCONNECTED;
     }
-    Message->QueuePort = Port;
-    Message->State |= ALPC_MSG_STATE_QUEUED;
-    InsertHeadList(&Port->MainQueue, &Message->Entry);
-    Port->MainQueueLength++;
-    if (Port->Flags & ALPC_PORT_FLAG_WAITABLE) KeSetEvent(&Port->WaitEvent, IO_NO_INCREMENT, FALSE);
-    AlpcpWakeWaiter(Port);
-    AlpcpReleasePortLock(Port);
+    if (AlpcpReclaimCanceledMessage(Message))
+    {
+        ASSERT(!Message->WaitingThread);
+        AlpcpReleasePortLock(Port);
+        AlpcpFreeMessage(Message);
+    }
+    else
+    {
+        ASSERT(!(Message->State & ALPC_MSG_STATE_CANCELED));
+        Message->QueuePort = Port;
+        Message->State |= ALPC_MSG_STATE_QUEUED;
+        InsertHeadList(&Port->MainQueue, &Message->Entry);
+        Port->MainQueueLength++;
+        if (Port->Flags & ALPC_PORT_FLAG_WAITABLE) KeSetEvent(&Port->WaitEvent, IO_NO_INCREMENT, FALSE);
+        AlpcpWakeWaiter(Port);
+        AlpcpReleasePortLock(Port);
+    }
 
     Status = BufferLength ? AlpcpCopyOut(BufferLength, &RequiredLength, sizeof(RequiredLength), PreviousMode) : STATUS_SUCCESS;
     return NT_SUCCESS(Status) ? STATUS_BUFFER_TOO_SMALL : Status;
@@ -546,6 +560,8 @@ AlpcpReceiveToUser(
     PKALPC_MESSAGE Message = NULL;
     PALPC_PORT ReceivePort;
     BOOLEAN Pending = FALSE;
+    BOOLEAN Canceled = FALSE;
+    BOOLEAN Kept = FALSE;
     BOOLEAN ThreadCallback = FALSE;
 
     AlpcpAcquirePortLock(Port);
@@ -574,7 +590,8 @@ AlpcpReceiveToUser(
     else
     {
         AlpcpAcquirePortLock(Port);
-        if (!AlpcpReclaimCanceledMessage(Message) &&
+        Canceled = AlpcpReclaimCanceledMessage(Message);
+        if (!Canceled &&
             (Message->State & (ALPC_MSG_STATE_CONNECTION | ALPC_MSG_STATE_SYNC)) &&
             !(Message->State & ALPC_MSG_STATE_REPLIED))
         {
@@ -587,9 +604,20 @@ AlpcpReceiveToUser(
 
     Status = AlpcpDeliverToUser(Port, Message, ReceiveMessage, BufferLength, AvailableLength, ReceiveAttributes, UserReceiveAttributes, PreviousMode);
 
+    if (Canceled && NT_SUCCESS(Status) &&
+        ((Message->State & (ALPC_MSG_STATE_CONNECTION | ALPC_MSG_STATE_SYNC)) == ALPC_MSG_STATE_SYNC))
+    {
+        ASSERT(!Pending);
+        ASSERT(!Message->WaitingThread);
+        ASSERT(Message->State & ALPC_MSG_STATE_CANCELED);
+        AlpcpAcquirePortLock(Port);
+        Kept = AlpcpRequeueCanceledMessage(Message);
+        AlpcpReleasePortLock(Port);
+    }
+
     if (!Pending)
     {
-        AlpcpFreeMessage(Message);
+        if (!Kept) AlpcpFreeMessage(Message);
     }
     else if (!NT_SUCCESS(Status))
     {

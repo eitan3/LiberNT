@@ -44,6 +44,7 @@ list(APPEND SOURCE
     ldr/ldrinit.c
     ldr/ldrnotify.c
     ldr/ldrmui.c
+    ldr/ldrpath.c
     ldr/ldrpe.c
     ldr/ldrddag.c
     ldr/ldrutils.c
@@ -52,7 +53,9 @@ list(APPEND SOURCE
     rtl/exit.c
     rtl/mui.c
     rtl/nls.c
+    rtl/reflect.c
     rtl/secmem.c
+    rtl/sku.c
     rtl/telemetry.c
     rtl/transaction.c
     rtl/userpfn.c

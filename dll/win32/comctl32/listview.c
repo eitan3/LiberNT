@@ -2160,7 +2160,11 @@ static void LISTVIEW_UpdateHeaderSize(const LISTVIEW_INFO *infoPtr, INT nNewScro
 
     SetWindowPos(infoPtr->hwndHeader,0,
         point[0].x,point[0].y,point[1].x,point[1].y,
+#ifdef __REACTOS__
+        ((infoPtr->dwStyle & LVS_NOCOLUMNHEADER) ? SWP_HIDEWINDOW : SWP_SHOWWINDOW) |
+#else
         (infoPtr->dwStyle & LVS_NOCOLUMNHEADER) ? SWP_HIDEWINDOW : SWP_SHOWWINDOW |
+#endif
         SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
@@ -2220,7 +2224,11 @@ static INT LISTVIEW_UpdateHScroll(LISTVIEW_INFO *infoPtr)
     TRACE("horzInfo=%s\n", debugscrollinfo(&horzInfo));
 
     /* Update the Header Control */
+#ifdef __REACTOS__
+    if (infoPtr->hwndHeader && LISTVIEW_IsHeaderEnabled(infoPtr))
+#else
     if (infoPtr->hwndHeader)
+#endif
     {
 	horzInfo.fMask = SIF_POS;
 	GetScrollInfo(infoPtr->hwndSelf, SB_HORZ, &horzInfo);
@@ -9964,9 +9972,19 @@ static INT LISTVIEW_SetView(LISTVIEW_INFO *infoPtr, DWORD nView)
   infoPtr->uView = nView;
 
   SendMessageW(infoPtr->hwndEdit, WM_KILLFOCUS, 0, 0);
+#ifdef __REACTOS__
+  if (infoPtr->hwndHeader)
+      SetWindowPos(infoPtr->hwndHeader, NULL, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                   SWP_HIDEWINDOW | (infoPtr->redraw ? 0 : SWP_NOREDRAW));
+
+  if (is_redrawing(infoPtr))
+      ShowScrollBar(infoPtr->hwndSelf, SB_BOTH, FALSE);
+#else
   ShowWindow(infoPtr->hwndHeader, SW_HIDE);
 
   ShowScrollBar(infoPtr->hwndSelf, SB_BOTH, FALSE);
+#endif
   SetRectEmpty(&infoPtr->rcFocus);
 
   himl = (nView == LV_VIEW_ICON ? infoPtr->himlNormal : infoPtr->himlSmall);
@@ -9989,7 +10007,12 @@ static INT LISTVIEW_SetView(LISTVIEW_INFO *infoPtr, DWORD nView)
       hl.pwpos = &wp;
       SendMessageW(infoPtr->hwndHeader, HDM_LAYOUT, 0, (LPARAM)&hl);
       SetWindowPos(infoPtr->hwndHeader, infoPtr->hwndSelf, wp.x, wp.y, wp.cx, wp.cy,
+#ifdef __REACTOS__
+                   wp.flags | ((infoPtr->dwStyle & LVS_NOCOLUMNHEADER) ? SWP_HIDEWINDOW : (infoPtr->redraw ? SWP_SHOWWINDOW : 0)) |
+                   (infoPtr->redraw ? 0 : SWP_NOREDRAW));
+#else
                    wp.flags | ((infoPtr->dwStyle & LVS_NOCOLUMNHEADER) ? SWP_HIDEWINDOW : SWP_SHOWWINDOW));
+#endif
       break;
   }
   case LV_VIEW_LIST:
@@ -11788,6 +11811,11 @@ static LRESULT LISTVIEW_SetRedraw(LISTVIEW_INFO *infoPtr, BOOL redraw)
     if (infoPtr->redraw == !!redraw)
         return 0;
 
+#ifdef __REACTOS__
+    if (infoPtr->hwndHeader && (!redraw || LISTVIEW_IsHeaderEnabled(infoPtr)))
+        SendMessageW(infoPtr->hwndHeader, WM_SETREDRAW, redraw, 0);
+
+#endif
     if (!(infoPtr->redraw = !!redraw))
         return 0;
 
@@ -11890,7 +11918,11 @@ static void LISTVIEW_UpdateSize(LISTVIEW_INFO *infoPtr)
 	TRACE("  wp.flags=0x%08x, wp=%d,%d (%dx%d)\n", wp.flags, wp.x, wp.y, wp.cx, wp.cy);
 
 	if (LISTVIEW_IsHeaderEnabled(infoPtr))
+#ifdef __REACTOS__
+	    wp.flags |= infoPtr->redraw ? SWP_SHOWWINDOW : 0;
+#else
 	    wp.flags |= SWP_SHOWWINDOW;
+#endif
 	else
 	{
 	    wp.flags |= SWP_HIDEWINDOW;

@@ -9,6 +9,7 @@ extern void func_ControlServiceEx(void);
 extern void func_CopySid(void);
 extern void func_FileSecurityOwner(void);
 extern void func_RedistributableFileOwner(void);
+extern void func_CreateProcessAsUserToken(void);
 extern void func_CreateProcessWithToken(void);
 extern void func_CreateProcessWithTokenChild(void);
 extern void func_CreateService(void);
@@ -65,9 +66,11 @@ extern void func_SetSecurityInfoAcl(void);
 extern void func_ServiceArgs(void);
 extern void func_ServiceControlPipe(void);
 extern void func_ServiceCrash(void);
+extern void func_ServiceDisplay(void);
 extern void func_ServiceEnv(void);
 extern void func_ServiceRegistryState(void);
 extern void func_TriggerInfo(void);
+extern void func_WaitChain(void);
 extern void func_ServiceNetwork(void);
 extern void func_ServicePowerSetting(void);
 extern void func_StartServiceCtrlDispatcher(void);
@@ -86,6 +89,7 @@ const struct test winetest_testlist[] =
     { "CopySid", func_CopySid },
     { "FileSecurityOwner", func_FileSecurityOwner },
     { "RedistributableFileOwner", func_RedistributableFileOwner },
+    { "CreateProcessAsUserToken", func_CreateProcessAsUserToken },
     { "CreateProcessWithToken", func_CreateProcessWithToken },
     { "CreateProcessWithTokenChild", func_CreateProcessWithTokenChild },
     { "CreateService", func_CreateService },
@@ -142,9 +146,11 @@ const struct test winetest_testlist[] =
     { "ServiceArgs", func_ServiceArgs },
     { "ServiceControlPipe", func_ServiceControlPipe },
     { "ServiceCrash", func_ServiceCrash },
+    { "ServiceDisplay", func_ServiceDisplay },
     { "ServiceEnv", func_ServiceEnv },
     { "ServiceRegistryState", func_ServiceRegistryState },
     { "TriggerInfo", func_TriggerInfo },
+    { "WaitChain", func_WaitChain },
     { "ServiceNetwork", func_ServiceNetwork },
     { "ServicePowerSetting", func_ServicePowerSetting },
     { "StartServiceCtrlDispatcher", func_StartServiceCtrlDispatcher },

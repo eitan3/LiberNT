@@ -128,6 +128,7 @@
 @ stdcall -arch=x86_64 CopyMemoryNonTemporal(ptr ptr long) ntdll.RtlCopyMemoryNonTemporal
 @ stdcall CopySid(long ptr ptr)
 @ stdcall -thunk CreateActCtxW(ptr) kernel32.CreateActCtxW
+@ stdcall CreateAppContainerToken(ptr ptr ptr)
 @ stdcall -thunk CreateBoundaryDescriptorW(wstr long) kernel32.CreateBoundaryDescriptorW
 @ stdcall CreateConsoleScreenBuffer(long long ptr long ptr)
 @ stdcall -thunk CreateDirectoryA(str ptr) kernel32.CreateDirectoryA
@@ -857,6 +858,7 @@
 @ stdcall -thunk OutputDebugStringA(str) kernel32.OutputDebugStringA
 @ stdcall -thunk OutputDebugStringW(wstr) kernel32.OutputDebugStringW
 @ stdcall PackageFamilyNameFromFullName(wstr ptr ptr)
+@ stdcall PackageFamilyNameFromId(ptr ptr ptr)
 @ stdcall PackageIdFromFullName(wstr long ptr ptr)
 @ stdcall ParseApplicationUserModelId(wstr ptr ptr ptr ptr)
 @ stdcall ParseURLA(str ptr)
@@ -1526,3 +1528,6 @@
 # TODO: Windows 11 kernelbase forwards this to NTDLL
 @ stdcall QueryUnbiasedInterruptTime(ptr) ntdll.RtlQueryUnbiasedInterruptTime
 @ stdcall -thunk QueryUnbiasedInterruptTimePrecise(ptr) kernel32.QueryUnbiasedInterruptTimePrecise
+@ stdcall ClosePackageInfo(ptr)
+@ stdcall GetPackageInfo(ptr long ptr ptr ptr)
+@ stdcall OpenPackageInfoByFullName(wstr long ptr)

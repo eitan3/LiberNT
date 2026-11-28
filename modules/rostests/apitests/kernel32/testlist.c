@@ -2,6 +2,9 @@
 #define STANDALONE
 #include <apitest.h>
 
+extern void func_HeapGrowInPlace(void);
+extern void func_ExportForwarders(void);
+extern void func_PackageInfo(void);
 extern void func_ApiSetHosts(void);
 extern void func_GlobalMemoryStatusVirtual(void);
 extern void func_ActCtxWithXmlNamespaces(void);
@@ -151,6 +154,7 @@ extern void func_PerfConsumer(void);
 extern void func_PerfProvider(void);
 extern void func_Pipes(void);
 extern void func_PackageIdentity(void);
+extern void func_PackageInfoReference(void);
 extern void func_PackageNames(void);
 extern void func_ParentHandleList(void);
 extern void func_PixeloramaCompat(void);
@@ -167,6 +171,8 @@ extern void func_PagingFileOpen(void);
 extern void func_PrivMoveFileIdentityW(void);
 extern void func_RenameAsyncHandle(void);
 extern void func_RenameDirectoryOldPath(void);
+extern void func_RenameReplaceRestore(void);
+extern void func_BackupSemanticsAccess(void);
 extern void func_QueueUserAPC(void);
 extern void func_QueryProcessCycleTime(void);
 extern void func_ResizePseudoConsole(void);
@@ -241,6 +247,9 @@ extern void func_FileSecurityCache(void);
 
 const struct test winetest_testlist[] =
 {
+    { "HeapGrowInPlace", func_HeapGrowInPlace },
+    { "ExportForwarders", func_ExportForwarders },
+    { "PackageInfo", func_PackageInfo },
     { "GlobalMemoryStatusVirtual", func_GlobalMemoryStatusVirtual },
     { "ApiSetHosts", func_ApiSetHosts },
     { "FileSecurityCache",                  func_FileSecurityCache },
@@ -394,6 +403,7 @@ const struct test winetest_testlist[] =
     { "PerfProvider",              func_PerfProvider },
     { "Pipes",                       func_Pipes },
     { "PackageIdentity",             func_PackageIdentity },
+    { "PackageInfoReference",        func_PackageInfoReference },
     { "PackageNames",                func_PackageNames },
     { "ParentHandleList",            func_ParentHandleList },
     { "PixeloramaCompat",            func_PixeloramaCompat },
@@ -410,6 +420,8 @@ const struct test winetest_testlist[] =
     { "PrivMoveFileIdentityW",       func_PrivMoveFileIdentityW },
     { "RenameAsyncHandle",           func_RenameAsyncHandle },
     { "RenameDirectoryOldPath",      func_RenameDirectoryOldPath },
+    { "RenameReplaceRestore",        func_RenameReplaceRestore },
+    { "BackupSemanticsAccess",       func_BackupSemanticsAccess },
     { "QueueUserAPC",                func_QueueUserAPC },
     { "QueryProcessCycleTime",       func_QueryProcessCycleTime },
     { "ResizePseudoConsole",         func_ResizePseudoConsole },

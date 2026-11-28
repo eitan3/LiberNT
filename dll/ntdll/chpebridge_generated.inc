@@ -641,6 +641,12 @@ VOID NTAPI ChpeAutoKiUserExceptionDispatcherWorker(PVOID a0, PVOID a1)
     KiUserExceptionDispatcherWorker(a0, a1);
 }
 
+NTSTATUS NTAPI ChpeAutoLdrAddDllDirectory(PCUNICODE_STRING a0, PVOID * a1)
+{
+    return LdrAddDllDirectory(a0, a1);
+}
+_Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoLdrAddDllDirectory), __typeof__(&LdrAddDllDirectory)), "LdrAddDllDirectory bridge signature mismatch");
+
 ULONG_PTR NTAPI ChpeStubLdrAddLoadAsDataTable(PVOID a0, PCWSTR a1, ULONG a2, PVOID a3)
 {
     return 0;
@@ -672,6 +678,18 @@ BOOLEAN NTAPI ChpeAutoLdrFlushAlternateResourceModules(VOID)
 {
     return LdrFlushAlternateResourceModules();
 }
+
+NTSTATUS NTAPI ChpeAutoLdrGetDllDirectory(PUNICODE_STRING a0)
+{
+    return LdrGetDllDirectory(a0);
+}
+_Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoLdrGetDllDirectory), __typeof__(&LdrGetDllDirectory)), "LdrGetDllDirectory bridge signature mismatch");
+
+NTSTATUS NTAPI ChpeAutoLdrGetDllPath(PCWSTR a0, ULONG a1, PWSTR * a2, PWSTR * a3)
+{
+    return LdrGetDllPath(a0, a1, a2, a3);
+}
+_Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoLdrGetDllPath), __typeof__(&LdrGetDllPath)), "LdrGetDllPath bridge signature mismatch");
 
 ULONG_PTR NTAPI ChpeStubLdrGetFailureData(VOID)
 {
@@ -782,6 +800,12 @@ NTSTATUS NTAPI ChpeAutoLdrRegisterDllNotification(ULONG a0, PLDR_DLL_NOTIFICATIO
 }
 _Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoLdrRegisterDllNotification), __typeof__(&LdrRegisterDllNotification)), "LdrRegisterDllNotification bridge signature mismatch");
 
+NTSTATUS NTAPI ChpeAutoLdrRemoveDllDirectory(PVOID a0)
+{
+    return LdrRemoveDllDirectory(a0);
+}
+_Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoLdrRemoveDllDirectory), __typeof__(&LdrRemoveDllDirectory)), "LdrRemoveDllDirectory bridge signature mismatch");
+
 ULONG_PTR NTAPI ChpeStubLdrRemoveLoadAsDataTable(PVOID a0, PVOID a1, PVOID a2, ULONG a3)
 {
     return 0;
@@ -826,6 +850,18 @@ NTSTATUS NTAPI ChpeAutoLdrSetAppCompatDllRedirectionCallback(ULONG a0, PVOID a1,
 {
     return LdrSetAppCompatDllRedirectionCallback(a0, a1, a2);
 }
+
+NTSTATUS NTAPI ChpeAutoLdrSetDefaultDllDirectories(ULONG a0)
+{
+    return LdrSetDefaultDllDirectories(a0);
+}
+_Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoLdrSetDefaultDllDirectories), __typeof__(&LdrSetDefaultDllDirectories)), "LdrSetDefaultDllDirectories bridge signature mismatch");
+
+NTSTATUS NTAPI ChpeAutoLdrSetDllDirectory(PCUNICODE_STRING a0)
+{
+    return LdrSetDllDirectory(a0);
+}
+_Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoLdrSetDllDirectory), __typeof__(&LdrSetDllDirectory)), "LdrSetDllDirectory bridge signature mismatch");
 
 void NTAPI ChpeAutoLdrSetDllManifestProber(PLDR_MANIFEST_PROBER_ROUTINE a0)
 {
@@ -3748,6 +3784,12 @@ NTSTATUS NTAPI ChpeAutoRtlConsoleMultiByteToUnicodeN(PVOID a0, ULONG a1, PVOID a
     return RtlConsoleMultiByteToUnicodeN(a0, a1, a2, a3, a4, a5);
 }
 
+DWORD NTAPI ChpeAutoRtlConvertDeviceFamilyInfoToString(PDWORD a0, PDWORD a1, PWSTR a2, PWSTR a3)
+{
+    return RtlConvertDeviceFamilyInfoToString(a0, a1, a2, a3);
+}
+_Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoRtlConvertDeviceFamilyInfoToString), __typeof__(&RtlConvertDeviceFamilyInfoToString)), "RtlConvertDeviceFamilyInfoToString bridge signature mismatch");
+
 void NTAPI ChpeAutoRtlConvertExclusiveToShared(PRTL_RESOURCE a0)
 {
     RtlConvertExclusiveToShared(a0);
@@ -4987,6 +5029,12 @@ NTSTATUS NTAPI ChpeAutoRtlGetExtendedContextLength(ULONG a0, PVOID a1)
     return RtlGetExtendedContextLength(a0, a1);
 }
 
+NTSTATUS NTAPI ChpeAutoRtlGetExePath(PCWSTR a0, PWSTR * a1)
+{
+    return RtlGetExePath(a0, a1);
+}
+_Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoRtlGetExePath), __typeof__(&RtlGetExePath)), "RtlGetExePath bridge signature mismatch");
+
 /* Native definition: dll/ntdll/rtl/xstate_wow64.c */
 #ifdef RtlGetExtendedContextLength2
 #undef RtlGetExtendedContextLength2
@@ -5108,6 +5156,12 @@ NTSTATUS NTAPI ChpeAutoRtlGetSaclSecurityDescriptor(PSECURITY_DESCRIPTOR a0, PBO
     return RtlGetSaclSecurityDescriptor(a0, a1, a2, a3);
 }
 _Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoRtlGetSaclSecurityDescriptor), __typeof__(&RtlGetSaclSecurityDescriptor)), "RtlGetSaclSecurityDescriptor bridge signature mismatch");
+
+NTSTATUS NTAPI ChpeAutoRtlGetSearchPath(PWSTR * a0)
+{
+    return RtlGetSearchPath(a0);
+}
+_Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoRtlGetSearchPath), __typeof__(&RtlGetSearchPath)), "RtlGetSearchPath bridge signature mismatch");
 
 BOOLEAN NTAPI ChpeAutoRtlGetSecurityDescriptorRMControl(PSECURITY_DESCRIPTOR a0, PUCHAR a1)
 {
@@ -5653,6 +5707,26 @@ BOOLEAN NTAPI ChpeAutoRtlIsNameInExpression(PVOID a0, PVOID a1, BOOLEAN a2, PVOI
     return RtlIsNameInExpression(a0, a1, a2, a3);
 }
 
+/* Native definition: dll/ntdll/rtl/sku.c */
+#ifdef RtlIsMultiSessionSku
+#undef RtlIsMultiSessionSku
+#endif
+BOOLEAN NTAPI RtlIsMultiSessionSku(VOID);
+BOOLEAN NTAPI ChpeAutoRtlIsMultiSessionSku(VOID)
+{
+    return RtlIsMultiSessionSku();
+}
+
+/* Native definition: dll/ntdll/rtl/sku.c */
+#ifdef RtlIsMultiUsersInSessionSku
+#undef RtlIsMultiUsersInSessionSku
+#endif
+BOOLEAN NTAPI RtlIsMultiUsersInSessionSku(VOID);
+BOOLEAN NTAPI ChpeAutoRtlIsMultiUsersInSessionSku(VOID)
+{
+    return RtlIsMultiUsersInSessionSku();
+}
+
 BOOLEAN NTAPI ChpeAutoRtlIsNameLegalDOS8Dot3(PCUNICODE_STRING a0, POEM_STRING a1, PBOOLEAN a2)
 {
     return RtlIsNameLegalDOS8Dot3(a0, a1, a2);
@@ -5664,6 +5738,16 @@ NTSTATUS NTAPI ChpeAutoRtlIsNormalizedString(ULONG a0, PCWSTR a1, LONG a2, PBOOL
     return RtlIsNormalizedString(a0, a1, a2, a3);
 }
 _Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoRtlIsNormalizedString), __typeof__(&RtlIsNormalizedString)), "RtlIsNormalizedString bridge signature mismatch");
+
+/* Native definition: dll/ntdll/rtl/sku.c */
+#ifdef RtlIsStateSeparationEnabled
+#undef RtlIsStateSeparationEnabled
+#endif
+BOOLEAN NTAPI RtlIsStateSeparationEnabled(VOID);
+BOOLEAN NTAPI ChpeAutoRtlIsStateSeparationEnabled(VOID)
+{
+    return RtlIsStateSeparationEnabled();
+}
 
 BOOLEAN NTAPI ChpeAutoRtlIsTextUnicode(const void * a0, INT a1, INT * a2)
 {
@@ -6213,6 +6297,18 @@ ULONG NTAPI ChpeAutoRtlRandomEx(PVOID a0)
     return RtlRandomEx(a0);
 }
 
+void NTAPI ChpeAutoRtlRbInsertNodeEx(PRTL_RB_TREE a0, PRTL_BALANCED_NODE a1, BOOLEAN a2, PRTL_BALANCED_NODE a3)
+{
+    RtlRbInsertNodeEx(a0, a1, a2, a3);
+}
+_Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoRtlRbInsertNodeEx), __typeof__(&RtlRbInsertNodeEx)), "RtlRbInsertNodeEx bridge signature mismatch");
+
+void NTAPI ChpeAutoRtlRbRemoveNode(PRTL_RB_TREE a0, PRTL_BALANCED_NODE a1)
+{
+    RtlRbRemoveNode(a0, a1);
+}
+_Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoRtlRbRemoveNode), __typeof__(&RtlRbRemoveNode)), "RtlRbRemoveNode bridge signature mismatch");
+
 HRESULT NTAPI ChpeAutoRtlReadMemoryStream(struct IStream * a0, PVOID a1, ULONG a2, PULONG a3)
 {
     return RtlReadMemoryStream(a0, a1, a2, a3);
@@ -6263,6 +6359,12 @@ void NTAPI ChpeAutoRtlReleaseActivationContext(HANDLE a0)
     RtlReleaseActivationContext(a0);
 }
 _Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoRtlReleaseActivationContext), __typeof__(&RtlReleaseActivationContext)), "RtlReleaseActivationContext bridge signature mismatch");
+
+void NTAPI ChpeAutoRtlReleasePath(PWSTR a0)
+{
+    RtlReleasePath(a0);
+}
+_Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoRtlReleasePath), __typeof__(&RtlReleasePath)), "RtlReleasePath bridge signature mismatch");
 
 void NTAPI ChpeAutoRtlReleasePebLock(VOID)
 {

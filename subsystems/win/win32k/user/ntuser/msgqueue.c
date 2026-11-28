@@ -63,6 +63,24 @@ MsqInitializeImpl(VOID)
    return(STATUS_SUCCESS);
 }
 
+VOID
+NTAPI
+MsqFreeImpl(VOID)
+{
+    if (pgMessageLookasideList != NULL)
+    {
+        ExDeletePagedLookasideList(pgMessageLookasideList);
+        ExFreePoolWithTag(pgMessageLookasideList, TAG_USRMSG);
+        pgMessageLookasideList = NULL;
+    }
+    if (pgSendMsgLookasideList != NULL)
+    {
+        ExDeletePagedLookasideList(pgSendMsgLookasideList);
+        ExFreePoolWithTag(pgSendMsgLookasideList, TAG_USRMSG);
+        pgSendMsgLookasideList = NULL;
+    }
+}
+
 PWND FASTCALL
 IntTopLevelWindowFromPoint(INT x, INT y)
 {
@@ -814,6 +832,10 @@ co_MsqInsertMouseMessage(MSG* Msg, DWORD flags, ULONG_PTR dwExtraInfo, BOOL Hook
              // ptiLastInput = pti; // Once this is set during Reboot or Shutdown, this prevents the exit window having foreground.
              // Find all the Move Mouse calls and fix mouse set active focus issues......
            }
+           if (Msg->message == WM_LBUTTONDOWN || Msg->message == WM_RBUTTONDOWN || Msg->message == WM_MBUTTONDOWN ||
+               Msg->message == WM_XBUTTONDOWN || Msg->message == WM_NCLBUTTONDOWN || Msg->message == WM_NCRBUTTONDOWN ||
+               Msg->message == WM_NCMBUTTONDOWN || Msg->message == WM_NCXBUTTONDOWN)
+               gppiLastInput = pti->ppi;
 
            // Post mouse move before posting mouse buttons, keep it in sync.
            if (pti->MessageQueue->QF_flags & QF_MOUSEMOVED)

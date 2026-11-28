@@ -1,5 +1,7 @@
 
 list(APPEND SOURCE
+    LogonRights.c
+    LogonTypes.c
     Negotiate.c
     testlist.c)
 

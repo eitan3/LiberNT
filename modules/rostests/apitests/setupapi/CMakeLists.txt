@@ -1,6 +1,7 @@
 
 list(APPEND SOURCE
     AcpiDeviceCapabilities.c
+    ClassAddProperty.c
     CfgMgr32EnumSubkeys.c
     ClassInstallParams.c
     devclass.c
@@ -47,6 +48,7 @@ list(APPEND SOURCE
     SoftwareComponent.c
     SysButtonDevices.c
     UsbHubInformation.c
+    SwDevice.c
     UsbInterfaceIds.c
     testlist.c)
 

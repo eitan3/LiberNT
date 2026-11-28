@@ -54,6 +54,7 @@ set(ALPC_SOURCE
     TpAlpc.c)
 
 list(APPEND SOURCE
+    ThreadLastSystemCall.c
     ApiSetMap.c
     AppendOnlyWrite.c
     BootLog.c
@@ -74,6 +75,7 @@ list(APPEND SOURCE
     LdrGetDllHandleByName.c
     LdrLoadDll.c
     LdrQueryProcessModuleInformation.c
+    ResourceFile.c
     Breakpoint.c
     ExceptionLoaderList.c
     FastFail.c
@@ -108,6 +110,7 @@ list(APPEND SOURCE
     NtFilterToken.c
     NtFlushInstructionCache.c
     NtFreeVirtualMemory.c
+    NtGetContextThread.c
     NtGetCurrentProcessorNumberEx.c
     NtImpersonateAnonymousToken.c
     NtInitializeRegistry.c
@@ -144,6 +147,7 @@ list(APPEND SOURCE
     NtQueryOpenSubKeys.c
     NtQuerySection.c
     NtQuerySectionImageNoExecute.c
+    NtQuerySecurityAttributesToken.c
     NtQuerySecurityObject.c
     NtSetSecurityObjectStatus.c
     PipeMailslotSecurity.c
@@ -164,6 +168,7 @@ list(APPEND SOURCE
     NtSetInformationThread.c
     NtSetInformationToken.c
     NtSetValueKey.c
+    NtSetTimerEx.c
     NtSetVolumeInformationFile.c
     NtStartProfile.c
     NtTerminateThread.c
@@ -181,6 +186,7 @@ list(APPEND SOURCE
     RtlComputePrivatizedDllName_U.c
     RtlConditionVariable.c
     RtlCopyMappedMemory.c
+    RtlCreateProcessReflection.c
     RtlCreateServiceSid.c
     RtlCriticalSection.c
     RtlCurrentTransaction.c
@@ -208,6 +214,7 @@ list(APPEND SOURCE
     RtlFirstFreeAce.c
     RtlGenerate8dot3Name.c
     RtlGetFullPathName_U.c
+    RtlGetFullPathName_UEx.c
     RtlGetFullPathName_Ustr.c
     RtlGetFullPathName_UstrEx.c
     RtlGetLengthWithoutLastFullDosOrNtPathElement.c
@@ -267,6 +274,7 @@ list(APPEND SOURCE
     StackOverflow.c
     StackProbe.c
     SystemInfo.c
+    SystemProcessExtension.c
     SystemTimeAtBoot.c
     Timer.c
     UserHiveLinks.c
@@ -331,7 +339,7 @@ add_rostests_file(TARGET ntdll_apitest SUBDIR testdata)
 # Keep the emulation regressions runnable independently of unrelated NTDLL
 # imports in the umbrella executable. Use the same test sources and assertions.
 add_executable(emulation_apitest EXCLUDE_FROM_ALL
-    arm64_chpe.c wow64_startup.c Wow64AddressLimit.c LdrFindResource_U.c LdrLoadDll.c emulation.rc emulation_testlist.c)
+    arm64_chpe.c wow64_startup.c Wow64AddressLimit.c LdrFindResource_U.c LdrLoadDll.c ResourceFile.c emulation.rc emulation_testlist.c)
 if(ARCH STREQUAL "i386" OR ARCH STREQUAL "amd64")
     add_asm_files(emulation_apitest_asm ${ARCH}/NtContinue.S)
     target_sources(emulation_apitest PRIVATE NtContinue.c UserModeException.c ${emulation_apitest_asm})

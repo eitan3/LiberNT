@@ -1876,7 +1876,7 @@
 @ stdcall -arch=win64 RtlCultureNameToLCID()
 @ stdcall RtlDowncaseUnicodeChar(long)
 @ stdcall RtlDuplicateUnicodeString(long ptr ptr)
-@ stdcall -arch=win64 RtlFindExportedRoutineByName()
+@ stdcall RtlFindExportedRoutineByName(ptr str)
 @ stdcall -arch=win64 RtlFindNextForwardRunSet()
 @ stdcall -arch=win64 RtlFirstFreeAce()
 @ stdcall -arch=win64 RtlFormatMessage()
@@ -2724,7 +2724,7 @@
 @ stdcall NtQueryInformationResourceManager(ptr long ptr long ptr)
 @ stdcall NtQueryInformationTransaction(ptr long ptr long ptr)
 @ stdcall NtQueryInformationTransactionManager(ptr long ptr long ptr)
-@ stub -arch=win64 NtQuerySecurityAttributesToken
+@ stdcall -arch=win64 NtQuerySecurityAttributesToken(ptr ptr long ptr long ptr)
 @ stdcall -version=0x601+ -arch=win64 NtQuerySystemInformationEx(long ptr long ptr long ptr)
 @ stdcall NtReadOnlyEnlistment(ptr ptr)
 @ stdcall NtRecoverEnlistment(ptr ptr)
@@ -3368,7 +3368,7 @@
 @ stdcall ZwQueryInformationTransaction(ptr long ptr long ptr)
 @ stdcall ZwQueryInformationTransactionManager(ptr long ptr long ptr)
 @ stdcall ZwQueryLicenseValue(ptr ptr ptr long ptr)
-@ stub -arch=win64 ZwQuerySecurityAttributesToken
+@ stdcall -arch=win64 ZwQuerySecurityAttributesToken(ptr ptr long ptr long ptr)
 @ stub -arch=win64 ZwQuerySecurityPolicy
 @ stdcall -version=0x601+ -arch=win64 ZwQuerySystemInformationEx(long ptr long ptr long ptr)
 @ stdcall -version=0x602+ -arch=win64 ZwQueryWnfStateData(ptr ptr ptr ptr ptr ptr)
@@ -3387,7 +3387,7 @@
 @ stdcall ZwSetInformationResourceManager(ptr long ptr long)
 @ stdcall ZwSetInformationTransaction(ptr long ptr long)
 @ stdcall -arch=win64 ZwSetInformationVirtualMemory()
-@ stub -arch=win64 ZwSetTimerEx
+@ stdcall ZwSetTimerEx(ptr long ptr long)
 @ stdcall ZwTraceControl(long ptr long ptr long ptr)
 @ stdcall -version=0x602+ -arch=win64 ZwUpdateWnfStateData(ptr ptr long ptr ptr long long)
 @ stdcall -arch=arm64 ZwWaitForAlertByThreadId(ptr ptr)

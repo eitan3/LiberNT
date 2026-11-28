@@ -120,6 +120,11 @@ NTAPI
 InbvSetDisplayWriteRoutine(
     _In_opt_ PVID_DISPLAY_WRITE_ROUTINE Routine);
 
+VOID
+NTAPI
+InbvNotifyDisplayOwnershipChange(
+    _In_ BOOLEAN DisplayOwned);
+
 /* ========================================================================
  * POST (boot) display ownership
  *
@@ -141,38 +146,25 @@ static PDXGKRNL_ADAPTER g_PostDisplayOwnerAdapter = NULL;
 static PVOID g_BootScreenCopy;
 static volatile LONG g_BootScreenDetached;
 
-/* The boot video driver keeps drawing at the firmware framebuffer's address, for the boot log and at a debugger stop; once the miniport shows other memory there it draws to a copy. */
-NTSTATUS
-DxgkDetachBootScreen(
-    _In_ PHYSICAL_ADDRESS ApertureBase,
-    _In_ ULONG AperturePageSize,
-    _In_ ULONG FirstPage,
-    _In_ ULONG PageCount)
+BOOLEAN
+DxgkBootScreenDrawsToCopy(VOID)
 {
-    LOADER_PARAMETER_FRAMEBUFFER Fb;
+    return InterlockedCompareExchange(&g_BootScreenDetached, 0, 0) != 0;
+}
+
+static
+NTSTATUS
+DxgkpDetachBootScreenToCopy(
+    _In_ CONST LOADER_PARAMETER_FRAMEBUFFER *FrameBuffer)
+{
+    LOADER_PARAMETER_FRAMEBUFFER Fb = *FrameBuffer;
     INBV_VIRTUAL_FRAME_BUFFER Shadow;
     PVOID Copy;
     PVOID Installed;
     NTSTATUS Status;
 
     PAGED_CODE();
-    ASSERT(ApertureBase.QuadPart >= 0);
-
-    /* TODO: a swizzling range or a CPU-visible segment placed in that window is not covered */
-    if (InterlockedCompareExchange(&g_BootScreenDetached, 0, 0) != 0 ||
-        !InbvIsBootDriverInstalled() ||
-        !InbvHasValidGopFrameBuffer() ||
-        !InbvGetGopFrameBufferInfo(&Fb) ||
-        Fb.FrameBufferBase.QuadPart <= 0 ||
-        !DxgkPostDisplayCoreApertureRunTakesBootWindow((ULONGLONG)ApertureBase.QuadPart,
-                                                       AperturePageSize,
-                                                       FirstPage,
-                                                       PageCount,
-                                                       (ULONGLONG)Fb.FrameBufferBase.QuadPart,
-                                                       Fb.FrameBufferSize))
-    {
-        return STATUS_SUCCESS;
-    }
+    ASSERT(Fb.FrameBufferBase.QuadPart > 0);
 
     ASSERT(Fb.FrameBufferSize != 0);
     Copy = ExAllocatePoolWithTag(NonPagedPool, Fb.FrameBufferSize, TAG_DXGK_DISPLAY);
@@ -201,6 +193,57 @@ DxgkDetachBootScreen(
                      Fb.FrameBufferBase.QuadPart, Fb.FrameBufferSize);
     }
     return STATUS_SUCCESS;
+}
+
+/* The boot video driver keeps drawing at the firmware framebuffer's address, for the boot log and at a debugger stop; once the miniport shows other memory there it draws to a copy. */
+NTSTATUS
+DxgkDetachBootScreen(
+    _In_ PHYSICAL_ADDRESS ApertureBase,
+    _In_ ULONG AperturePageSize,
+    _In_ ULONG FirstPage,
+    _In_ ULONG PageCount)
+{
+    LOADER_PARAMETER_FRAMEBUFFER Fb;
+
+    PAGED_CODE();
+    ASSERT(ApertureBase.QuadPart >= 0);
+
+    /* TODO: a swizzling range or a CPU-visible segment placed in that window is not covered */
+    if (InterlockedCompareExchange(&g_BootScreenDetached, 0, 0) != 0 ||
+        !InbvIsBootDriverInstalled() ||
+        !InbvHasValidGopFrameBuffer() ||
+        !InbvGetGopFrameBufferInfo(&Fb) ||
+        Fb.FrameBufferBase.QuadPart <= 0 ||
+        !DxgkPostDisplayCoreApertureRunTakesBootWindow((ULONGLONG)ApertureBase.QuadPart,
+                                                       AperturePageSize,
+                                                       FirstPage,
+                                                       PageCount,
+                                                       (ULONGLONG)Fb.FrameBufferBase.QuadPart,
+                                                       Fb.FrameBufferSize))
+    {
+        return STATUS_SUCCESS;
+    }
+
+    return DxgkpDetachBootScreenToCopy(&Fb);
+}
+
+static
+NTSTATUS
+DxgkpDetachWholeBootScreen(VOID)
+{
+    LOADER_PARAMETER_FRAMEBUFFER Fb;
+
+    PAGED_CODE();
+
+    if (InterlockedCompareExchange(&g_BootScreenDetached, 0, 0) != 0 ||
+        !InbvIsBootDriverInstalled() ||
+        !InbvHasValidGopFrameBuffer() ||
+        !InbvGetGopFrameBufferInfo(&Fb) ||
+        Fb.FrameBufferBase.QuadPart <= 0)
+    {
+        return STATUS_SUCCESS;
+    }
+    return DxgkpDetachBootScreenToCopy(&Fb);
 }
 
 static NTSTATUS
@@ -345,6 +388,78 @@ DxgkpFreeDeferredResources(
         ExFreePoolWithTag(TranslatedResources, TAG_DXGK_RESOURCES);
 }
 
+typedef struct _DXGKP_ADAPTER_START_THREAD
+{
+    PDXGKRNL_ADAPTER Adapter;
+    PCM_RESOURCE_LIST AllocatedResources;
+    PCM_RESOURCE_LIST TranslatedResources;
+    NTSTATUS Status;
+    KEVENT Done;
+} DXGKP_ADAPTER_START_THREAD, *PDXGKP_ADAPTER_START_THREAD;
+
+static KSTART_ROUTINE DxgkpAdapterStartThread;
+
+static
+VOID
+NTAPI
+DxgkpAdapterStartThread(
+    _In_ PVOID Context)
+{
+    PDXGKP_ADAPTER_START_THREAD Start = (PDXGKP_ADAPTER_START_THREAD)Context;
+
+    PAGED_CODE();
+    ASSERT(Start != NULL);
+    ASSERT(Start->Adapter != NULL);
+    ASSERT(PsGetCurrentProcess() == PsInitialSystemProcess);
+
+    Start->Status = DxgkAdapterStart(Start->Adapter,
+                                     Start->AllocatedResources,
+                                     Start->TranslatedResources);
+    KeSetEvent(&Start->Done, IO_NO_INCREMENT, FALSE);
+    PsTerminateSystemThread(STATUS_SUCCESS);
+}
+
+/* The miniport starts on a system thread of its own, whose stack is free, not on the stack of the PnP or session request that asked for it. */
+static
+NTSTATUS
+DxgkpStartAdapterOnOwnThread(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _In_opt_ PCM_RESOURCE_LIST AllocatedResources,
+    _In_opt_ PCM_RESOURCE_LIST TranslatedResources)
+{
+    DXGKP_ADAPTER_START_THREAD Start;
+    OBJECT_ATTRIBUTES Attributes;
+    HANDLE Thread;
+    NTSTATUS Status;
+
+    PAGED_CODE();
+    ASSERT(Adapter != NULL);
+
+    Start.Adapter = Adapter;
+    Start.AllocatedResources = AllocatedResources;
+    Start.TranslatedResources = TranslatedResources;
+    Start.Status = STATUS_UNSUCCESSFUL;
+    KeInitializeEvent(&Start.Done, NotificationEvent, FALSE);
+    InitializeObjectAttributes(&Attributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+
+    Status = PsCreateSystemThread(&Thread,
+                                  THREAD_ALL_ACCESS,
+                                  &Attributes,
+                                  NULL,
+                                  NULL,
+                                  DxgkpAdapterStartThread,
+                                  &Start);
+    if (!NT_SUCCESS(Status))
+    {
+        DXGKRNL_ERR("DxgkpStartAdapterOnOwnThread: adapter %p start thread not created 0x%08lX\n", Adapter, Status);
+        return Status;
+    }
+    ZwClose(Thread);
+
+    KeWaitForSingleObject(&Start.Done, Executive, KernelMode, FALSE, NULL);
+    return Start.Status;
+}
+
 static
 BOOLEAN
 DxgkpDeferAdapterStart(
@@ -457,7 +572,7 @@ DxgkStartDeferredAdapters(VOID)
         if (InterlockedCompareExchange(&Adapter->RemoveRundownStarted, 0, 0) == 0 &&
             ExAcquireRundownProtection(&Adapter->RemoveRundownRef))
         {
-            Status = DxgkAdapterStart(Adapter, Resources, Translated);
+            Status = DxgkpStartAdapterOnOwnThread(Adapter, Resources, Translated);
             if (!NT_SUCCESS(Status))
             {
                 DXGKRNL_ERR("DxgkStartDeferredAdapters: adapter %p did not start (0x%08lX)\n", Adapter, Status);
@@ -831,7 +946,8 @@ DxgkpShouldRegisterDisplayBridge(
     TakeOverFromFallback = !RegisterDisplayBridge &&
                            Owner != NULL &&
                            DxgkPostDisplayCoreOutranks(DxgkpPostDisplayRole(Claimant),
-                                                       DxgkpPostDisplayRole(Owner));
+                                                       DxgkpPostDisplayRole(Owner)) &&
+                           DxgkAdapterHasMemoryResources(Claimant->TranslatedResources);
 
     if (OwnerDeviceObject != NULL)
         ObDereferenceObject(OwnerDeviceObject);
@@ -870,6 +986,9 @@ DxgkpShouldRegisterDisplayBridge(
         KeReleaseMutex(&g_PostDisplayOwnershipMutex, FALSE);
     }
 
+    /* Source displays skip display-only adapters, so each of them gets a bridge of its own */
+    if (Claimant->MiniportContext->IsDisplayOnlyDriver)
+        RegisterDisplayBridge = TRUE;
     if (!RegisterDisplayBridge)
     {
         DXGKRNL_WARN("DISPLAY_BRIDGE: adapter %p did not claim POST ownership; "
@@ -1148,10 +1267,7 @@ DxgkpStartStopScreen(
 }
 
 static VOID
-NTAPI
-DxgkpBugCheckCallback(
-    _In_opt_ PVOID Buffer,
-    _In_ ULONG Length)
+DxgkpEnableSystemDisplay(VOID)
 {
     PDXGKRNL_ADAPTER Owner;
     PDXGKDDI_SYSTEM_DISPLAY_ENABLE PfnEnable;
@@ -1164,9 +1280,6 @@ DxgkpBugCheckCallback(
     KIRQL CurrentIrql;
     KIRQL OldIrql = PASSIVE_LEVEL;
     BOOLEAN LockAtDpcLevel;
-
-    UNREFERENCED_PARAMETER(Buffer);
-    UNREFERENCED_PARAMETER(Length);
 
     CurrentIrql = KeGetCurrentIrql();
     LockAtDpcLevel = (CurrentIrql >= DISPATCH_LEVEL);
@@ -1201,7 +1314,18 @@ ReleaseLock:
         KeReleaseSpinLock(&g_PostDisplayOwnerLock, OldIrql);
 }
 
-/* Marks the boot frame buffer as no longer scanned out; DxgkpBugCheckCallback brings it back. */
+static VOID
+NTAPI
+DxgkpBugCheckCallback(
+    _In_opt_ PVOID Buffer,
+    _In_ ULONG Length)
+{
+    UNREFERENCED_PARAMETER(Buffer);
+    UNREFERENCED_PARAMETER(Length);
+
+    DxgkpEnableSystemDisplay();
+}
+
 static
 BOOLEAN
 NTAPI
@@ -1212,6 +1336,7 @@ DxgkpInbvResetDisplay(
     UNREFERENCED_PARAMETER(Cols);
     UNREFERENCED_PARAMETER(Rows);
 
+    DxgkpEnableSystemDisplay();
     return TRUE;
 }
 
@@ -14538,6 +14663,7 @@ DxgkAdapterStart(
     ULONG           StartGeneration;
     DXGK_ADAPTER_START_ROLE Role;
     DXGKP_ADAPTER_START_PROGRESS Progress;
+    DXGK_BOOT_SCREEN_ACTION BootScreenAction;
     BOOLEAN         Restartable;
 
     PAGED_CODE();
@@ -14841,7 +14967,17 @@ DxgkAdapterStart(
         }
     }
 
-    if (!Adapter->IsBasicDisplayFallback && DxgkpIsPostDisplayDevice(Adapter) && !DxgkpScreenLogRequested())
+    BootScreenAction = DxgkPostDisplayCoreBootScreenAction(Adapter->IsBasicDisplayFallback,
+                                                           DxgkpIsPostDisplayDevice(Adapter),
+                                                           DxgkpScreenLogRequested());
+    if (BootScreenAction == DxgkBootScreenDrawToCopy && !NT_SUCCESS(DxgkpDetachWholeBootScreen()))
+        BootScreenAction = DxgkBootScreenRelease;
+    if (BootScreenAction == DxgkBootScreenDrawToCopy && !Adapter->MiniportContext->IsBasicDisplayFallback)
+    {
+        InbvNotifyDisplayOwnershipLost(DxgkpInbvResetDisplay);
+        InbvNotifyDisplayOwnershipChange(TRUE);
+    }
+    if (BootScreenAction == DxgkBootScreenRelease)
     {
         /* TODO: keep boot output in a virtual frame buffer for the boot image relay instead of dropping it */
         DXGKRNL_TRACE("DxgkAdapterStart: POST display adapter %p takes the display from the boot screen\n", Adapter);
@@ -14851,6 +14987,7 @@ DxgkAdapterStart(
     /* Call miniport start. */
     DXGKRNL_TRACE("DxgkAdapterStart: calling DxgkDdiStartDevice MiniportCtx=%p\n",
                   Adapter->MiniportDeviceContext);
+    ASSERT(PsGetCurrentProcess() == PsInitialSystemProcess);
     InterlockedExchange(&Adapter->MiniportStartFailed, 0);
     StepStart100ns = DxgkpTraceNow100ns();
     Status = Adapter->MiniportContext->InitData.s.DxgkDdiStartDevice(
@@ -16814,8 +16951,8 @@ DxgkpMiniportPnpDispatch(
      */
 
     /* Route \Device\Video0 PnP IRPs to the display handler. */
-    if (DxgkDisplayDispatchPnp(DeviceObject, Irp))
-        return STATUS_SUCCESS;
+    if (DxgkDisplayDispatchPnp(DeviceObject, Irp, &Status))
+        return Status;
 
     /* Route \Device\DxgKrnl PnP IRPs — complete with success (no-op). */
     if (GDxgControlDeviceObject != NULL && DeviceObject == GDxgControlDeviceObject)
@@ -16896,7 +17033,7 @@ DxgkpMiniportPnpDispatch(
                                             Stack->Parameters.StartDevice.AllocatedResources,
                                             Stack->Parameters.StartDevice.AllocatedResourcesTranslated))
                 {
-                    Status = DxgkAdapterStart(
+                    Status = DxgkpStartAdapterOnOwnThread(
                                  Adapter,
                                  Stack->Parameters.StartDevice.AllocatedResources,
                                  Stack->Parameters.StartDevice.AllocatedResourcesTranslated);
@@ -16923,12 +17060,18 @@ DxgkpMiniportPnpDispatch(
 
         case IRP_MN_QUERY_REMOVE_DEVICE:
         {
-            if (DxgkIsDisplayAdapter(Adapter))
+            if (DxgkIsDisplayAdapter(Adapter) && !DxgkDisplayBeginRemove(Adapter))
             {
                 Irp->IoStatus.Status = STATUS_DEVICE_BUSY;
                 IoCompleteRequest(Irp, IO_NO_INCREMENT);
                 return STATUS_DEVICE_BUSY;
             }
+            return DxgkpForwardIrp(Adapter, Irp);
+        }
+
+        case IRP_MN_CANCEL_REMOVE_DEVICE:
+        {
+            DxgkDisplaySetRemovePending(Adapter, FALSE);
             return DxgkpForwardIrp(Adapter, Irp);
         }
 
@@ -17110,6 +17253,7 @@ DxgkpMiniportPnpDispatch(
             NTSTATUS NotifyStatus = STATUS_UNSUCCESSFUL;
             NTSTATUS StopStatus = STATUS_SUCCESS;
 
+            DxgkDisplaySetRemovePending(Adapter, TRUE);
             DxgkpAcquireAdapterMutexAfterStart(Adapter);
             PreviousState = Adapter->State;
             WaitForStop = (InterlockedCompareExchange(&Adapter->AdapterStopInProgress, 0, 0) != 0);
@@ -17530,15 +17674,12 @@ DxgkpMiniportPowerDispatch(
     }
 
     /* Check for display device (\Device\Video0) — not a real power device. */
+    if (DxgkIsDisplayBridgeDevice(DeviceObject))
     {
-        extern PDEVICE_OBJECT g_DisplayDeviceObject;
-        if (g_DisplayDeviceObject != NULL && DeviceObject == g_DisplayDeviceObject)
-        {
-            PoStartNextPowerIrp(Irp);
-            Irp->IoStatus.Status = STATUS_SUCCESS;
-            IoCompleteRequest(Irp, IO_NO_INCREMENT);
-            return STATUS_SUCCESS;
-        }
+        PoStartNextPowerIrp(Irp);
+        Irp->IoStatus.Status = STATUS_SUCCESS;
+        IoCompleteRequest(Irp, IO_NO_INCREMENT);
+        return STATUS_SUCCESS;
     }
 
     Adapter = DXGKRNL_ADAPTER_FROM_DEVOBJ(DeviceObject);

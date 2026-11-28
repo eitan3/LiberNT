@@ -146,6 +146,8 @@
     ROS_SYSCALL_ENTRY( NtSetSystemEnvironmentValue ) \
     ROS_SYSCALL_ENTRY( NtSetSystemEnvironmentValueEx ) \
     ROS_SYSCALL_ENTRY( NtSetSystemPowerState ) \
+    ROS_SYSCALL_ENTRY( NtSetTimerEx ) \
+    ROS_SYSCALL_ENTRY( NtQuerySecurityAttributesToken ) \
     ROS_SYSCALL_ENTRY( NtSetUuidSeed ) \
     ROS_SYSCALL_ENTRY( NtSinglePhaseReject ) \
     ROS_SYSCALL_ENTRY( NtStartProfile ) \

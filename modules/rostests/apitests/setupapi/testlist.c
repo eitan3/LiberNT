@@ -2,6 +2,7 @@
 #define STANDALONE
 #include <apitest.h>
 
+extern void func_ClassAddProperty(void);
 extern void func_AcpiDeviceCapabilities(void);
 extern void func_CfgMgr32EnumSubkeys(void);
 extern void func_ClassInstallParams(void);
@@ -49,10 +50,12 @@ extern void func_SetupInstallRegisterDlls(void);
 extern void func_AddRegRegistryView(void);
 extern void func_SysButtonDevices(void);
 extern void func_UsbHubInformation(void);
+extern void func_SwDevice(void);
 extern void func_UsbInterfaceIds(void);
 
 const struct test winetest_testlist[] =
 {
+    { "ClassAddProperty", func_ClassAddProperty },
     { "AcpiDeviceCapabilities", func_AcpiDeviceCapabilities },
     { "CfgMgr32EnumSubkeys", func_CfgMgr32EnumSubkeys },
     { "ClassInstallParams", func_ClassInstallParams },
@@ -100,6 +103,7 @@ const struct test winetest_testlist[] =
     { "AddRegRegistryView", func_AddRegRegistryView },
     { "SysButtonDevices", func_SysButtonDevices },
     { "UsbHubInformation", func_UsbHubInformation },
+    { "SwDevice", func_SwDevice },
     { "UsbInterfaceIds", func_UsbInterfaceIds },
     { 0, 0 }
 };

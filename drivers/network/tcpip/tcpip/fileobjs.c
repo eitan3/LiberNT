@@ -79,6 +79,31 @@ static PLIST_ENTRY AddrFileNextLive(
     return Entry;
 }
 
+BOOLEAN AddrFileReferenceByPointer(
+    PADDRESS_FILE AddrFile)
+{
+    PLIST_ENTRY Entry;
+    KIRQL OldIrql;
+    BOOLEAN Live = FALSE;
+
+    TcpipAcquireSpinLock(&AddressFileListLock, &OldIrql);
+
+    for (Entry = AddressFileListHead.Flink;
+         Entry != &AddressFileListHead;
+         Entry = Entry->Flink)
+    {
+        if (CONTAINING_RECORD(Entry, ADDRESS_FILE, ListEntry) == AddrFile)
+        {
+            Live = AddrFileReferenceLive(AddrFile);
+            break;
+        }
+    }
+
+    TcpipReleaseSpinLock(&AddressFileListLock, OldIrql);
+
+    return Live;
+}
+
 /*
  * FUNCTION: Searches through address file entries to find the first match
  * ARGUMENTS:
