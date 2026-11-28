@@ -46,6 +46,7 @@
 #include "devpkey.h"
 #ifdef __REACTOS__
 #include <libernt/mmdevdefault.h>
+#include "ks.h"
 #endif
 
 WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
@@ -131,6 +132,9 @@ static inline IPropertyBagImpl *impl_from_IPropertyBag(IPropertyBag *iface)
 #ifdef __REACTOS__
 /* The three device notifications of IMMNotificationClient, one per verdict of the diff, sent to the registered clients as notify_clients sends the default's (R7-01) */
 static void notify_device(enum notif_change change, const MMDevice *device);
+static void notify_clients(EDataFlow flow, ERole role, const WCHAR *id);
+static HRESULT WINAPI MMDevEnum_GetDevice(IMMDeviceEnumerator *iface, const WCHAR *name, IMMDevice **device);
+static inline MMDevice *impl_from_IMMDevice(IMMDevice *iface);
 static CRITICAL_SECTION g_notif_lock;
 #endif
 
@@ -963,11 +967,23 @@ end:
 }
 
 #ifdef __REACTOS__
-/* The devices of the flows as the answer left them, in the list's order: the diff's Next (devenum_notif.h) */
+/* The refresh of the device list, one at a time: a client asking and the jack watcher may both ask the driver. The lock is recursive: a client told of a change under it may ask again */
+static CRITICAL_SECTION g_refresh_lock;
+static CRITICAL_SECTION_DEBUG g_refresh_lock_debug =
+{
+    0, 0, &g_refresh_lock,
+    { &g_refresh_lock_debug.ProcessLocksList, &g_refresh_lock_debug.ProcessLocksList },
+      0, 0, { (DWORD_PTR)(__FILE__ ": g_refresh_lock") }
+};
+static CRITICAL_SECTION g_refresh_lock = { &g_refresh_lock_debug, -1, 0, 0, 0, 0 };
+
+/* The devices of the flows as the answer left them, in the list's order: the diff's Next (devenum_notif.h), with the list as it was, for the state a change had */
 struct refresh_iter
 {
     struct list *at;
     EDataFlow first, last;
+    const struct notif_before *before;
+    UINT count;
 };
 
 static BOOLEAN refresh_next(void *context, struct notif_after *after)
@@ -990,15 +1006,165 @@ static BOOLEAN refresh_next(void *context, struct notif_after *after)
     return FALSE;
 }
 
-/* The diff's verdict on a device told to the clients: a removed one is not present from now on */
+/* The diff's verdict on a device told to the clients: a removed one is not present from now on, and a changed state is told in the log with its name (LEG-1) */
 static void refresh_tell(enum notif_change change, struct notif_after *after, void *context)
 {
+    struct refresh_iter *iter = context;
     MMDevice *device = after->device;
 
-    (void)context;
+    if (change == NOTIF_STATE && iter->before)
+    {
+        WCHAR id[56];
+
+        MMDevice_FormatId(device, id);
+        WARN("endpoint state: %s (%s) %#lx -> %#lx\n", wine_dbgstr_w(id), wine_dbgstr_w(device->drv_id),
+             notif_before_state(iter->before, iter->count, after->id), after->state);
+    }
+
     if (change == NOTIF_REMOVED)
         device->state = DEVICE_STATE_NOTPRESENT;
     notify_device(change, device);
+}
+
+/* The devices of one flow in the list's order, as they are now */
+struct flow_iter
+{
+    struct list *at;
+    EDataFlow flow;
+};
+
+static BOOLEAN flow_next(void *context, struct notif_after *after)
+{
+    struct flow_iter *iter = context;
+    MMDevice *device;
+
+    while (iter->at != &device_list)
+    {
+        device = LIST_ENTRY(iter->at, MMDevice, entry);
+        iter->at = iter->at->next;
+        if (device->flow != iter->flow)
+            continue;
+        after->id = &device->devguid;
+        after->state = device->state;
+        after->named = TRUE;
+        after->device = device;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* The device an endpoint id names, as GetDevice finds it, without a reference kept */
+static MMDevice *device_from_id(const WCHAR *id)
+{
+    IMMDevice *device;
+    MMDevice *found;
+
+    if (FAILED(MMDevEnum_GetDevice(&enumerator.IMMDeviceEnumerator_iface, id, &device)))
+        return NULL;
+    found = impl_from_IMMDevice(device);
+    IMMDevice_Release(device);
+    return found;
+}
+
+/*
+ * The device that is a flow's default for a role (LEG-1): what the user chose
+ * for the role, then what the user chose for the flow, then the driver's
+ * default, the first of them that is active, else the first active device of
+ * the flow, as GetDefaultAudioEndpoint hands it out. NULL when no device of
+ * the flow is active.
+ */
+static MMDevice *pick_default_device(EDataFlow flow, ERole role)
+{
+    WCHAR reg_key[256], def_id[64];
+    GUID preferred[3];
+    struct flow_iter iter;
+    MMDevice *device, *driver_default;
+    DWORD size;
+    UINT count = 0, i;
+    HKEY key;
+
+    if (!drvs.module_name[0])
+        return NULL;
+
+    lstrcpyW(reg_key, drv_keyW);
+    lstrcatW(reg_key, L"\\");
+    lstrcatW(reg_key, drvs.module_name);
+
+    if (RegOpenKeyW(HKEY_CURRENT_USER, reg_key, &key) == ERROR_SUCCESS)
+    {
+        const WCHAR *names[2];
+        UINT names_count = 0;
+
+        if (role == eCommunications)
+            names[names_count++] = flow == eRender ? L"DefaultVoiceOutput" : L"DefaultVoiceInput";
+        names[names_count++] = flow == eRender ? L"DefaultOutput" : L"DefaultInput";
+
+        for (i = 0; i < names_count; i++)
+        {
+            size = sizeof(def_id);
+            if (RegQueryValueExW(key, names[i], 0, NULL, (BYTE *)def_id, &size) != ERROR_SUCCESS)
+                continue;
+            def_id[ARRAY_SIZE(def_id) - 1] = 0;
+            if ((device = device_from_id(def_id)))
+                preferred[count++] = device->devguid;
+        }
+        RegCloseKey(key);
+    }
+
+    driver_default = flow == eRender ? MMDevice_def_play : MMDevice_def_rec;
+    if (driver_default)
+        preferred[count++] = driver_default->devguid;
+
+    iter.at = device_list.next;
+    iter.flow = flow;
+    return notif_default_pick(flow_next, &iter, preferred, count);
+}
+
+/* The roles a default is told for: eMultimedia follows eConsole, as notify_clients tells it */
+static const ERole default_roles[2] = {eConsole, eCommunications};
+
+/* The defaults of two flows and two roles, by flow and by role, as they were or are */
+struct default_snapshot
+{
+    GUID id[2][2];
+    BOOLEAN has[2][2];
+};
+
+static void default_snapshot_take(struct default_snapshot *snapshot, EDataFlow first, EDataFlow last)
+{
+    MMDevice *device;
+    UINT flow, role;
+
+    for (flow = first; flow <= last; flow++)
+        for (role = 0; role < 2; role++)
+        {
+            device = pick_default_device(flow, default_roles[role]);
+            snapshot->has[flow][role] = device != NULL;
+            if (device)
+                snapshot->id[flow][role] = device->devguid;
+        }
+}
+
+/* The defaults the answer moved are told to the clients (LEG-1), with the device that is the default now, or NULL when none is; the caller holds g_notif_lock */
+static void default_snapshot_tell(const struct default_snapshot *snapshot, EDataFlow first, EDataFlow last)
+{
+    MMDevice *device;
+    WCHAR id[56];
+    UINT flow, role;
+
+    for (flow = first; flow <= last; flow++)
+        for (role = 0; role < 2; role++)
+        {
+            device = pick_default_device(flow, default_roles[role]);
+            if ((device != NULL) == snapshot->has[flow][role] &&
+                (!device || IsEqualGUID(&device->devguid, &snapshot->id[flow][role])))
+                continue;
+            if (device)
+                MMDevice_FormatId(device, id);
+            WARN("endpoint state: the default of flow %u role %u is now %s\n", flow, default_roles[role],
+                 device ? wine_dbgstr_w(id) : "(none)");
+            notify_clients(flow, default_roles[role], device ? id : NULL);
+        }
 }
 
 /*
@@ -1008,12 +1174,15 @@ static void refresh_tell(enum notif_change change, struct notif_after *after, vo
  * holds, with its state. A device the answer no longer names is not present
  * and was removed; one it names that was not there, or was not present, was
  * added; one whose state changed has the new state. An unchanged answer tells
- * nothing. The clients are told under g_notif_lock, as the default's change is.
- * The diff itself is devenum_notif.h's, where the host test runs it.
+ * nothing. A default the answer moved, as a jack that was unplugged or plugged
+ * moves it (LEG-1), is told too. The clients are told under g_notif_lock, as
+ * the default's change is. The diff itself is devenum_notif.h's, where the host
+ * test runs it, and so is the default's rule.
  */
 static void reactos_refresh_devices(EDataFlow flow)
 {
     struct notif_before *before;
+    struct default_snapshot snapshot;
     MMDevice *device;
     EDataFlow first, last;
     struct refresh_iter iter;
@@ -1023,14 +1192,16 @@ static void reactos_refresh_devices(EDataFlow flow)
         return;
 
     if (flow == eRender || flow == eCapture)
-    {
         first = last = flow;
-    }
     else
     {
         first = eRender;
         last = eCapture;
     }
+
+    EnterCriticalSection(&g_refresh_lock);
+
+    default_snapshot_take(&snapshot, first, last);
 
     LIST_FOR_EACH_ENTRY(device, &device_list, MMDevice, entry)
     {
@@ -1058,18 +1229,148 @@ static void reactos_refresh_devices(EDataFlow flow)
         load_driver_devices(last);
 
     /* without the list as it was, nothing can be told to have changed */
-    if (!before)
-        return;
+    if (before)
+    {
+        EnterCriticalSection(&g_notif_lock);
 
-    EnterCriticalSection(&g_notif_lock);
+        iter.at = device_list.next;
+        iter.first = first;
+        iter.last = last;
+        iter.before = before;
+        iter.count = count;
+        notif_diff_run(before, count, refresh_next, refresh_tell, &iter);
+        default_snapshot_tell(&snapshot, first, last);
 
-    iter.at = device_list.next;
-    iter.first = first;
-    iter.last = last;
-    notif_diff_run(before, count, refresh_next, refresh_tell, &iter);
+        LeaveCriticalSection(&g_notif_lock);
+        free(before);
+    }
+    LeaveCriticalSection(&g_refresh_lock);
+}
 
-    LeaveCriticalSection(&g_notif_lock);
-    free(before);
+/*
+ * The jack watcher (LEG-1). The HDAudio driver raises
+ * KSEVENT_PINCAPS_JACKINFOCHANGE on an endpoint's filter when a jack's
+ * presence changes. The watcher enables it, with an event of its own, on the
+ * wave filter of every endpoint that takes it, waits for any of the events,
+ * and asks the driver for the endpoints again: reactos_refresh_devices tells
+ * the registered clients the states and the defaults that changed, as a
+ * client's own enumeration would. The events are enabled again after each
+ * answer, since the endpoints it names may differ; with nothing to wait for
+ * it looks again later.
+ */
+#define JACK_WATCH_MAX       32
+#define JACK_WATCH_IDLE_MS   30000
+
+struct jack_watch
+{
+    HANDLE filters[JACK_WATCH_MAX];
+    HANDLE events[JACK_WATCH_MAX];
+    UINT count;
+};
+
+static void jack_watch_disarm(struct jack_watch *watch)
+{
+    UINT i;
+
+    for (i = 0; i < watch->count; i++)
+    {
+        /* an event a file enabled goes with the file's closing */
+        CloseHandle(watch->filters[i]);
+        CloseHandle(watch->events[i]);
+    }
+    watch->count = 0;
+}
+
+static void jack_watch_arm(struct jack_watch *watch)
+{
+    static const GUID pin_caps_change = {STATIC_KSEVENTSETID_PinCapsChange};
+    GUID endpoints[JACK_WATCH_MAX];
+    KSEVENT event;
+    MMDevice *device;
+    UINT count = 0, i;
+
+    jack_watch_disarm(watch);
+    EnterCriticalSection(&g_refresh_lock);
+    LIST_FOR_EACH_ENTRY(device, &device_list, MMDevice, entry)
+    {
+        if (count < JACK_WATCH_MAX)
+            endpoints[count++] = device->devguid;
+    }
+    LeaveCriticalSection(&g_refresh_lock);
+
+    event.Set = pin_caps_change;
+    event.Id = KSEVENT_PINCAPS_JACKINFOCHANGE;
+    event.Flags = KSEVENT_TYPE_ENABLE;
+
+    for (i = 0; i < count; i++)
+    {
+        KSEVENTDATA data;
+        WCHAR *path;
+        HANDLE filter, signal;
+        DWORD bytes;
+        ULONG pin;
+
+        if (FAILED(reactos_wave_connector(&endpoints[i], &path, &pin)))
+            continue;
+        filter = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        free(path);
+        if (filter == INVALID_HANDLE_VALUE)
+            continue;
+        if (!(signal = CreateEventW(NULL, FALSE, FALSE, NULL)))
+        {
+            CloseHandle(filter);
+            continue;
+        }
+
+        ZeroMemory(&data, sizeof(data));
+        data.NotificationType = KSEVENTF_EVENT_HANDLE;
+        data.EventHandle.Event = signal;
+        if (DeviceIoControl(filter, IOCTL_KS_ENABLE_EVENT, &event, sizeof(event), &data, sizeof(data), &bytes, NULL))
+        {
+            watch->filters[watch->count] = filter;
+            watch->events[watch->count] = signal;
+            watch->count++;
+        }
+        else
+        {
+            CloseHandle(filter);
+            CloseHandle(signal);
+        }
+    }
+}
+
+static DWORD WINAPI jack_thread_proc(void *user)
+{
+    struct jack_watch watch;
+    HANDLE handles[JACK_WATCH_MAX];
+    UINT i;
+    DWORD woken;
+
+    UNREFERENCED_PARAMETER(user);
+    SetThreadDescription(GetCurrentThread(), L"libernt_mmdevapi_jack");
+    watch.count = 0;
+
+    for (;;)
+    {
+        jack_watch_arm(&watch);
+        if (!watch.count)
+        {
+            Sleep(JACK_WATCH_IDLE_MS);
+            continue;
+        }
+        for (i = 0; i < watch.count; i++)
+            handles[i] = watch.events[i];
+        woken = WaitForMultipleObjects(watch.count, handles, FALSE, INFINITE);
+        if (woken == WAIT_FAILED)
+        {
+            jack_watch_disarm(&watch);
+            Sleep(JACK_WATCH_IDLE_MS);
+            continue;
+        }
+        TRACE("jack change told by endpoint %lu: asking the driver again\n", woken);
+        reactos_refresh_devices(eAll);
+    }
+    return 0;
 }
 #endif
 
@@ -1533,9 +1834,11 @@ static HRESULT WINAPI MMDevEnum_EnumAudioEndpoints(IMMDeviceEnumerator *iface, E
 static HRESULT WINAPI MMDevEnum_GetDefaultAudioEndpoint(IMMDeviceEnumerator *iface, EDataFlow flow, ERole role, IMMDevice **device)
 {
     MMDevEnumImpl *This = impl_from_IMMDeviceEnumerator(iface);
+#ifndef __REACTOS__
     WCHAR reg_key[256];
     HKEY key;
     HRESULT hr;
+#endif
 
     TRACE("(%p)->(%u,%u,%p)\n", This, flow, role, device);
 
@@ -1552,8 +1855,18 @@ static HRESULT WINAPI MMDevEnum_GetDefaultAudioEndpoint(IMMDeviceEnumerator *ifa
 
 #ifdef __REACTOS__
     reactos_refresh_devices(flow);
-#endif
 
+    /* the first active of the user's choices and of the driver's default, else the first active one (LEG-1) */
+    {
+        MMDevice *impl = pick_default_device(flow, role);
+
+        if (!impl)
+            return E_NOTFOUND;
+        *device = &impl->IMMDevice_iface;
+        IMMDevice_AddRef(*device);
+        return S_OK;
+    }
+#else
     if(!drvs.module_name[0])
         return E_NOTFOUND;
 
@@ -1623,6 +1936,7 @@ static HRESULT WINAPI MMDevEnum_GetDefaultAudioEndpoint(IMMDeviceEnumerator *ifa
         return E_NOTFOUND;
     IMMDevice_AddRef(*device);
     return S_OK;
+#endif
 }
 
 static HRESULT WINAPI MMDevEnum_GetDevice(IMMDeviceEnumerator *iface, const WCHAR *name, IMMDevice **device)
@@ -1669,6 +1983,8 @@ static HRESULT WINAPI MMDevEnum_GetDevice(IMMDeviceEnumerator *iface, const WCHA
 /* The registered clients and their walks: devenum_notif.h's bookkeeping, every entry under g_notif_lock */
 static struct notif_clients g_notif_clients = NOTIF_CLIENTS_INIT(g_notif_clients);
 static HANDLE g_notif_thread;
+/* The thread that waits for the jacks' changes (LEG-1), started with the notification thread */
+static HANDLE g_jack_thread;
 
 static CRITICAL_SECTION g_notif_lock;
 static CRITICAL_SECTION_DEBUG g_notif_lock_debug =
@@ -1883,6 +2199,9 @@ static HRESULT WINAPI MMDevEnum_RegisterEndpointNotificationCallback(IMMDeviceEn
             if(!g_notif_thread)
                 ERR("CreateThread failed: %lu\n", GetLastError());
         }
+        /* a jack's change wakes the refresh that tells the clients (LEG-1) */
+        if (!g_jack_thread)
+            g_jack_thread = CreateThread(NULL, 0, jack_thread_proc, NULL, 0, NULL);
 
         LeaveCriticalSection(&g_notif_lock);
 

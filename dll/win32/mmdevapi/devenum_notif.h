@@ -1,7 +1,7 @@
 /*
  * PROJECT:     ReactOS Audio Sound Manager
  * LICENSE:     LGPL-2.1-or-later (https://spdx.org/licenses/LGPL-2.1-or-later): the licence of devenum.c, whose register and unregister bookkeeping, walks and diff of a device set moved here
- * PURPOSE:     The notification clients of the device enumerator and the diff of a device set against its snapshot: the bookkeeping, the walks that never call a client unregistered under them and never free a wrapper a walk still holds (N7-04), and the verdict per device that tells an added, a removed and a changed endpoint apart (R7-01). Free of the device list's own types and of COM, so that the host test runs the very code the DLL runs (N7-06)
+ * PURPOSE:     The notification clients of the device enumerator and the diff of a device set against its snapshot: the bookkeeping, the walks that never call a client unregistered under them and never free a wrapper a walk still holds (N7-04), and the verdict per device that tells an added, a removed and a changed endpoint apart (R7-01); the default of a flow after an answer, which an unplugged jack is not (LEG-1). Free of the device list's own types and of COM, so that the host test runs the very code the DLL runs (N7-06)
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  *
  * This library is free software; you can redistribute it and/or
@@ -205,6 +205,38 @@ static inline void notif_diff_run(const struct notif_before *before, UINT count,
         if (change != NOTIF_UNCHANGED)
             tell(change, &after, context);
     }
+}
+
+/*
+ * The device a flow's default falls to when the answer left it (LEG-1): the
+ * first of the preferred devices that the answer names and that is active,
+ * else the first device the answer names that is active; NULL when none is.
+ * A jack that is unplugged is not active, so the default leaves it for the
+ * next active device, or for none, and comes back to it when it is plugged
+ * again. The devices are Next's, in the list's order.
+ */
+static inline void *notif_default_pick(notif_next_t next, void *context, const GUID *preferred, UINT preferred_count)
+{
+    struct notif_after after;
+    void *first = NULL, *found = NULL;
+    UINT best, i;
+
+    best = preferred ? preferred_count : 0;
+    while (next(context, &after))
+    {
+        if (!after.named || after.state != DEVICE_STATE_ACTIVE)
+            continue;
+        if (!first)
+            first = after.device;
+        for (i = 0; i < best; i++)
+            if (IsEqualGUID(&preferred[i], after.id))
+            {
+                best = i;
+                found = after.device;
+                break;
+            }
+    }
+    return found ? found : first;
 }
 
 #endif /* _MMDEVAPI_DEVENUM_NOTIF_H_ */
