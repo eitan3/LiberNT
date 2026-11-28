@@ -1,6 +1,7 @@
 #pragma once
 
 extern BOOL g_bWindowSnapEnabled;
+extern BOOL g_bLiberExperience;
 
 /* Private server-side class used only by the composited snap preview. */
 #define SNAP_PREVIEW_CLASS_NAME L"ReactOSSnapPreview"

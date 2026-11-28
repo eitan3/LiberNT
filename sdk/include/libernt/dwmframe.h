@@ -341,6 +341,31 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
 #define DWM_LIBER_MATERIAL_ALPHA(Packed)     (((ULONG)(Packed) >> 16) & 0xFFu)
 #define DWM_LIBER_MATERIAL_MASK              0x80FF7F7Fu
 
+/* Liber window geometry and motion, shared by win32k, the compositor and their tests */
+#define DWM_CORNER_RADIUS_LIBER_96    12u
+#define DWM_LIBER_ANIM_MINIMIZE_MS    300u
+#define DWM_LIBER_ANIM_RESTORE_MS     340u
+#define DWM_LIBER_ANIM_MOVE_MS        300u
+#define DWM_LIBER_ANIM_FADE_FROM      40u
+
+static __inline ULONG
+DwmLiberWindowCornerRadius(ULONG Dpi)
+{
+    return DWM_CORNER_RADIUS_LIBER_96 * (Dpi ? Dpi : 96u) / 96u;
+}
+
+static __inline ULONG
+DwmLiberMinimizeAlpha(ULONG Progress, ULONG Scale)
+{
+    ULONG From = (ULONG)(((ULONGLONG)Scale * DWM_LIBER_ANIM_FADE_FROM) / 100u);
+
+    if (Scale == 0 || Progress <= From)
+        return 255u;
+    if (Progress >= Scale)
+        return 0u;
+    return (ULONG)(255u - ((ULONGLONG)(Progress - From) * 255u) / (Scale - From));
+}
+
 /* Values intentionally match DWM_SYSTEMBACKDROP_TYPE in dwmapi.h. */
 #define DWM_BACKDROP_NONE       1u
 #define DWM_BACKDROP_MAIN       2u

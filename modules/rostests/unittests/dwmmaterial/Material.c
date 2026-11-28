@@ -181,6 +181,20 @@ static void TestFade(void)
        "a fading material blurs behind the window\n");
 }
 
+static void TestWindowMotion(void)
+{
+    ok(DwmLiberWindowCornerRadius(96) == 12 && DwmLiberWindowCornerRadius(144) == 18 && DwmLiberWindowCornerRadius(0) == 12,
+       "Liber windows use the spec's 12 px radius, scaled by DPI\n");
+    ok(DwmLiberMinimizeAlpha(0, 65536) == 255, "the window starts opaque\n");
+    ok(DwmLiberMinimizeAlpha(65536 * 40 / 100, 65536) == 255, "it stays opaque for the first 40%% of the travel\n");
+    ok(DwmLiberMinimizeAlpha(65536 * 70 / 100, 65536) > 120 && DwmLiberMinimizeAlpha(65536 * 70 / 100, 65536) < 135,
+       "it is half faded at 70%%: %lu\n", DwmLiberMinimizeAlpha(65536 * 70 / 100, 65536));
+    ok(DwmLiberMinimizeAlpha(65536, 65536) == 0 && DwmLiberMinimizeAlpha(70000, 65536) == 0, "it is gone at the icon\n");
+    ok(DwmLiberMinimizeAlpha(10, 0) == 255, "no scale, no fade\n");
+    ok(DWM_LIBER_ANIM_MINIMIZE_MS == 300 && DWM_LIBER_ANIM_RESTORE_MS == 340 && DWM_LIBER_ANIM_MOVE_MS == 300,
+       "minimize 300 ms, restore 340 ms, maximize and snap 300 ms\n");
+}
+
 START_TEST(Material)
 {
     TestPacking();
@@ -189,4 +203,5 @@ START_TEST(Material)
     TestBlur();
     TestDim();
     TestFade();
+    TestWindowMotion();
 }
