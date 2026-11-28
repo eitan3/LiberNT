@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT API tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     Connection recovery after a failed roam attempt and a stalled 4-way handshake
+ * PURPOSE:     Connection recovery after a failed roam attempt, a lost roam and a stalled 4-way handshake
  * COPYRIGHT:   Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
 
@@ -24,6 +24,7 @@ typedef struct _TEST_EVENT
 } TEST_EVENT;
 
 static const UCHAR RoamBssid[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x77};
+static const UCHAR OpenBssid[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
 
 static const WCHAR Wpa2ProfileXml[] =
     L"<?xml version=\"1.0\"?>"
@@ -56,6 +57,28 @@ static const WCHAR RejoinProfileXml[] =
     L"<MSM><security><authEncryption><authentication>open</authentication>"
     L"<encryption>none</encryption><useOneX>false</useOneX></authEncryption></security></MSM>"
     L"</WLANProfile>";
+
+static const WCHAR LostProfileXml[] =
+    L"<?xml version=\"1.0\"?>"
+    L"<WLANProfile xmlns=\"http://www.microsoft.com/networking/WLAN/profile/v1\">"
+    L"<name>ReactOS-Lost</name>"
+    L"<SSIDConfig><SSID><name>ReactOS-Lost</name></SSID></SSIDConfig>"
+    L"<connectionType>ESS</connectionType><connectionMode>manual</connectionMode>"
+    L"<MSM><security><authEncryption><authentication>open</authentication>"
+    L"<encryption>none</encryption><useOneX>false</useOneX></authEncryption></security></MSM>"
+    L"</WLANProfile>";
+
+static const WCHAR OpenProfileXml[] =
+    L"<?xml version=\"1.0\"?>"
+    L"<WLANProfile xmlns=\"http://www.microsoft.com/networking/WLAN/profile/v1\">"
+    L"<name>ReactOS-Open</name>"
+    L"<SSIDConfig><SSID><name>ReactOS-Open</name></SSID></SSIDConfig>"
+    L"<connectionType>ESS</connectionType><connectionMode>manual</connectionMode>"
+    L"<MSM><security><authEncryption><authentication>open</authentication>"
+    L"<encryption>none</encryption><useOneX>false</useOneX></authEncryption></security></MSM>"
+    L"</WLANProfile>";
+
+typedef VOID (*VWIFI_TEST)(HANDLE Client, const GUID *Interface);
 
 static CRITICAL_SECTION EventLock;
 static HANDLE EventSignal;
@@ -136,6 +159,23 @@ WaitEvent(LONG From, DWORD Source, DWORD Code, DWORD TimeoutMs, WLAN_REASON_CODE
         WaitForSingleObject(EventSignal, (DWORD)(Deadline - Now));
     }
     return FindEvent(From, Source, Code, Reason);
+}
+
+static BOOL
+WaitConnectionOutcome(LONG From, DWORD TimeoutMs, WLAN_REASON_CODE *Reason)
+{
+    ULONGLONG Deadline = GetTickCount64() + TimeoutMs;
+    ULONGLONG Now;
+
+    for (Now = GetTickCount64(); Now < Deadline; Now = GetTickCount64())
+    {
+        if (FindEvent(From, WLAN_NOTIFICATION_SOURCE_ACM, wlan_notification_acm_connection_complete, Reason))
+            return TRUE;
+        if (FindEvent(From, WLAN_NOTIFICATION_SOURCE_ACM, wlan_notification_acm_connection_attempt_fail, Reason))
+            return FALSE;
+        WaitForSingleObject(EventSignal, (DWORD)(Deadline - Now));
+    }
+    return FindEvent(From, WLAN_NOTIFICATION_SOURCE_ACM, wlan_notification_acm_connection_complete, Reason);
 }
 
 static WLAN_INTERFACE_STATE
@@ -293,7 +333,76 @@ TestUnrequestedAssociation(HANDLE Client, const GUID *Interface)
 }
 
 static VOID
-RunOnVwifi(BOOL StalledHandshake)
+TestReconnectAfterLostRoam(HANDLE Client, const GUID *Interface)
+{
+    PWLAN_CONNECTION_ATTRIBUTES Attributes = NULL;
+    WLAN_REASON_CODE Reason = WLAN_REASON_CODE_UNKNOWN;
+    DWORD Size = 0;
+    DWORD Error;
+    BOOL Connected;
+    LONG Mark;
+
+    Mark = EventMark();
+    if (ConnectProfile(Client, Interface, LostProfileXml, L"ReactOS-Lost") != ERROR_SUCCESS)
+        return;
+
+    ok(WaitEvent(Mark, WLAN_NOTIFICATION_SOURCE_ACM, wlan_notification_acm_connection_complete, 5000, &Reason),
+       "ReactOS-Lost did not connect\n");
+    ok(Reason == WLAN_REASON_CODE_SUCCESS, "Connection completed with reason 0x%lx\n", Reason);
+    ok(WaitEvent(Mark, WLAN_NOTIFICATION_SOURCE_MSM, wlan_notification_msm_roaming_end, 5000, NULL),
+       "No roaming end notification\n");
+    ok(WaitState(Client, Interface, wlan_interface_state_disconnected, 3000),
+       "Interface state is %d after a roam that lost the network, expected disconnected\n",
+       QueryState(Client, Interface));
+
+    Mark = EventMark();
+    Reason = WLAN_REASON_CODE_UNKNOWN;
+    if (ConnectProfile(Client, Interface, OpenProfileXml, L"ReactOS-Open") == ERROR_SUCCESS)
+    {
+        Connected = WaitConnectionOutcome(Mark, 5000, &Reason);
+        ok(Connected, "ReactOS-Open did not connect after a roam that lost the network, reason 0x%lx\n", Reason);
+        ok(Reason == WLAN_REASON_CODE_SUCCESS, "Connection completed with reason 0x%lx\n", Reason);
+        ok(!FindEvent(Mark, WLAN_NOTIFICATION_SOURCE_ACM, wlan_notification_acm_connection_attempt_fail, NULL),
+           "The connection after a roam that lost the network failed\n");
+    }
+    else
+    {
+        Connected = FALSE;
+    }
+
+    if (Connected)
+    {
+        ok(WaitState(Client, Interface, wlan_interface_state_connected, 3000),
+           "Interface state is %d, expected connected\n", QueryState(Client, Interface));
+
+        Error = WlanQueryInterface(Client, Interface, wlan_intf_opcode_current_connection, NULL,
+                                   &Size, (PVOID *)&Attributes, NULL);
+        ok(Error == ERROR_SUCCESS, "Querying the current connection failed: %lu\n", Error);
+        if (Error == ERROR_SUCCESS && Attributes != NULL)
+        {
+            ok(Attributes->isState == wlan_interface_state_connected, "isState %d\n", Attributes->isState);
+            ok(!memcmp(Attributes->wlanAssociationAttributes.dot11Bssid, OpenBssid, sizeof(OpenBssid)),
+               "Connected to the wrong BSSID\n");
+        }
+        if (Attributes != NULL)
+            WlanFreeMemory(Attributes);
+
+        WlanDisconnect(Client, Interface, NULL);
+    }
+
+    WlanDeleteProfile(Client, Interface, L"ReactOS-Open", NULL);
+    WlanDeleteProfile(Client, Interface, L"ReactOS-Lost", NULL);
+}
+
+static VOID
+TestRoamAndRejoin(HANDLE Client, const GUID *Interface)
+{
+    TestRoamAfterFailedAttempt(Client, Interface);
+    TestUnrequestedAssociation(Client, Interface);
+}
+
+static VOID
+RunOnVwifi(VWIFI_TEST Test)
 {
     SP_DEVINFO_DATA Device;
     HDEVINFO Devices = INVALID_HANDLE_VALUE;
@@ -329,15 +438,7 @@ RunOnVwifi(BOOL StalledHandshake)
             ok(WaitEvent(Mark, WLAN_NOTIFICATION_SOURCE_ACM, wlan_notification_acm_scan_complete, 5000, NULL),
                "The scan did not complete\n");
 
-            if (StalledHandshake)
-            {
-                TestStalledHandshake(Client, &Interface);
-            }
-            else
-            {
-                TestRoamAfterFailedAttempt(Client, &Interface);
-                TestUnrequestedAssociation(Client, &Interface);
-            }
+            Test(Client, &Interface);
 
             WlanRegisterNotification(Client, WLAN_NOTIFICATION_SOURCE_NONE, FALSE, NULL, NULL, NULL, NULL);
         }
@@ -354,7 +455,12 @@ RunOnVwifi(BOOL StalledHandshake)
 
 START_TEST(WlanConnectionRecovery)
 {
-    RunOnVwifi(FALSE);
+    RunOnVwifi(TestRoamAndRejoin);
+}
+
+START_TEST(WlanReconnectAfterLostRoam)
+{
+    RunOnVwifi(TestReconnectAfterLostRoam);
 }
 
 START_TEST(WlanStalledHandshake)
@@ -362,5 +468,5 @@ START_TEST(WlanStalledHandshake)
     /* Waits for the 10 s key start timeout (as on Linux), too long for a unit run */
     skip("the stalled handshake case waits for the 10 s key start timeout\n");
     if (0)
-        RunOnVwifi(TRUE);
+        RunOnVwifi(TestStalledHandshake);
 }

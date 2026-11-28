@@ -15,6 +15,7 @@ static VOID NwifiAggregateBssList(_In_ PNWIFI_MSM Msm);
 static NDIS_STATUS NwifiMsmDisconnectLower(_In_ PNWIFI_MSM Msm,
                                            _In_ NWIFI_NOTIFICATION_CODE Code,
                                            _In_ NDIS_STATUS Status);
+static VOID NwifiMsmReturnLowerToInit(_In_ PNWIFI_MSM Msm);
 static KDEFERRED_ROUTINE NwifiMsmHandshakeDpc;
 
 /* ===========================================================================
@@ -294,8 +295,16 @@ NwifiMsmRefuseAssociationWorker(
 
     Status = NwifiDoRequest(Msm->Adapter, NdisRequestSetInformation,
                             OID_DOT11_DISCONNECT_REQUEST, NULL, 0, NULL);
-    if (Status != NDIS_STATUS_SUCCESS)
+    if (Status == NDIS_STATUS_SUCCESS)
+    {
+        NdisAcquireSpinLock(&Msm->Lock);
+        Msm->LowerOperating = FALSE;
+        NdisReleaseSpinLock(&Msm->Lock);
+    }
+    else
+    {
         DPRINT1("NWIFI: DISCONNECT_REQUEST for an unrequested association failed 0x%08X\n", Status);
+    }
     NwifiMsmCompleteWorkItem(Msm, NdisIoWorkItemHandle);
 }
 
@@ -792,6 +801,7 @@ NwifiMsmConnect(
         NwifiSupplicantResetSession(Msm);
         NwifiMsmDisconnectLower(Msm, NwifiNotifyDisconnected, NDIS_STATUS_SUCCESS);
     }
+    NwifiMsmReturnLowerToInit(Msm);
 
     NdisAcquireSpinLock(&Msm->Lock);
     if (Msm->State != NwifiMsmIdle && Msm->State != NwifiMsmScanning)
@@ -922,6 +932,9 @@ NwifiMsmConnect(
         return Status;
     }
 
+    NdisAcquireSpinLock(&Msm->Lock);
+    Msm->LowerOperating = TRUE;
+    NdisReleaseSpinLock(&Msm->Lock);
     return NDIS_STATUS_SUCCESS;
 
 ConnectFailed:
@@ -968,9 +981,65 @@ NwifiMsmDisconnectLower(
     NwifiIndicateLinkState(Adapter, FALSE);
     NwifiQueueNotification(Adapter->InterfaceIndex, Code, Status);
 
-    return NwifiDoRequest(Adapter, NdisRequestSetInformation,
-                                  OID_DOT11_DISCONNECT_REQUEST,
-                                  NULL, 0, NULL);
+    Status = NwifiDoRequest(Adapter, NdisRequestSetInformation,
+                            OID_DOT11_DISCONNECT_REQUEST,
+                            NULL, 0, NULL);
+    if (Status == NDIS_STATUS_SUCCESS)
+    {
+        NdisAcquireSpinLock(&Msm->Lock);
+        Msm->LowerOperating = FALSE;
+        NdisReleaseSpinLock(&Msm->Lock);
+    }
+    return Status;
+}
+
+static
+VOID
+NwifiMsmReturnLowerToInit(
+    _In_ PNWIFI_MSM Msm)
+{
+    PNWIFI_ADAPTER Adapter = Msm->Adapter;
+    union
+    {
+        DOT11_RESET_REQUEST Request;
+        DOT11_STATUS_INDICATION Confirm;
+    } Reset;
+    ULONG Written = 0;
+    ULONG Needed = 0;
+    BOOLEAN Operating;
+    NDIS_STATUS Status;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
+    NdisAcquireSpinLock(&Msm->Lock);
+    Operating = Msm->LowerOperating;
+    NdisReleaseSpinLock(&Msm->Lock);
+    if (!Operating)
+        return;
+
+    /* A station that lost its BSS fails the disconnect with NDIS_STATUS_INVALID_STATE but is still in OP. */
+    Status = NwifiDoRequest(Adapter, NdisRequestSetInformation, OID_DOT11_DISCONNECT_REQUEST, NULL, 0, NULL);
+    if (Status == NDIS_STATUS_INVALID_STATE)
+    {
+        RtlZeroMemory(&Reset, sizeof(Reset));
+        Reset.Request.dot11ResetType = dot11_reset_type_phy_and_mac;
+        RtlCopyMemory(Reset.Request.dot11MacAddress, Adapter->MacAddress, sizeof(Reset.Request.dot11MacAddress));
+        Reset.Request.bSetDefaultMIB = FALSE;
+        Status = NwifiDoMethodRequest(Adapter, OID_DOT11_RESET_REQUEST, &Reset, sizeof(Reset.Request),
+                                      sizeof(Reset), &Written, &Needed);
+        if (Status == NDIS_STATUS_SUCCESS && Reset.Confirm.uStatusType == DOT11_STATUS_RESET_CONFIRM)
+            Status = Reset.Confirm.ndisStatus;
+    }
+
+    if (Status != NDIS_STATUS_SUCCESS)
+    {
+        DPRINT1("NWIFI: cannot return the adapter to its INIT state, status 0x%08X\n", Status);
+        return;
+    }
+
+    NdisAcquireSpinLock(&Msm->Lock);
+    Msm->LowerOperating = FALSE;
+    NdisReleaseSpinLock(&Msm->Lock);
 }
 
 /* ===========================================================================
@@ -1110,6 +1179,7 @@ NwifiMsmIndicateStatus(
                     BOOLEAN Secure;
 
                     NdisAcquireSpinLock(&Msm->Lock);
+                    Msm->LowerOperating = TRUE;
                     if (Msm->State == NwifiMsmIdle)
                     {
                         NdisReleaseSpinLock(&Msm->Lock);

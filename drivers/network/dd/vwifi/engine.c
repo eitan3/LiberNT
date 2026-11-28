@@ -121,6 +121,21 @@ VWifiInitFakeBssList(
     Bss->Passphrase = "    cccccccc    ";
     VWifiAuthInitBss(Bss);
 
+    Bss = &Adapter->Bss[Adapter->BssCount++];
+    Bss->Bssid[0] = 0x02; Bss->Bssid[1] = 0x11; Bss->Bssid[2] = 0x22;
+    Bss->Bssid[3] = 0x33; Bss->Bssid[4] = 0x44; Bss->Bssid[5] = 0xaa;
+    Bss->BssType = dot11_BSS_type_infrastructure;
+    RtlCopyMemory(Bss->Ssid, "ReactOS-Lost", sizeof("ReactOS-Lost") - 1);
+    Bss->SsidLength = sizeof("ReactOS-Lost") - 1;
+    Bss->ChannelNumber = 6;
+    Bss->ChCenterFrequency = VWifiChannelToFrequency(6);
+    Bss->Rssi = -60;
+    Bss->LinkQuality = 60;
+    Bss->CapabilityInformation = VWIFI_CAP_ESS | VWIFI_CAP_SHORT_PREAMBLE;
+    Bss->AuthAlgorithm = DOT11_AUTH_ALGO_80211_OPEN;
+    Bss->RoamAfterConnect = TRUE;
+    Bss->RoamFails = TRUE;
+
     ASSERT(Adapter->BssCount <= VWIFI_MAX_BSS);
 }
 
@@ -709,6 +724,7 @@ VWifiEngineWorker(
                 Adapter->ConnState = VWifiConnected;
                 Adapter->ConnectedBssIndex = (ULONG)BssIndex;
                 Adapter->Rejoined = FALSE;
+                Adapter->Operating = TRUE;
                 Adapter->Dot11.CurrentChannel = Bss->ChannelNumber;
                 NdisReleaseSpinLock(&Adapter->Lock);
 
@@ -735,6 +751,30 @@ VWifiEngineWorker(
 
             if (Bss == NULL)
                 break;
+
+            if (Bss->RoamFails)
+            {
+                DPRINT1("VWIFI: AP dropped the station -> roam, every attempt fails\n");
+                VWifiAuthStop(Adapter);
+                VWifiIndicateRoamingStart(Adapter, DOT11_ASSOC_STATUS_ROAMING_ASSOCIATION_LOST);
+                VWifiIndicateDisassociation(Adapter, DOT11_ASSOC_STATUS_PEER_DISASSOCIATED_START);
+
+                NdisAcquireSpinLock(&Adapter->Lock);
+                Adapter->ConnState = VWifiAssociating;
+                NdisReleaseSpinLock(&Adapter->Lock);
+
+                VWifiIndicateAssocStart(Adapter, Bss);
+                VWifiIndicateAssocComplete(Adapter, Bss, DOT11_ASSOC_STATUS_FAILURE);
+
+                NdisAcquireSpinLock(&Adapter->Lock);
+                Adapter->ConnState = VWifiDisconnected;
+                ASSERT(Adapter->Operating);
+                NdisReleaseSpinLock(&Adapter->Lock);
+
+                VWifiIndicateLinkState(Adapter, FALSE);
+                VWifiIndicateRoamingComplete(Adapter, DOT11_ASSOC_STATUS_ROAMING_ASSOCIATION_LOST);
+                break;
+            }
 
             DPRINT1("VWIFI: AP dropped the station -> roam, first attempt fails\n");
             VWifiIndicateRoamingStart(Adapter, DOT11_ASSOC_STATUS_ROAMING_ASSOCIATION_LOST);
@@ -783,6 +823,7 @@ VWifiEngineWorker(
                 Rejoin = TRUE;
             }
             Adapter->ConnState = VWifiDisconnected;
+            Adapter->Operating = FALSE;
             NdisReleaseSpinLock(&Adapter->Lock);
 
             VWifiIndicateLinkState(Adapter, FALSE);
@@ -802,6 +843,7 @@ VWifiEngineWorker(
             {
                 Bss = &Adapter->Bss[Adapter->ConnectedBssIndex];
                 Adapter->ConnState = VWifiConnected;
+                Adapter->Operating = TRUE;
             }
             NdisReleaseSpinLock(&Adapter->Lock);
 

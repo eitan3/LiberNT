@@ -77,6 +77,7 @@ typedef struct _NWIFI_MSM
     NWIFI_MSM_STATE  State;
     BOOLEAN          Roaming;
     BOOLEAN          Reassociating;
+    BOOLEAN          LowerOperating;
 
     /* Currently-selected / associated BSS. */
     DOT11_MAC_ADDRESS CurrentBssid;

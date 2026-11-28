@@ -37,7 +37,7 @@
 #define VWIFI_BEACON_PERIOD         100
 
 /* Maximum number of simulated BSS entries. */
-#define VWIFI_MAX_BSS               5
+#define VWIFI_MAX_BSS               6
 
 #define VWIFI_MAX_JOBS              8
 
@@ -67,6 +67,7 @@ typedef struct _VWIFI_FAKE_BSS
     USHORT CapabilityInformation;  /* 802.11 capability bits                */
     DOT11_AUTH_ALGORITHM AuthAlgorithm; /* what this AP requires            */
     BOOLEAN RoamAfterConnect;
+    BOOLEAN RoamFails;
     BOOLEAN RejoinAfterDisconnect;
     PCSTR Passphrase;
     UCHAR Pmk[VWIFI_PMK_LENGTH];
@@ -156,6 +157,7 @@ typedef struct _VWIFI_ADAPTER
     VWIFI_CONN_STATE ConnState;
     ULONG ConnectedBssIndex;        /* index into Bss[] while Connected       */
     BOOLEAN Rejoined;
+    BOOLEAN Operating;
     NDIS_SPIN_LOCK Lock;            /* guards ConnState / job queue           */
 
     /* Lifecycle. */

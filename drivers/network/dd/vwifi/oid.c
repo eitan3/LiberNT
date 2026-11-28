@@ -631,6 +631,40 @@ VWifiDot11SetDisconnectRequest(
 }
 
 static
+BOOLEAN
+VWifiIsOperating(
+    IN PVWIFI_ADAPTER Adapter)
+{
+    BOOLEAN Operating;
+
+    NdisAcquireSpinLock(&Adapter->Lock);
+    Operating = Adapter->Operating;
+    NdisReleaseSpinLock(&Adapter->Lock);
+    return Operating;
+}
+
+static
+BOOLEAN
+VWifiIsInitOnlyOid(
+    IN NDIS_OID Oid)
+{
+    switch (Oid)
+    {
+        case OID_DOT11_DESIRED_BSS_TYPE:
+        case OID_DOT11_DESIRED_SSID_LIST:
+        case OID_DOT11_DESIRED_BSSID_LIST:
+        case OID_DOT11_ENABLED_AUTHENTICATION_ALGORITHM:
+        case OID_DOT11_ENABLED_UNICAST_CIPHER_ALGORITHM:
+        case OID_DOT11_ENABLED_MULTICAST_CIPHER_ALGORITHM:
+        case OID_DOT11_CONNECT_REQUEST:
+            return TRUE;
+
+        default:
+            return FALSE;
+    }
+}
+
+static
 NDIS_STATUS
 VWifiDot11Set(
     IN PVWIFI_ADAPTER Adapter,
@@ -639,6 +673,12 @@ VWifiDot11Set(
     NDIS_OID Oid = Request->DATA.SET_INFORMATION.Oid;
     PVOID Buffer = Request->DATA.SET_INFORMATION.InformationBuffer;
     ULONG Length = Request->DATA.SET_INFORMATION.InformationBufferLength;
+
+    if (VWifiIsInitOnlyOid(Oid) && VWifiIsOperating(Adapter))
+    {
+        DPRINT1("VWIFI: OID 0x%08lx refused in the OP state\n", Oid);
+        return NDIS_STATUS_INVALID_STATE;
+    }
 
     switch (Oid)
     {
@@ -790,6 +830,7 @@ VWifiDot11Set(
             /* Tear down any association and clear desired selectors. */
             NdisAcquireSpinLock(&Adapter->Lock);
             Adapter->ConnState = VWifiDisconnected;
+            Adapter->Operating = FALSE;
             Adapter->Dot11.HaveDesiredSsid = FALSE;
             Adapter->Dot11.HaveDesiredBssid = FALSE;
             NdisReleaseSpinLock(&Adapter->Lock);
@@ -879,6 +920,11 @@ VWifiOidMethod(
             return NDIS_STATUS_SUCCESS;
 
         case OID_DOT11_CONNECT_REQUEST:
+            if (VWifiIsOperating(Adapter))
+            {
+                DPRINT1("VWIFI: OID_DOT11_CONNECT_REQUEST (method) refused in the OP state\n");
+                return NDIS_STATUS_INVALID_STATE;
+            }
             DPRINT1("VWIFI: OID_DOT11_CONNECT_REQUEST (method) -> association\n");
             NdisAcquireSpinLock(&Adapter->Lock);
             Adapter->ConnState = VWifiAssociating;
@@ -933,13 +979,33 @@ VWifiOidMethod(
         }
 
         case OID_DOT11_RESET_REQUEST:
+        {
+            PDOT11_STATUS_INDICATION Confirm = Request->DATA.METHOD_INFORMATION.InformationBuffer;
+
+            if (Request->DATA.METHOD_INFORMATION.InputBufferLength < sizeof(DOT11_RESET_REQUEST))
+            {
+                Request->DATA.METHOD_INFORMATION.BytesNeeded = sizeof(DOT11_RESET_REQUEST);
+                return NDIS_STATUS_INVALID_LENGTH;
+            }
+            if (Request->DATA.METHOD_INFORMATION.OutputBufferLength < sizeof(DOT11_STATUS_INDICATION))
+            {
+                Request->DATA.METHOD_INFORMATION.BytesNeeded = sizeof(DOT11_STATUS_INDICATION);
+                return NDIS_STATUS_BUFFER_OVERFLOW;
+            }
+
             NdisAcquireSpinLock(&Adapter->Lock);
             Adapter->ConnState = VWifiDisconnected;
+            Adapter->Operating = FALSE;
             Adapter->Dot11.HaveDesiredSsid = FALSE;
             Adapter->Dot11.HaveDesiredBssid = FALSE;
             NdisReleaseSpinLock(&Adapter->Lock);
-            Request->DATA.METHOD_INFORMATION.BytesWritten = 0;
+
+            DPRINT1("VWIFI: OID_DOT11_RESET_REQUEST (method) -> INIT\n");
+            Request->DATA.METHOD_INFORMATION.BytesRead = sizeof(DOT11_RESET_REQUEST);
+            Confirm->uStatusType = DOT11_STATUS_RESET_CONFIRM;
+            Confirm->ndisStatus = NDIS_STATUS_SUCCESS;
             return NDIS_STATUS_SUCCESS;
+        }
 
         default:
             return NDIS_STATUS_NOT_SUPPORTED;
