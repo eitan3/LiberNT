@@ -140,6 +140,7 @@ list(APPEND SOURCE
     ScrollWindowEx.c
     UnhookWinEvent.c
     SendMessageTimeout.c
+    SendMessageTimeoutBuffer.c
     ServiceAccountDesktop.c
     SendMessageTimeoutHung.c
     SetActiveWindow.c

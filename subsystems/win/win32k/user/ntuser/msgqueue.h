@@ -35,6 +35,7 @@ typedef struct _USER_SENT_MESSAGE
   ULONG_PTR CompletionCallbackContext;
   INT HookMessage;
   BOOL HasPackedLParam;
+  SIZE_T OwnedLParamSize;
   KEVENT CompletionEvent;
 } USER_SENT_MESSAGE, *PUSER_SENT_MESSAGE;
 
@@ -286,6 +287,8 @@ DWORD APIENTRY IntGetQueueStatus(DWORD);
 
 UINT lParamMemorySize(UINT Msg, WPARAM wParam, LPARAM lParam);
 INT lParamMemoryFlags(UINT Msg);
+NTSTATUS IntCaptureSentLParam(UINT Msg, WPARAM wParam, LPARAM lParam, PVOID *ppCopy, SIZE_T *pSize);
+VOID IntReturnSentLParam(UINT Msg, WPARAM wParam, LPARAM lParam, PVOID pCopy, SIZE_T Size);
 #define LPARAM_MEMORY_READ  0x01
 #define LPARAM_MEMORY_WRITE 0x02
 

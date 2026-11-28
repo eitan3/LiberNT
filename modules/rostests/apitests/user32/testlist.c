@@ -141,6 +141,7 @@ extern void func_ScrollDC(void);
 extern void func_ScrollWindowEx(void);
 extern void func_UnhookWinEvent(void);
 extern void func_SendMessageTimeout(void);
+extern void func_SendMessageTimeoutBuffer(void);
 extern void func_SendMessageTimeoutHung(void);
 extern void func_ServiceAccountDesktop(void);
 extern void func_SetActiveWindow(void);
@@ -324,6 +325,7 @@ const struct test winetest_testlist[] =
     { "ScrollWindowEx", func_ScrollWindowEx },
     { "UnhookWinEvent", func_UnhookWinEvent },
     { "SendMessageTimeout", func_SendMessageTimeout },
+    { "SendMessageTimeoutBuffer", func_SendMessageTimeoutBuffer },
     { "SendMessageTimeoutHung", func_SendMessageTimeoutHung },
     { "ServiceAccountDesktop", func_ServiceAccountDesktop },
     { "SetActiveWindow", func_SetActiveWindow },

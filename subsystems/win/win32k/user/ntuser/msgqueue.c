@@ -946,6 +946,12 @@ FreeUserMessage(PUSER_SENT_MESSAGE Message)
 {
    Message->pkCompletionEvent = NULL;
 
+   ASSERT(!Message->OwnedLParamSize || !Message->HasPackedLParam);
+   if (Message->OwnedLParamSize && Message->Msg.lParam)
+      ExFreePoolWithTag((PVOID)Message->Msg.lParam, TAG_MSG);
+   Message->Msg.lParam = 0;
+   Message->OwnedLParamSize = 0;
+
    /* Remove it from the list */
    RemoveEntryList(&Message->ListEntry);
 
@@ -1324,6 +1330,27 @@ co_MsqSendMessage(PTHREADINFO ptirec,
    Message->Msg.message = Msg;
    Message->Msg.wParam = wParam;
    Message->Msg.lParam = lParam;
+
+   /* The receiver may still run after a timeout returns: it must not touch the sender's buffer */
+   if (HookMessage == MSQ_NORMAL && lParam && (ULONG_PTR)lParam >= MmUserProbeAddress)
+   {
+      PVOID Copy;
+      SIZE_T Size;
+      NTSTATUS CaptureStatus = IntCaptureSentLParam(Msg, wParam, lParam, &Copy, &Size);
+      if (!NT_SUCCESS(CaptureStatus))
+      {
+         ERR("MsqSendMessage(): Not enough memory to copy the parameters\n");
+         InitializeListHead(&Message->ListEntry);
+         FreeUserMessage(Message);
+         if (uResult) *uResult = -1;
+         return CaptureStatus;
+      }
+      if (Copy)
+      {
+         Message->Msg.lParam = (LPARAM)Copy;
+         Message->OwnedLParamSize = Size;
+      }
+   }
    Message->ptiReceiver = ptirec;
    Message->ptiSender = pti;
    Message->HookMessage = HookMessage;
@@ -1505,6 +1532,13 @@ co_MsqSendMessage(PTHREADINFO ptirec,
    KeSetEvent(pti->pEventQueueServer, IO_NO_INCREMENT, FALSE);
 
    Result = Message->lResult;
+
+   /* After ReplyMessage the receiver is still running and may still write the copy */
+   if (Message->OwnedLParamSize && WaitStatus == STATUS_WAIT_0 && !(Message->flags & SMF_RECEIVERBUSY))
+   {
+      ASSERT(Message->Msg.lParam && Message->Msg.lParam != lParam);
+      IntReturnSentLParam(Msg, wParam, lParam, (PVOID)Message->Msg.lParam, Message->OwnedLParamSize);
+   }
 
    // Determine whether this message is being processed or not.
    if ((Message->flags & (SMF_RECEIVERBUSY|SMF_RECEIVEDMESSAGE)) != SMF_RECEIVEDMESSAGE)
