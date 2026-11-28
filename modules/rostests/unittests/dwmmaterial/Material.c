@@ -403,6 +403,20 @@ static void TestSnapZones(void)
        "edge classification\n");
 }
 
+static void TestOpenMotion(void)
+{
+    RECT window = { 100, 200, 900, 800 }, from;
+
+    DwmLiberOpenFromRect(&window, &from);
+    ok(from.left == 124 && from.top == 218 && from.right == 876 && from.bottom == 782,
+       "a window opens from 94%% of its size around its center\n");
+    ok(DWM_LIBER_ANIM_OPEN_MS == 280 && DWM_LIBER_ANIM_OPEN_MS / DWM_TRANSITION_UNIT_MS <= 0xFF,
+       "the 280 ms open fits the transition packing\n");
+    window.right = window.left;
+    DwmLiberOpenFromRect(&window, &from);
+    ok(from.left == from.right, "an empty window stays empty\n");
+}
+
 START_TEST(Material)
 {
     TestPacking();
@@ -413,6 +427,7 @@ START_TEST(Material)
     TestFade();
     TestWindowMotion();
     TestSnapZones();
+    TestOpenMotion();
     TestCaptionButtons();
     TestFrameShadow();
     TestFrameEdge();

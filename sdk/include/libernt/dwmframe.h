@@ -354,6 +354,21 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
 #define DWM_LIBER_ANIM_RESTORE_MS     340u
 #define DWM_LIBER_ANIM_MOVE_MS        300u
 #define DWM_LIBER_ANIM_FADE_FROM      40u
+#define DWM_LIBER_ANIM_OPEN_MS        280u
+#define DWM_LIBER_ANIM_OPEN_SCALE     94u
+
+static __inline void
+DwmLiberOpenFromRect(const RECT *Window, RECT *From)
+{
+    LONG Cx = Window->right - Window->left, Cy = Window->bottom - Window->top;
+    LONG Dx = (LONG)(((LONGLONG)Cx * (100 - DWM_LIBER_ANIM_OPEN_SCALE)) / 200);
+    LONG Dy = (LONG)(((LONGLONG)Cy * (100 - DWM_LIBER_ANIM_OPEN_SCALE)) / 200);
+
+    From->left = Window->left + Dx;
+    From->top = Window->top + Dy;
+    From->right = Window->right - Dx;
+    From->bottom = Window->bottom - Dy;
+}
 
 static __inline ULONG
 DwmLiberWindowCornerRadius(ULONG Dpi)

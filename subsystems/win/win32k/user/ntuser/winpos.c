@@ -2527,6 +2527,7 @@ co_WinPosBatchApply(PWINPOS_ENTRY Entry)
       {
          if (!UserIsDesktopWindow(Window))
          {
+            IntCompositionLiberOpen(Window);
             co_IntShellHookNotify(HSHELL_WINDOWCREATED, (WPARAM)UserHMGetHandle(Window), 0);
             if (Window->head.pti->MessageQueue->spwndActive == Window)
                UpdateShellHook(Window);

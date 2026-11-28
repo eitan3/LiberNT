@@ -2330,6 +2330,29 @@ IntCompositionOnWindowResize(_In_ PWND Wnd)
 }
 
 VOID
+IntCompositionLiberOpen(_In_ PWND Wnd)
+{
+    static UCHAR Seq;
+    RECT From;
+
+    ASSERT(Wnd != NULL);
+    ASSERT(UserIsEnteredExclusive());
+    if (!g_bLiberExperience || !IntCompositionIsEnabled() || !gspv.animationinfo.iMinAnimate ||
+        AtomDwmTransition == 0 || AtomDwmTransitionFromLT == 0 || AtomDwmTransitionFromRB == 0)
+        return;
+    if ((Wnd->style & (WS_CHILD | WS_MINIMIZE | WS_CAPTION)) != WS_CAPTION || Wnd->fnid == FNID_MENU)
+        return;
+    if (++Seq == 0)
+        Seq = 1;
+    DwmLiberOpenFromRect((const RECT *)&Wnd->rcWindow, &From);
+    ASSERT(From.right >= From.left && From.bottom >= From.top);
+    UserSetProp(Wnd, AtomDwmTransitionFromLT, (HANDLE)(ULONG_PTR)DWM_TRANSITION_POINT(From.left, From.top), FALSE);
+    UserSetProp(Wnd, AtomDwmTransitionFromRB, (HANDLE)(ULONG_PTR)DWM_TRANSITION_POINT(From.right, From.bottom), FALSE);
+    UserSetProp(Wnd, AtomDwmTransition, (HANDLE)(ULONG_PTR)DWM_TRANSITION_PACK(Seq, 0, 255, DWM_LIBER_ANIM_OPEN_MS),
+                FALSE);
+}
+
+VOID
 IntCompositionAnimateMove(_In_opt_ PWND Wnd, _In_opt_ const RECTL *From)
 {
     REDIRECT_ENTRY *e;
