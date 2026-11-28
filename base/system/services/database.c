@@ -1018,6 +1018,46 @@ ScmCreateServiceEnvironment(HANDLE hToken, LPVOID *lpEnvironment)
     return bResult;
 }
 
+static VOID
+ScmApplyServiceEnvironment(PSERVICE Service, LPVOID *lpEnvironment)
+{
+    HKEY hServiceKey;
+    DWORD dwType, dwSize = 0;
+    LPWSTR lpValues, lpEntry;
+
+    if (*lpEnvironment == NULL ||
+        ScmOpenServiceKey(Service->lpServiceName, KEY_READ, &hServiceKey) != ERROR_SUCCESS)
+        return;
+
+    if (RegQueryValueExW(hServiceKey, L"Environment", NULL, &dwType, NULL, &dwSize) != ERROR_SUCCESS ||
+        dwType != REG_MULTI_SZ || dwSize < 2 * sizeof(WCHAR) ||
+        (lpValues = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwSize + 2 * sizeof(WCHAR))) == NULL)
+    {
+        RegCloseKey(hServiceKey);
+        return;
+    }
+
+    if (RegQueryValueExW(hServiceKey, L"Environment", NULL, &dwType, (LPBYTE)lpValues, &dwSize) == ERROR_SUCCESS)
+    {
+        for (lpEntry = lpValues; *lpEntry; lpEntry += wcslen(lpEntry) + 1)
+        {
+            LPWSTR lpEqual = wcschr(lpEntry + 1, L'=');
+            UNICODE_STRING Name, Value;
+
+            if (lpEqual == NULL)
+                continue;
+            Name.Buffer = lpEntry;
+            Name.Length = Name.MaximumLength = (USHORT)((lpEqual - lpEntry) * sizeof(WCHAR));
+            RtlInitUnicodeString(&Value, lpEqual + 1);
+            if (!NT_SUCCESS(RtlSetEnvironmentVariable((PWSTR *)lpEnvironment, &Name, &Value)))
+                DPRINT1("Service '%S': environment entry '%S' not applied\n", Service->lpServiceName, lpEntry);
+        }
+    }
+
+    HeapFree(GetProcessHeap(), 0, lpValues);
+    RegCloseKey(hServiceKey);
+}
+
 /* A recovery program runs under the account of the service, like its processes. */
 DWORD
 ScmRunServiceCommand(PSERVICE pService, LPWSTR lpCommandLine)
@@ -2350,6 +2390,7 @@ ScmStartUserModeService(PSERVICE Service,
                     GetLastError(), Service->lpServiceName);
             lpEnvironment = NULL;
         }
+        ScmApplyServiceEnvironment(Service, &lpEnvironment);
 
         /* Impersonate the new user */
         Result = ImpersonateLoggedOnUser(Service->lpImage->hToken);
@@ -2390,6 +2431,7 @@ ScmStartUserModeService(PSERVICE Service,
                     GetLastError(), Service->lpServiceName);
             lpEnvironment = NULL;
         }
+        ScmApplyServiceEnvironment(Service, &lpEnvironment);
 
         /* Use the interactive desktop if the service is interactive */
         if ((NoInteractiveServices == 0) &&

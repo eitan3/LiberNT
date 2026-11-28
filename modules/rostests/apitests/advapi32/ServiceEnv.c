@@ -135,6 +135,13 @@ service_main(DWORD dwArgc, LPWSTR* lpszArgv)
     service_ok(dwSize != 0, "ALLUSERSPROFILE envvar not found, or GetEnvironmentVariableW failed: %lu\n", GetLastError());
     dwSize = GetEnvironmentVariableW(L"USERPROFILE", NULL, 0);
     service_ok(dwSize != 0, "USERPROFILE envvar not found, or GetEnvironmentVariableW failed: %lu\n", GetLastError());
+    {
+        WCHAR szAdded[32];
+
+        dwSize = GetEnvironmentVariableW(L"SERVICEENV_ADDED", szAdded, ARRAYSIZE(szAdded));
+        service_ok(dwSize == 5 && wcscmp(szAdded, L"Added") == 0,
+                   "SERVICEENV_ADDED from the service Environment value: size %lu, error %lu\n", dwSize, GetLastError());
+    }
     if (dwArgc > 1 && _wcsicmp(lpszArgv[1], L"SystemProfile") == 0)
         check_system_profile();
 #if 0 // May not always exist
@@ -244,6 +251,18 @@ my_test_server(PCSTR service_nameA,
     {
         skip("CreateServiceW failed with error %lu!\n", GetLastError());
         goto Cleanup;
+    }
+
+    lError = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\ServiceEnv", 0, KEY_SET_VALUE,
+                           &hKey);
+    ok(lError == ERROR_SUCCESS, "RegOpenKeyExW failed: %ld\n", lError);
+    if (lError == ERROR_SUCCESS)
+    {
+        static const WCHAR Environment[] = L"SERVICEENV_ADDED=Added\0";
+
+        lError = RegSetValueExW(hKey, L"Environment", 0, REG_MULTI_SZ, (const BYTE *)Environment, sizeof(Environment));
+        ok(lError == ERROR_SUCCESS, "RegSetValueExW failed: %ld\n", lError);
+        RegCloseKey(hKey);
     }
 
     /* Start it */
