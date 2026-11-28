@@ -1251,6 +1251,8 @@ IntcDspStreamsRelease(
             IntcDspStreamLog(Streams, "streams: %u teardowns were pending at the release; their buffers are returned\n", Pending);
     }
     Streams->Ready = FALSE;
+    /* the model the firmware refused is not held against the next D0 entry: that entry parses the file again and the first open after it boots once (N12-02) */
+    Streams->ModelRefused = FALSE;
     Streams->Generation++;
     IntcDspStreamsUnlock(Streams);
 }
@@ -1283,6 +1285,17 @@ IntcDspStreamsDeviceBootEnd(
 {
     IntcDspStreamsLock(Streams);
     Streams->DeviceBoot = FALSE;
+    IntcDspStreamsUnlock(Streams);
+}
+
+VOID
+IntcDspStreamsTopologyRefused(
+    _Inout_ PINTCDSP_STREAMS Streams)
+{
+    if (Streams->Ops == NULL)
+        return;
+    IntcDspStreamsLock(Streams);
+    Streams->ModelRefused = TRUE;
     IntcDspStreamsUnlock(Streams);
 }
 
@@ -1798,6 +1811,12 @@ IntcDspStreamOpen(
         {
             /* the device's own boot sequence is in progress (N10-04): the Boot operation is not run beside it, and the lock is not kept waiting for a boot that takes it; the open is refused as one without the operation is, and the next open finds the manager as that sequence left it */
             IntcDspStreamLog(Streams, "boot at stream open not run: the D0 entry's boot is in progress; no stream is taken\n");
+            IntcDspStreamsUnlock(Streams);
+            return STATUS_DEVICE_NOT_READY;
+        }
+        /* a model the firmware refused at the boot before is remembered (N12-02): refused without a boot and without a line, until the release or the initialization clears it */
+        if (Streams->ModelRefused)
+        {
             IntcDspStreamsUnlock(Streams);
             return STATUS_DEVICE_NOT_READY;
         }

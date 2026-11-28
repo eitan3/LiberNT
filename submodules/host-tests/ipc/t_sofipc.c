@@ -1511,6 +1511,8 @@ typedef struct _STREAM_HARNESS
     UINT32 Boots;
     UINT32 BootDepth;
     BOOLEAN BootStops;
+    /* whether the firmware's limits refuse the model at the boot, as a DSP whose firmware cannot run it (topology.c IntcDspTopologyCheck): the boot comes, the model is dropped and the manager is told (N12-02) */
+    BOOLEAN BootRefuses;
     /* the device's period event, as the driver's wait registers it on the capture stream */
     KEVENT Event;
     UINT32 Waits;
@@ -2323,6 +2325,12 @@ StreamBootAtOpen(
     S->BootDepth = (UINT32)FakeBusLockDepth;
     if (S->BootStops)
         return STATUS_UNSUCCESSFUL;
+    if (S->BootRefuses)
+    {
+        /* the firmware's limits refuse the model: the driver drops it and powers the DSP down (topology.c IntcDspTopologyCheck) and tells the manager (N12-02) */
+        IntcDspStreamsTopologyRefused(&S->Streams);
+        return STATUS_DEVICE_NOT_READY;
+    }
     Clock = S->H.Dsp->Clock;
     StreamBoot(S, NULL);
     S->H.Dsp->Clock += Clock;
@@ -5946,6 +5954,89 @@ CheckStreamTeardownPoll(
     free(S);
 }
 
+/*
+ * (i30) A model the firmware refused at the boot at an open is remembered
+ * (N12-02): the manager down as an idle power-down or a D0 entry without
+ * a boot leaves it, the first open boots the DSP and the firmware's limits
+ * refuse the model -- the driver drops it and powers the DSP down, and the
+ * Boot operation tells the manager -- the open refused
+ * STATUS_DEVICE_NOT_READY with its line, the pool untouched; the next opens
+ * are refused without a boot and without a line. The release of a D0 exit
+ * forgets it: the next open boots once more, refused again as the limits
+ * answer as before, with its line, and remembered again; with the firmware
+ * running the model the next open boots and goes through, nothing
+ * remembered. A manager without operations, before its first start, keeps
+ * nothing.
+ */
+static
+void
+CheckStreamModelRefused(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    STREAM_HARNESS* T;
+    HANDLE Stream = NULL;
+    UINT32 Pcm, I, Lines;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    /* the manager down as a D0 entry without a boot or an idle power-down leaves it: not ready, in need of a boot, its operations kept */
+    IntcDspStreamsRelease(&S->Streams);
+    CHECK(!S->Streams.Ready && S->Streams.NeedsBoot && !S->Streams.Faulted && !S->Streams.ModelRefused);
+    S->Ops.Boot = StreamBootAtOpen;
+    /* the first open boots the DSP and the firmware's limits refuse the model: refused with its line, remembered */
+    S->BootRefuses = TRUE;
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Stream), STATUS_DEVICE_NOT_READY);
+    CHECK(Stream == NULL);
+    CHECK_EQ(S->Boots, 1);
+    CHECK_EQ(S->Streams.ModelRefused, TRUE);
+    CHECK(!S->Streams.Ready && S->Streams.NeedsBoot && !S->Streams.Faulted);
+    CHECK_EQ(S->Streams.Path[Pcm].Open, 0);
+    Lines = StreamLogCount(S, "boot at stream open failed: ");
+    CHECK(Lines >= 1);
+    /* the next opens: refused without a boot and without a line, the pool untouched */
+    for (I = 0; I < 3; I++)
+    {
+        Stream = (HANDLE)(UINT_PTR)0x1234;
+        CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, I & 1, 48000, 2, 32, 32, &Stream), STATUS_DEVICE_NOT_READY);
+        CHECK(Stream == NULL);
+    }
+    CHECK_EQ(S->Boots, 1);
+    CHECK_EQ(StreamLogCount(S, "boot at stream open failed: "), Lines);
+    CHECK_EQ(S->Streams.Path[Pcm].Open, 0);
+    /* the release of a D0 exit forgets it: the next open boots once more, refused again as the limits answer as before, its line, remembered again */
+    IntcDspStreamsRelease(&S->Streams);
+    CHECK_EQ(S->Streams.ModelRefused, FALSE);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Stream), STATUS_DEVICE_NOT_READY);
+    CHECK(Stream == NULL);
+    CHECK_EQ(S->Boots, 2);
+    CHECK_EQ(S->Streams.ModelRefused, TRUE);
+    CHECK_EQ(StreamLogCount(S, "boot at stream open failed: "), Lines + 1);
+    /* the firmware runs the model now: after the release the open boots, the manager starts on the model and the open goes through; nothing is remembered */
+    S->BootRefuses = FALSE;
+    IntcDspStreamsRelease(&S->Streams);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Stream), STATUS_SUCCESS);
+    CHECK(Stream != NULL);
+    CHECK_EQ(S->Boots, 3);
+    CHECK(S->Streams.Ready && !S->Streams.Faulted && !S->Streams.NeedsBoot);
+    CHECK_EQ(S->Streams.ModelRefused, FALSE);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Stream), STATUS_SUCCESS);
+    StreamStop(S);
+    free(S);
+    /* a manager without operations, before its first start, keeps nothing: the check at a D0 entry's own boot */
+    T = (STREAM_HARNESS*)calloc(1, sizeof(*T));
+    CHECK(T != NULL);
+    if (T != NULL)
+    {
+        IntcDspStreamsTopologyRefused(&T->Streams);
+        CHECK_EQ(T->Streams.ModelRefused, FALSE);
+        free(T);
+    }
+}
+
 int
 main(
     void)
@@ -6005,6 +6096,7 @@ main(
     CheckStreamGainValues();
     CheckStreamGainSet();
     CheckStreamSelfTestGain();
+    CheckStreamModelRefused();
 
     printf("sofipc: %d checks, %d failures\n", Checks, Failures);
     free(H->Dsp);

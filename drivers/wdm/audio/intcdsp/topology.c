@@ -468,6 +468,8 @@ IntcDspTopologyCheck(
     Dev->Topology = NULL;
     Dev->TopologyBytes = 0;
     Dev->TopologyModel = NULL;
+    /* remembered for the next opens: refused without a boot until the D0 exit or another model (N12-02, stream.c IntcDspStreamsTopologyRefused) */
+    IntcDspStreamsTopologyRefused(&Dev->Streams);
     return FALSE;
 }
 

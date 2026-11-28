@@ -325,6 +325,15 @@ typedef struct _INTCDSP_STREAMS
     BOOLEAN Faulted;
     /* the DSP is powered down with the topology model kept, after a fault or a power-down: the next open boots (E1); cleared by the initialization */
     BOOLEAN NeedsBoot;
+    /*
+     * The firmware cannot run the model the device keeps: the boot at an
+     * open ran it into the firmware's limits and the driver dropped the
+     * model (topology.c IntcDspTopologyCheck, N12-02). Remembered so that
+     * the next opens are refused STATUS_DEVICE_NOT_READY without a boot and
+     * without a line, until the D0 exit (IntcDspStreamsRelease) or a start
+     * of the manager on another model (the initialization zeroes it).
+     */
+    BOOLEAN ModelRefused;
     UINT32 Faults;
     /*
      * The idle power-down (E2): the setting's seconds, 0 = off; whether the
@@ -536,6 +545,24 @@ IntcDspStreamsDeviceBootBegin(
 
 VOID
 IntcDspStreamsDeviceBootEnd(
+    _Inout_ PINTCDSP_STREAMS Streams);
+
+/*
+ * The firmware cannot run the model (N12-02): the driver's check against
+ * the firmware's limits refused the model at the boot at an open (topology.c
+ * IntcDspTopologyCheck, inside the Boot operation, under the open's lock)
+ * and the driver powered the DSP down. Told here, so that the next opens
+ * of the device are refused STATUS_DEVICE_NOT_READY without a Boot and
+ * without a line (IntcDspStreamOpen): the limits do not change before the
+ * next boot of the device, so a boot per open would learn the same again.
+ * Forgotten by the release for a D0 exit (IntcDspStreamsRelease) and by
+ * the initialization on another model. A manager without operations (the
+ * check at a D0 entry's own boot, before the manager is started) keeps
+ * nothing: that model is parsed again at the next D0 entry, and the first
+ * open after it boots once and refuses with its lines.
+ */
+VOID
+IntcDspStreamsTopologyRefused(
     _Inout_ PINTCDSP_STREAMS Streams);
 
 /*
