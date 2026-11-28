@@ -151,6 +151,12 @@ VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens);
 VOID LiberShell_MapToWallpaper(const RECT *prcScreen, SIZE screen, SIZE image, UINT style, RECT *prcImage);
 double LiberShell_Luminance(DWORD argb);
 BOOL LiberShell_WallpaperLuma(const RECT *prcScreen, double *pLuma);
+#define LIBER_LUMA_GRID_W 64
+#define LIBER_LUMA_GRID_H 36
+VOID LiberShell_BuildLumaGrid(const DWORD *pPixels, UINT width, UINT height, float *pGrid);
+BOOL LiberShell_GridLuma(const float *pGrid, SIZE image, const RECT *prcImage, double *pLuma);
+BOOL LiberShell_WallpaperPalette(LiberUI::PaletteResult *pPalette);
+LiberUI::Accent LiberShell_ResolveAccent(DWORD dwChoice, const LiberUI::PaletteResult *pPalette);
 VOID LiberShell_BuildWallpaperInkTokens(LiberUI::ThemeTokens *pTokens, const RECT *prcScreen);
 VOID LiberShell_ApplyFont(LiberUI::Surface *pSurface);
 BOOL LiberShell_SetDarkMode(BOOL bDark);

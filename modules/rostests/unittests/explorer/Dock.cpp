@@ -527,8 +527,81 @@ static void TestPillWidth()
     LiberUI::Shutdown();
 }
 
+static void TestLumaGrid(void)
+{
+    static DWORD pixels[128 * 72];
+    static float grid[LIBER_LUMA_GRID_W * LIBER_LUMA_GRID_H];
+    SIZE image = { 128, 72 };
+    RECT left = { 0, 0, 64, 72 }, right = { 64, 0, 128, 72 }, all = { 0, 0, 128, 72 }, empty = { 10, 10, 10, 20 };
+    double luma = -1.0;
+
+    for (UINT y = 0; y < 72; y++)
+        for (UINT x = 0; x < 128; x++)
+            pixels[y * 128 + x] = x < 64 ? 0xFF000000 : 0xFFFFFFFF;
+    LiberShell_BuildLumaGrid(pixels, 128, 72, grid);
+    ok(grid[0] == 0.0f && grid[LIBER_LUMA_GRID_W - 1] > 0.99f, "the grid follows the image: %f %f\n", grid[0],
+       grid[LIBER_LUMA_GRID_W - 1]);
+    ok(LiberShell_GridLuma(grid, image, &left, &luma) && luma < 0.01, "the black half reads dark: %f\n", luma);
+    ok(LiberShell_GridLuma(grid, image, &right, &luma) && luma > 0.99, "the white half reads bright: %f\n", luma);
+    ok(LiberShell_GridLuma(grid, image, &all, &luma) && fabs(luma - 0.5) < 0.01, "the whole image is grey: %f\n",
+       luma);
+    ok(!LiberShell_GridLuma(grid, image, &empty, &luma), "an empty area has no luminance\n");
+    SIZE none = { 0, 0 };
+    ok(!LiberShell_GridLuma(grid, none, &all, &luma), "an image without size has no luminance\n");
+
+    LiberShell_BuildLumaGrid(pixels, 3, 2, grid);
+    ok(grid[LIBER_LUMA_GRID_W * LIBER_LUMA_GRID_H - 1] >= 0.0f, "a tiny image still fills every cell\n");
+}
+
+static void TestAccentChoice(void)
+{
+    LiberUI::PaletteResult palette;
+    LiberUI::Accent accent, azure = LiberUI::AccentPreset(LIBER_ACCENT_AZURE);
+
+    accent = LiberShell_ResolveAccent(LIBER_ACCENT_AMBER, NULL);
+    ok(accent.H == LiberUI::AccentPreset(LIBER_ACCENT_AMBER).H, "a preset is used as chosen: %f\n", accent.H);
+    ZeroMemory(&palette, sizeof(palette));
+    palette.Count = 1;
+    palette.Candidates[0].AccentColor = LiberUI::AccentFromWallpaper(150.0, 0.12);
+    accent = LiberShell_ResolveAccent(LIBER_ACCENT_FOLLOW, &palette);
+    ok(accent.H == 150.0 && accent.C == palette.Candidates[0].AccentColor.C,
+       "following the wallpaper uses its first candidate: %f %f\n", accent.H, accent.C);
+    accent = LiberShell_ResolveAccent(LIBER_ACCENT_TEAL, &palette);
+    ok(accent.H == LiberUI::AccentPreset(LIBER_ACCENT_TEAL).H, "a preset wins over the wallpaper\n");
+    palette.Count = 0;
+    accent = LiberShell_ResolveAccent(LIBER_ACCENT_FOLLOW, &palette);
+    ok(accent.H == azure.H && accent.C == azure.C, "a wallpaper without colors falls back to azure\n");
+    accent = LiberShell_ResolveAccent(LIBER_ACCENT_FOLLOW, NULL);
+    ok(accent.H == azure.H, "no wallpaper falls back to azure\n");
+    accent = LiberShell_ResolveAccent(LIBER_ACCENT_PRESET_COUNT, NULL);
+    ok(accent.H == azure.H, "an unknown choice is treated as following a missing wallpaper\n");
+
+    HKEY key;
+    DWORD saved = 0, size = sizeof(saved);
+    BOOL had = RegGetValueW(HKEY_CURRENT_USER, L"Software\\LiberNT\\Shell\\Design", L"Accent", RRF_RT_REG_DWORD, NULL,
+                            &saved, &size) == ERROR_SUCCESS;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\LiberNT\\Shell\\Design", 0, NULL, 0, KEY_SET_VALUE, NULL, &key,
+                        NULL) != ERROR_SUCCESS)
+    {
+        skip("cannot write the Design key\n");
+        return;
+    }
+    RegDeleteValueW(key, L"Accent");
+    ok(LiberExperience_Accent() == LIBER_ACCENT_FOLLOW, "the accent follows the wallpaper by default\n");
+    DWORD value = LIBER_ACCENT_GREEN;
+    RegSetValueExW(key, L"Accent", 0, REG_DWORD, (const BYTE *)&value, sizeof(value));
+    ok(LiberExperience_Accent() == LIBER_ACCENT_GREEN, "a stored preset is read back\n");
+    if (had)
+        RegSetValueExW(key, L"Accent", 0, REG_DWORD, (const BYTE *)&saved, sizeof(saved));
+    else
+        RegDeleteValueW(key, L"Accent");
+    RegCloseKey(key);
+}
+
 START_TEST(Dock)
 {
+    TestLumaGrid();
+    TestAccentChoice();
     TestPillWidth();
     TestStartDefaults();
     TestMenuDismiss();

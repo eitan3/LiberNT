@@ -35,6 +35,11 @@ DWORD LiberExperience_SurfaceTint(VOID)
     return tint <= 2 ? tint : 1;
 }
 
+DWORD LiberExperience_Accent(VOID)
+{
+    return ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Accent", LIBER_ACCENT_FOLLOW);
+}
+
 BOOL LiberExperience_WidgetsEnabled(VOID)
 {
     return ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Widgets", 1) != 0;

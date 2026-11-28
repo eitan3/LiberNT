@@ -54,11 +54,13 @@ VOID LiberShell_ApplyMaterial(LiberUI::Surface *pSurface, const LiberUI::ThemeTo
                           radiusDip);
 }
 
+static LiberUI::Accent CurrentAccent(VOID);
+
 VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens)
 {
     g_LiberGlass = LiberShell_ReadGlassEnabled();
     LiberUI::ThemeParams params = { LiberExperience_IsDark() ? LiberUI::ThemeMode::Dark : LiberUI::ThemeMode::Light,
-                                    LiberUI::AccentPreset(LIBER_ACCENT_AZURE),
+                                    CurrentAccent(),
                                     (LiberUI::SurfaceTint)LiberExperience_SurfaceTint() };
     pTokens->Build(params);
 }
@@ -150,79 +152,151 @@ static BOOL LoadWallpaperPixels(LPCWSTR pszPath, DWORD **ppPixels, UINT *pWidth,
     return SUCCEEDED(hr);
 }
 
+VOID LiberShell_BuildLumaGrid(const DWORD *pPixels, UINT width, UINT height, float *pGrid)
+{
+    ATLASSERT(pPixels && pGrid && width && height);
+    for (UINT gy = 0; gy < LIBER_LUMA_GRID_H; gy++)
+    {
+        UINT y0 = gy * height / LIBER_LUMA_GRID_H, y1 = max(y0 + 1, (gy + 1) * height / LIBER_LUMA_GRID_H);
+        for (UINT gx = 0; gx < LIBER_LUMA_GRID_W; gx++)
+        {
+            UINT x0 = gx * width / LIBER_LUMA_GRID_W, x1 = max(x0 + 1, (gx + 1) * width / LIBER_LUMA_GRID_W);
+            UINT stepX = max(1u, (x1 - x0) / 8), stepY = max(1u, (y1 - y0) / 8), count = 0;
+            double sum = 0.0;
+            for (UINT y = y0; y < y1 && y < height; y += stepY)
+            {
+                for (UINT x = x0; x < x1 && x < width; x += stepX)
+                {
+                    sum += LiberShell_Luminance(pPixels[(SIZE_T)y * width + x]);
+                    count++;
+                }
+            }
+            pGrid[gy * LIBER_LUMA_GRID_W + gx] = count ? (float)(sum / count) : 0.0f;
+        }
+    }
+}
+
+BOOL LiberShell_GridLuma(const float *pGrid, SIZE image, const RECT *prcImage, double *pLuma)
+{
+    double sum = 0.0;
+    UINT samples = 0;
+
+    *pLuma = 0.0;
+    if (!pGrid || image.cx <= 0 || image.cy <= 0 || !prcImage || IsRectEmpty(prcImage))
+        return FALSE;
+    for (UINT y = 0; y < 10; y++)
+    {
+        for (UINT x = 0; x < 10; x++)
+        {
+            LONG px = prcImage->left + (prcImage->right - prcImage->left) * (LONG)(x * 2 + 1) / 20;
+            LONG py = prcImage->top + (prcImage->bottom - prcImage->top) * (LONG)(y * 2 + 1) / 20;
+            if (px < 0 || py < 0 || px >= image.cx || py >= image.cy)
+                continue;
+            UINT gx = (UINT)((LONGLONG)px * LIBER_LUMA_GRID_W / image.cx);
+            UINT gy = (UINT)((LONGLONG)py * LIBER_LUMA_GRID_H / image.cy);
+            ATLASSERT(gx < LIBER_LUMA_GRID_W && gy < LIBER_LUMA_GRID_H);
+            sum += pGrid[gy * LIBER_LUMA_GRID_W + gx];
+            samples++;
+        }
+    }
+    if (!samples)
+        return FALSE;
+    *pLuma = sum / samples;
+    return TRUE;
+}
+
 static struct
 {
     WCHAR Path[MAX_PATH];
     UINT Style;
     FILETIME Written;
-    RECT Screen;
-    SIZE Size;
+    BOOL Loaded;
     BOOL Valid;
-    double Luma;
-} g_WallpaperLuma;
+    SIZE Image;
+    float Grid[LIBER_LUMA_GRID_H * LIBER_LUMA_GRID_W];
+    LiberUI::PaletteResult Palette;
+} g_Wallpaper;
 
-BOOL LiberShell_WallpaperLuma(const RECT *prcScreen, double *pLuma)
+static BOOL LoadWallpaper(UINT *pStyle)
 {
     WCHAR szPath[MAX_PATH], szStyle[8];
     DWORD cb = sizeof(szStyle);
-    UINT style = LIBER_WALLPAPER_FILL;
+    WIN32_FILE_ATTRIBUTE_DATA info;
     DWORD *pixels = NULL;
     UINT width = 0, height = 0;
-    double sum = 0.0;
-    UINT samples = 0;
 
-    *pLuma = 0.0;
+    *pStyle = LIBER_WALLPAPER_FILL;
     if (!SystemParametersInfoW(SPI_GETDESKWALLPAPER, _countof(szPath), szPath, 0) || !szPath[0])
         return FALSE;
     if (RegGetValueW(HKEY_CURRENT_USER, L"Control Panel\\Desktop", L"WallpaperStyle", RRF_RT_REG_SZ, NULL, szStyle,
                      &cb) == ERROR_SUCCESS)
     {
-        style = (UINT)_wtoi(szStyle);
+        *pStyle = (UINT)_wtoi(szStyle);
     }
-    SIZE screen = { GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
-    WIN32_FILE_ATTRIBUTE_DATA info;
     if (!GetFileAttributesExW(szPath, GetFileExInfoStandard, &info))
         return FALSE;
-    if (g_WallpaperLuma.Path[0] && !lstrcmpiW(g_WallpaperLuma.Path, szPath) && g_WallpaperLuma.Style == style &&
-        !CompareFileTime(&g_WallpaperLuma.Written, &info.ftLastWriteTime) &&
-        EqualRect(&g_WallpaperLuma.Screen, prcScreen) && g_WallpaperLuma.Size.cx == screen.cx &&
-        g_WallpaperLuma.Size.cy == screen.cy)
+    if (g_Wallpaper.Loaded && !lstrcmpiW(g_Wallpaper.Path, szPath) &&
+        !CompareFileTime(&g_Wallpaper.Written, &info.ftLastWriteTime))
     {
-        *pLuma = g_WallpaperLuma.Luma;
-        return g_WallpaperLuma.Valid;
+        return g_Wallpaper.Valid;
     }
-    StringCchCopyW(g_WallpaperLuma.Path, _countof(g_WallpaperLuma.Path), szPath);
-    g_WallpaperLuma.Style = style;
-    g_WallpaperLuma.Written = info.ftLastWriteTime;
-    g_WallpaperLuma.Screen = *prcScreen;
-    g_WallpaperLuma.Size = screen;
-    g_WallpaperLuma.Valid = FALSE;
-    g_WallpaperLuma.Luma = 0.0;
+    ZeroMemory(&g_Wallpaper, sizeof(g_Wallpaper));
+    StringCchCopyW(g_Wallpaper.Path, _countof(g_Wallpaper.Path), szPath);
+    g_Wallpaper.Written = info.ftLastWriteTime;
+    g_Wallpaper.Loaded = TRUE;
     if (!LoadWallpaperPixels(szPath, &pixels, &width, &height))
         return FALSE;
-    SIZE image = { (LONG)width, (LONG)height };
-    RECT area;
-    LiberShell_MapToWallpaper(prcScreen, screen, image, style, &area);
-    for (UINT y = 0; y < 10 && !IsRectEmpty(&area); y++)
-    {
-        for (UINT x = 0; x < 10; x++)
-        {
-            INT px = area.left + (INT)((area.right - area.left) * (x * 2 + 1) / 20);
-            INT py = area.top + (INT)((area.bottom - area.top) * (y * 2 + 1) / 20);
-            if (px >= 0 && py >= 0 && (UINT)px < width && (UINT)py < height)
-            {
-                sum += LiberShell_Luminance(pixels[(SIZE_T)py * width + px]);
-                samples++;
-            }
-        }
-    }
+    g_Wallpaper.Image.cx = (LONG)width;
+    g_Wallpaper.Image.cy = (LONG)height;
+    LiberShell_BuildLumaGrid(pixels, width, height, g_Wallpaper.Grid);
+    if (!LiberUI::ExtractPalette(pixels, width, height, width * sizeof(DWORD), &g_Wallpaper.Palette))
+        ZeroMemory(&g_Wallpaper.Palette, sizeof(g_Wallpaper.Palette));
     LocalFree(pixels);
-    if (!samples)
-        return FALSE;
-    *pLuma = sum / samples;
-    g_WallpaperLuma.Luma = *pLuma;
-    g_WallpaperLuma.Valid = TRUE;
+    g_Wallpaper.Valid = TRUE;
     return TRUE;
+}
+
+BOOL LiberShell_WallpaperLuma(const RECT *prcScreen, double *pLuma)
+{
+    UINT style;
+    RECT area;
+
+    *pLuma = 0.0;
+    if (!prcScreen || !LoadWallpaper(&style))
+        return FALSE;
+    SIZE screen = { GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    LiberShell_MapToWallpaper(prcScreen, screen, g_Wallpaper.Image, style, &area);
+    return LiberShell_GridLuma(g_Wallpaper.Grid, g_Wallpaper.Image, &area, pLuma);
+}
+
+BOOL LiberShell_WallpaperPalette(LiberUI::PaletteResult *pPalette)
+{
+    UINT style;
+
+    ZeroMemory(pPalette, sizeof(*pPalette));
+    if (!LoadWallpaper(&style) || !g_Wallpaper.Palette.Count)
+        return FALSE;
+    *pPalette = g_Wallpaper.Palette;
+    return TRUE;
+}
+
+LiberUI::Accent LiberShell_ResolveAccent(DWORD dwChoice, const LiberUI::PaletteResult *pPalette)
+{
+    if (dwChoice < LIBER_ACCENT_PRESET_COUNT)
+        return LiberUI::AccentPreset((LIBER_ACCENT_PRESET_ID)dwChoice);
+    if (pPalette && pPalette->Count)
+        return pPalette->Candidates[0].AccentColor;
+    return LiberUI::AccentPreset(LIBER_ACCENT_AZURE);
+}
+
+static LiberUI::Accent CurrentAccent(VOID)
+{
+    LiberUI::PaletteResult palette;
+    DWORD choice = LiberExperience_Accent();
+
+    if (choice < LIBER_ACCENT_PRESET_COUNT)
+        return LiberShell_ResolveAccent(choice, NULL);
+    return LiberShell_ResolveAccent(choice, LiberShell_WallpaperPalette(&palette) ? &palette : NULL);
 }
 
 VOID LiberShell_BuildWallpaperInkTokens(LiberUI::ThemeTokens *pTokens, const RECT *prcScreen)
@@ -230,7 +304,7 @@ VOID LiberShell_BuildWallpaperInkTokens(LiberUI::ThemeTokens *pTokens, const REC
     double luma = 0.0;
     BOOL dark = !prcScreen || !LiberShell_WallpaperLuma(prcScreen, &luma) || luma < LIBER_WALLPAPER_INK_LUMA;
     LiberUI::ThemeParams params = { dark ? LiberUI::ThemeMode::Dark : LiberUI::ThemeMode::Light,
-                                    LiberUI::AccentPreset(LIBER_ACCENT_AZURE),
+                                    CurrentAccent(),
                                     (LiberUI::SurfaceTint)LiberExperience_SurfaceTint() };
     pTokens->Build(params);
 }

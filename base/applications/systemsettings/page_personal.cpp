@@ -95,6 +95,18 @@ BuildLiberExperience(PageBuilder &page)
                     BroadcastSetting(L"ImmersiveColorSet");
                 });
 
+    std::vector<std::wstring> accents;
+    DWORD accent = ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Accent", 0xFFFFFFFF);
+    for (UINT id = IDS_LIBER_ACCENT_FOLLOW; id <= IDS_LIBER_ACCENT_GRAPHITE; id++)
+        accents.push_back(Str(id));
+    page.Choice(Str(IDS_LIBER_ACCENT), Str(IDS_LIBER_ACCENT_DESC), L"paint_brush_20_regular", accents,
+                accent < accents.size() - 1 ? (int)accent + 1 : 0,
+                [](int index)
+                {
+                    WriteDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Accent", index > 0 ? (DWORD)(index - 1) : 0xFFFFFFFF);
+                    BroadcastSetting(L"ImmersiveColorSet");
+                });
+
     page.Toggle(Str(IDS_LIBER_WIDGETS), Str(IDS_LIBER_WIDGETS_DESC), L"data_pie_20_regular",
                 ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Widgets", 1) != 0,
                 [](int on)

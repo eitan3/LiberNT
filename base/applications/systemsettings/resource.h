@@ -795,3 +795,16 @@
 #define IDS_LIBER_FONT_DEFAULT         872
 #define IDS_LIBER_WIDGETS              873
 #define IDS_LIBER_WIDGETS_DESC         874
+#define IDS_LIBER_ACCENT               875
+#define IDS_LIBER_ACCENT_DESC          876
+#define IDS_LIBER_ACCENT_FOLLOW        877
+#define IDS_LIBER_ACCENT_AZURE         878
+#define IDS_LIBER_ACCENT_INDIGO        879
+#define IDS_LIBER_ACCENT_VIOLET        880
+#define IDS_LIBER_ACCENT_MAGENTA       881
+#define IDS_LIBER_ACCENT_CRIMSON       882
+#define IDS_LIBER_ACCENT_ORANGE        883
+#define IDS_LIBER_ACCENT_AMBER         884
+#define IDS_LIBER_ACCENT_GREEN         885
+#define IDS_LIBER_ACCENT_TEAL          886
+#define IDS_LIBER_ACCENT_GRAPHITE      887

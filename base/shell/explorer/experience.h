@@ -11,10 +11,12 @@
 #define LIBER_EXPERIENCE_VALUE  L"Experience"
 #define LIBER_EXPERIENCE_CLASSIC 0
 #define LIBER_EXPERIENCE_LIBER   1
+#define LIBER_ACCENT_FOLLOW      0xFFFFFFFF
 
 DWORD LiberExperience_Get(VOID);
 BOOL LiberExperience_IsLiber(VOID);
 BOOL LiberExperience_IsDark(VOID);
 DWORD LiberExperience_SurfaceTint(VOID);
 BOOL LiberExperience_WidgetsEnabled(VOID);
+DWORD LiberExperience_Accent(VOID);
 BOOL LiberExperience_UiFont(LPWSTR pszFamily, DWORD cchFamily);
