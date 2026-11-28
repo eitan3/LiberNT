@@ -27,6 +27,9 @@ using namespace LiberUI;
 #define LIBER_TIMER_CLOCK    1
 #define LIBER_TIMER_REFRESH  2
 #define LIBER_TIMER_BACKDROP 3
+#define LIBER_TIMER_PREVIEW  4
+#define LIBER_TIMER_UNHOVER  5
+#define LIBER_UNHOVER_DELAY  300
 #define LIBER_BACKDROP_DELAY 100
 #define LIBER_REFRESH_DELAY  60
 
@@ -55,6 +58,8 @@ struct LIBER_DOCK_ENTRY
     HICON hIcon;
     BOOL bOwnsIcon;
     BOOL bPinned;
+    UINT cWindows;
+    WCHAR szTitle[128];
 };
 
 class CLiberDock;
@@ -63,7 +68,7 @@ class CDockCell : public Widget, public IAnimationClient
 {
 public:
     CDockCell(CLiberDock *dock, int index) : m_Dock(dock), m_Index(index), m_Icon(NULL), m_Running(FALSE),
-        m_Active(FALSE)
+        m_Active(FALSE), m_Windows(0)
     {
         SetSize(LIBER_DOCK_CELL, LIBER_DOCK_CELL);
         SetHitTestable(TRUE);
@@ -86,13 +91,20 @@ public:
     BOOL OnAnimationFrame(ULONGLONG now);
     BOOL OnContextMenu(POINT screen);
 
-    void Set(HICON icon, BOOL running, BOOL active)
+    void Set(HICON icon, BOOL running, BOOL active, UINT windows = 0, LPCWSTR title = NULL)
     {
         m_Icon = icon;
         m_Running = running;
         m_Active = active;
+        m_Windows = windows;
+        if (title)
+            SetTooltip(running ? L"" : title);
         Invalidate();
     }
+
+    UINT Windows() const { return m_Windows; }
+    void OnPointerEnter();
+    void OnPointerLeave();
 
     void OnClick();
 
@@ -102,6 +114,12 @@ protected:
         RectF rc = ToRectF(Bounds());
         const ThemeTokens &tokens = context.Tokens;
 
+        if (m_Windows >= 2 && (m_Active || HasState(StateHover)))
+        {
+            RectF behind = { rc.X + LIBER_DOCK_STACK_OFFSET, rc.Y, rc.Width, rc.Height };
+            context.Painter.FillEllipse(behind, tokens.Color(m_Active ? LIBER_COLOR_FILL_PLATE_HOVER
+                                                                      : LIBER_COLOR_FILL_SUBTLE_HOVER));
+        }
         if (m_Active)
             context.Painter.FillEllipse(rc, tokens.Color(LIBER_COLOR_FILL_PLATE));
         else if (HasState(StateHover) || HasState(StatePressed))
@@ -154,6 +172,7 @@ private:
     HICON m_Icon;
     BOOL m_Running;
     BOOL m_Active;
+    UINT m_Windows;
 };
 
 class CTrayButton : public Widget
@@ -335,7 +354,7 @@ private:
 class CLiberDock
 {
 public:
-    CLiberDock() : m_Tray(NULL), m_hwndSink(NULL), m_hMoveHook(NULL), m_hMinimizeHook(NULL), m_BackdropPending(FALSE), m_uShellHook(0), m_Count(0), m_DockRoot(NULL), m_TrayRoot(NULL),
+    CLiberDock() : m_Tray(NULL), m_hwndSink(NULL), m_hMoveHook(NULL), m_hMinimizeHook(NULL), m_BackdropPending(FALSE), m_HoverCell(-1), m_uShellHook(0), m_Count(0), m_DockRoot(NULL), m_TrayRoot(NULL),
         m_Pill(NULL), m_Chevron(NULL), m_Language(NULL), m_TrayWidth(0), m_Clock(NULL), m_Dpi(96),
         m_RestoreTray(TRUE)
     {
@@ -360,6 +379,7 @@ public:
     BOOL MinimizeRect(HWND hwnd, RECT *prc);
     UINT Dpi() const { return m_Dpi; }
     void OnChevronClick();
+    void CellHover(int index, BOOL inside);
 
 private:
     static LRESULT CALLBACK SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -374,6 +394,9 @@ private:
     void Refresh();
     void Place();
     void PlaceBands(const RECT *prcMonitor);
+    static BOOL IsForeground(const LIBER_DOCK_ENTRY &entry, HWND foreground);
+    void ShowPreview();
+    UINT AppWindows(UINT index, HWND *windows, UINT max);
     RECT ScreenRect(Surface &surface, const RECT &dip);
 
     ITrayWindow *m_Tray;
@@ -381,6 +404,7 @@ private:
     HWINEVENTHOOK m_hMoveHook;
     HWINEVENTHOOK m_hMinimizeHook;
     BOOL m_BackdropPending;
+    int m_HoverCell;
     UINT m_uShellHook;
     ThemeTokens m_Tokens;
     Surface m_DockSurface;
@@ -405,6 +429,16 @@ public:
 };
 
 static CLiberDock *g_pLiberDock;
+
+void CDockCell::OnPointerEnter()
+{
+    m_Dock->CellHover(m_Index, TRUE);
+}
+
+void CDockCell::OnPointerLeave()
+{
+    m_Dock->CellHover(m_Index, FALSE);
+}
 
 void CDockCell::OnClick()
 {
@@ -462,6 +496,7 @@ BOOL CALLBACK CLiberDock::PinProc(PCWSTR pszShortcut, PCWSTR pszTarget, PCWSTR p
     StringCchCopyW(entry.szTarget, _countof(entry.szTarget), pszTarget);
     StringCchCopyW(entry.szSource, _countof(entry.szSource), pszShortcut && *pszShortcut ? pszShortcut : pszTarget);
     entry.bPinned = TRUE;
+    LiberDock_AppName(entry.szSource, entry.szTitle, _countof(entry.szTitle));
     ZeroMemory(&sfi, sizeof(sfi));
     if ((SHGetFileInfoW(pszTarget, 0, &sfi, sizeof(sfi), SHGFI_ICON | SHGFI_LARGEICON) && sfi.hIcon) ||
         (pszShortcut && *pszShortcut &&
@@ -492,10 +527,15 @@ BOOL CALLBACK CLiberDock::WindowProc(HWND hwnd, LPARAM lParam)
         if (self->m_Entries[i].hwnd == NULL && LiberDock_SameApp(self->m_Entries[i].szTarget, szImage))
         {
             self->m_Entries[i].hwnd = hwnd;
+            self->m_Entries[i].cWindows = 1;
+            GetWindowTextW(hwnd, self->m_Entries[i].szTitle, _countof(self->m_Entries[i].szTitle));
             return TRUE;
         }
         if (self->m_Entries[i].hwnd != NULL && LiberDock_SameApp(self->m_Entries[i].szTarget, szImage))
+        {
+            self->m_Entries[i].cWindows++;
             return TRUE;
+        }
     }
     if (self->m_Count >= LIBER_DOCK_MAX_ITEMS)
         return FALSE;
@@ -504,6 +544,8 @@ BOOL CALLBACK CLiberDock::WindowProc(HWND hwnd, LPARAM lParam)
     ZeroMemory(&entry, sizeof(entry));
     StringCchCopyW(entry.szTarget, _countof(entry.szTarget), szImage);
     entry.hwnd = hwnd;
+    entry.cWindows = 1;
+    GetWindowTextW(hwnd, entry.szTitle, _countof(entry.szTitle));
     DWORD_PTR result = 0;
     if (SendMessageTimeoutW(hwnd, WM_GETICON, ICON_BIG, 0, SMTO_ABORTIFHUNG, 100, &result) && result)
         entry.hIcon = (HICON)result;
@@ -609,6 +651,18 @@ void CLiberDock::Place()
         SystemParametersInfoW(SPI_SETWORKAREA, 0, &work, SPIF_SENDCHANGE);
 }
 
+BOOL CLiberDock::IsForeground(const LIBER_DOCK_ENTRY &entry, HWND foreground)
+{
+    DWORD entryPid = 0, foregroundPid = 0;
+
+    if (!entry.hwnd || !foreground)
+        return FALSE;
+    if (entry.hwnd == foreground)
+        return TRUE;
+    return entry.cWindows > 1 && GetWindowThreadProcessId(entry.hwnd, &entryPid) &&
+           GetWindowThreadProcessId(foreground, &foregroundPid) && entryPid == foregroundPid;
+}
+
 void CLiberDock::Refresh()
 {
     HWND foreground = GetForegroundWindow();
@@ -637,6 +691,8 @@ void CLiberDock::Refresh()
         {
             if (!previous[i].bOwnsIcon && !m_Entries[i].bOwnsIcon)
                 previous[i].hIcon = m_Entries[i].hIcon;
+            previous[i].cWindows = m_Entries[i].cWindows;
+            StringCchCopyW(previous[i].szTitle, _countof(previous[i].szTitle), m_Entries[i].szTitle);
         }
         ClearEntries();
         CopyMemory(m_Entries, previous, sizeof(m_Entries));
@@ -646,8 +702,8 @@ void CLiberDock::Refresh()
         for (UINT i = 0; i < m_Count; i++)
         {
             m_Cells[i + LIBER_DOCK_FIXED_CELLS]->Set(m_Entries[i].hIcon, m_Entries[i].hwnd != NULL,
-                                                     m_Entries[i].hwnd != NULL && m_Entries[i].hwnd == foreground &&
-                                                         !LiberStart_IsOpen());
+                                                     IsForeground(m_Entries[i], foreground) && !LiberStart_IsOpen(),
+                                                     m_Entries[i].cWindows, m_Entries[i].szTitle);
         }
         Place();
         m_DockSurface.Render(AnimationClock::Now());
@@ -672,15 +728,17 @@ void CLiberDock::Refresh()
     }
 
     m_Cells[0] = new CDockCell(this, LIBER_CELL_START);
-    m_Cells[0]->Set(NULL, FALSE, LiberStart_IsOpen());
+    m_Cells[0]->Set(NULL, FALSE, LiberStart_IsOpen(), 0, L"Start");
     m_DockRoot->AddChild(m_Cells[0]);
     m_Cells[1] = new CDockCell(this, LIBER_CELL_SEARCH);
+    m_Cells[1]->Set(NULL, FALSE, FALSE, 0, L"Search");
     m_DockRoot->AddChild(m_Cells[1]);
     for (UINT i = 0; i < m_Count; i++)
     {
         CDockCell *cell = new CDockCell(this, (int)i);
         cell->Set(m_Entries[i].hIcon, m_Entries[i].hwnd != NULL,
-                  m_Entries[i].hwnd != NULL && m_Entries[i].hwnd == foreground && !LiberStart_IsOpen());
+                  IsForeground(m_Entries[i], foreground) && !LiberStart_IsOpen(), m_Entries[i].cWindows,
+                  m_Entries[i].szTitle);
         m_Cells[i + LIBER_DOCK_FIXED_CELLS] = cell;
         m_DockRoot->AddChild(cell);
     }
@@ -688,6 +746,78 @@ void CLiberDock::Refresh()
     Place();
     m_DockSurface.Render(AnimationClock::Now());
     m_TraySurface.Render(AnimationClock::Now());
+}
+
+typedef struct _LIBER_APP_WINDOWS
+{
+    DWORD Pid;
+    HWND *Windows;
+    UINT Count;
+    UINT Max;
+} LIBER_APP_WINDOWS;
+
+static BOOL CALLBACK CollectAppWindow(HWND hwnd, LPARAM lParam)
+{
+    LIBER_APP_WINDOWS *app = (LIBER_APP_WINDOWS *)lParam;
+    DWORD pid = 0;
+
+    if (app->Count >= app->Max)
+        return FALSE;
+    if (LiberDock_IsTaskWindow(hwnd) && GetWindowThreadProcessId(hwnd, &pid) && pid == app->Pid)
+        app->Windows[app->Count++] = hwnd;
+    return TRUE;
+}
+
+UINT CLiberDock::AppWindows(UINT index, HWND *windows, UINT max)
+{
+    LIBER_APP_WINDOWS app = { 0, windows, 0, max };
+
+    if (index >= m_Count || !m_Entries[index].hwnd || !IsWindow(m_Entries[index].hwnd) ||
+        !GetWindowThreadProcessId(m_Entries[index].hwnd, &app.Pid))
+    {
+        return 0;
+    }
+    EnumWindows(CollectAppWindow, (LPARAM)&app);
+    return app.Count;
+}
+
+void CLiberDock::CellHover(int index, BOOL inside)
+{
+    if (!inside)
+    {
+        if (index == m_HoverCell)
+            SetTimer(m_hwndSink, LIBER_TIMER_UNHOVER, LIBER_UNHOVER_DELAY, NULL);
+        return;
+    }
+    KillTimer(m_hwndSink, LIBER_TIMER_UNHOVER);
+    m_HoverCell = index;
+    if (index < 0 || (UINT)index >= m_Count || !m_Entries[index].hwnd)
+    {
+        KillTimer(m_hwndSink, LIBER_TIMER_PREVIEW);
+        LiberPreview_Hide();
+        return;
+    }
+    if (LiberPreview_IsOpen())
+        ShowPreview();
+    else
+        SetTimer(m_hwndSink, LIBER_TIMER_PREVIEW, LIBER_PREVIEW_DELAY, NULL);
+}
+
+void CLiberDock::ShowPreview()
+{
+    HWND windows[LIBER_PREVIEW_MAX];
+    int index = m_HoverCell;
+
+    KillTimer(m_hwndSink, LIBER_TIMER_PREVIEW);
+    if (index < 0 || (UINT)index >= m_Count || !m_Cells[index + LIBER_DOCK_FIXED_CELLS] ||
+        !m_Cells[index + LIBER_DOCK_FIXED_CELLS]->HasState(StateHover))
+    {
+        return;
+    }
+    UINT count = AppWindows((UINT)index, windows, _countof(windows));
+    RECT anchor = ScreenRect(m_DockSurface, m_Cells[index + LIBER_DOCK_FIXED_CELLS]->Bounds());
+    if (!count || !LiberPreview_Show(windows, count, m_Entries[index].hIcon, &anchor))
+        LiberPreview_Hide();
 }
 
 void CLiberDock::OnCellClick(int index, const RECT &bounds)
@@ -858,7 +988,26 @@ LRESULT CALLBACK CLiberDock::SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         return self && self->MinimizeRect((HWND)wParam, (RECT *)lParam);
     if (self && msg == WM_TIMER)
     {
-        if (wParam == LIBER_TIMER_BACKDROP)
+        if (wParam == LIBER_TIMER_PREVIEW)
+        {
+            self->ShowPreview();
+        }
+        else if (wParam == LIBER_TIMER_UNHOVER)
+        {
+            POINT cursor;
+            KillTimer(hwnd, LIBER_TIMER_UNHOVER);
+            if (GetCursorPos(&cursor) && LiberPreview_Contains(cursor))
+                SetTimer(hwnd, LIBER_TIMER_UNHOVER, LIBER_UNHOVER_DELAY, NULL);
+            else if (self->m_HoverCell < 0 || (UINT)self->m_HoverCell >= self->m_Count ||
+                     !self->m_Cells[self->m_HoverCell + LIBER_DOCK_FIXED_CELLS] ||
+                     !self->m_Cells[self->m_HoverCell + LIBER_DOCK_FIXED_CELLS]->HasState(StateHover))
+            {
+                self->m_HoverCell = -1;
+                KillTimer(hwnd, LIBER_TIMER_PREVIEW);
+                LiberPreview_Hide();
+            }
+        }
+        else if (wParam == LIBER_TIMER_BACKDROP)
         {
             KillTimer(hwnd, LIBER_TIMER_BACKDROP);
             self->m_BackdropPending = FALSE;
@@ -998,6 +1147,7 @@ void CLiberDock::Stop()
     LiberCalendar_Destroy();
     LiberOverflow_Destroy();
     LiberStart_Destroy();
+    LiberPreview_Destroy();
     if (m_hMoveHook)
         UnhookWinEvent(m_hMoveHook);
     if (m_hMinimizeHook)
@@ -1009,6 +1159,8 @@ void CLiberDock::Stop()
         KillTimer(m_hwndSink, LIBER_TIMER_CLOCK);
         KillTimer(m_hwndSink, LIBER_TIMER_REFRESH);
         KillTimer(m_hwndSink, LIBER_TIMER_BACKDROP);
+        KillTimer(m_hwndSink, LIBER_TIMER_PREVIEW);
+        KillTimer(m_hwndSink, LIBER_TIMER_UNHOVER);
         DestroyWindow(m_hwndSink);
         m_hwndSink = NULL;
     }

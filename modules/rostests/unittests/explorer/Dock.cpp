@@ -653,9 +653,36 @@ static void TestAccentChoice(void)
     RegCloseKey(key);
 }
 
+static void TestPreviewHelpers()
+{
+    WCHAR name[64];
+    SIZE limit = { LIBER_PREVIEW_THUMB_W, LIBER_PREVIEW_THUMB_H }, size;
+    SIZE wide = { 1920, 1080 }, tall = { 600, 1200 }, none = { 0, 0 };
+
+    LiberDock_AppName(L"C:\\Users\\tester\\Desktop\\Notepad.lnk", name, _countof(name));
+    ok(!wcscmp(name, L"Notepad"), "a shortcut is named after its file: %S\n", name);
+    LiberDock_AppName(L"C:/Apps/my.tool.exe", name, _countof(name));
+    ok(!wcscmp(name, L"my.tool"), "only the last extension is dropped: %S\n", name);
+    LiberDock_AppName(L"", name, _countof(name));
+    ok(name[0] == 0, "no path, no name\n");
+    LiberDock_AppName(NULL, name, _countof(name));
+    ok(name[0] == 0, "a NULL path gives no name\n");
+
+    size = LiberDock_FitThumbnail(wide, limit);
+    ok(size.cx == 200 && size.cy == 112, "a wide window fills the width: %ld x %ld\n", size.cx, size.cy);
+    size = LiberDock_FitThumbnail(tall, limit);
+    ok(size.cx == 60 && size.cy == 120, "a tall window fills the height: %ld x %ld\n", size.cx, size.cy);
+    size = LiberDock_FitThumbnail(none, limit);
+    ok(size.cx == 0 && size.cy == 0, "an empty window has no thumbnail\n");
+    SIZE thin = { 4000, 1 };
+    size = LiberDock_FitThumbnail(thin, limit);
+    ok(size.cx == 200 && size.cy == 1, "a sliver keeps at least one pixel\n");
+}
+
 START_TEST(Dock)
 {
     TestLumaGrid();
+    TestPreviewHelpers();
     TestAccentChoice();
     TestBackdropLuma();
     ok(LiberShell_DimShade(0xFF10171E) == RGB(0x10, 0x17, 0x1E), "the dim shade is the surface base color\n");

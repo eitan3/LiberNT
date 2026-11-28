@@ -18,6 +18,7 @@ list(APPEND SOURCE
     liberdock.cpp
     libermenu.cpp
     liberoverflow.cpp
+    liberpreview.cpp
     libershell.cpp
     liberstart.cpp
     liberwidgets.cpp

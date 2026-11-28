@@ -37,6 +37,48 @@ BOOL LiberDock_SameApp(LPCWSTR pszTarget, LPCWSTR pszImage)
     return pszTarget && pszImage && *pszTarget && *pszImage && !lstrcmpiW(pszTarget, pszImage);
 }
 
+SIZE LiberDock_FitThumbnail(SIZE window, SIZE limit)
+{
+    SIZE size = { 0, 0 };
+
+    if (window.cx <= 0 || window.cy <= 0 || limit.cx <= 0 || limit.cy <= 0)
+        return size;
+    if ((LONGLONG)window.cx * limit.cy >= (LONGLONG)window.cy * limit.cx)
+    {
+        size.cx = limit.cx;
+        size.cy = max(1L, (LONG)((LONGLONG)window.cy * limit.cx / window.cx));
+    }
+    else
+    {
+        size.cy = limit.cy;
+        size.cx = max(1L, (LONG)((LONGLONG)window.cx * limit.cy / window.cy));
+    }
+    return size;
+}
+
+VOID LiberDock_AppName(LPCWSTR pszPath, LPWSTR pszName, UINT cchName)
+{
+    ATLASSERT(pszName && cchName);
+    pszName[0] = 0;
+    if (!pszPath || !*pszPath)
+        return;
+    LPCWSTR name = pszPath;
+    for (LPCWSTR p = pszPath; *p; p++)
+    {
+        if (*p == L'\\' || *p == L'/')
+            name = p + 1;
+    }
+    lstrcpynW(pszName, name, (int)cchName);
+    for (WCHAR *dot = pszName + lstrlenW(pszName); dot > pszName; dot--)
+    {
+        if (*dot == L'.')
+        {
+            *dot = 0;
+            break;
+        }
+    }
+}
+
 VOID LiberDock_WorkArea(const RECT *prcMonitor, UINT dpi, RECT *prcWork)
 {
     ATLASSERT(prcMonitor && prcWork && dpi != 0);
