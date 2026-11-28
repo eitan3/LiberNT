@@ -20,6 +20,7 @@
 #include <ks.h>
 #include <ksmedia.h>
 #include <devicetopology.h>
+#include <conio.h>
 #include <stdlib.h>
 #include "compare.h"
 
@@ -442,6 +443,61 @@ Done:
     return Result;
 }
 
+/*
+ * The hold (N12-03): DSPLOOP_HOLD's seconds, 0 when unset or not a number.
+ * With it the test opens its render pin and holds it, initialized and never
+ * started, until a key or the seconds: the stream is allocated the whole
+ * time, so the idle power-down (E2) has nothing to time, and the close
+ * ends it; the three runs are not made then.
+ */
+static
+DWORD
+HoldSeconds(
+    void)
+{
+    CHAR Text[16];
+    DWORD Chars = GetEnvironmentVariableA("DSPLOOP_HOLD", Text, sizeof(Text));
+
+    return Chars > 0 && Chars < sizeof(Text) ? (DWORD)atoi(Text) : 0;
+}
+
+/* One render pin open and not running: the client initialized, the service asked, nothing started; held until a key or the seconds, then closed */
+static
+VOID
+HoldPin(
+    IMMDevice *Render,
+    DWORD Seconds)
+{
+    WAVEFORMATEXTENSIBLE Format;
+    IAudioRenderClient *Service = NULL;
+    IAudioClient *Client = NULL;
+    HANDLE Event = NULL;
+    DWORD Started, Held;
+    BOOL Key = FALSE;
+    HRESULT hr;
+
+    ToneFormat(&Format, 16);
+    hr = OpenClient(Render, (WAVEFORMATEX *)&Format, DSPLOOP_RENDER_BUFFER, 0, &IID_IAudioRenderClient, (void **)&Service, &Client, &Event);
+    ok(hr == S_OK, "dsploop hold: render: Initialize 0x%08lx\n", hr);
+    if (FAILED(hr))
+        return;
+    Started = GetTickCount();
+    trace("dsploop hold: the render client initialized, its pin open and not started; holding up to %lu s, a key ends it\n", Seconds);
+    while (GetTickCount() - Started < Seconds * 1000)
+    {
+        Sleep(100);
+        if (_kbhit())
+        {
+            Key = TRUE;
+            (void)_getch();
+            break;
+        }
+    }
+    Held = GetTickCount() - Started;
+    trace("dsploop hold: released after %lu ms (%s); the pin closes\n", Held, Key ? "a key" : "the timeout");
+    CloseClient((IUnknown *)Service, Client, Event);
+}
+
 START_TEST(dsploop)
 {
     /* 16 valid bits is the run the plan asks for; 24 in a 32-bit word and 32 follow when the shared-mode engine takes them */
@@ -480,6 +536,12 @@ START_TEST(dsploop)
     if (FAILED(hr))
     {
         apitest_missing("dsploop: no active capture endpoint of the DSP's PCM (" DSPPCM_ID_TEXT "; 0x%08lx)\n", hr);
+        goto Done;
+    }
+    /* the hold (N12-03): one pin open and not running, the runs not made */
+    if (HoldSeconds() != 0)
+    {
+        HoldPin(Render, HoldSeconds());
         goto Done;
     }
     for (I = 0; I < ARRAY_SIZE(Runs); I++)
