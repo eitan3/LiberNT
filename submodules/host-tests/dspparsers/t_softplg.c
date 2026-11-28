@@ -1805,10 +1805,17 @@ check_model_loopback(void)
     CHECK_EQ(W->GainRampType, 2);
     CHECK_EQ(W->GainRampDuration, 200000);
     CHECK_EQ(W->GainVal, 2147483647);
-    CHECK_EQ(W->Config.Count, SOFTPLG_IPC4_BASE_CONFIG_WORDS);
+    /* the gain's configuration ends with its volume entry: every channel, the initial gain, the curve, a reserved word, the duration */
+    CHECK_EQ(W->Config.Count, SOFTPLG_IPC4_BASE_CONFIG_WORDS + SOFTPLG_IPC4_GAIN_CONFIG_WORDS);
     for (N = 0; N < SOFTPLG_IPC4_BASE_CONFIG_WORDS; N++)
         CHECK_EQ(W->Config.Words[N], GainConfig[N]);
-    for (N = SOFTPLG_IPC4_BASE_CONFIG_WORDS; N < SOFTPLG_IPC4_CONFIG_WORDS_MAX; N++)
+    CHECK_EQ(W->Config.Words[SOFTPLG_GAIN_ENTRY_WORD], 0xffffffff);
+    CHECK_EQ(W->Config.Words[SOFTPLG_GAIN_ENTRY_WORD + 1], 0x7fffffff);
+    CHECK_EQ(W->Config.Words[SOFTPLG_GAIN_ENTRY_WORD + 2], 2);
+    CHECK_EQ(W->Config.Words[SOFTPLG_GAIN_ENTRY_WORD + 3], 0);
+    CHECK_EQ(W->Config.Words[SOFTPLG_GAIN_ENTRY_WORD + 4], 200000);
+    CHECK_EQ(W->Config.Words[SOFTPLG_GAIN_ENTRY_WORD + 5], 0);
+    for (N = SOFTPLG_IPC4_BASE_CONFIG_WORDS + SOFTPLG_IPC4_GAIN_CONFIG_WORDS; N < SOFTPLG_IPC4_CONFIG_WORDS_MAX; N++)
         CHECK_EQ(W->Config.Words[N], 0);
 
     W = &Model->Widgets[3];
@@ -2040,7 +2047,8 @@ check_model_widgets(
         CHECK_EQ(Found, 1);
         ModulesSeen++;
         CHECK(W->InputFormats != 0 || W->OutputFormats != 0);
-        CHECK_EQ(W->Config.Count, IsCopier ? SOFTPLG_IPC4_COPIER_CONFIG_WORDS : SOFTPLG_IPC4_BASE_CONFIG_WORDS);
+        CHECK_EQ(W->Config.Count, IsCopier ? SOFTPLG_IPC4_COPIER_CONFIG_WORDS :
+                          SoftplgModelIsGain(W) ? SOFTPLG_IPC4_BASE_CONFIG_WORDS + SOFTPLG_IPC4_GAIN_CONFIG_WORDS : SOFTPLG_IPC4_BASE_CONFIG_WORDS);
         for (I = 0; I < W->InputFormats + W->OutputFormats; I++)
         {
             F = &Model->Formats[W->FirstFormat + I];

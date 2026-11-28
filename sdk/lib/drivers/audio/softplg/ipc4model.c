@@ -103,6 +103,23 @@ ModelIsModule(
     return ModelIsCopier(Kind) || Kind == SoftplgKindProcessor;
 }
 
+BOOLEAN
+SoftplgModelIsGain(
+    const SOFTPLG_IPC4_WIDGET* Widget)
+{
+    static const UINT8 GainUuid[SOFTPLG_UUID_BYTES] = SOFTPLG_GAIN_UUID;
+    UINT32 I;
+
+    if (Widget == NULL || Widget->Kind != SoftplgKindProcessor || !Widget->HasUuid)
+        return FALSE;
+    for (I = 0; I < SOFTPLG_UUID_BYTES; I++)
+    {
+        if (Widget->Uuid[I] != GainUuid[I])
+            return FALSE;
+    }
+    return TRUE;
+}
+
 /* The kind a widget type id names; FALSE for every type the model does not read */
 static
 BOOLEAN
@@ -1391,6 +1408,18 @@ SoftplgModelConfig(
     for (I = 0; I < SOFTPLG_IPC4_AUDIO_FORMAT_WORDS; I++)
         Config->Words[SOFTPLG_IPC4_BASE_CONFIG_WORDS - SOFTPLG_IPC4_AUDIO_FORMAT_WORDS + I] = In != NULL ? In->Words[I] : 0;
     Config->Count = SOFTPLG_IPC4_BASE_CONFIG_WORDS;
+    if (SoftplgModelIsGain(W))
+    {
+        /* the volume entry the topology declares for the widget: every channel, its initial gain, curve and duration */
+        Config->Words[SOFTPLG_GAIN_ENTRY_WORD] = 0xFFFFFFFFu;
+        Config->Words[SOFTPLG_GAIN_ENTRY_WORD + 1] = W->GainVal;
+        Config->Words[SOFTPLG_GAIN_ENTRY_WORD + 2] = W->GainRampType;
+        Config->Words[SOFTPLG_GAIN_ENTRY_WORD + 3] = 0;
+        Config->Words[SOFTPLG_GAIN_ENTRY_WORD + 4] = W->GainRampDuration;
+        Config->Words[SOFTPLG_GAIN_ENTRY_WORD + 5] = 0;
+        Config->Count = SOFTPLG_IPC4_BASE_CONFIG_WORDS + SOFTPLG_IPC4_GAIN_CONFIG_WORDS;
+        return SoftplgModelOk;
+    }
     if (!ModelIsCopier(W->Kind))
         return SoftplgModelOk;
 

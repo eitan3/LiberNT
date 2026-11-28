@@ -200,6 +200,33 @@ typedef enum _SOFIPC4_STATUS
 #define SOFIPC4_LARGE_CONFIG_PARAM_ID_MAX     0xFF
 #define SOFIPC4_LARGE_CONFIG_DATA_MAX         0xFFFFF
 
+/*
+ * The gain module -- the firmware's volume component, a topology's "gain"
+ * widget: the one configuration entry a volume change carries. The layout
+ * was read in the Sound Open Firmware source at the revision named above
+ * (src/audio/volume/peak_volume.h for the entry and the parameter id,
+ * src/audio/volume/volume_ipc4.c for how a set is applied) and is declared
+ * here in this file's own words (LICENSING.md rule 7). The target volume is
+ * a linear gain in Q1.31, 0 to 0x7fffffff, unity at 0x7fffffff; a change is
+ * a large-config set of parameter id SOFIPC4_GAIN_PARAM_VOLUME whose one
+ * block is exactly one entry, every channel when the channel id is the
+ * all-channels value. The curve type 0 is no fade: the gain applies at once.
+ */
+#define SOFIPC4_GAIN_PARAM_VOLUME               0
+#define SOFIPC4_GAIN_ALL_CHANNELS               0xFFFFFFFFUL
+#define SOFIPC4_GAIN_CURVE_NONE                 0
+#define SOFIPC4_GAIN_UNITY                      0x7FFFFFFFUL
+
+typedef struct _SOFIPC4_GAIN_CONFIG
+{
+    UINT32 ChannelId;
+    UINT32 TargetVolume;
+    UINT32 CurveType;
+    UINT32 Reserved;
+    /* hundreds of nanoseconds */
+    UINT64 CurveDuration;
+} SOFIPC4_GAIN_CONFIG, *PSOFIPC4_GAIN_CONFIG;
+
 /* ipc4_module_set_d0ix.extension.r */
 #define SOFIPC4_D0IX_WAKE                     0x00000001UL
 #define SOFIPC4_D0IX_STREAMING                0x00000002UL

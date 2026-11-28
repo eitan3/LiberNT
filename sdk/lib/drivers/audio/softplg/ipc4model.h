@@ -27,6 +27,10 @@
  *    gateway index, the attributes and the DMA buffer size are filled: the
  *    same Linux file's function sof_ipc4_prepare_copier_module, studied for
  *    its behaviour;
+ *  - the gain module's UUID, the volume entry its configuration ends with
+ *    and the parameter id of a volume change: the same Sound Open Firmware
+ *    revision, src/audio/volume/volume_uuid.h and peak_volume.h (BSD-3-Clause,
+ *    Copyright Intel);
  *  - the formats the HD Audio controller can carry: this tree's
  *    drivers/wdm/audio/hdaudbus/hdac_stream.cpp, function hdac_format, and
  *    drivers/wdm/audio/drivers/hdaudio/hdaudio_format.h,
@@ -159,6 +163,12 @@ typedef enum _SOFTPLG_IPC4_KIND
 #define SOFTPLG_COPIER_CONFIG_LENGTH_WORD      19
 #define SOFTPLG_COPIER_ATTRIBUTES_WORD         20
 #define SOFTPLG_NODE_TYPE_SHIFT                8
+/* ipc4_peak_volume_module_cfg: the base configuration, then one volume entry of six words -- the channel (every channel is 0xffffffff), the target volume in Q1.31 (unity is 0x7fffffff), the curve type, a reserved word, the curve duration in hundreds of nanoseconds -- of which an initialization carries at least one (the firmware's volume_init refuses a configuration that ends with the base configuration) and a volume change exactly one */
+#define SOFTPLG_IPC4_GAIN_CONFIG_WORDS          6
+#define SOFTPLG_GAIN_ENTRY_WORD                 SOFTPLG_IPC4_BASE_CONFIG_WORDS
+#define SOFTPLG_GAIN_UNITY                      0x7FFFFFFFu
+/* gain_uuid, the gain module of the firmware's manifest, in the byte order of the topology's UUID blocks and the manifest's module table */
+#define SOFTPLG_GAIN_UUID                       { 0xA8, 0xA9, 0xBC, 0x61, 0xD0, 0x18, 0x18, 0x4A, 0x8E, 0x7B, 0x26, 0x39, 0x21, 0x98, 0x04, 0xB7 }
 #define SOFTPLG_NODE_INDEX_MASK                0xFF
 #define SOFTPLG_ATTRIBUTE_LP_BUFFER            0x1
 /* The gateway DMA buffer holds at least this many milliseconds of the copier's buffer (Linux v6.12 SOF_IPC4_MIN_DMA_BUFFER_SIZE) */
@@ -423,7 +433,12 @@ SoftplgModelValidate(
     _In_ const SOFTPLG_IPC4_LIMITS* Limits,
     _Out_ SOFTPLG_IPC4_PROBLEM* Problem);
 
-/* A widget's init-instance configuration for the given input and output formats; a host copier's gateway index is the stream tag minus one, or the placeholder without a tag; a gateway buffer size that does not fit its word is SoftplgModelGatewayBuffer and nothing is written */
+/* Whether a widget is the gain module: a processing widget whose UUID is the gain's */
+BOOLEAN
+SoftplgModelIsGain(
+    _In_ const SOFTPLG_IPC4_WIDGET* Widget);
+
+/* A widget's init-instance configuration for the given input and output formats; a host copier's gateway index is the stream tag minus one, or the placeholder without a tag; a gateway buffer size that does not fit its word is SoftplgModelGatewayBuffer and nothing is written. A gain widget's configuration ends with the volume entry the topology declares for it (its initial value, curve and duration) */
 SOFTPLG_MODEL_STATUS
 SoftplgModelConfig(
     _In_ const SOFTPLG_IPC4_MODEL* Model,
