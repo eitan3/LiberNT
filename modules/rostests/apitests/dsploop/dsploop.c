@@ -26,6 +26,12 @@
 #include <stdlib.h>
 #include "compare.h"
 
+/* The KS identifiers the node reads use, as the mmdevapi apitests have theirs (devicetopology.c): the headers declare
+ * these GUIDs by name but no library the test links defines them, so each is a constant of its own here */
+static const GUID AudioPropertySet = { STATIC_KSPROPSETID_Audio };
+static const GUID VolumeNodeType = { STATIC_KSNODETYPE_VOLUME };
+static const GUID MuteNodeType = { STATIC_KSNODETYPE_MUTE };
+
 #define DSPLOOP_RATE             48000
 #define DSPLOOP_CHANNELS         2
 /* one second of tone; the capture holds a second of latency before it as well */
@@ -179,7 +185,7 @@ ReadNodeProperty(
     if (SUCCEEDED(hr))
     {
         ZeroMemory(&Request, sizeof(Request));
-        Request.Property.Set = KSPROPSETID_Audio;
+        Request.Property.Set = AudioPropertySet;
         Request.Property.Id = PropertyId;
         Request.Property.Flags = KSPROPERTY_TYPE_GET;
         Request.NodeId = NodeId;
@@ -663,9 +669,9 @@ START_TEST(dsploop)
         goto Done;
     }
     /* the level the stream starts at is the node's, in 1/65536 decibels, the driver's own answer (N14-17); a topology without control interfaces leaves the endpoint's scalar, in decibels as user mode maps it and rounded back, which at a coarse step is not the level the stream runs at */
-    hr = ReadNodeProperty(Render, &KSNODETYPE_VOLUME, KSPROPERTY_AUDIO_VOLUMELEVEL, &Level, sizeof(Level));
+    hr = ReadNodeProperty(Render, &VolumeNodeType, KSPROPERTY_AUDIO_VOLUMELEVEL, &Level, sizeof(Level));
     if (hr == S_OK)
-        hr = ReadNodeProperty(Render, &KSNODETYPE_MUTE, KSPROPERTY_AUDIO_MUTE, &Mute, sizeof(Mute));
+        hr = ReadNodeProperty(Render, &MuteNodeType, KSPROPERTY_AUDIO_MUTE, &Mute, sizeof(Mute));
     if (hr == S_OK)
     {
         NodeLevel = TRUE;
