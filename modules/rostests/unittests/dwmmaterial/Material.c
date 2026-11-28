@@ -750,6 +750,29 @@ static void TestMicaPixel(void)
     ok(DwmLiberMicaPixel(0x101010, 0x101010, 255, 0xFF0000, &Mica) == 0x00FF00, "an opaque tint hides the wallpaper\n");
 }
 
+static void TestWindowContent(void)
+{
+    DWM_WIN Window;
+
+    ZeroMemory(&Window, sizeof(Window));
+    Window.cx = 640;
+    Window.cy = 420;
+    Window.LiberMaterial = DWM_LIBER_MATERIAL_PACK(LIBER_MATERIAL_THICK + 1, FALSE, DWM_LIBER_LAYER_SHELL, 0,
+                                                   DWM_LIBER_EDGE_GLASS, 0x80);
+    DwmLiberApplyMaterial(&Window);
+    ok(Window.BlurFlags == (DWM_BLUR_ENABLE | DWM_BLUR_REGION_ENTIRE_WINDOW), "blur flags %lx\n", Window.BlurFlags);
+    ok(!DwmWindowHasBase(&Window), "a window without a redirection bitmap has no base\n");
+    ok(DwmWindowHasContent(&Window, TRUE), "a glass surface drawn only through its DX layer blurs what is below it\n");
+    ok(!DwmWindowHasContent(&Window, FALSE), "a window with neither a base nor a DX layer draws nothing\n");
+    Window.Generation = 3;
+    ok(!DwmWindowHasBase(&Window) && !DwmWindowHasContent(&Window, FALSE), "a base needs a published update\n");
+    Window.BaseUpdateId = 7;
+    ok(DwmWindowHasBase(&Window), "a published redirection bitmap is a base\n");
+    ok(DwmWindowHasContent(&Window, FALSE) && DwmWindowHasContent(&Window, TRUE), "a base is content with or without a DX layer\n");
+    Window.Generation = 0;
+    ok(!DwmWindowHasBase(&Window), "a base needs a surface generation\n");
+}
+
 START_TEST(Material)
 {
     TestPacking();
@@ -771,4 +794,5 @@ START_TEST(Material)
     TestMicaLuma();
     TestMicaWindow();
     TestMicaPixel();
+    TestWindowContent();
 }

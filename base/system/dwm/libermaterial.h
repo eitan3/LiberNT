@@ -212,6 +212,15 @@ DwmLiberMicaLuma(
     _In_ const RECT *Rect);
 
 BOOLEAN
+DwmWindowHasBase(
+    _In_ const DWM_WIN *Window);
+
+BOOLEAN
+DwmWindowHasContent(
+    _In_ const DWM_WIN *Window,
+    _In_ BOOLEAN HasDxLayer);
+
+BOOLEAN
 DwmLiberClassifyMica(
     _Inout_ DWM_WIN *Window);
 

@@ -52,12 +52,6 @@ typedef struct _DWM_SURFACE
 static DWM_SURFACE g_views[DWM_VIEW_CACHE_SIZE];
 static ULONG g_frameSeq;
 
-static BOOL
-DwmWindowHasBase(const DWM_WIN *Window)
-{
-    return Window->Generation != 0 && Window->BaseUpdateId != 0;
-}
-
 static void
 DwmDropView(DWM_SURFACE *v)
 {
@@ -5512,6 +5506,7 @@ DwmComposeLoop(HANDLE hStopEvent)
                     RECTL Cover;
                     BOOL HaveCover;
                     BOOL HasBase;
+                    BOOL HasContent;
 
                     if (DwmWindowIsHidden(wins, hdr->Count, i, cl, ct, cr, cb))
                         continue;
@@ -5571,7 +5566,9 @@ DwmComposeLoop(HANDLE hStopEvent)
                     }
                     DwmStatCounter(&stgA);
                     backdropBase = NULL;
-                    if (HasBase)
+                    dxpix = DwmDxGetSurfacePixels(&wins[i], &dxPitch);
+                    HasContent = DwmWindowHasContent(&wins[i], dxpix != NULL);
+                    if (HasContent)
                     {
                         DwmKeepCorners((ULONG *)g_compBits, g_W, g_H, &wins[i], FALSE);
                         DwmApplyBlur((const ULONG *)g_compBits,
@@ -5582,13 +5579,15 @@ DwmComposeLoop(HANDLE hStopEvent)
                     DwmStatCounter(&stgB);
                     if (g_frameStats)
                         g_statBlurTicks += (ULONGLONG)(stgB.QuadPart - stgA.QuadPart);
+                    /* TODO: filter a transient system backdrop under a window that has only a DX layer */
                     if (HasBase)
                     {
                         backdropBase = DwmApplyBackdropBlur(
                             (ULONG *)g_compBits, g_W, g_H,
                             pl, pt, pr, pb, &wins[i], wins, i);
-                        DwmKeepCorners((ULONG *)g_compBits, g_W, g_H, &wins[i], TRUE);
                     }
+                    if (HasContent)
+                        DwmKeepCorners((ULONG *)g_compBits, g_W, g_H, &wins[i], TRUE);
                     DwmStatCounter(&stgA);
                     if (g_frameStats)
                         g_statBackdropBlurTicks += (ULONGLONG)(stgA.QuadPart - stgB.QuadPart);
@@ -5611,7 +5610,6 @@ DwmComposeLoop(HANDLE hStopEvent)
                     if (g_frameStats)
                         g_statBlitTicks += (ULONGLONG)(stgA.QuadPart - stgB.QuadPart);
 
-                    dxpix = DwmDxGetSurfacePixels(&wins[i], &dxPitch);
                     if (dxpix != NULL)
                     {
                         DWM_WIN client = wins[i];

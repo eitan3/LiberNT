@@ -662,6 +662,23 @@ DwmLiberMicaLuma(
 }
 
 BOOLEAN
+DwmWindowHasBase(
+    _In_ const DWM_WIN *Window)
+{
+    assert(Window != NULL);
+    return Window->Generation != 0 && Window->BaseUpdateId != 0;
+}
+
+BOOLEAN
+DwmWindowHasContent(
+    _In_ const DWM_WIN *Window,
+    _In_ BOOLEAN HasDxLayer)
+{
+    assert(Window != NULL);
+    return DwmWindowHasBase(Window) || HasDxLayer;
+}
+
+BOOLEAN
 DwmLiberClassifyMica(
     _Inout_ DWM_WIN *Window)
 {
