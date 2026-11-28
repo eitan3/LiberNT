@@ -11,6 +11,8 @@
 
 #define INITIAL_SYSTEM_PAGE_SIZE 4096
 #define LOGFILE_SCAN_CHUNK_SIZE 0x10000
+/* LogPageDataOffset of the record layout the reader knows (LFS 1.1 and 2.0 pages alike) */
+#define LFS_LOG_PAGE_DATA_OFFSET 0x40
 
 static BOOLEAN
 IsPowerOfTwo(_In_ ULONG Value)
@@ -302,18 +304,50 @@ LogFileService::InitializeLFS()
         goto Done;
     }
 
-    /* Only a 2.0 log is replayed: an older one is written to only if it says its volume was closed cleanly */
+    /*
+     * A log older than 2.0 is written to without a replay when it says its volume was closed
+     * cleanly.  One that was not closed cleanly is replayed when the reader knows its record
+     * layout, the one the 2.0 pages carry (the record header the reader requires and page data
+     * at the LFS page data offset), and keeps the volume read-only for any other layout or a
+     * replay that fails.
+     */
     {
         PLfsRestartArea Area = reinterpret_cast<PLfsRestartArea>(
             reinterpret_cast<PUCHAR>(SelectedPage) + SelectedPage->RestartOffset);
 
-        if (Area->ClientInUseList != 0xffff && !(Area->Flags & LFS_RESTART_AREA_CLEAN))
+        if (Area->ClientInUseList == 0xffff || (Area->Flags & LFS_RESTART_AREA_CLEAN))
         {
-            DPRINT1("Log %ld.%ld was not closed cleanly and cannot be replayed\n",
-                    ClientMajorVersion, ClientMinorVersion);
-            Status = STATUS_VOLUME_DIRTY;
+            DPRINT1("Log %ld.%ld was closed cleanly: no replay\n", ClientMajorVersion, ClientMinorVersion);
             goto Done;
         }
+
+        if (Area->RecordHeaderLength == FIELD_OFFSET(LfsRecord, Data) &&
+            Area->LogPageDataOffset == LFS_LOG_PAGE_DATA_OFFSET)
+        {
+            DPRINT1("Log %ld.%ld was not closed cleanly: replaying it\n",
+                    ClientMajorVersion, ClientMinorVersion);
+            SelectedRestartPage = SelectedPage;
+            Status = PerformFileSystemRecovery();
+            SelectedRestartPage = NULL;
+            RestartPage1 = NULL;
+            RestartPage2 = NULL;
+            delete[] LogFileData;
+            LogFileData = NULL;
+            if (!NT_SUCCESS(Status))
+            {
+                DPRINT1("Replay of the %ld.%ld log failed (Status %lx)\n",
+                        ClientMajorVersion, ClientMinorVersion, Status);
+                Status = STATUS_VOLUME_DIRTY;
+            }
+            ClientMajorVersion = 0;
+            ClientMinorVersion = 0;
+            goto Done;
+        }
+
+        DPRINT1("Log %ld.%ld was not closed cleanly and its record layout (header %#x, page data %#x) is not known: no replay\n",
+                ClientMajorVersion, ClientMinorVersion, Area->RecordHeaderLength, Area->LogPageDataOffset);
+        Status = STATUS_VOLUME_DIRTY;
+        goto Done;
     }
 
 Done:

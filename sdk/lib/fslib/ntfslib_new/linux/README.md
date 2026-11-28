@@ -359,8 +359,11 @@ incorrect result fails instead of being reported as fast.
   replacement is unavailable.
 - An all-`0xff` `$LogFile` is recognized as NTFS's empty/clean form. A writable open
   replays an LFS 2.0 log Windows left dirty (`tests/windows_log_replay_test.sh` checks
-  the replay against Windows' own); a 1.1 log is written to only when it says its volume
-  was closed cleanly. The library itself writes no journal and never marks a volume
+  the replay against Windows' own); a 1.1 log is written to without a replay when it says
+  its volume was closed cleanly, and replayed when it does not but carries the record
+  layout the reader knows (the 2.0 pages': record header 0x30, page data 0x40); any other
+  1.1 layout keeps the volume read-only (`tests/dirty_log_readonly_smoke.sh`). The library
+  itself writes no journal and never marks a volume
   dirty, so there is no crash recovery for its own writes: a writable mount that does
   not unmount cleanly can leave the volume inconsistent.
 - Growth synchronizes duplicated local and parent-index `$FILE_NAME` sizes,

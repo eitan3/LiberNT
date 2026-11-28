@@ -35,12 +35,19 @@ import sys
 driver, fixtures, workdir = sys.argv[1:4]
 truth_dir = os.path.join(fixtures, "truth")
 
-# image, the listing Windows' own replay of the capture gave, whether the captured log is dirty
+# image, the listing Windows' own replay of the capture gave, whether the captured log is dirty.
+# The one-one images are byte patches of real captures made outside the tree (the restart pages'
+# version or clean flag changed), modelling a 1.1 log that was not closed cleanly: one with
+# nothing to redo, one with the records of dirty-d1 behind a 1.1 page.
 cases = [
     ("dirty-ntfs-256m.img", "windows-format-live-after-flush.txt", True),
     ("libernt-format-dirty-d1.img", "libernt-d1-windows-replay.txt", True),
     ("libernt-format-dirty-d2.img", "libernt-d2-windows-replay.txt", True),
     ("libernt-format-clean.img", "libernt-format-live-after-flush.txt", False),
+    ("midwrite-b0.img", "midwrite-b0-windows-replay.txt", True),
+    ("midwrite-b1.img", "midwrite-b1-windows-replay.txt", True),
+    ("one-one-norecords.img", "libernt-format-live-after-flush.txt", True),
+    ("one-one-records.img", "libernt-d1-windows-replay.txt", True),
 ]
 
 failed = False
@@ -111,7 +118,9 @@ def truth(name):
             if not line.strip():
                 continue
             path, size, digest = line.rstrip("\r\n").rsplit(" ", 2)
-            files[path[3:]] = (int(size), digest.upper())
+            # The first truths carry a drive letter (Y:\dir\file), the later ones start at the root (\dir\file)
+            path = path[3:] if path[1:2] == ":" else path.lstrip("\\")
+            files[path] = (int(size), digest.upper())
     return files
 
 
