@@ -1,5 +1,6 @@
 
-add_definitions(${I18N_DEFS})
+separate_arguments(_setup_language_flags NATIVE_COMMAND "${I18N_DEFS}")
+add_compile_options("$<$<COMPILE_LANGUAGE:C>:${_setup_language_flags}>")
 if(_WINKD_)
     add_definitions(-D_WINKD_)
 endif()

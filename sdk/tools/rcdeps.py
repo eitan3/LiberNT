@@ -6,6 +6,7 @@
 
 import os
 import re
+import subprocess
 import sys
 
 MEMORY_OPTIONS = {"PRELOAD", "LOADONCALL", "FIXED", "MOVEABLE", "DISCARDABLE", "PURE", "IMPURE", "SHARED",
@@ -111,6 +112,12 @@ def main():
         sys.exit("usage: rcdeps.py <object> <source.rc> [-I dir]...")
     target, source = sys.argv[1], sys.argv[2]
     includes, args = [], sys.argv[3:]
+    if "--compile" in args:
+        separator = args.index("--compile")
+        status = subprocess.call(args[separator + 1:])
+        if status:
+            sys.exit(status)
+        args = args[:separator]
     i = 0
     while i < len(args):
         arg = args[i]

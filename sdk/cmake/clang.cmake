@@ -312,6 +312,12 @@ find_program(RCDEPS_PYTHON_EXECUTABLE NAMES python3 python REQUIRED NO_CMAKE_FIN
 set(CMAKE_RC_COMPILE_OBJECT "<CMAKE_RC_COMPILER> ${_rc_target_flag} -O coff <INCLUDES> <FLAGS> -DRC_INVOKED -D__WIN32__=1 -D__FLAT__=1 ${I18N_DEFS} <DEFINES> <SOURCE> <OBJECT>"
     "\"${RCDEPS_PYTHON_EXECUTABLE}\" \"${REACTOS_SOURCE_DIR}/sdk/tools/rcdeps.py\" <OBJECT> <SOURCE> <INCLUDES>")
 
+if(CMAKE_HOST_WIN32)
+    list(GET CMAKE_RC_COMPILE_OBJECT 0 _rc_compile_command)
+    list(GET CMAKE_RC_COMPILE_OBJECT 1 _rc_deps_command)
+    set(CMAKE_RC_COMPILE_OBJECT "${_rc_deps_command} --compile ${_rc_compile_command}")
+endif()
+
 # We have to pass args to windres. one... by... one...
 set(CMAKE_DEPFILE_FLAGS_RC "--preprocessor=\"${CMAKE_C_COMPILER}\" ${RC_PREPROCESSOR_TARGET} --preprocessor-arg=-E --preprocessor-arg=-nostdlibinc --preprocessor-arg=-xc-header --preprocessor-arg=-MMD --preprocessor-arg=-MF --preprocessor-arg=<OBJECT>.d --preprocessor-arg=-MT --preprocessor-arg=<OBJECT>")
 
