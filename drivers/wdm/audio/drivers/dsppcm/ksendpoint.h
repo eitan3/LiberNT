@@ -151,7 +151,7 @@ DsppcmPositionFromValue(
  * properties, which would let the engine map the register, are not answered
  * there yet. The engine's clock is therefore derived from these offsets: it
  * counts the periods the cursors cross and adds them to a 64-bit frame
- * position that never decreases (dll/win32/mmdevapi/reactos_wdmaud.c
+ * position that never decreases (dll/win32/mmdevapi/libernt_wdmaud.c
  * refill_cyclic_period over reactos_wavert.h). So the clock carries across
  * the buffer's wrap; at the register's own wrap, every 2^32 bytes, the
  * cursors jump by the remainder of 2^32 over the buffer, which that rule

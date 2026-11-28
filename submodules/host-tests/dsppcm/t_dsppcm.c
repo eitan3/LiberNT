@@ -14,7 +14,7 @@
 
 #include <ksendpoint.h>
 #include "tables.h"
-/* the engine's period-crossing rule over the cursors the position arithmetic reports: the header the render engine and its apitest compile (dll/win32/mmdevapi/reactos_wdmaud.c) */
+/* the engine's period-crossing rule over the cursors the position arithmetic reports: the header the render engine and its apitest compile (dll/win32/mmdevapi/libernt_wdmaud.c) */
 #include "reactos_wavert.h"
 
 static int Checks;
@@ -1061,7 +1061,7 @@ CheckPositionWrap(
  * The engine's clock over the arithmetic: the register moves StepBytes a
  * sample for Samples samples from Start, and the engine adds a period to a
  * 64-bit frame clock whenever the cursors say the playing half changed
- * (dll/win32/mmdevapi/reactos_wdmaud.c refill_cyclic_period, over the rule
+ * (dll/win32/mmdevapi/libernt_wdmaud.c refill_cyclic_period, over the rule
  * of reactos_wavert.h); as the engine starts, the first sample's half is
  * taken without counting. The clock is answered in frames; Refused counts
  * the samples the rule refused and Fell the samples at which the clock went
