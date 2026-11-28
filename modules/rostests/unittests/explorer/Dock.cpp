@@ -203,22 +203,32 @@ static void TestFlyoutOrigin()
     RECT monitor = { 0, 0, 1600, 900 }, tray = { 1317, 838, 1588, 886 }, dock = { 543, 832, 1057, 892 };
     POINT pt;
 
-    LiberShell_FlyoutOrigin(&monitor, 96, &tray, 384, 474, FALSE, &pt);
+    LiberShell_FlyoutOrigin(&monitor, 96, &tray, 384, 474, LIBER_FLYOUT_RIGHT, &pt);
     ok(pt.x == 1588 - 384 && pt.y == 900 - 80 - 474, "control center sits above the reserved taskbar at %ld,%ld\n",
        pt.x, pt.y);
-    LiberShell_FlyoutOrigin(&monitor, 96, &dock, 660, 700, TRUE, &pt);
+    LiberShell_FlyoutOrigin(&monitor, 96, &dock, 660, 700, LIBER_FLYOUT_MONITOR_CENTER, &pt);
     ok(pt.x == (1600 - 660) / 2 && pt.y == 900 - 80 - 700, "Start is centered at %ld,%ld\n", pt.x, pt.y);
 
     RECT edge = { 1500, 838, 1600, 886 };
-    LiberShell_FlyoutOrigin(&monitor, 96, &edge, 384, 474, FALSE, &pt);
+    LiberShell_FlyoutOrigin(&monitor, 96, &edge, 384, 474, LIBER_FLYOUT_RIGHT, &pt);
     ok(pt.x == 1600 - 12 - 384, "kept 12 px from the right edge: %ld\n", pt.x);
     RECT left = { 0, 838, 50, 886 };
-    LiberShell_FlyoutOrigin(&monitor, 96, &left, 384, 474, FALSE, &pt);
+    LiberShell_FlyoutOrigin(&monitor, 96, &left, 384, 474, LIBER_FLYOUT_RIGHT, &pt);
     ok(pt.x == 12, "kept 12 px from the left edge: %ld\n", pt.x);
-    LiberShell_FlyoutOrigin(&monitor, 96, &tray, 384, 2000, FALSE, &pt);
+    LiberShell_FlyoutOrigin(&monitor, 96, &tray, 384, 2000, LIBER_FLYOUT_RIGHT, &pt);
     ok(pt.y == 12, "a tall flyout stays below the top inset: %ld\n", pt.y);
-    LiberShell_FlyoutOrigin(&monitor, 144, &tray, 576, 600, FALSE, &pt);
+    LiberShell_FlyoutOrigin(&monitor, 144, &tray, 576, 600, LIBER_FLYOUT_RIGHT, &pt);
     ok(pt.y == 900 - 120 - 600, "gap and reserve scale with DPI: %ld\n", pt.y);
+
+    RECT cell = { 100, 832, 148, 880 };
+    LiberShell_FlyoutOrigin(&monitor, 96, &cell, 216, 180, LIBER_FLYOUT_ANCHOR_CENTER, &pt);
+    ok(pt.x == 124 - 108, "a preview is centered on its dock icon: %ld\n", pt.x);
+    RECT farLeft = { 12, 832, 60, 880 };
+    LiberShell_FlyoutOrigin(&monitor, 96, &farLeft, 216, 180, LIBER_FLYOUT_ANCHOR_CENTER, &pt);
+    ok(pt.x == 12, "a preview near the left edge keeps the inset: %ld\n", pt.x);
+    RECT start = { 12, 832, 60, 880 };
+    LiberShell_FlyoutOrigin(&monitor, 96, &start, 660, 700, LIBER_FLYOUT_ANCHOR_LEFT, &pt);
+    ok(pt.x == 12, "Start opens at the left of a left-aligned taskbar: %ld\n", pt.x);
 }
 
 static void TestCalendarGrid()

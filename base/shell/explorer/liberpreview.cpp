@@ -270,7 +270,7 @@ public:
         SIZE size = m_Root->Measure(available);
         UINT dpi = m_Surface.Dpi();
         POINT pt;
-        LiberShell_PlaceFlyout(prcAnchor, ScaleToDpi(size.cx, dpi), ScaleToDpi(size.cy, dpi), TRUE, &pt);
+        LiberShell_PlaceFlyout(prcAnchor, ScaleToDpi(size.cx, dpi), ScaleToDpi(size.cy, dpi), LIBER_FLYOUT_ANCHOR_CENTER, &pt);
         m_Surface.SetPosition(pt.x, pt.y, size.cx, size.cy);
         LiberShell_SampleBackdrop(&m_Surface, &m_Tokens, FALSE);
         m_Surface.RequestLayout();

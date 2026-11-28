@@ -9,6 +9,7 @@
 
 #include "libershell.h"
 #include "startmodel.h"
+#include "experience.h"
 
 using namespace LiberUI;
 
@@ -708,7 +709,8 @@ BOOL CLiberStart::Open(const RECT *prcAnchor)
     SIZE size = m_Root->Measure(available);
     UINT dpi = m_Surface.Dpi();
     POINT pt;
-    LiberShell_PlaceFlyout(prcAnchor, ScaleToDpi(LIBER_START_WIDTH, dpi), ScaleToDpi(size.cy, dpi), TRUE, &pt);
+    LiberShell_PlaceFlyout(prcAnchor, ScaleToDpi(LIBER_START_WIDTH, dpi), ScaleToDpi(size.cy, dpi),
+                           LiberExperience_TaskbarLeft() ? LIBER_FLYOUT_ANCHOR_LEFT : LIBER_FLYOUT_MONITOR_CENTER, &pt);
 
     m_Surface.SetPosition(pt.x, pt.y, LIBER_START_WIDTH, size.cy);
     LiberShell_SampleBackdrop(&m_Surface, &m_Tokens, FALSE);

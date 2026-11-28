@@ -636,7 +636,7 @@ BOOL CLiberControlCenter::Open(const RECT *prcAnchor)
     SIZE size = m_Root->Measure(available);
     POINT pt;
     LiberShell_PlaceFlyout(prcAnchor, ScaleToDpi(LIBER_CC_WIDTH, m_Surface.Dpi()), ScaleToDpi(size.cy, m_Surface.Dpi()),
-                           FALSE, &pt);
+                           LIBER_FLYOUT_RIGHT, &pt);
     m_Surface.SetPosition(pt.x, pt.y, LIBER_CC_WIDTH, size.cy);
     LiberShell_SampleBackdrop(&m_Surface, &m_Tokens, FALSE);
     m_Surface.RequestLayout();

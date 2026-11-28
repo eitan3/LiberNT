@@ -176,9 +176,18 @@ BOOL LiberShell_SampleBackdrop(LiberUI::Surface *pSurface, const LiberUI::ThemeT
 VOID LiberShell_BuildWallpaperInkTokens(LiberUI::ThemeTokens *pTokens, const RECT *prcScreen);
 VOID LiberShell_ApplyFont(LiberUI::Surface *pSurface);
 BOOL LiberShell_SetDarkMode(BOOL bDark);
+typedef enum _LIBER_FLYOUT_PLACE
+{
+    LIBER_FLYOUT_RIGHT,
+    LIBER_FLYOUT_MONITOR_CENTER,
+    LIBER_FLYOUT_ANCHOR_CENTER,
+    LIBER_FLYOUT_ANCHOR_LEFT
+} LIBER_FLYOUT_PLACE;
+
 VOID LiberShell_FlyoutOrigin(const RECT *prcMonitor, UINT dpi, const RECT *prcAnchor, int widthPx, int heightPx,
-                             BOOL bCenter, POINT *pptTopLeft);
-VOID LiberShell_PlaceFlyout(const RECT *prcAnchor, int widthPx, int heightPx, BOOL bCenter, POINT *pptTopLeft);
+                             LIBER_FLYOUT_PLACE place, POINT *pptTopLeft);
+VOID LiberShell_PlaceFlyout(const RECT *prcAnchor, int widthPx, int heightPx, LIBER_FLYOUT_PLACE place,
+                            POINT *pptTopLeft);
 
 typedef struct _LIBER_RECENT_FILE
 {

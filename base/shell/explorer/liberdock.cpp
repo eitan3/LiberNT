@@ -730,7 +730,8 @@ void CLiberDock::Place()
 
     if (!GetMonitorInfoW(monitor, &mi))
         SetRect(&mi.rcMonitor, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
-    UpdateMetrics(&mi.rcMonitor);
+    if (UpdateMetrics(&mi.rcMonitor))
+        LiberPreview_Hide();
     LiberDock_Layout(&mi.rcMonitor, m_Dpi, cells, m_TrayWidth, &m_Metrics, &m_Layout);
     BOOL floating = m_Metrics.Style != LIBER_TASKBAR_STYLE_CLASSIC;
     BOOL island = floating && !m_Metrics.Touched;
