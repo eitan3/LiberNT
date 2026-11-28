@@ -192,6 +192,7 @@ void CLiberWidgets::Place()
         UINT dpi = m_Surfaces[i].Dpi();
         m_Surfaces[i].SetPosition(rcs[i].left, rcs[i].top, MulDiv(rcs[i].right - rcs[i].left, 96, (int)dpi),
                                   MulDiv(rcs[i].bottom - rcs[i].top, 96, (int)dpi));
+        LiberShell_SampleBackdrop(&m_Surfaces[i], &m_Tokens, TRUE);
     }
 }
 

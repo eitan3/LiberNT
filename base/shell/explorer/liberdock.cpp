@@ -26,6 +26,8 @@ using namespace LiberUI;
 #define LIBER_CELL_SEARCH    (-2)
 #define LIBER_TIMER_CLOCK    1
 #define LIBER_TIMER_REFRESH  2
+#define LIBER_TIMER_BACKDROP 3
+#define LIBER_BACKDROP_DELAY 100
 #define LIBER_REFRESH_DELAY  60
 
 static BOOL ImagePathOf(HWND hwnd, LPWSTR pszPath, DWORD cchPath)
@@ -333,7 +335,7 @@ private:
 class CLiberDock
 {
 public:
-    CLiberDock() : m_Tray(NULL), m_hwndSink(NULL), m_uShellHook(0), m_Count(0), m_DockRoot(NULL), m_TrayRoot(NULL),
+    CLiberDock() : m_Tray(NULL), m_hwndSink(NULL), m_hMoveHook(NULL), m_hMinimizeHook(NULL), m_BackdropPending(FALSE), m_uShellHook(0), m_Count(0), m_DockRoot(NULL), m_TrayRoot(NULL),
         m_Pill(NULL), m_Chevron(NULL), m_Language(NULL), m_TrayWidth(0), m_Clock(NULL), m_Dpi(96),
         m_RestoreTray(TRUE)
     {
@@ -361,6 +363,8 @@ public:
 
 private:
     static LRESULT CALLBACK SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    static VOID CALLBACK WindowMoved(HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG idObject, LONG idChild,
+                                     DWORD thread, DWORD time);
     static BOOL CALLBACK PinProc(PCWSTR pszShortcut, PCWSTR pszTarget, PCWSTR pszAppId, const FILETIME *pCreationTime,
                                  LPARAM lParam);
     static BOOL CALLBACK WindowProc(HWND hwnd, LPARAM lParam);
@@ -373,6 +377,9 @@ private:
 
     ITrayWindow *m_Tray;
     HWND m_hwndSink;
+    HWINEVENTHOOK m_hMoveHook;
+    HWINEVENTHOOK m_hMinimizeHook;
+    BOOL m_BackdropPending;
     UINT m_uShellHook;
     ThemeTokens m_Tokens;
     Surface m_DockSurface;
@@ -573,6 +580,7 @@ void CLiberDock::Place()
     m_DockSurface.SetPosition(m_Layout.Dock.left, m_Layout.Dock.top, LiberDock_Width(cells),
                               LIBER_DOCK_HEIGHT);
     m_TraySurface.SetPosition(m_Layout.Tray.left, m_Layout.Tray.top, m_TrayWidth, LIBER_TRAY_HEIGHT);
+    LiberShell_SampleBackdrop(&m_DockSurface, &m_Tokens, FALSE);
 
     RECT work;
     LiberDock_WorkArea(&mi.rcMonitor, m_Dpi, &work);
@@ -792,6 +800,22 @@ void CLiberDock::OnClockClick(const RECT &bounds)
     LiberCalendar_Toggle(&rc);
 }
 
+VOID CALLBACK CLiberDock::WindowMoved(HWINEVENTHOOK hook, DWORD event, HWND hwnd, LONG idObject, LONG idChild,
+                                      DWORD thread, DWORD time)
+{
+    CLiberDock *self = g_pLiberDock;
+
+    UNREFERENCED_PARAMETER(hook);
+    UNREFERENCED_PARAMETER(event);
+    UNREFERENCED_PARAMETER(idChild);
+    UNREFERENCED_PARAMETER(thread);
+    UNREFERENCED_PARAMETER(time);
+    if (!self || !self->m_hwndSink || idObject != OBJID_WINDOW || !hwnd || GetAncestor(hwnd, GA_ROOT) != hwnd)
+        return;
+    if (!self->m_BackdropPending)
+        self->m_BackdropPending = SetTimer(self->m_hwndSink, LIBER_TIMER_BACKDROP, LIBER_BACKDROP_DELAY, NULL) != 0;
+}
+
 LRESULT CALLBACK CLiberDock::SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     CLiberDock *self = g_pLiberDock;
@@ -813,7 +837,13 @@ LRESULT CALLBACK CLiberDock::SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         return self && self->MinimizeRect((HWND)wParam, (RECT *)lParam);
     if (self && msg == WM_TIMER)
     {
-        if (wParam == LIBER_TIMER_REFRESH)
+        if (wParam == LIBER_TIMER_BACKDROP)
+        {
+            KillTimer(hwnd, LIBER_TIMER_BACKDROP);
+            self->m_BackdropPending = FALSE;
+            LiberShell_SampleBackdrop(&self->m_DockSurface, &self->m_Tokens, FALSE);
+        }
+        else if (wParam == LIBER_TIMER_REFRESH)
         {
             KillTimer(hwnd, LIBER_TIMER_REFRESH);
             self->Refresh();
@@ -922,6 +952,10 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
 
     m_uShellHook = RegisterWindowMessageW(L"SHELLHOOK");
     RegisterShellHookWindow(m_hwndSink);
+    m_hMoveHook = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, NULL, WindowMoved, 0, 0,
+                                  WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    m_hMinimizeHook = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND, NULL, WindowMoved, 0, 0,
+                                      WINEVENT_OUTOFCONTEXT);
     SetTimer(m_hwndSink, LIBER_TIMER_CLOCK, 1000, NULL);
 
     if (m_Tray && m_Tray->GetHWND())
@@ -935,11 +969,17 @@ void CLiberDock::Stop()
     LiberCalendar_Destroy();
     LiberOverflow_Destroy();
     LiberStart_Destroy();
+    if (m_hMoveHook)
+        UnhookWinEvent(m_hMoveHook);
+    if (m_hMinimizeHook)
+        UnhookWinEvent(m_hMinimizeHook);
+    m_hMoveHook = m_hMinimizeHook = NULL;
     if (m_hwndSink)
     {
         DeregisterShellHookWindow(m_hwndSink);
         KillTimer(m_hwndSink, LIBER_TIMER_CLOCK);
         KillTimer(m_hwndSink, LIBER_TIMER_REFRESH);
+        KillTimer(m_hwndSink, LIBER_TIMER_BACKDROP);
         DestroyWindow(m_hwndSink);
         m_hwndSink = NULL;
     }

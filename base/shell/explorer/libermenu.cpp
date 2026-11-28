@@ -174,6 +174,7 @@ UINT CLiberMenu::Track(const LIBER_MENU_ITEM *items, UINT count, POINT anchor)
     POINT pt;
     LiberMenu_Origin(&mi.rcWork, anchor, ScaleToDpi(LIBER_MENU_MIN_WIDTH, dpi), ScaleToDpi(size.cy, dpi), &pt);
     m_Surface.SetPosition(pt.x, pt.y, LIBER_MENU_MIN_WIDTH, size.cy);
+    LiberShell_SampleBackdrop(&m_Surface, &m_Tokens, FALSE);
     m_Surface.Render(AnimationClock::Now());
     ShowWindow(m_Surface.Window(), SW_SHOW);
     m_Surface.TransitionIn(4.0f, LIBER_DUR_NORMAL);

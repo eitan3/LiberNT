@@ -40,7 +40,8 @@ static BOOL RegisterSurfaceClass(HINSTANCE instance, WNDPROC proc)
 Surface::Surface()
     : m_hwnd(NULL), m_Dpi(96), m_Tokens(NULL), m_Root(NULL), m_LayoutPending(TRUE), m_Tracking(FALSE), m_Gpu(NULL), m_Presents(0), m_Owner(NULL), m_ExStyle(0),
       m_InputRadius(0.0f), m_Opacity(1.0f), m_OffsetY(0.0f), m_Transition(FALSE), m_HideAtEnd(FALSE), m_Shadow(NULL), m_ShadowWidget(NULL), m_Elevation(-1), m_ShadowRadius(0.0f), m_Material(-1),
-      m_MaterialTint(0), m_MaterialAlpha(0), m_MaterialRadius(0.0f),
+      m_MaterialTint(0), m_MaterialAlpha(0), m_MaterialRadius(0.0f), m_BackdropTarget(0.5),
+      m_BackdropKnown(FALSE), m_BackdropAnimating(FALSE),
       m_Recovering(FALSE)
 {
     m_Title[0] = L'\0';
@@ -310,12 +311,73 @@ void Surface::TransitionOut(float dropDip, UINT durationMs)
     OnAnimationFrame(now);
 }
 
+void Surface::SetBackdropLuma(double luma)
+{
+    ULONGLONG now = AnimationClock::Now();
+
+    LUI_ASSERT(luma >= 0.0 && luma <= 1.0);
+    luma = luma < 0.0 ? 0.0 : luma > 1.0 ? 1.0 : luma;
+    if (!m_BackdropKnown || !m_hwnd || !IsWindowVisible(m_hwnd))
+    {
+        m_BackdropAnimation.Start(luma, luma, 0, Easing::Linear, now);
+        m_BackdropTarget = luma;
+        m_BackdropKnown = TRUE;
+        m_BackdropAnimating = FALSE;
+        ApplyBackdropTint(now);
+        if (m_Root)
+            InvalidateRect(m_Root->Bounds());
+        return;
+    }
+    if (fabs(luma - m_BackdropTarget) < 0.5 / 255.0)
+        return;
+    m_BackdropAnimation.Start(BackdropLuma(now), luma, LIBER_DUR_ADAPTIVE_TINT, Easing::Linear, now);
+    m_BackdropTarget = luma;
+    m_BackdropAnimating = TRUE;
+    AnimationClock::Instance().Add(this);
+}
+
+double Surface::BackdropLuma(ULONGLONG now) const
+{
+    return m_BackdropKnown ? m_BackdropAnimation.Value(now) : m_BackdropTarget;
+}
+
+void Surface::ApplyBackdropTint(ULONGLONG now)
+{
+    if (m_Material < 0 || !m_Tokens)
+        return;
+    GlassTint tint = m_Tokens->Material((LIBER_MATERIAL_KIND)m_Material, BackdropLuma(now));
+    Argb color = OklchToArgb(tint.Color, 1.0);
+    BYTE alpha = (BYTE)(tint.Alpha * 255.0 + 0.5);
+    if (color != m_MaterialTint || alpha != m_MaterialAlpha)
+    {
+        m_MaterialTint = color;
+        m_MaterialAlpha = alpha;
+        ApplyMaterial();
+    }
+}
+
+BOOL Surface::StepBackdrop(ULONGLONG now)
+{
+    if (!m_BackdropAnimating)
+        return FALSE;
+    BOOL running = m_BackdropAnimation.IsRunning(now);
+    ApplyBackdropTint(now);
+    if (m_Root)
+    {
+        InvalidateRect(m_Root->Bounds());
+        Render(now);
+    }
+    m_BackdropAnimating = running;
+    return running;
+}
+
 BOOL Surface::OnAnimationFrame(ULONGLONG now)
 {
+    BOOL backdrop = StepBackdrop(now);
     BOOL running = m_MoveAnimation.IsRunning(now) || m_FadeAnimation.IsRunning(now);
 
     if (!m_Transition)
-        return FALSE;
+        return backdrop;
     m_OffsetY = (float)m_MoveAnimation.Value(now);
     m_Opacity = (float)m_FadeAnimation.Value(now);
     if (!running)
@@ -329,7 +391,7 @@ BOOL Surface::OnAnimationFrame(ULONGLONG now)
             m_Opacity = 1.0f;
             if (m_Shadow)
                 m_Shadow->SetOpacity(1.0f);
-            return FALSE;
+            return backdrop;
         }
     }
     if (m_Shadow)
@@ -338,7 +400,7 @@ BOOL Surface::OnAnimationFrame(ULONGLONG now)
         m_Shadow->SetOpacity(m_Opacity);
     }
     Present();
-    return running;
+    return running || backdrop;
 }
 
 void Surface::Destroy()
@@ -346,6 +408,8 @@ void Surface::Destroy()
     AnimationClock::Instance().Remove(this);
     m_Transition = FALSE;
     m_HideAtEnd = FALSE;
+    m_BackdropAnimating = FALSE;
+    m_BackdropKnown = FALSE;
     m_OffsetY = 0.0f;
     m_Opacity = 1.0f;
     if (m_Shadow)
@@ -577,7 +641,7 @@ BOOL Surface::RenderPass(ULONGLONG now, BOOL *lost)
         painter.Clear(0);
         if (m_Root)
         {
-            PaintContext context = { painter, *tokens, now };
+            PaintContext context = { painter, *tokens, now, BackdropLuma(now) };
             m_Root->Paint(context);
         }
     }

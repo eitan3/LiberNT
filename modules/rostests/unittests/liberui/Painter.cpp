@@ -627,6 +627,54 @@ static void TestMaterial()
     surface.Destroy();
 }
 
+static BYTE PackedAlpha(HWND hwnd)
+{
+    return (BYTE)DWM_LIBER_MATERIAL_ALPHA((ULONG)(ULONG_PTR)GetPropW(hwnd, DWM_PROP_LIBER_MATERIAL));
+}
+
+static BYTE TokenAlpha(const ThemeTokens &tokens, double luma)
+{
+    return (BYTE)(tokens.Material(LIBER_MATERIAL_THICK, luma).Alpha * 255.0 + 0.5);
+}
+
+static void TestBackdrop()
+{
+    Surface surface;
+    ThemeTokens tokens;
+    ThemeParams params = { ThemeMode::Light, AccentPreset(LIBER_ACCENT_AZURE), SurfaceTint::Soft };
+
+    tokens.Build(params);
+    ok(surface.Create(NULL, L"LiberUI backdrop test", WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE), "surface created\n");
+    surface.SetDpi(96);
+    surface.SetTokens(&tokens);
+    surface.SetPosition(40, 40, 80, 80);
+    ok(surface.BackdropLuma(AnimationClock::Now()) == 0.5, "the backdrop starts at the middle\n");
+    surface.SetMaterial(LIBER_MATERIAL_THICK, 0xFFF3F8FE, TokenAlpha(tokens, 0.5), 8.0f);
+    surface.SetBackdropLuma(0.08);
+    ok(surface.BackdropLuma(AnimationClock::Now()) == 0.08 && surface.BackdropTarget() == 0.08,
+       "a hidden surface takes the backdrop at once\n");
+    ok(PackedAlpha(surface.Window()) == TokenAlpha(tokens, 0.08), "the material follows a dark backdrop: %u %u\n",
+       PackedAlpha(surface.Window()), TokenAlpha(tokens, 0.08));
+    ok(TokenAlpha(tokens, 0.08) > TokenAlpha(tokens, 0.92), "light glass is more solid over a dark backdrop\n");
+
+    ShowWindow(surface.Window(), SW_SHOWNOACTIVATE);
+    surface.SetBackdropLuma(0.92);
+    ok(surface.BackdropTarget() == 0.92, "the new backdrop is the target\n");
+    double start = surface.BackdropLuma(AnimationClock::Now());
+    ok(start < 0.2, "a visible surface does not jump to the new backdrop: %f\n", start);
+    Pump(150);
+    double middle = surface.BackdropLuma(AnimationClock::Now());
+    ok(middle > start && middle < 0.92, "the backdrop moves over time: %f\n", middle);
+    Pump(LIBER_DUR_ADAPTIVE_TINT + 200);
+    ok(surface.BackdropLuma(AnimationClock::Now()) == 0.92, "the backdrop arrives after the transition\n");
+    ok(PackedAlpha(surface.Window()) == TokenAlpha(tokens, 0.92), "the material follows the new backdrop: %u %u\n",
+       PackedAlpha(surface.Window()), TokenAlpha(tokens, 0.92));
+    surface.SetBackdropLuma(0.92 + 0.5 / 512.0);
+    ok(surface.BackdropTarget() == 0.92, "changes below one alpha step are ignored\n");
+    surface.Destroy();
+    ok(surface.BackdropLuma(AnimationClock::Now()) == 0.92, "a destroyed surface keeps its last target\n");
+}
+
 static void TestShadow()
 {
     Surface surface;
@@ -761,6 +809,7 @@ START_TEST(Painter)
     TestGpuPainter();
     TestShadow();
     TestMaterial();
+    TestBackdrop();
     TestTransitions();
     TestSurfaceInput();
     ok(AssertionFailures() == failures, "%ld assertions failed\n", AssertionFailures() - failures);

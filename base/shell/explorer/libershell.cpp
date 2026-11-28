@@ -49,7 +49,8 @@ VOID LiberShell_ApplyMaterial(LiberUI::Surface *pSurface, const LiberUI::ThemeTo
         pSurface->SetMaterial(-1, 0, 0, 0.0f);
         return;
     }
-    LiberUI::GlassTint tint = pTokens->Material(material, 0.5);
+    LiberShell_SampleBackdrop(pSurface, pTokens, material == LIBER_MATERIAL_THIN);
+    LiberUI::GlassTint tint = pTokens->Material(material, pSurface->BackdropLuma(LiberUI::AnimationClock::Now()));
     pSurface->SetMaterial((int)material, LiberUI::OklchToArgb(tint.Color, 1.0), (BYTE)(tint.Alpha * 255.0 + 0.5),
                           radiusDip);
 }
@@ -287,6 +288,101 @@ LiberUI::Accent LiberShell_ResolveAccent(DWORD dwChoice, const LiberUI::PaletteR
     if (pPalette && pPalette->Count)
         return pPalette->Candidates[0].AccentColor;
     return LiberUI::AccentPreset(LIBER_ACCENT_AZURE);
+}
+
+BOOL LiberShell_BackdropLumaAt(const float *pGrid, SIZE image, UINT style, SIZE screen, const RECT *prcSurface,
+                               const RECT *pOccluders, UINT cOccluders, double occluderLuma, double dim,
+                               double *pLuma)
+{
+    double sum = 0.0;
+    UINT samples = 0;
+
+    *pLuma = 0.0;
+    ATLASSERT(dim >= 0.0 && dim <= 1.0);
+    if (!prcSurface || IsRectEmpty(prcSurface))
+        return FALSE;
+    for (UINT y = 0; y < 10; y++)
+    {
+        for (UINT x = 0; x < 10; x++)
+        {
+            POINT pt = { prcSurface->left + (prcSurface->right - prcSurface->left) * (LONG)(x * 2 + 1) / 20,
+                         prcSurface->top + (prcSurface->bottom - prcSurface->top) * (LONG)(y * 2 + 1) / 20 };
+            BOOL covered = FALSE;
+            for (UINT i = 0; i < cOccluders && !covered; i++)
+                covered = PtInRect(&pOccluders[i], pt);
+            if (covered)
+            {
+                sum += occluderLuma;
+                samples++;
+                continue;
+            }
+            RECT point = { pt.x, pt.y, pt.x + 1, pt.y + 1 }, area;
+            double luma;
+            LiberShell_MapToWallpaper(&point, screen, image, style, &area);
+            if (pGrid && LiberShell_GridLuma(pGrid, image, &area, &luma))
+            {
+                sum += luma * (1.0 - dim);
+                samples++;
+            }
+        }
+    }
+    if (!samples)
+        return FALSE;
+    *pLuma = sum / samples;
+    return TRUE;
+}
+
+typedef struct _LIBER_OCCLUDERS
+{
+    RECT Rects[64];
+    UINT Count;
+} LIBER_OCCLUDERS;
+
+static BOOL CALLBACK CollectOccluder(HWND hwnd, LPARAM lParam)
+{
+    LIBER_OCCLUDERS *occluders = (LIBER_OCCLUDERS *)lParam;
+    WCHAR szClass[32];
+    RECT rc;
+
+    if (occluders->Count >= _countof(occluders->Rects))
+        return FALSE;
+    if (!IsWindowVisible(hwnd) || IsIconic(hwnd) || hwnd == GetShellWindow() || !GetWindowRect(hwnd, &rc) ||
+        IsRectEmpty(&rc))
+    {
+        return TRUE;
+    }
+    if (GetClassNameW(hwnd, szClass, _countof(szClass)) &&
+        (!lstrcmpW(szClass, L"LiberSurface") || !lstrcmpW(szClass, L"Progman") || !lstrcmpW(szClass, L"WorkerW")))
+    {
+        return TRUE;
+    }
+    occluders->Rects[occluders->Count++] = rc;
+    return TRUE;
+}
+
+BOOL LiberShell_SampleBackdrop(LiberUI::Surface *pSurface, const LiberUI::ThemeTokens *pTokens, BOOL bDesktopLayer)
+{
+    LIBER_OCCLUDERS occluders;
+    UINT style;
+    RECT rc;
+    double luma, dim = 0.0;
+
+    if (!pSurface || !pTokens || !pSurface->Window() || !GetWindowRect(pSurface->Window(), &rc) || !LoadWallpaper(&style))
+        return FALSE;
+    occluders.Count = 0;
+    if (!bDesktopLayer)
+        EnumWindows(CollectOccluder, (LPARAM)&occluders);
+    if (pTokens->IsDark())
+        dim = LiberUI::WallpaperDim(g_Wallpaper.Palette.AverageLuma);
+    SIZE screen = { GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    double occluderLuma = LiberShell_Luminance(pTokens->Color(LIBER_COLOR_SURFACE_PANE));
+    if (!LiberShell_BackdropLumaAt(g_Wallpaper.Grid, g_Wallpaper.Image, style, screen, &rc, occluders.Rects,
+                                   occluders.Count, occluderLuma, dim, &luma))
+    {
+        return FALSE;
+    }
+    pSurface->SetBackdropLuma(luma);
+    return TRUE;
 }
 
 static LiberUI::Accent CurrentAccent(VOID)

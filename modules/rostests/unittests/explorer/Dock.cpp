@@ -553,6 +553,40 @@ static void TestLumaGrid(void)
     ok(grid[LIBER_LUMA_GRID_W * LIBER_LUMA_GRID_H - 1] >= 0.0f, "a tiny image still fills every cell\n");
 }
 
+static void TestBackdropLuma(void)
+{
+    static float grid[LIBER_LUMA_GRID_W * LIBER_LUMA_GRID_H];
+    SIZE image = { 1280, 720 }, screen = { 1280, 720 };
+    RECT surface = { 100, 100, 300, 200 }, empty = { 5, 5, 5, 5 };
+    RECT cover = { 0, 0, 1280, 720 }, half = { 0, 0, 200, 720 };
+    double luma = -1.0;
+
+    for (UINT i = 0; i < _countof(grid); i++)
+        grid[i] = 0.8f;
+    ok(LiberShell_BackdropLumaAt(grid, image, LIBER_WALLPAPER_FILL, screen, &surface, NULL, 0, 0.1, 0.0, &luma) &&
+           fabs(luma - 0.8) < 1e-6,
+       "the wallpaper alone gives its luminance: %f\n", luma);
+    ok(LiberShell_BackdropLumaAt(grid, image, LIBER_WALLPAPER_FILL, screen, &surface, &cover, 1, 0.1, 0.0, &luma) &&
+           fabs(luma - 0.1) < 1e-6,
+       "a window covering the surface gives the window's luminance: %f\n", luma);
+    ok(LiberShell_BackdropLumaAt(grid, image, LIBER_WALLPAPER_FILL, screen, &surface, &half, 1, 0.0, 0.0, &luma) &&
+           fabs(luma - 0.4) < 1e-6,
+       "a window over half the surface averages both: %f\n", luma);
+    ok(LiberShell_BackdropLumaAt(grid, image, LIBER_WALLPAPER_FILL, screen, &surface, NULL, 0, 0.1, 0.5, &luma) &&
+           fabs(luma - 0.4) < 1e-6,
+       "the dark-mode dim darkens only the wallpaper: %f\n", luma);
+    ok(LiberShell_BackdropLumaAt(grid, image, LIBER_WALLPAPER_FILL, screen, &surface, &cover, 1, 0.3, 0.5, &luma) &&
+           fabs(luma - 0.3) < 1e-6,
+       "windows are not dimmed: %f\n", luma);
+    ok(!LiberShell_BackdropLumaAt(grid, image, LIBER_WALLPAPER_FILL, screen, &empty, NULL, 0, 0.1, 0.0, &luma),
+       "an empty surface has no backdrop\n");
+    ok(!LiberShell_BackdropLumaAt(NULL, image, LIBER_WALLPAPER_FILL, screen, &surface, NULL, 0, 0.1, 0.0, &luma),
+       "no wallpaper and no window gives no backdrop\n");
+    ok(LiberShell_BackdropLumaAt(NULL, image, LIBER_WALLPAPER_FILL, screen, &surface, &cover, 1, 0.2, 0.0, &luma) &&
+           fabs(luma - 0.2) < 1e-6,
+       "windows alone still give a backdrop: %f\n", luma);
+}
+
 static void TestAccentChoice(void)
 {
     LiberUI::PaletteResult palette;
@@ -602,6 +636,7 @@ START_TEST(Dock)
 {
     TestLumaGrid();
     TestAccentChoice();
+    TestBackdropLuma();
     TestPillWidth();
     TestStartDefaults();
     TestMenuDismiss();

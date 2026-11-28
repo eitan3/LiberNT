@@ -105,7 +105,7 @@ BOOL LiberShell_ReadGlassEnabled(VOID);
 static inline void LiberShell_PaintGlass(LiberUI::PaintContext &context, const LiberUI::RectF &rc, float radius,
                                          LIBER_MATERIAL_KIND material)
 {
-    LiberUI::GlassTint tint = context.Tokens.Material(material, 0.5);
+    LiberUI::GlassTint tint = context.Tokens.Material(material, context.Backdrop);
     LiberUI::RectF edge = { rc.X + 0.5f, rc.Y + 0.5f, rc.Width - 1.0f, rc.Height - 1.0f };
     LiberUI::RectF top = { rc.X, rc.Y, rc.Width, radius };
     LiberUI::RectF highlight = { rc.X + 0.5f, rc.Y + 1.5f, rc.Width - 1.0f, rc.Height - 2.0f };
@@ -157,6 +157,10 @@ VOID LiberShell_BuildLumaGrid(const DWORD *pPixels, UINT width, UINT height, flo
 BOOL LiberShell_GridLuma(const float *pGrid, SIZE image, const RECT *prcImage, double *pLuma);
 BOOL LiberShell_WallpaperPalette(LiberUI::PaletteResult *pPalette);
 LiberUI::Accent LiberShell_ResolveAccent(DWORD dwChoice, const LiberUI::PaletteResult *pPalette);
+BOOL LiberShell_BackdropLumaAt(const float *pGrid, SIZE image, UINT style, SIZE screen, const RECT *prcSurface,
+                               const RECT *pOccluders, UINT cOccluders, double occluderLuma, double dim,
+                               double *pLuma);
+BOOL LiberShell_SampleBackdrop(LiberUI::Surface *pSurface, const LiberUI::ThemeTokens *pTokens, BOOL bDesktopLayer);
 VOID LiberShell_BuildWallpaperInkTokens(LiberUI::ThemeTokens *pTokens, const RECT *prcScreen);
 VOID LiberShell_ApplyFont(LiberUI::Surface *pSurface);
 BOOL LiberShell_SetDarkMode(BOOL bDark);

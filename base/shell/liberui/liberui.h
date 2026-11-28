@@ -334,6 +334,7 @@ struct PaintContext
     IPainter &Painter;
     const ThemeTokens &Tokens;
     ULONGLONG Now;
+    double Backdrop;
 };
 
 enum WidgetState
@@ -655,6 +656,9 @@ public:
     void SetElevation(int elevation, float radiusDip);
     void SetMaterial(int material, Argb tint, BYTE alpha, float radiusDip);
     int Material() const { return m_Material; }
+    void SetBackdropLuma(double luma);
+    double BackdropLuma(ULONGLONG now) const;
+    double BackdropTarget() const { return m_BackdropTarget; }
     void SetOpacity(float opacity);
     float Opacity() const { return m_Opacity; }
     float OffsetY() const { return m_OffsetY; }
@@ -695,6 +699,8 @@ private:
     void ApplyInputShape();
     void UpdateShadow(BOOL show);
     void ApplyMaterial();
+    BOOL StepBackdrop(ULONGLONG now);
+    void ApplyBackdropTint(ULONGLONG now);
     LONG OffsetPx() const;
 
     HWND m_hwnd;
@@ -730,6 +736,10 @@ private:
     Argb m_MaterialTint;
     BYTE m_MaterialAlpha;
     float m_MaterialRadius;
+    Animation m_BackdropAnimation;
+    double m_BackdropTarget;
+    BOOL m_BackdropKnown;
+    BOOL m_BackdropAnimating;
     BOOL m_Recovering;
 };
 
