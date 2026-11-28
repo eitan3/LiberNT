@@ -59,7 +59,7 @@ VblkConfigurationChanged(_In_ PVBLK_DEVICE_EXTENSION Device)
     UCHAR Generation = VblkReadConfigGeneration(Device);
     ULONGLONG Capacity;
 
-    if (StorPortReadRegisterUchar(Device, Device->CommonCfg + VIRTIO_PCI_COMMON_STATUS) & VIRTIO_STATUS_DEVICE_NEEDS_RESET)
+    if (VblkReadStatus(Device) & VIRTIO_STATUS_DEVICE_NEEDS_RESET)
     {
         DPRINT1("vioblk: device asked to be reset\n");
         VblkRestartLocked(Device);
@@ -91,7 +91,7 @@ VblkHwInterrupt(_In_ PVOID DeviceExtension)
     if (!Device->DeviceReady || Device->MessageInterrupts)
         return FALSE;
 
-    Isr = StorPortReadRegisterUchar(Device, Device->IsrStatus);
+    Isr = VblkReadIsr(Device);
     if (Isr == 0)
         return FALSE;
     if (Isr & VIRTIO_ISR_QUEUE)
@@ -166,6 +166,8 @@ VblkHwFindAdapter(_In_ PVOID DeviceExtension,
         return SP_RETURN_ERROR;
     Physical = StorPortGetPhysicalAddress(Device, NULL, Ring, &Length);
     if (Physical.QuadPart == 0 || Length < Device->RingBytes || (Physical.QuadPart & (sizeof(VIRTQ_DESC) - 1)) != 0)
+        return SP_RETURN_ERROR;
+    if (Device->Legacy && (Physical.QuadPart & (VIRTIO_PCI_LEGACY_QUEUE_ALIGN - 1)) != 0)
         return SP_RETURN_ERROR;
     VblkSetRingMemory(Device, Ring, (ULONGLONG)Physical.QuadPart);
 

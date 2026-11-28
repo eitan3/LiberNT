@@ -53,6 +53,21 @@
 
 #define VIRTIO_MSI_NO_VECTOR                    0xFFFF
 
+#define VIRTIO_PCI_LEGACY_HOST_FEATURES         0x00
+#define VIRTIO_PCI_LEGACY_GUEST_FEATURES        0x04
+#define VIRTIO_PCI_LEGACY_QUEUE_PFN             0x08
+#define VIRTIO_PCI_LEGACY_QUEUE_SIZE            0x0C
+#define VIRTIO_PCI_LEGACY_QUEUE_SELECT          0x0E
+#define VIRTIO_PCI_LEGACY_QUEUE_NOTIFY          0x10
+#define VIRTIO_PCI_LEGACY_STATUS                0x12
+#define VIRTIO_PCI_LEGACY_ISR                   0x13
+#define VIRTIO_PCI_LEGACY_CONFIG_VECTOR         0x14
+#define VIRTIO_PCI_LEGACY_QUEUE_VECTOR          0x16
+#define VIRTIO_PCI_LEGACY_CONFIG                0x14
+#define VIRTIO_PCI_LEGACY_CONFIG_MSIX           0x18
+#define VIRTIO_PCI_LEGACY_QUEUE_ALIGN           4096
+#define VIRTIO_PCI_LEGACY_PFN_SHIFT             12
+
 #define VIRTIO_ISR_QUEUE                        0x01
 #define VIRTIO_ISR_CONFIG                       0x02
 
@@ -112,6 +127,7 @@
 #define VIRTQ_USED_F_NO_NOTIFY                  1
 
 #define VBLK_MAX_QUEUE_SIZE                     128
+#define VBLK_QUEUE_CAPACITY                     1024
 #define VBLK_MAX_DATA_DESCRIPTORS               128
 #define VBLK_MAX_DISCARD_RANGES                 16
 #define VBLK_DIRECT_MIN_REQUESTS                4U
@@ -213,6 +229,9 @@ typedef struct _VBLK_DEVICE_EXTENSION
     ULONG NotifyMultiplier;
     ULONG DeviceCfgLength;
     volatile USHORT *QueueNotify;
+    BOOLEAN Legacy;
+    PUCHAR LegacyBase;
+    ULONG LegacyLength;
 
     ULONGLONG DeviceFeatures;
     ULONGLONG DriverFeatures;
@@ -229,7 +248,7 @@ typedef struct _VBLK_DEVICE_EXTENSION
     USHORT FreeCount;
     USHORT AvailIndex;
     USHORT LastUsedIndex;
-    PSCSI_REQUEST_BLOCK Requests[VBLK_MAX_QUEUE_SIZE];
+    PSCSI_REQUEST_BLOCK Requests[VBLK_QUEUE_CAPACITY];
 
     ULONGLONG CapacitySectors;
     ULONGLONG Blocks;
@@ -302,6 +321,14 @@ VblkReadCapacity(
 
 UCHAR
 VblkReadConfigGeneration(
+    _In_ PVBLK_DEVICE_EXTENSION Device);
+
+UCHAR
+VblkReadStatus(
+    _In_ PVBLK_DEVICE_EXTENSION Device);
+
+UCHAR
+VblkReadIsr(
     _In_ PVBLK_DEVICE_EXTENSION Device);
 
 VOID

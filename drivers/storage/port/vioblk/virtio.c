@@ -9,6 +9,63 @@
 
 static
 UCHAR
+VblkIoRead8(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ PUCHAR Address)
+{
+    if (Device->Legacy)
+        return StorPortReadPortUchar(Device, Address);
+    return StorPortReadRegisterUchar(Device, Address);
+}
+
+static
+USHORT
+VblkIoRead16(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ PUCHAR Address)
+{
+    if (Device->Legacy)
+        return StorPortReadPortUshort(Device, (PUSHORT)Address);
+    return StorPortReadRegisterUshort(Device, (PUSHORT)Address);
+}
+
+static
+ULONG
+VblkIoRead32(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ PUCHAR Address)
+{
+    if (Device->Legacy)
+        return StorPortReadPortUlong(Device, (PULONG)Address);
+    return StorPortReadRegisterUlong(Device, (PULONG)Address);
+}
+
+static
+VOID
+VblkIoWrite8(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ PUCHAR Address, _In_ UCHAR Value)
+{
+    if (Device->Legacy)
+        StorPortWritePortUchar(Device, Address, Value);
+    else
+        StorPortWriteRegisterUchar(Device, Address, Value);
+}
+
+static
+VOID
+VblkIoWrite16(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ PUCHAR Address, _In_ USHORT Value)
+{
+    if (Device->Legacy)
+        StorPortWritePortUshort(Device, (PUSHORT)Address, Value);
+    else
+        StorPortWriteRegisterUshort(Device, (PUSHORT)Address, Value);
+}
+
+static
+VOID
+VblkIoWrite32(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ PUCHAR Address, _In_ ULONG Value)
+{
+    if (Device->Legacy)
+        StorPortWritePortUlong(Device, (PULONG)Address, Value);
+    else
+        StorPortWriteRegisterUlong(Device, (PULONG)Address, Value);
+}
+
+static
+UCHAR
 VblkCommonRead8(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ ULONG Offset)
 {
     return StorPortReadRegisterUchar(Device, Device->CommonCfg + Offset);
@@ -63,7 +120,7 @@ VblkConfigRead8(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ ULONG Offset)
 {
     if (Offset + sizeof(UCHAR) > Device->DeviceCfgLength)
         return 0;
-    return StorPortReadRegisterUchar(Device, Device->DeviceCfg + Offset);
+    return VblkIoRead8(Device, Device->DeviceCfg + Offset);
 }
 
 static
@@ -72,7 +129,7 @@ VblkConfigRead16(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ ULONG Offset)
 {
     if (Offset + sizeof(USHORT) > Device->DeviceCfgLength)
         return 0;
-    return StorPortReadRegisterUshort(Device, (PUSHORT)(Device->DeviceCfg + Offset));
+    return VblkIoRead16(Device, Device->DeviceCfg + Offset);
 }
 
 static
@@ -81,7 +138,7 @@ VblkConfigRead32(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ ULONG Offset)
 {
     if (Offset + sizeof(ULONG) > Device->DeviceCfgLength)
         return 0;
-    return StorPortReadRegisterUlong(Device, (PULONG)(Device->DeviceCfg + Offset));
+    return VblkIoRead32(Device, Device->DeviceCfg + Offset);
 }
 
 static
@@ -154,6 +211,98 @@ VblkMapCapability(_In_ PVBLK_DEVICE_EXTENSION Device,
     return NULL;
 }
 
+static
+BOOLEAN
+VblkMsixEnabled(_In_reads_bytes_(256) PUCHAR Config)
+{
+    ULONG CapOffset;
+    ULONG Guard;
+
+    if ((Config[FIELD_OFFSET(PCI_COMMON_HEADER, Status)] & PCI_STATUS_CAPABILITIES_LIST) == 0)
+        return FALSE;
+
+    CapOffset = Config[FIELD_OFFSET(PCI_COMMON_HEADER, u.type0.CapabilitiesPtr)] & 0xFC;
+    for (Guard = 0; CapOffset >= sizeof(PCI_COMMON_HEADER) && CapOffset < 256 - sizeof(ULONG) && Guard < 48; Guard++)
+    {
+        if (Config[CapOffset] == PCI_CAPABILITY_ID_MSIX)
+            return (Config[CapOffset + 3] & 0x80) != 0;
+        CapOffset = Config[CapOffset + 1] & 0xFC;
+    }
+    return FALSE;
+}
+
+static
+BOOLEAN
+VblkLegacyUpdateLayout(_In_ PVBLK_DEVICE_EXTENSION Device)
+{
+    UCHAR Config[256];
+    ULONG Offset;
+
+    ASSERT(Device->Legacy);
+
+    if (StorPortGetBusData(Device, PCIConfiguration, Device->SystemIoBusNumber, Device->SlotNumber,
+                           Config, sizeof(Config)) < sizeof(Config))
+    {
+        return FALSE;
+    }
+
+    Offset = VblkMsixEnabled(Config) ? VIRTIO_PCI_LEGACY_CONFIG_MSIX : VIRTIO_PCI_LEGACY_CONFIG;
+    if (Device->LegacyLength <= Offset)
+        return FALSE;
+
+    Device->DeviceCfg = Device->LegacyBase + Offset;
+    Device->DeviceCfgLength = Device->LegacyLength - Offset;
+    return TRUE;
+}
+
+static
+BOOLEAN
+VblkMapLegacy(_In_ PVBLK_DEVICE_EXTENSION Device,
+              _In_ PPORT_CONFIGURATION_INFORMATION ConfigInfo,
+              _In_reads_bytes_(256) PUCHAR Config)
+{
+    ULONG BarLow = VblkReadConfigDword(Config, FIELD_OFFSET(PCI_COMMON_HEADER, u.type0.BaseAddresses));
+    ULONGLONG Address;
+    ULONG Index;
+    PUCHAR Base;
+
+    if ((BarLow & PCI_ADDRESS_IO_SPACE) == 0)
+        return FALSE;
+    Address = BarLow & PCI_ADDRESS_IO_ADDRESS_MASK;
+
+    for (Index = 0; Index < ConfigInfo->NumberOfAccessRanges; Index++)
+    {
+        PACCESS_RANGE Range = &(*ConfigInfo->AccessRanges)[Index];
+
+        if (Range->RangeInMemory || (ULONGLONG)Range->RangeStart.QuadPart != Address ||
+            Range->RangeLength <= VIRTIO_PCI_LEGACY_CONFIG_MSIX)
+        {
+            continue;
+        }
+
+        Base = (PUCHAR)StorPortGetDeviceBase(Device,
+                                             ConfigInfo->AdapterInterfaceType,
+                                             ConfigInfo->SystemIoBusNumber,
+                                             Range->RangeStart,
+                                             Range->RangeLength,
+                                             TRUE);
+        if (Base == NULL)
+            return FALSE;
+
+        Device->CommonCfg = NULL;
+        Device->NotifyCfg = NULL;
+        Device->NotifyLength = 0;
+        Device->NotifyMultiplier = 0;
+        Device->Legacy = TRUE;
+        Device->LegacyBase = Base;
+        Device->LegacyLength = Range->RangeLength;
+        Device->IsrStatus = Base + VIRTIO_PCI_LEGACY_ISR;
+        return VblkLegacyUpdateLayout(Device);
+    }
+
+    return FALSE;
+}
+
 BOOLEAN
 VblkMapDevice(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ PPORT_CONFIGURATION_INFORMATION ConfigInfo)
 {
@@ -175,13 +324,14 @@ VblkMapDevice(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ PPORT_CONFIGURATION_INFOR
     VendorId = (USHORT)(Config[0] | (Config[1] << 8));
     DeviceId = (USHORT)(Config[2] | (Config[3] << 8));
     if (VendorId != VIRTIO_PCI_VENDOR_ID ||
-        (DeviceId != VIRTIO_PCI_DEVICE_BLOCK_TRANSITIONAL && DeviceId != VIRTIO_PCI_DEVICE_BLOCK) ||
-        (Config[FIELD_OFFSET(PCI_COMMON_HEADER, Status)] & PCI_STATUS_CAPABILITIES_LIST) == 0)
+        (DeviceId != VIRTIO_PCI_DEVICE_BLOCK_TRANSITIONAL && DeviceId != VIRTIO_PCI_DEVICE_BLOCK))
     {
         return FALSE;
     }
 
-    CapOffset = Config[FIELD_OFFSET(PCI_COMMON_HEADER, u.type0.CapabilitiesPtr)] & 0xFC;
+    CapOffset = 0;
+    if (Config[FIELD_OFFSET(PCI_COMMON_HEADER, Status)] & PCI_STATUS_CAPABILITIES_LIST)
+        CapOffset = Config[FIELD_OFFSET(PCI_COMMON_HEADER, u.type0.CapabilitiesPtr)] & 0xFC;
     for (Guard = 0; CapOffset >= sizeof(PCI_COMMON_HEADER) && CapOffset < sizeof(Config) - 2 && Guard < 48; Guard++)
     {
         ULONG CapLength = Config[CapOffset + 2];
@@ -234,7 +384,11 @@ VblkMapDevice(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ PPORT_CONFIGURATION_INFOR
     if (Device->CommonCfg == NULL || Device->NotifyCfg == NULL ||
         Device->IsrStatus == NULL || Device->DeviceCfg == NULL)
     {
-        /* TODO: legacy (pre-1.0) virtio-pci I/O port transport */
+        if (DeviceId == VIRTIO_PCI_DEVICE_BLOCK_TRANSITIONAL && VblkMapLegacy(Device, ConfigInfo, Config))
+        {
+            DPRINT1("vioblk: device %04x has no VirtIO 1.0 capabilities, using its legacy interface\n", DeviceId);
+            return TRUE;
+        }
         DPRINT1("vioblk: device %04x has no usable VirtIO 1.0 PCI capabilities\n", DeviceId);
         return FALSE;
     }
@@ -242,15 +396,39 @@ VblkMapDevice(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ PPORT_CONFIGURATION_INFOR
     return TRUE;
 }
 
+UCHAR
+VblkReadStatus(_In_ PVBLK_DEVICE_EXTENSION Device)
+{
+    if (Device->Legacy)
+        return VblkIoRead8(Device, Device->LegacyBase + VIRTIO_PCI_LEGACY_STATUS);
+    return VblkCommonRead8(Device, VIRTIO_PCI_COMMON_STATUS);
+}
+
+static
+VOID
+VblkWriteStatus(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ UCHAR Status)
+{
+    if (Device->Legacy)
+        VblkIoWrite8(Device, Device->LegacyBase + VIRTIO_PCI_LEGACY_STATUS, Status);
+    else
+        VblkCommonWrite8(Device, VIRTIO_PCI_COMMON_STATUS, Status);
+}
+
+UCHAR
+VblkReadIsr(_In_ PVBLK_DEVICE_EXTENSION Device)
+{
+    return VblkIoRead8(Device, Device->IsrStatus);
+}
+
 BOOLEAN
 VblkResetDevice(_In_ PVBLK_DEVICE_EXTENSION Device)
 {
     ULONG Waited;
 
-    VblkCommonWrite8(Device, VIRTIO_PCI_COMMON_STATUS, 0);
+    VblkWriteStatus(Device, 0);
     for (Waited = 0; Waited < VBLK_RESET_TIMEOUT_US; Waited += 10)
     {
-        if (VblkCommonRead8(Device, VIRTIO_PCI_COMMON_STATUS) == 0)
+        if (VblkReadStatus(Device) == 0)
             return TRUE;
         StorPortStallExecution(10);
     }
@@ -263,9 +441,9 @@ static
 VOID
 VblkFailDevice(_In_ PVBLK_DEVICE_EXTENSION Device)
 {
-    UCHAR Status = VblkCommonRead8(Device, VIRTIO_PCI_COMMON_STATUS);
+    UCHAR Status = VblkReadStatus(Device);
 
-    VblkCommonWrite8(Device, VIRTIO_PCI_COMMON_STATUS, Status | VIRTIO_STATUS_FAILED);
+    VblkWriteStatus(Device, Status | VIRTIO_STATUS_FAILED);
 }
 
 static
@@ -274,6 +452,9 @@ VblkReadDeviceFeatures(_In_ PVBLK_DEVICE_EXTENSION Device)
 {
     ULONG Low;
     ULONG High;
+
+    if (Device->Legacy)
+        return VblkIoRead32(Device, Device->LegacyBase + VIRTIO_PCI_LEGACY_HOST_FEATURES);
 
     VblkCommonWrite32(Device, VIRTIO_PCI_COMMON_DFSELECT, 0);
     Low = VblkCommonRead32(Device, VIRTIO_PCI_COMMON_DF);
@@ -286,6 +467,12 @@ static
 VOID
 VblkWriteDriverFeatures(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ ULONGLONG Features)
 {
+    if (Device->Legacy)
+    {
+        VblkIoWrite32(Device, Device->LegacyBase + VIRTIO_PCI_LEGACY_GUEST_FEATURES, (ULONG)Features);
+        return;
+    }
+
     VblkCommonWrite32(Device, VIRTIO_PCI_COMMON_GFSELECT, 0);
     VblkCommonWrite32(Device, VIRTIO_PCI_COMMON_GF, (ULONG)Features);
     VblkCommonWrite32(Device, VIRTIO_PCI_COMMON_GFSELECT, 1);
@@ -295,6 +482,8 @@ VblkWriteDriverFeatures(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ ULONGLONG Featu
 UCHAR
 VblkReadConfigGeneration(_In_ PVBLK_DEVICE_EXTENSION Device)
 {
+    if (Device->Legacy)
+        return 0;
     return VblkCommonRead8(Device, VIRTIO_PCI_COMMON_CFGGENERATION);
 }
 
@@ -311,8 +500,20 @@ VblkReadCapacity(_In_ PVBLK_DEVICE_EXTENSION Device)
         Generation = VblkReadConfigGeneration(Device);
         Low = VblkConfigRead32(Device, VIRTIO_BLK_CFG_CAPACITY);
         High = VblkConfigRead32(Device, VIRTIO_BLK_CFG_CAPACITY + sizeof(ULONG));
-        if (Generation == VblkReadConfigGeneration(Device) || Attempt >= 16)
+        if (Attempt >= 16)
             break;
+        if (Device->Legacy)
+        {
+            if (Low == VblkConfigRead32(Device, VIRTIO_BLK_CFG_CAPACITY) &&
+                High == VblkConfigRead32(Device, VIRTIO_BLK_CFG_CAPACITY + sizeof(ULONG)))
+            {
+                break;
+            }
+        }
+        else if (Generation == VblkReadConfigGeneration(Device))
+        {
+            break;
+        }
     }
 
     return ((ULONGLONG)High << 32) | Low;
@@ -323,15 +524,21 @@ VblkWriteWriteback(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ BOOLEAN Enable)
 {
     if (VIRTIO_BLK_CFG_WRITEBACK + sizeof(UCHAR) > Device->DeviceCfgLength)
         return;
-    StorPortWriteRegisterUchar(Device, Device->DeviceCfg + VIRTIO_BLK_CFG_WRITEBACK, Enable ? 1 : 0);
+    VblkIoWrite8(Device, Device->DeviceCfg + VIRTIO_BLK_CFG_WRITEBACK, Enable ? 1 : 0);
 }
 
 static
 ULONG
-VblkRingLayout(_In_ USHORT QueueSize, _Out_ PULONG AvailOffset, _Out_ PULONG UsedOffset)
+VblkRingLayout(_In_ USHORT QueueSize, _In_ BOOLEAN Legacy, _Out_ PULONG AvailOffset, _Out_ PULONG UsedOffset)
 {
+    ULONG AvailEnd;
+
     *AvailOffset = QueueSize * sizeof(VIRTQ_DESC);
-    *UsedOffset = (*AvailOffset + FIELD_OFFSET(VIRTQ_AVAIL, Ring) + QueueSize * sizeof(USHORT) + sizeof(USHORT) + 3) & ~3UL;
+    AvailEnd = *AvailOffset + FIELD_OFFSET(VIRTQ_AVAIL, Ring) + QueueSize * sizeof(USHORT) + sizeof(USHORT);
+    if (Legacy)
+        *UsedOffset = (AvailEnd + VIRTIO_PCI_LEGACY_QUEUE_ALIGN - 1) & ~(VIRTIO_PCI_LEGACY_QUEUE_ALIGN - 1UL);
+    else
+        *UsedOffset = (AvailEnd + 3) & ~3UL;
     return *UsedOffset + FIELD_OFFSET(VIRTQ_USED, Ring) + QueueSize * sizeof(VIRTQ_USED_ELEMENT) + sizeof(USHORT);
 }
 
@@ -341,7 +548,7 @@ VblkSetRingMemory(_In_ PVBLK_DEVICE_EXTENSION Device, _In_ PUCHAR Virtual, _In_ 
     ULONG AvailOffset;
     ULONG UsedOffset;
 
-    VblkRingLayout(Device->QueueSize, &AvailOffset, &UsedOffset);
+    VblkRingLayout(Device->QueueSize, Device->Legacy, &AvailOffset, &UsedOffset);
     Device->Desc = (volatile VIRTQ_DESC *)Virtual;
     Device->Avail = (volatile VIRTQ_AVAIL *)(Virtual + AvailOffset);
     Device->Used = (volatile VIRTQ_USED *)(Virtual + UsedOffset);
@@ -376,13 +583,12 @@ VblkProbeDevice(_In_ PVBLK_DEVICE_EXTENSION Device)
 
     if (!VblkResetDevice(Device))
         return FALSE;
-    VblkCommonWrite8(Device, VIRTIO_PCI_COMMON_STATUS, VIRTIO_STATUS_ACKNOWLEDGE);
-    VblkCommonWrite8(Device, VIRTIO_PCI_COMMON_STATUS, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
+    VblkWriteStatus(Device, VIRTIO_STATUS_ACKNOWLEDGE);
+    VblkWriteStatus(Device, VIRTIO_STATUS_ACKNOWLEDGE | VIRTIO_STATUS_DRIVER);
 
     Device->DeviceFeatures = VblkReadDeviceFeatures(Device);
-    if ((Device->DeviceFeatures & VIRTIO_FEATURE(VIRTIO_F_VERSION_1)) == 0)
+    if (!Device->Legacy && (Device->DeviceFeatures & VIRTIO_FEATURE(VIRTIO_F_VERSION_1)) == 0)
     {
-        /* TODO: legacy (pre-1.0) virtio-pci I/O port transport */
         DPRINT1("vioblk: device does not offer VirtIO 1.0\n");
         goto Fail;
     }
@@ -435,10 +641,24 @@ VblkProbeDevice(_In_ PVBLK_DEVICE_EXTENSION Device)
             Device->Discard = FALSE;
     }
 
-    VblkCommonWrite16(Device, VIRTIO_PCI_COMMON_Q_SELECT, 0);
-    QueueMax = VblkCommonRead16(Device, VIRTIO_PCI_COMMON_Q_SIZE);
-    for (Device->QueueSize = VBLK_MAX_QUEUE_SIZE; Device->QueueSize > QueueMax; Device->QueueSize >>= 1)
-        NOTHING;
+    if (Device->Legacy)
+    {
+        VblkIoWrite16(Device, Device->LegacyBase + VIRTIO_PCI_LEGACY_QUEUE_SELECT, 0);
+        QueueMax = VblkIoRead16(Device, Device->LegacyBase + VIRTIO_PCI_LEGACY_QUEUE_SIZE);
+        if (QueueMax > VBLK_QUEUE_CAPACITY || (QueueMax & (QueueMax - 1)) != 0)
+        {
+            DPRINT1("vioblk: legacy request queue of %u entries is not usable\n", QueueMax);
+            goto Fail;
+        }
+        Device->QueueSize = QueueMax;
+    }
+    else
+    {
+        VblkCommonWrite16(Device, VIRTIO_PCI_COMMON_Q_SELECT, 0);
+        QueueMax = VblkCommonRead16(Device, VIRTIO_PCI_COMMON_Q_SIZE);
+        for (Device->QueueSize = VBLK_MAX_QUEUE_SIZE; Device->QueueSize > QueueMax; Device->QueueSize >>= 1)
+            NOTHING;
+    }
     if (Device->QueueSize < (Device->Indirect ? 2 : 4))
     {
         DPRINT1("vioblk: request queue of %u entries is too small\n", QueueMax);
@@ -468,7 +688,7 @@ VblkProbeDevice(_In_ PVBLK_DEVICE_EXTENSION Device)
         goto Fail;
     }
 
-    Device->RingBytes = VblkRingLayout(Device->QueueSize, &AvailOffset, &UsedOffset);
+    Device->RingBytes = VblkRingLayout(Device->QueueSize, Device->Legacy, &AvailOffset, &UsedOffset);
     VblkUpdateGeometry(Device);
 
     return VblkResetDevice(Device);
@@ -494,6 +714,60 @@ VblkInitializeRing(_In_ PVBLK_DEVICE_EXTENSION Device)
     Device->LastUsedIndex = 0;
 }
 
+static
+BOOLEAN
+VblkStartLegacyQueue(_In_ PVBLK_DEVICE_EXTENSION Device)
+{
+    PUCHAR Base = Device->LegacyBase;
+    BOOLEAN Msix;
+    ULONGLONG Pfn;
+
+    ASSERT(Device->Legacy);
+
+    if (!VblkLegacyUpdateLayout(Device))
+        return FALSE;
+    Msix = (Device->DeviceCfg == Base + VIRTIO_PCI_LEGACY_CONFIG_MSIX);
+
+    if (Msix)
+    {
+        VblkIoWrite16(Device, Base + VIRTIO_PCI_LEGACY_CONFIG_VECTOR, Device->ConfigVector);
+        if (VblkIoRead16(Device, Base + VIRTIO_PCI_LEGACY_CONFIG_VECTOR) != Device->ConfigVector)
+        {
+            DPRINT1("vioblk: device refused MSI-X vector %u for configuration changes\n", Device->ConfigVector);
+            return FALSE;
+        }
+    }
+
+    VblkIoWrite16(Device, Base + VIRTIO_PCI_LEGACY_QUEUE_SELECT, 0);
+    if (VblkIoRead16(Device, Base + VIRTIO_PCI_LEGACY_QUEUE_SIZE) != Device->QueueSize)
+    {
+        DPRINT1("vioblk: legacy request queue no longer has %u entries\n", Device->QueueSize);
+        return FALSE;
+    }
+
+    if (Msix)
+    {
+        VblkIoWrite16(Device, Base + VIRTIO_PCI_LEGACY_QUEUE_VECTOR, Device->QueueVector);
+        if (VblkIoRead16(Device, Base + VIRTIO_PCI_LEGACY_QUEUE_VECTOR) != Device->QueueVector)
+        {
+            DPRINT1("vioblk: device refused MSI-X vector %u for the request queue\n", Device->QueueVector);
+            return FALSE;
+        }
+    }
+
+    Pfn = Device->DescPhysical >> VIRTIO_PCI_LEGACY_PFN_SHIFT;
+    if ((Device->DescPhysical & (VIRTIO_PCI_LEGACY_QUEUE_ALIGN - 1)) != 0 || Pfn > MAXULONG)
+    {
+        DPRINT1("vioblk: request queue at 0x%I64x cannot be given to a legacy device\n", Device->DescPhysical);
+        return FALSE;
+    }
+
+    VblkInitializeRing(Device);
+    VblkIoWrite32(Device, Base + VIRTIO_PCI_LEGACY_QUEUE_PFN, (ULONG)Pfn);
+    Device->QueueNotify = (volatile USHORT *)(Base + VIRTIO_PCI_LEGACY_QUEUE_NOTIFY);
+    return TRUE;
+}
+
 BOOLEAN
 VblkStartDevice(_In_ PVBLK_DEVICE_EXTENSION Device)
 {
@@ -505,9 +779,9 @@ VblkStartDevice(_In_ PVBLK_DEVICE_EXTENSION Device)
         return FALSE;
 
     Status = VIRTIO_STATUS_ACKNOWLEDGE;
-    VblkCommonWrite8(Device, VIRTIO_PCI_COMMON_STATUS, Status);
+    VblkWriteStatus(Device, Status);
     Status |= VIRTIO_STATUS_DRIVER;
-    VblkCommonWrite8(Device, VIRTIO_PCI_COMMON_STATUS, Status);
+    VblkWriteStatus(Device, Status);
 
     if ((Device->DriverFeatures & ~VblkReadDeviceFeatures(Device)) != 0)
     {
@@ -515,9 +789,16 @@ VblkStartDevice(_In_ PVBLK_DEVICE_EXTENSION Device)
         goto Fail;
     }
     VblkWriteDriverFeatures(Device, Device->DriverFeatures);
+    if (Device->Legacy)
+    {
+        if (!VblkStartLegacyQueue(Device))
+            goto Fail;
+        goto QueueReady;
+    }
+
     Status |= VIRTIO_STATUS_FEATURES_OK;
-    VblkCommonWrite8(Device, VIRTIO_PCI_COMMON_STATUS, Status);
-    if ((VblkCommonRead8(Device, VIRTIO_PCI_COMMON_STATUS) & VIRTIO_STATUS_FEATURES_OK) == 0)
+    VblkWriteStatus(Device, Status);
+    if ((VblkReadStatus(Device) & VIRTIO_STATUS_FEATURES_OK) == 0)
     {
         DPRINT1("vioblk: device rejected features %I64x\n", Device->DriverFeatures);
         goto Fail;
@@ -553,8 +834,10 @@ VblkStartDevice(_In_ PVBLK_DEVICE_EXTENSION Device)
     Device->QueueNotify = (volatile USHORT *)(Device->NotifyCfg + NotifyOffset);
 
     VblkCommonWrite16(Device, VIRTIO_PCI_COMMON_Q_ENABLE, 1);
+
+QueueReady:
     Status |= VIRTIO_STATUS_DRIVER_OK;
-    VblkCommonWrite8(Device, VIRTIO_PCI_COMMON_STATUS, Status);
+    VblkWriteStatus(Device, Status);
 
     if (Device->ConfigWce)
         VblkWriteWriteback(Device, Device->WriteCacheEnabled);
@@ -666,7 +949,7 @@ VblkQueueRequest(_In_ PVBLK_DEVICE_EXTENSION Device,
     Device->Avail->Index = Device->AvailIndex;
     KeMemoryBarrier();
     if ((Device->Used->Flags & VIRTQ_USED_F_NO_NOTIFY) == 0)
-        StorPortWriteRegisterUshort(Device, (PUSHORT)Device->QueueNotify, 0);
+        VblkIoWrite16(Device, (PUCHAR)Device->QueueNotify, 0);
 
     return SRB_STATUS_PENDING;
 }
