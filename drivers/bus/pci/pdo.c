@@ -10,12 +10,6 @@
 
 #include "pci.h"
 
-#if defined(_M_ARM64)
-#define PCI_PDO_EXPOSE_IO_BARS 0
-#else
-#define PCI_PDO_EXPOSE_IO_BARS 1
-#endif
-
 #include <initguid.h>
 #include <devpkey.h>
 #include <wdmguid.h>
@@ -49,6 +43,20 @@ NTAPI
 HalpGetMessageRoutingInfo(
     _Inout_ PHAL_MESSAGE_ROUTING_INFO RoutingInfo);
 #endif
+
+static
+BOOLEAN
+PciPdoIoBarReachable(
+    _In_ ULONG BusNumber,
+    _In_ ULONGLONG Base)
+{
+    PHYSICAL_ADDRESS BusAddress;
+    PHYSICAL_ADDRESS Translated;
+    ULONG AddressSpace = 1;
+
+    BusAddress.QuadPart = (LONGLONG)Base;
+    return HalTranslateBusAddress(PCIBus, BusNumber, BusAddress, &AddressSpace, &Translated);
+}
 
 #if defined(_M_ARM64)
 static
@@ -3119,7 +3127,7 @@ PdoQueryResourceRequirements(
                 continue;
             }
 
-            if (!PCI_PDO_EXPOSE_IO_BARS && (Flags & PCI_ADDRESS_IO_SPACE))
+            if ((Flags & PCI_ADDRESS_IO_SPACE) && !PciPdoIoBarReachable(DeviceExtension->PciDevice->BusNumber, Base))
                 continue;
 
             Descriptor = PciPdoAppendBarRequirements(FdoExtension, Descriptor, BaseDescriptors + RTL_NUMBER_OF(BaseDescriptors), PciPdoPreferredBarBase(FdoExtension, Base, Length, Flags, (Flags & PCI_ADDRESS_IO_SPACE) ? IoDecode : MemDecode), Length, Flags, MaximumAddress);
@@ -3157,7 +3165,7 @@ PdoQueryResourceRequirements(
                 continue;
             }
 
-            if (!PCI_PDO_EXPOSE_IO_BARS && (Flags & PCI_ADDRESS_IO_SPACE))
+            if ((Flags & PCI_ADDRESS_IO_SPACE) && !PciPdoIoBarReachable(DeviceExtension->PciDevice->BusNumber, Base))
                 continue;
 
             Descriptor = PciPdoAppendBarRequirements(FdoExtension, Descriptor, BaseDescriptors + RTL_NUMBER_OF(BaseDescriptors), PciPdoPreferredBarBase(FdoExtension, Base, Length, Flags, (Flags & PCI_ADDRESS_IO_SPACE) ? IoDecode : MemDecode), Length, Flags, MaximumAddress);
@@ -3544,7 +3552,7 @@ PdoQueryResources(
                 break;
 
             if (Length && Base != 0 &&
-                (PCI_PDO_EXPOSE_IO_BARS || !(Flags & PCI_ADDRESS_IO_SPACE)) &&
+                (!(Flags & PCI_ADDRESS_IO_SPACE) || PciPdoIoBarReachable(DeviceExtension->PciDevice->BusNumber, Base)) &&
                 ((Flags & PCI_ADDRESS_IO_SPACE) ? IoDecode : MemDecode))
                 ResCount += 2;
         }
@@ -3576,7 +3584,7 @@ PdoQueryResources(
                 break;
 
             if (Length != 0 && Base != 0 &&
-                (PCI_PDO_EXPOSE_IO_BARS || !(Flags & PCI_ADDRESS_IO_SPACE)) &&
+                (!(Flags & PCI_ADDRESS_IO_SPACE) || PciPdoIoBarReachable(DeviceExtension->PciDevice->BusNumber, Base)) &&
                 ((Flags & PCI_ADDRESS_IO_SPACE) ? IoDecode : MemDecode))
                 ResCount += 2;
         }
@@ -3683,7 +3691,7 @@ PdoQueryResources(
                 continue;
             }
 
-            if (!PCI_PDO_EXPOSE_IO_BARS && (Flags & PCI_ADDRESS_IO_SPACE))
+            if ((Flags & PCI_ADDRESS_IO_SPACE) && !PciPdoIoBarReachable(DeviceExtension->PciDevice->BusNumber, Base))
                 continue;
 
             if (!((Flags & PCI_ADDRESS_IO_SPACE) ? IoDecode : MemDecode))
@@ -3759,7 +3767,7 @@ PdoQueryResources(
                 continue;
             }
 
-            if (!PCI_PDO_EXPOSE_IO_BARS && (Flags & PCI_ADDRESS_IO_SPACE))
+            if ((Flags & PCI_ADDRESS_IO_SPACE) && !PciPdoIoBarReachable(DeviceExtension->PciDevice->BusNumber, Base))
                 continue;
 
             if (!((Flags & PCI_ADDRESS_IO_SPACE) ? IoDecode : MemDecode))
@@ -5193,7 +5201,7 @@ PciPdoProgramType0Bars(
             continue;
 
         IsIo = !!(Flags & PCI_ADDRESS_IO_SPACE);
-        if (IsIo && !PCI_PDO_EXPOSE_IO_BARS)
+        if (IsIo && !PciPdoIoBarReachable(DeviceExtension->PciDevice->BusNumber, Base))
             continue;
         for (ResourceIndex = 0; ResourceIndex < AssignedCount; ResourceIndex++)
         {
