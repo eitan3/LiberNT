@@ -838,6 +838,222 @@ check_node_parts(
     CHECK_EQ(node, ~0u);
 }
 
+/* A device id by its index, distinct from the others' */
+static
+void
+device_id(
+    GUID* id,
+    int index)
+{
+    memset(id, 0, sizeof(*id));
+    id->Data1 = (unsigned int)index + 1;
+}
+
+/*
+ * The default's rule of the jack (LEG-1), which devenum.c's pick_default_device
+ * runs over a flow: the headphone jack is the driver's default. Unplugged it
+ * is not active, so the default is the first active device, the speaker, and
+ * it is the jack's again when the jack is plugged; what the user chose comes
+ * first while it is active, and nothing active is no default. The speaker is
+ * first in the list's order, so that the first active device and the driver's
+ * default are told apart.
+ */
+static
+void
+check_default_pick(void)
+{
+    const int SPEAKER = 0, HEADPHONES = 1, MICROPHONE = 2;
+    SET set;
+    DIFF_CTX ctx;
+    GUID preferred[3];
+    DEVICE* picked;
+    UINT i;
+
+    memset(&set, 0, sizeof(set));
+    set.count = 3;
+    for (i = 0; i < 3; i++)
+    {
+        device_id(&set.devices[i].id, (int)i);
+        set.devices[i].named = TRUE;
+        set.devices[i].state = DEVICE_STATE_ACTIVE;
+    }
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.set = &set;
+
+#define PICK(count) (set.at = 0, (DEVICE*)notif_default_pick(set_next, &ctx, preferred, (count)))
+
+    /* all active: the driver's default, the headphones, not the first of the list */
+    preferred[0] = set.devices[HEADPHONES].id;
+    picked = PICK(1);
+    CHECK(picked == &set.devices[HEADPHONES]);
+
+    /* the headphones unplugged: the first active device, the speaker */
+    set.devices[HEADPHONES].state = DEVICE_STATE_UNPLUGGED;
+    picked = PICK(1);
+    CHECK(picked == &set.devices[SPEAKER]);
+
+    /* plugged again: the default is theirs again */
+    set.devices[HEADPHONES].state = DEVICE_STATE_ACTIVE;
+    picked = PICK(1);
+    CHECK(picked == &set.devices[HEADPHONES]);
+
+    /* the user chose the speaker: theirs while it is active, else the headphones */
+    preferred[0] = set.devices[SPEAKER].id;
+    preferred[1] = set.devices[HEADPHONES].id;
+    picked = PICK(2);
+    CHECK(picked == &set.devices[SPEAKER]);
+    set.devices[SPEAKER].state = DEVICE_STATE_UNPLUGGED;
+    picked = PICK(2);
+    CHECK(picked == &set.devices[HEADPHONES]);
+    set.devices[SPEAKER].state = DEVICE_STATE_ACTIVE;
+
+    /* the user's choice no longer there: the driver's default */
+    set.devices[SPEAKER].named = FALSE;
+    set.devices[SPEAKER].state = DEVICE_STATE_NOTPRESENT;
+    picked = PICK(2);
+    CHECK(picked == &set.devices[HEADPHONES]);
+    set.devices[SPEAKER].named = TRUE;
+    set.devices[SPEAKER].state = DEVICE_STATE_ACTIVE;
+
+    /* the voice choice unplugged, the plain choice active: the plain one, before the driver's default */
+    preferred[0] = set.devices[MICROPHONE].id;
+    preferred[1] = set.devices[SPEAKER].id;
+    preferred[2] = set.devices[HEADPHONES].id;
+    set.devices[MICROPHONE].state = DEVICE_STATE_UNPLUGGED;
+    picked = PICK(3);
+    CHECK(picked == &set.devices[SPEAKER]);
+    set.devices[MICROPHONE].state = DEVICE_STATE_ACTIVE;
+
+    /* nothing preferred: the first active device in the list's order */
+    picked = PICK(0);
+    CHECK(picked == &set.devices[SPEAKER]);
+    set.devices[SPEAKER].state = DEVICE_STATE_UNPLUGGED;
+    picked = PICK(0);
+    CHECK(picked == &set.devices[HEADPHONES]);
+    set.devices[SPEAKER].state = DEVICE_STATE_ACTIVE;
+
+    /* nothing active: no default, whatever is preferred */
+    set.devices[SPEAKER].state = DEVICE_STATE_UNPLUGGED;
+    set.devices[HEADPHONES].state = DEVICE_STATE_UNPLUGGED;
+    set.devices[MICROPHONE].state = DEVICE_STATE_UNPLUGGED;
+    picked = PICK(3);
+    CHECK(picked == NULL);
+    picked = PICK(0);
+    CHECK(picked == NULL);
+
+#undef PICK
+}
+
+/* The unplug and the plug as the refresh runs them: the diff over the device set, its verdicts recorded */
+struct sequence
+{
+    SET* set;
+    TELL told[CALLS];
+    UINT count;
+};
+
+static
+BOOLEAN
+sequence_next(
+    void* context,
+    struct notif_after* after)
+{
+    struct sequence* seq = context;
+    DIFF_CTX ctx;
+
+    ctx.set = seq->set;
+    return set_next(&ctx, after);
+}
+
+static
+void
+sequence_tell(
+    enum notif_change change,
+    struct notif_after* after,
+    void* context)
+{
+    struct sequence* seq = context;
+
+    CHECK(seq->count < CALLS);
+    if (seq->count >= CALLS)
+        return;
+    seq->told[seq->count].change = change;
+    seq->told[seq->count].device = (int)((DEVICE*)after->device - seq->set->devices);
+    seq->told[seq->count].state = after->state;
+    seq->count++;
+}
+
+/*
+ * The unplug and the plug of the default endpoint, as the refresh tells them
+ * (LEG-1): with the headphones the default and the speaker active, an unplug
+ * is one state change told, of the headphones, to UNPLUGGED, and the default
+ * moves to the speaker; a plug is one state change told, back to ACTIVE, and
+ * the default is theirs again. The speaker is told nothing either way.
+ */
+static
+void
+check_unplug_plug_sequence(void)
+{
+    const int SPEAKER = 0, HEADPHONES = 1;
+    SET set;
+    struct sequence seq;
+    struct notif_before before[2];
+    GUID preferred[1];
+    DIFF_CTX ctx;
+    DEVICE* picked;
+    UINT i;
+
+    memset(&set, 0, sizeof(set));
+    set.count = 2;
+    for (i = 0; i < 2; i++)
+    {
+        device_id(&set.devices[i].id, (int)i);
+        set.devices[i].named = TRUE;
+        set.devices[i].state = DEVICE_STATE_ACTIVE;
+    }
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.set = &set;
+    memset(&seq, 0, sizeof(seq));
+    seq.set = &set;
+    preferred[0] = set.devices[HEADPHONES].id;
+    for (i = 0; i < 2; i++)
+    {
+        before[i].id = set.devices[i].id;
+        before[i].state = DEVICE_STATE_ACTIVE;
+    }
+
+    /* unplugged */
+    set.devices[HEADPHONES].state = DEVICE_STATE_UNPLUGGED;
+    set.at = 0;
+    notif_diff_run(before, 2, sequence_next, sequence_tell, &seq);
+    CHECK_EQ(seq.count, 1);
+    CHECK(seq.told[0].change == NOTIF_STATE && seq.told[0].device == HEADPHONES);
+    CHECK_EQ(seq.told[0].state, DEVICE_STATE_UNPLUGGED);
+    set.at = 0;
+    picked = (DEVICE*)notif_default_pick(set_next, &ctx, preferred, 1);
+    CHECK(picked == &set.devices[SPEAKER]);
+
+    /* plugged again, with the list as the unplug left it */
+    seq.count = 0;
+    before[HEADPHONES].state = DEVICE_STATE_UNPLUGGED;
+    set.devices[HEADPHONES].state = DEVICE_STATE_ACTIVE;
+    set.at = 0;
+    notif_diff_run(before, 2, sequence_next, sequence_tell, &seq);
+    CHECK_EQ(seq.count, 1);
+    CHECK(seq.told[0].change == NOTIF_STATE && seq.told[0].device == HEADPHONES);
+    CHECK_EQ(seq.told[0].state, DEVICE_STATE_ACTIVE);
+    set.at = 0;
+    picked = (DEVICE*)notif_default_pick(set_next, &ctx, preferred, 1);
+    CHECK(picked == &set.devices[HEADPHONES]);
+
+    /* asked again with nothing changed: nothing told */
+    seq.count = 0;
+    before[HEADPHONES].state = DEVICE_STATE_ACTIVE;
+    set.at = 0;
+    notif_diff_run(before, 2, sequence_next, sequence_tell, &seq);
+    CHECK_EQ(seq.count, 0);
+}
+
 int
 main(
     void)
@@ -851,6 +1067,8 @@ main(
     check_node_method();
     check_node_event();
     check_node_parts();
+    check_default_pick();
+    check_unplug_plug_sequence();
 
     printf("mmdevapi: %d checks, %d failures\n", Checks, Failures);
     return Failures != 0;
