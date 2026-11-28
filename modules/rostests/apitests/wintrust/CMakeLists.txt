@@ -1,6 +1,7 @@
 
 list(APPEND SOURCE
     Asn1Codecs.c
+    CatalogFromHash.c
     CatalogV2.c
     FindCerts.c
     Internals.c

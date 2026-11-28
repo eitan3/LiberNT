@@ -946,6 +946,7 @@ HCATINFO WINAPI CryptCATAdminEnumCatalogFromHash(HCATADMIN hCatAdmin, BYTE* pbHa
         if (ca->find == INVALID_HANDLE_VALUE)
         {
             CryptReleaseContext(prov, 0);
+            SetLastError(ERROR_NOT_FOUND);
             return NULL;
         }
     }
@@ -953,6 +954,7 @@ HCATINFO WINAPI CryptCATAdminEnumCatalogFromHash(HCATADMIN hCatAdmin, BYTE* pbHa
     {
         CryptCATAdminReleaseCatalogContext(hCatAdmin, prev, 0);
         CryptReleaseContext(prov, 0);
+        SetLastError(ERROR_NOT_FOUND);
         return NULL;
     }
 
@@ -1013,6 +1015,7 @@ next_catalog:
             FindClose(ca->find);
             ca->find = INVALID_HANDLE_VALUE;
             CryptReleaseContext(prov, 0);
+            SetLastError(ERROR_NOT_FOUND);
             return NULL;
         }
     }

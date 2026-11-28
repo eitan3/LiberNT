@@ -2,6 +2,7 @@
 #include <apitest.h>
 
 extern void func_Asn1Codecs(void);
+extern void func_CatalogFromHash(void);
 extern void func_CatalogV2(void);
 extern void func_FindCerts(void);
 extern void func_Internals(void);
@@ -17,6 +18,7 @@ extern void func_TrustedRoot(void);
 const struct test winetest_testlist[] =
 {
     { "Asn1Codecs", func_Asn1Codecs },
+    { "CatalogFromHash", func_CatalogFromHash },
     { "CatalogV2", func_CatalogV2 },
     { "FindCerts", func_FindCerts },
     { "Internals", func_Internals },
