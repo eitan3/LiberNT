@@ -19,6 +19,7 @@ Widget::Widget()
     : m_Parent(NULL), m_FirstChild(NULL), m_LastChild(NULL), m_Next(NULL), m_Prev(NULL), m_Host(NULL),
       m_HAlign(Align::Stretch), m_VAlign(Align::Stretch), m_State(0), m_Focusable(FALSE), m_HitTestable(FALSE)
 {
+    m_Tooltip[0] = 0;
     SetRectEmpty(&m_Bounds);
     m_Desired.cx = m_Desired.cy = 0;
     m_Fixed.cx = m_Fixed.cy = -1;
@@ -360,6 +361,19 @@ BOOL Widget::IsAncestorOf(const Widget *widget) const
             return TRUE;
     }
     return FALSE;
+}
+
+void Widget::Animate(UINT durationMs)
+{
+    IWidgetHost *host = Host();
+    if (host)
+        host->RequestFrames(durationMs);
+    Invalidate();
+}
+
+void Widget::SetTooltip(LPCWSTR text)
+{
+    lstrcpynW(m_Tooltip, text ? text : L"", _countof(m_Tooltip));
 }
 
 }

@@ -685,6 +685,51 @@ static void TestBackdrop()
     ok(surface.BackdropLuma(AnimationClock::Now()) == 0.92, "a destroyed surface keeps its last target\n");
 }
 
+static void TestTooltip()
+{
+    Surface surface;
+    StackPanel *root = new StackPanel(Orientation::Vertical, 0);
+    Button *button = new Button(NULL, L"grid_20_regular", ButtonKind::Subtle, LIBER_CONTROL_MD, FALSE);
+
+    button->SetTooltip(L"Grid view");
+    button->SetAlign(Align::Start, Align::Start);
+    root->AddChild(button);
+    POINT saved;
+    GetCursorPos(&saved);
+    ok(surface.Create(NULL, L"LiberUI tooltip test", WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE), "surface created\n");
+    surface.SetDpi(96);
+    surface.SetRoot(root);
+    surface.SetPosition(200, 200, 100, 100);
+    surface.Render(AnimationClock::Now());
+    ShowWindow(surface.Window(), SW_SHOWNOACTIVATE);
+    SetCursorPos(210, 210);
+    SendMessageW(surface.Window(), WM_MOUSEMOVE, 0, MAKELPARAM(10, 10));
+    ok(surface.TooltipSurface() == NULL, "no tooltip right away\n");
+    Pump(LIBER_TOOLTIP_DELAY / 2);
+    ok(surface.TooltipSurface() == NULL, "still no tooltip before the delay\n");
+    Pump(LIBER_TOOLTIP_DELAY);
+    ok(surface.TooltipSurface() && IsWindowVisible(surface.TooltipSurface()->Window()),
+       "the tooltip appears after the delay\n");
+    if (surface.TooltipSurface())
+    {
+        RECT tip, host;
+        GetWindowRect(surface.TooltipSurface()->Window(), &tip);
+        GetWindowRect(surface.Window(), &host);
+        ok(tip.bottom <= host.top + 10, "the tooltip sits above the control: %ld %ld\n", tip.bottom, host.top);
+    }
+    SendMessageW(surface.Window(), WM_MOUSELEAVE, 0, 0);
+    ok(!surface.TooltipSurface() || !IsWindowVisible(surface.TooltipSurface()->Window()), "leaving hides the tooltip\n");
+    SetCursorPos(290, 290);
+    SendMessageW(surface.Window(), WM_MOUSEMOVE, 0, MAKELPARAM(90, 90));
+    Pump(LIBER_TOOLTIP_DELAY + 200);
+    ok(!surface.TooltipSurface() || !IsWindowVisible(surface.TooltipSurface()->Window()),
+       "a control without a tooltip shows none\n");
+    SetCursorPos(saved.x, saved.y);
+    surface.SetRoot(NULL);
+    surface.Destroy();
+    delete root;
+}
+
 static void TestShadow()
 {
     Surface surface;
@@ -820,6 +865,7 @@ START_TEST(Painter)
     TestShadow();
     TestMaterial();
     TestBackdrop();
+    TestTooltip();
     TestTransitions();
     TestSurfaceInput();
     ok(AssertionFailures() == failures, "%ld assertions failed\n", AssertionFailures() - failures);

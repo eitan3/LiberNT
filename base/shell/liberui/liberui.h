@@ -297,6 +297,7 @@ public:
     virtual void SetCapture(Widget *widget) = 0;
     virtual void OnFocusChanged(Widget *widget) = 0;
     virtual void OnWidgetRemoved(Widget *widget) = 0;
+    virtual void RequestFrames(UINT durationMs) { UNREFERENCED_PARAMETER(durationMs); }
 
 protected:
     ~IWidgetHost() {}
@@ -401,7 +402,16 @@ public:
     virtual void OnClick() {}
     virtual BOOL OnContextMenu(POINT screen) { UNREFERENCED_PARAMETER(screen); return FALSE; }
     virtual BOOL OnKeyDown(UINT vk) { UNREFERENCED_PARAMETER(vk); return FALSE; }
+    virtual BOOL OnChar(WCHAR ch) { UNREFERENCED_PARAMETER(ch); return FALSE; }
+    virtual void OnSiblingSelected(Widget *selected, UINT group)
+    {
+        UNREFERENCED_PARAMETER(selected);
+        UNREFERENCED_PARAMETER(group);
+    }
     virtual Widget *MoveFocus(Widget *from, FocusMove move);
+    void Animate(UINT durationMs);
+    void SetTooltip(LPCWSTR text);
+    LPCWSTR Tooltip() const { return m_Tooltip; }
 
 protected:
     virtual SIZE MeasureOverride(SIZE available);
@@ -429,6 +439,7 @@ private:
     UINT m_State;
     BOOL m_Focusable;
     BOOL m_HitTestable;
+    WCHAR m_Tooltip[64];
 };
 
 class Panel : public Widget
@@ -598,6 +609,265 @@ private:
     int m_Maximum;
 };
 
+enum class ButtonKind
+{
+    Accent,
+    Standard,
+    Subtle,
+    Danger
+};
+
+class Button : public Control
+{
+public:
+    Button(LPCWSTR text, LPCWSTR icon, ButtonKind kind, int height, BOOL capsule);
+
+    void SetText(LPCWSTR text);
+    LPCWSTR Text() const { return m_Text; }
+    ButtonKind Kind() const { return m_Kind; }
+    BOOL IsCapsule() const { return m_Capsule; }
+    void OnClick();
+
+protected:
+    SIZE MeasureOverride(SIZE available);
+    void PaintOverride(PaintContext &context);
+
+private:
+    WCHAR m_Text[64];
+    WCHAR m_Icon[64];
+    ButtonKind m_Kind;
+    BOOL m_Capsule;
+    int m_Height;
+};
+
+#define LIBER_SWITCH_WIDTH  44
+#define LIBER_SWITCH_HEIGHT 26
+
+class Switch : public Control
+{
+public:
+    explicit Switch(LPCWSTR label);
+
+    BOOL IsOn() const { return HasState(StateChecked); }
+    void SetOn(BOOL on);
+    double KnobPosition(ULONGLONG now) const;
+    void OnClick();
+    BOOL OnKeyDown(UINT vk);
+
+protected:
+    SIZE MeasureOverride(SIZE available);
+    void PaintOverride(PaintContext &context);
+
+private:
+    WCHAR m_Label[64];
+    Animation m_Knob;
+};
+
+class CheckBox : public Control
+{
+public:
+    explicit CheckBox(LPCWSTR label);
+
+    BOOL IsChecked() const { return HasState(StateChecked); }
+    BOOL IsIndeterminate() const { return m_Indeterminate; }
+    void SetChecked(BOOL checked);
+    void SetIndeterminate();
+    void OnClick();
+    BOOL OnKeyDown(UINT vk);
+
+protected:
+    SIZE MeasureOverride(SIZE available);
+    void PaintOverride(PaintContext &context);
+
+private:
+    WCHAR m_Label[64];
+    BOOL m_Indeterminate;
+};
+
+class RadioButton : public Control
+{
+public:
+    RadioButton(LPCWSTR label, UINT group);
+
+    BOOL IsChecked() const { return HasState(StateChecked); }
+    UINT Group() const { return m_Group; }
+    void SetChecked(BOOL checked);
+    void OnClick();
+    BOOL OnKeyDown(UINT vk);
+    void OnSiblingSelected(Widget *selected, UINT group);
+
+protected:
+    SIZE MeasureOverride(SIZE available);
+    void PaintOverride(PaintContext &context);
+
+private:
+    WCHAR m_Label[64];
+    UINT m_Group;
+};
+
+enum class TextFieldKind
+{
+    Text,
+    Password,
+    Search
+};
+
+class TextField : public Control
+{
+public:
+    TextField(LPCWSTR placeholder, TextFieldKind kind);
+
+    LPCWSTR Text() const { return m_Text; }
+    void SetText(LPCWSTR text);
+    void DisplayText(LPWSTR out, UINT cch) const;
+    BOOL OnChar(WCHAR ch);
+    BOOL OnKeyDown(UINT vk);
+
+protected:
+    void PaintOverride(PaintContext &context);
+
+private:
+    WCHAR m_Placeholder[64];
+    WCHAR m_Text[128];
+    TextFieldKind m_Kind;
+    UINT m_Length;
+};
+
+class SegmentedControl : public Control
+{
+public:
+    SegmentedControl();
+
+    UINT AddOption(LPCWSTR text);
+    UINT Count() const { return m_Count; }
+    UINT Selected() const { return m_Selected; }
+    double SlidePosition(ULONGLONG now) const { return m_Slide.Value(now); }
+    void Select(UINT index, BOOL animate);
+    UINT OptionAt(LONG x) const;
+    void OnPointerUp(POINT pt);
+    BOOL OnKeyDown(UINT vk);
+
+protected:
+    SIZE MeasureOverride(SIZE available);
+    void PaintOverride(PaintContext &context);
+
+private:
+    WCHAR m_Options[6][32];
+    UINT m_Count;
+    UINT m_Selected;
+    Animation m_Slide;
+};
+
+class TabStrip : public Control
+{
+public:
+    TabStrip();
+
+    UINT AddTab(LPCWSTR text);
+    UINT Count() const { return m_Count; }
+    UINT Selected() const { return m_Selected; }
+    void Select(UINT index);
+    UINT TabAt(LONG x) const;
+    void OnPointerUp(POINT pt);
+    BOOL OnKeyDown(UINT vk);
+
+protected:
+    SIZE MeasureOverride(SIZE available);
+    void PaintOverride(PaintContext &context);
+
+private:
+    WCHAR m_Tabs[8][32];
+    UINT m_Count;
+    UINT m_Selected;
+};
+
+#define LIBER_NAV_GROUP 0xFFFFFFFFu
+
+class NavItem : public Control
+{
+public:
+    NavItem(LPCWSTR icon, LPCWSTR selectedIcon, LPCWSTR text, LPCWSTR badge);
+
+    BOOL IsSelected() const { return HasState(StateChecked); }
+    void SetSelected(BOOL selected);
+    void OnClick();
+    void OnSiblingSelected(Widget *selected, UINT group);
+
+protected:
+    void PaintOverride(PaintContext &context);
+
+private:
+    WCHAR m_Icon[64];
+    WCHAR m_SelectedIcon[64];
+    WCHAR m_Text[64];
+    WCHAR m_Badge[16];
+};
+
+enum class InfoSeverity
+{
+    Info,
+    Success,
+    Caution,
+    Critical
+};
+
+class InfoBar : public Widget
+{
+public:
+    InfoBar(InfoSeverity severity, LPCWSTR title, LPCWSTR message);
+
+    InfoSeverity Severity() const { return m_Severity; }
+    LIBER_COLOR Background() const;
+    LIBER_COLOR Foreground() const;
+    LPCWSTR IconName() const;
+
+protected:
+    void PaintOverride(PaintContext &context);
+
+private:
+    InfoSeverity m_Severity;
+    WCHAR m_Title[64];
+    WCHAR m_Message[128];
+};
+
+#define LIBER_DIALOG_WIDTH 440
+
+class DialogPanel : public StackPanel
+{
+public:
+    DialogPanel(LPCWSTR title, LPCWSTR message);
+
+    Button *AddButton(LPCWSTR text, UINT id, BOOL primary, IControlListener *listener);
+
+protected:
+    void PaintOverride(PaintContext &context);
+
+private:
+    Label *m_Title;
+    Label *m_Message;
+    StackPanel *m_Buttons;
+};
+
+class TooltipPanel : public Widget
+{
+public:
+    TooltipPanel();
+
+    void SetText(LPCWSTR text);
+    LPCWSTR Text() const { return m_Text; }
+    void SetGlass(BOOL glass) { m_Glass = glass; }
+
+protected:
+    SIZE MeasureOverride(SIZE available);
+    void PaintOverride(PaintContext &context);
+
+private:
+    WCHAR m_Text[64];
+    BOOL m_Glass;
+};
+
+#define LIBER_TOOLTIP_DELAY 450
+
 class InputRouter
 {
 public:
@@ -615,6 +885,7 @@ public:
     void PointerDown(POINT pt);
     void PointerUp(POINT pt);
     BOOL KeyDown(UINT vk, BOOL shift);
+    BOOL Char(WCHAR ch);
     BOOL SetFocus(Widget *widget);
     BOOL MoveFocusInOrder(BOOL forward);
     void SetCapture(Widget *widget) { m_Capture = widget; }
@@ -685,6 +956,8 @@ public:
     void SetCapture(Widget *widget);
     void OnFocusChanged(Widget *widget);
     void OnWidgetRemoved(Widget *widget);
+    void RequestFrames(UINT durationMs);
+    Surface *TooltipSurface() const { return m_Tooltip; }
 
 protected:
     virtual LRESULT HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam);
@@ -702,6 +975,9 @@ private:
     void ApplyMaterial();
     BOOL StepBackdrop(ULONGLONG now);
     void ApplyBackdropTint(ULONGLONG now);
+    void ArmTooltip();
+    void ShowTooltip();
+    void HideTooltip();
     LONG OffsetPx() const;
 
     HWND m_hwnd;
@@ -738,6 +1014,10 @@ private:
     BYTE m_MaterialAlpha;
     float m_MaterialRadius;
     BOOL m_MaterialFade;
+    ULONGLONG m_FramesUntil;
+    Surface *m_Tooltip;
+    TooltipPanel *m_TooltipPanel;
+    Widget *m_TooltipFor;
     Animation m_BackdropAnimation;
     double m_BackdropTarget;
     BOOL m_BackdropKnown;

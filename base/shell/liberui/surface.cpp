@@ -40,7 +40,8 @@ static BOOL RegisterSurfaceClass(HINSTANCE instance, WNDPROC proc)
 Surface::Surface()
     : m_hwnd(NULL), m_Dpi(96), m_Tokens(NULL), m_Root(NULL), m_LayoutPending(TRUE), m_Tracking(FALSE), m_Gpu(NULL), m_Presents(0), m_Owner(NULL), m_ExStyle(0),
       m_InputRadius(0.0f), m_Opacity(1.0f), m_OffsetY(0.0f), m_Transition(FALSE), m_HideAtEnd(FALSE), m_Shadow(NULL), m_ShadowWidget(NULL), m_Elevation(-1), m_ShadowRadius(0.0f), m_Material(-1),
-      m_MaterialTint(0), m_MaterialAlpha(0), m_MaterialRadius(0.0f), m_MaterialFade(FALSE), m_BackdropTarget(0.5),
+      m_MaterialTint(0), m_MaterialAlpha(0), m_MaterialRadius(0.0f), m_MaterialFade(FALSE), m_FramesUntil(0), m_Tooltip(NULL), m_TooltipPanel(NULL),
+      m_TooltipFor(NULL), m_BackdropTarget(0.5),
       m_BackdropKnown(FALSE), m_BackdropAnimating(FALSE),
       m_Recovering(FALSE)
 {
@@ -379,9 +380,105 @@ BOOL Surface::StepBackdrop(ULONGLONG now)
     return running;
 }
 
+void Surface::RequestFrames(UINT durationMs)
+{
+    ULONGLONG until = AnimationClock::Now() + durationMs;
+
+    if (!m_hwnd)
+        return;
+    if (until > m_FramesUntil)
+        m_FramesUntil = until;
+    AnimationClock::Instance().Add(this);
+}
+
+void Surface::ArmTooltip()
+{
+    Widget *hover = m_Input.Hover();
+
+    if (hover == m_TooltipFor)
+        return;
+    HideTooltip();
+    m_TooltipFor = hover && hover->Tooltip()[0] ? hover : NULL;
+    if (m_TooltipFor)
+        SetTimer(m_hwnd, (UINT_PTR)this, LIBER_TOOLTIP_DELAY, NULL);
+}
+
+void Surface::ShowTooltip()
+{
+    KillTimer(m_hwnd, (UINT_PTR)this);
+    if (!m_TooltipFor || m_TooltipFor != m_Input.Hover() || !m_TooltipFor->Tooltip()[0])
+        return;
+    if (!m_Tooltip)
+    {
+        m_Tooltip = new Surface();
+        m_TooltipPanel = new TooltipPanel();
+        if (!m_Tooltip || !m_TooltipPanel ||
+            !m_Tooltip->Create(m_hwnd, L"", WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED |
+                                                WS_EX_TRANSPARENT))
+        {
+            delete m_Tooltip;
+            delete m_TooltipPanel;
+            m_Tooltip = NULL;
+            m_TooltipPanel = NULL;
+            return;
+        }
+        m_Tooltip->SetRoot(m_TooltipPanel);
+    }
+    m_Tooltip->SetDpi(m_Dpi);
+    m_Tooltip->SetTokens(m_Tokens);
+    m_Tooltip->Fonts().SetFamily(m_Fonts.Family());
+    m_TooltipPanel->SetText(m_TooltipFor->Tooltip());
+    m_TooltipPanel->SetGlass(m_Material >= 0);
+    SIZE available = { 400, 28 };
+    SIZE size = m_TooltipPanel->Measure(available);
+    RECT item = m_TooltipFor->Bounds(), window = { 0 };
+    GetWindowRect(m_hwnd, &window);
+    int width = ScaleToDpi(size.cx, m_Dpi), height = ScaleToDpi(size.cy, m_Dpi);
+    int x = window.left + ScaleToDpi((item.left + item.right) / 2, m_Dpi) - width / 2;
+    int y = window.top + ScaleToDpi(item.top, m_Dpi) - height - ScaleToDpi(8, m_Dpi);
+    if (y < 0)
+        y = window.top + ScaleToDpi(item.bottom + 8, m_Dpi);
+    m_Tooltip->SetPosition(x, y, size.cx, size.cy);
+    if (m_Material >= 0 && m_Tokens)
+    {
+        GlassTint tint = m_Tokens->Material(LIBER_MATERIAL_THICK, BackdropLuma(AnimationClock::Now()));
+        m_Tooltip->SetMaterial(LIBER_MATERIAL_THICK, OklchToArgb(tint.Color, 1.0), (BYTE)(tint.Alpha * 255.0 + 0.5),
+                               (float)LIBER_RADIUS_R6);
+    }
+    else
+    {
+        m_Tooltip->SetMaterial(-1, 0, 0, 0.0f);
+    }
+    m_Tooltip->SetBackdropLuma(BackdropLuma(AnimationClock::Now()));
+    m_Tooltip->Render(AnimationClock::Now());
+    ShowWindow(m_Tooltip->Window(), SW_SHOWNOACTIVATE);
+    m_Tooltip->TransitionIn(4.0f, LIBER_DUR_FAST);
+}
+
+void Surface::HideTooltip()
+{
+    if (m_hwnd)
+        KillTimer(m_hwnd, (UINT_PTR)this);
+    if (m_Tooltip && m_Tooltip->Window() && IsWindowVisible(m_Tooltip->Window()))
+        ShowWindow(m_Tooltip->Window(), SW_HIDE);
+    m_TooltipFor = NULL;
+}
+
 BOOL Surface::OnAnimationFrame(ULONGLONG now)
 {
-    BOOL backdrop = StepBackdrop(now);
+    BOOL frames = m_FramesUntil != 0;
+    if (frames)
+    {
+        if (m_Root)
+            InvalidateRect(m_Root->Bounds());
+        Render(now);
+        if (now >= m_FramesUntil)
+        {
+            m_FramesUntil = 0;
+            frames = FALSE;
+        }
+    }
+    BOOL backdrop = StepBackdrop(now) || frames;
     BOOL running = m_MoveAnimation.IsRunning(now) || m_FadeAnimation.IsRunning(now);
 
     if (!m_Transition)
@@ -414,6 +511,17 @@ BOOL Surface::OnAnimationFrame(ULONGLONG now)
 void Surface::Destroy()
 {
     AnimationClock::Instance().Remove(this);
+    if (m_Tooltip)
+    {
+        m_Tooltip->SetRoot(NULL);
+        m_Tooltip->Destroy();
+        delete m_Tooltip;
+        delete m_TooltipPanel;
+        m_Tooltip = NULL;
+        m_TooltipPanel = NULL;
+    }
+    m_TooltipFor = NULL;
+    m_FramesUntil = 0;
     m_Transition = FALSE;
     m_HideAtEnd = FALSE;
     m_BackdropAnimating = FALSE;
@@ -768,16 +876,35 @@ LRESULT Surface::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam)
                 m_Tracking = TrackMouseEvent(&track);
             }
             m_Input.PointerMove(PixelToDip(pt));
+            ArmTooltip();
             Render(AnimationClock::Now());
             return 0;
 
         case WM_MOUSELEAVE:
             m_Tracking = FALSE;
             m_Input.PointerLeave();
+            HideTooltip();
             Render(AnimationClock::Now());
             return 0;
 
+        case WM_TIMER:
+            if (wParam == (WPARAM)(UINT_PTR)this)
+            {
+                ShowTooltip();
+                return 0;
+            }
+            break;
+
+        case WM_CHAR:
+            if (m_Input.Char((WCHAR)wParam))
+            {
+                Render(AnimationClock::Now());
+                return 0;
+            }
+            break;
+
         case WM_LBUTTONDOWN:
+            HideTooltip();
             m_Input.PointerDown(PixelToDip(pt));
             if (m_Input.Capture())
                 ::SetCapture(m_hwnd);
