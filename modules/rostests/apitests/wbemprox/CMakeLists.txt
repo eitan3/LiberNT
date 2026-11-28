@@ -2,6 +2,7 @@
 list(APPEND SOURCE
     common.c
     decoupled.c
+    Firmware.c
     PhysicalMemory.c
     Projection.c
     repository.c

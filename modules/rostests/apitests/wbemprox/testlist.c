@@ -9,6 +9,7 @@
 #include <apitest.h>
 
 extern void func_Decoupled(void);
+extern void func_Firmware(void);
 extern void func_PhysicalMemory(void);
 extern void func_Projection(void);
 extern void func_Repository(void);
@@ -16,6 +17,7 @@ extern void func_Repository(void);
 const struct test winetest_testlist[] =
 {
     { "Decoupled", func_Decoupled },
+    { "Firmware", func_Firmware },
     { "PhysicalMemory", func_PhysicalMemory },
     { "Projection", func_Projection },
     { "Repository", func_Repository },

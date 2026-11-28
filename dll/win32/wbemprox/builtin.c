@@ -141,6 +141,9 @@ static const struct column col_compsys[] =
     { L"Name",                      CIM_STRING|COL_FLAG_DYNAMIC },
     { L"NumberOfLogicalProcessors", CIM_UINT32 },
     { L"NumberOfProcessors",        CIM_UINT32 },
+    { L"PCSystemType",              CIM_UINT16 },
+    { L"SystemFamily",              CIM_STRING|COL_FLAG_DYNAMIC },
+    { L"SystemSKUNumber",           CIM_STRING|COL_FLAG_DYNAMIC },
     { L"SystemType",                CIM_STRING },
     { L"TotalPhysicalMemory",       CIM_UINT64 },
     { L"UserName",                  CIM_STRING|COL_FLAG_DYNAMIC },
@@ -451,7 +454,10 @@ static const struct column col_operatingsystem[] =
 };
 static const struct column col_pagefileusage[] =
 {
-    { L"Name", CIM_STRING },
+    { L"AllocatedBaseSize", CIM_UINT32 },
+    { L"CurrentUsage",      CIM_UINT32 },
+    { L"Name",              CIM_STRING|COL_FLAG_DYNAMIC|COL_FLAG_KEY },
+    { L"PeakUsage",         CIM_UINT32 },
 };
 static const struct column col_param[] =
 {
@@ -495,6 +501,7 @@ static const struct column col_physicalmemoryarray[] =
     { L"Caption",              CIM_STRING },
     { L"MaxCapacity",          CIM_UINT32 },
     { L"MaxCapacityEx",        CIM_UINT64 },
+    { L"MemoryErrorCorrection", CIM_UINT16 },
     { L"Model",                CIM_STRING },
     { L"Name",                 CIM_STRING },
     { L"Status",               CIM_STRING },
@@ -723,6 +730,7 @@ static const struct column col_systemenclosure[] =
     { L"LockPresent",  CIM_BOOLEAN },
     { L"Manufacturer", CIM_STRING|COL_FLAG_DYNAMIC },
     { L"Name",         CIM_STRING },
+    { L"SMBIOSAssetTag", CIM_STRING|COL_FLAG_DYNAMIC },
     { L"SerialNumber", CIM_STRING|COL_FLAG_DYNAMIC },
     { L"Tag",          CIM_STRING|COL_FLAG_KEY },
 };
@@ -1003,6 +1011,9 @@ struct record_computersystem
     const WCHAR *name;
     UINT32       num_logical_processors;
     UINT32       num_processors;
+    UINT16       pcsystemtype;
+    const WCHAR *systemfamily;
+    const WCHAR *systemskunumber;
     const WCHAR *systemtype;
     UINT64       total_physical_memory;
     const WCHAR *username;
@@ -1265,7 +1276,10 @@ struct record_operatingsystem
 };
 struct record_pagefileusage
 {
+    UINT32       allocatedbasesize;
+    UINT32       currentusage;
     const WCHAR *name;
+    UINT32       peakusage;
 };
 struct record_param
 {
@@ -1309,6 +1323,7 @@ struct record_physicalmemoryarray
     const WCHAR *caption;
     UINT32       max_capacity;
     UINT64       max_capacity_ex;
+    UINT16       memoryerrorcorrection;
     const WCHAR *model;
     const WCHAR *name;
     const WCHAR *status;
@@ -1534,6 +1549,7 @@ struct record_systemenclosure
     int                 lockpresent;
     const WCHAR        *manufacturer;
     const WCHAR        *name;
+    const WCHAR        *smbiosassettag;
     const WCHAR        *serial_number;
     const WCHAR        *tag;
 };
@@ -1721,10 +1737,6 @@ static const struct record_associator data_associator[] =
     { L"Win32_DiskDriveToDiskPartition", L"Win32_DiskPartition", L"Win32_DiskDrive" },
     { L"Win32_LogicalDiskToPartition", L"Win32_LogicalDisk", L"Win32_DiskPartition" },
 };
-static const struct record_pagefileusage data_pagefileusage[] =
-{
-    { L"c:\\pagefile.sys", },
-};
 static const struct record_param data_param[] =
 {
     { L"__SystemSecurity", L"GetSD", -1, L"ReturnValue", CIM_UINT32 },
@@ -1904,6 +1916,7 @@ enum smbios_type
     SMBIOS_TYPE_BASEBOARD = 2,
     SMBIOS_TYPE_CHASSIS = 3,
     SMBIOS_TYPE_PROCESSOR = 4,
+    SMBIOS_TYPE_MEMARRAY = 16,
     SMBIOS_TYPE_MEMDEVICE = 17,
     SMBIOS_TYPE_BOOTINFO = 32,
     SMBIOS_TYPE_END = 127
@@ -1959,6 +1972,17 @@ struct smbios_system
     BYTE                 version;
     BYTE                 serial;
     BYTE                 uuid[16];
+    BYTE                 wakeup_type;
+    BYTE                 sku;
+    BYTE                 family;
+};
+
+struct smbios_memarray
+{
+    struct smbios_header hdr;
+    BYTE                 location;
+    BYTE                 use;
+    BYTE                 error_correction;
 };
 
 struct smbios_processor
@@ -2542,6 +2566,21 @@ static WCHAR *get_compsysproduct_vendor( const char *buf, UINT len )
     return ret;
 }
 
+static UINT16 get_compsys_pcsystemtype(void)
+{
+    const DWORD acpi = ('A' << 24) | ('C' << 16) | ('P' << 8) | 'I';
+    const DWORD facp = ('P' << 24) | ('C' << 16) | ('A' << 8) | 'F';
+    UINT16 ret = 0;
+    UINT len;
+    BYTE *buf;
+
+    len = GetSystemFirmwareTable( acpi, facp, NULL, 0 );
+    if (len <= 45 || !(buf = malloc( len ))) return 0;
+    if (GetSystemFirmwareTable( acpi, facp, buf, len ) == len && buf[45] <= 8) ret = buf[45];
+    free( buf );
+    return ret;
+}
+
 static enum fill_status fill_compsys( struct table *table, const struct expr *cond )
 {
     struct record_computersystem *rec;
@@ -2562,6 +2601,9 @@ static enum fill_status fill_compsys( struct table *table, const struct expr *co
     rec->model                  = get_compsysproduct_name( buf, len );
     rec->name                   = get_computername();
     rec->num_processors         = get_physical_processor_count( buf, len, &rec->num_logical_processors );
+    rec->pcsystemtype           = get_compsys_pcsystemtype();
+    rec->systemfamily           = get_smbios_string( SMBIOS_TYPE_SYSTEM, 0, offsetof(struct smbios_system, family), buf, len );
+    rec->systemskunumber        = get_smbios_string( SMBIOS_TYPE_SYSTEM, 0, offsetof(struct smbios_system, sku), buf, len );
     rec->systemtype             = get_systemtype();
     rec->total_physical_memory  = get_total_physical_memory();
     rec->username               = get_username();
@@ -5618,6 +5660,120 @@ static enum fill_status fill_physicalmemory( struct table *table, const struct e
     return status;
 }
 
+struct wbemprox_pagefile_information
+{
+    ULONG          NextEntryOffset;
+    ULONG          TotalSize;
+    ULONG          TotalInUse;
+    ULONG          PeakUsage;
+    UNICODE_STRING PageFileName;
+};
+
+static UINT32 pages_to_mb( ULONG pages )
+{
+    SYSTEM_INFO info;
+
+    GetSystemInfo( &info );
+    return (UINT32)(((ULONGLONG)pages * info.dwPageSize) >> 20);
+}
+
+static enum fill_status fill_pagefileusage( struct table *table, const struct expr *cond )
+{
+    struct record_pagefileusage *rec;
+    struct wbemprox_pagefile_information *entry;
+    enum fill_status status = FILL_STATUS_UNFILTERED;
+    ULONG size = 0x1000, count = 0, offset;
+    UINT row = 0;
+    NTSTATUS ret;
+    BYTE *buf;
+
+    for (;;)
+    {
+        ULONG needed = 0;
+
+        if (!(buf = malloc( size ))) return FILL_STATUS_FAILED;
+        ret = NtQuerySystemInformation( 18 /* SystemPageFileInformation */, buf, size, &needed );
+        if (ret != STATUS_INFO_LENGTH_MISMATCH)
+        {
+            size = ret ? 0 : needed;
+            break;
+        }
+        free( buf );
+        size = needed > size ? needed : size * 2;
+    }
+    if (ret || !size)
+    {
+        free( buf );
+        table->num_rows = 0;
+        return ret ? FILL_STATUS_FAILED : status;
+    }
+
+    for (offset = 0;;)
+    {
+        entry = (struct wbemprox_pagefile_information *)(buf + offset);
+        count++;
+        if (!entry->NextEntryOffset) break;
+        offset += entry->NextEntryOffset;
+    }
+    if (!resize_table( table, count, sizeof(*rec) ))
+    {
+        free( buf );
+        return FILL_STATUS_FAILED;
+    }
+
+    for (offset = 0;;)
+    {
+        WCHAR *name;
+        UINT chars;
+
+        entry = (struct wbemprox_pagefile_information *)(buf + offset);
+        chars = entry->PageFileName.Length / sizeof(WCHAR);
+        if ((name = malloc( (chars + 1) * sizeof(WCHAR) )))
+        {
+            const WCHAR *src = entry->PageFileName.Buffer;
+
+            if (chars >= 4 && !wcsncmp( src, L"\\??\\", 4 ))
+            {
+                src += 4;
+                chars -= 4;
+            }
+            memcpy( name, src, chars * sizeof(WCHAR) );
+            name[chars] = 0;
+        }
+        rec = (struct record_pagefileusage *)(table->data + row * sizeof(*rec));
+        rec->allocatedbasesize = pages_to_mb( entry->TotalSize );
+        rec->currentusage      = pages_to_mb( entry->TotalInUse );
+        rec->name              = name;
+        rec->peakusage         = pages_to_mb( entry->PeakUsage );
+        if (!match_row( table, row, cond, &status )) free_row_values( table, row );
+        else row++;
+        if (!entry->NextEntryOffset) break;
+        offset += entry->NextEntryOffset;
+    }
+    free( buf );
+
+    TRACE("created %u rows\n", row);
+    table->num_rows = row;
+    return status;
+}
+
+static UINT16 get_physicalmemoryarray_errorcorrection(void)
+{
+    const struct smbios_header *hdr;
+    UINT16 ret = 2;
+    UINT len;
+    char *buf;
+
+    len = GetSystemFirmwareTable( RSMB, 0, NULL, 0 );
+    if (!(buf = malloc( len ))) return ret;
+    GetSystemFirmwareTable( RSMB, 0, buf, len );
+    hdr = find_smbios_entry( SMBIOS_TYPE_MEMARRAY, 0, buf, len );
+    if (hdr && hdr->length > offsetof(struct smbios_memarray, error_correction))
+        ret = ((const struct smbios_memarray *)hdr)->error_correction;
+    free( buf );
+    return ret;
+}
+
 static enum fill_status fill_physicalmemoryarray( struct table *table, const struct expr *cond )
 {
     struct record_physicalmemoryarray *rec;
@@ -5633,6 +5789,7 @@ static enum fill_status fill_physicalmemoryarray( struct table *table, const str
     rec->caption              = L"Physical Memory Array";
     rec->max_capacity         = max_capacity > 0x400000 ? 0x400000 : max_capacity;
     rec->max_capacity_ex      = max_capacity;
+    rec->memoryerrorcorrection = get_physicalmemoryarray_errorcorrection();
     rec->name                 = L"Physical Memory Array";
     if (!match_row( table, row, cond, &status )) free_row_values( table, row );
     else row++;
@@ -6836,6 +6993,7 @@ static enum fill_status fill_systemenclosure( struct table *table, const struct 
     rec->lockpresent  = get_systemenclosure_lockpresent( buf, len );
     rec->manufacturer = get_systemenclosure_manufacturer( buf, len );
     rec->name         = L"System Enclosure";
+    rec->smbiosassettag = get_smbios_string( SMBIOS_TYPE_CHASSIS, 0, offsetof(struct smbios_chassis, asset_tag), buf, len );
     rec->serial_number = get_systemenclosure_serialnumber( buf, len );
     rec->tag          = L"System Enclosure 0";
     if (!match_row( table, row, cond, &status )) free_row_values( table, row );
@@ -7835,7 +7993,7 @@ static struct table cimv2_builtin_classes[] =
     { L"Win32_NetworkAdapter", C(col_networkadapter), 0, 0, NULL, fill_networkadapter },
     { L"Win32_NetworkAdapterConfiguration", C(col_networkadapterconfig), 0, 0, NULL, fill_networkadapterconfig },
     { L"Win32_OperatingSystem", C(col_operatingsystem), 0, 0, NULL, fill_operatingsystem },
-    { L"Win32_PageFileUsage", C(col_pagefileusage), D(data_pagefileusage) },
+    { L"Win32_PageFileUsage", C(col_pagefileusage), 0, 0, NULL, fill_pagefileusage },
     { L"Win32_PerfRawData_Counters_ThermalZoneInformation", C(col_thermalzoneinformation), 0, 0, NULL, fill_thermalzoneinformation },
     { L"Win32_PhysicalMedia", C(col_physicalmedia), D(data_physicalmedia) },
     { L"Win32_PhysicalMemory", C(col_physicalmemory), 0, 0, NULL, fill_physicalmemory },
