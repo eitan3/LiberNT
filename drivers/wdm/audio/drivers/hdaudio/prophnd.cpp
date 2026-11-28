@@ -12,6 +12,93 @@
 
 // FIXME: halfplemented
 
+/*
+ * The last jack description told of an endpoint (its node and its pin). The
+ * line comes once for an endpoint and then only when the answer changes: the
+ * jack watcher asks again every 30 s, and every enumeration does.
+ */
+#define HDAUDIO_JACK_ANSWERS_TOLD 16
+
+typedef struct
+{
+    PVOID Node;
+    ULONG PinId;
+    BOOL IsConnected;
+    ULONG Decider;
+    PCSTR Why;
+    ULONG Sense;
+}JACK_ANSWER_TOLD, *PJACK_ANSWER_TOLD;
+
+static JACK_ANSWER_TOLD JackAnswersTold[HDAUDIO_JACK_ANSWERS_TOLD];
+static volatile LONG JackAnswersLock = 0;
+
+static
+BOOLEAN
+SameJackReason(
+    IN PCSTR Left,
+    IN PCSTR Right)
+{
+    while (*Left && *Left == *Right)
+    {
+        Left++;
+        Right++;
+    }
+    return *Left == *Right;
+}
+
+static
+BOOLEAN
+JackAnswerChanged(
+    IN PVOID Node,
+    IN ULONG PinId,
+    IN BOOL IsConnected,
+    IN ULONG Decider,
+    IN PCSTR Why,
+    IN ULONG Sense)
+{
+    PJACK_ANSWER_TOLD Told;
+    ULONG Index, Free = MAXULONG;
+    BOOLEAN Changed = TRUE;
+
+    /* another thread is in the table: the answer is told rather than kept back */
+    if (InterlockedCompareExchange(&JackAnswersLock, 1, 0) != 0)
+        return TRUE;
+
+    for (Index = 0; Index < RTL_NUMBER_OF(JackAnswersTold); Index++)
+    {
+        Told = &JackAnswersTold[Index];
+        if (Told->Node == Node && Told->PinId == PinId)
+        {
+            Changed = Told->IsConnected != IsConnected || Told->Decider != Decider ||
+                      Told->Sense != Sense || !SameJackReason(Told->Why, Why);
+            break;
+        }
+        if (Free == MAXULONG && !Told->Node)
+            Free = Index;
+    }
+
+    if (Index == RTL_NUMBER_OF(JackAnswersTold))
+    {
+        /* an endpoint the table has no room for: told every time */
+        if (Free == MAXULONG)
+        {
+            InterlockedExchange(&JackAnswersLock, 0);
+            return TRUE;
+        }
+        Told = &JackAnswersTold[Free];
+    }
+
+    Told->Node = Node;
+    Told->PinId = PinId;
+    Told->IsConnected = IsConnected;
+    Told->Decider = Decider;
+    Told->Why = Why;
+    Told->Sense = Sense;
+
+    InterlockedExchange(&JackAnswersLock, 0);
+    return Changed;
+}
+
 NTSTATUS
 NTAPI
 PropertyHandler_JackDescription(IN PPCPROPERTY_REQUEST PropertyRequest)
@@ -111,8 +198,12 @@ PropertyHandler_JackDescription(IN PPCPROPERTY_REQUEST PropertyRequest)
         IsConnected = Connected;
     }
 
-    DPRINT1("HDAUDIO: jack description of a topology of %u pin(s): IsConnected %u by pin %u (%s, pin sense raw %08x)\n",
-            Miniport->GetPinCount(), IsConnected, Decider, Why, DeciderSense);
+    if (JackAnswerChanged(Node, Miniport->GetPinCount() ? Miniport->GetPinId(0) : MAXULONG,
+                          IsConnected, Decider, Why, DeciderSense))
+    {
+        DPRINT1("HDAUDIO: jack description of a topology of %u pin(s): IsConnected %u by pin %u (%s, pin sense raw %08x)\n",
+                Miniport->GetPinCount(), IsConnected, Decider, Why, DeciderSense);
+    }
 
     PIN_CONFIGURATION_DEFAULT PinConfiguration;
     Status = Node->GetPinConfigurationDefault(Miniport->GetPinCount() ? Miniport->GetPinId(0) : Node->GetStartNodeId(),
