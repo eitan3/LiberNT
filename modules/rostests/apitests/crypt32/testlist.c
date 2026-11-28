@@ -16,6 +16,7 @@ extern void func_NameToStr(void);
 extern void func_OtherName(void);
 extern void func_RevocationTimeout(void);
 extern void func_RootProgram(void);
+extern void func_StrToName(void);
 
 const struct test winetest_testlist[] =
 {
@@ -33,6 +34,7 @@ const struct test winetest_testlist[] =
     { "OtherName", func_OtherName },
     { "RevocationTimeout", func_RevocationTimeout },
     { "RootProgram", func_RootProgram },
+    { "StrToName", func_StrToName },
 
     { 0, 0 }
 };

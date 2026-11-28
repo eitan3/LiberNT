@@ -804,6 +804,38 @@ static BOOL CRYPT_ValueToRDN(DWORD dwCertEncodingType, PCERT_NAME_INFO info,
     return ret;
 }
 
+/* A key may also name the attribute by its object identifier, as OID.1.2.3 (any case) or 1.2.3. */
+static LPSTR CRYPT_KeyToObjectId(LPCWSTR key)
+{
+    LPCWSTR oid = key;
+    LPSTR ret;
+    DWORD i, len;
+
+    if ((oid[0] == 'O' || oid[0] == 'o') && (oid[1] == 'I' || oid[1] == 'i') &&
+     (oid[2] == 'D' || oid[2] == 'd') && oid[3] == '.')
+        oid += 4;
+    len = lstrlenW(oid);
+    if (!len || oid[0] == '.' || oid[len - 1] == '.')
+        return NULL;
+    for (i = 0; i < len; i++)
+    {
+        if (oid[i] == '.')
+        {
+            if (oid[i + 1] == '.')
+                return NULL;
+        }
+        else if (oid[i] < '0' || oid[i] > '9')
+            return NULL;
+    }
+    if (!wcschr(oid, '.'))
+        return NULL;
+    if (!(ret = CryptMemAlloc(len + 1)))
+        return NULL;
+    for (i = 0; i <= len; i++)
+        ret[i] = (char)oid[i];
+    return ret;
+}
+
 BOOL WINAPI CertStrToNameW(DWORD dwCertEncodingType, LPCWSTR pszX500,
  DWORD dwStrType, void *pvReserved, BYTE *pbEncoded, DWORD *pcbEncoded,
  LPCWSTR *ppszError)
@@ -813,6 +845,8 @@ BOOL WINAPI CertStrToNameW(DWORD dwCertEncodingType, LPCWSTR pszX500,
     struct KeynameKeeper keeper;
     DWORD i;
     BOOL ret = TRUE;
+    LPSTR *objectIds = NULL;
+    DWORD objectIdCount = 0;
 
     TRACE("(%08lx, %s, %08lx, %p, %p, %p, %p)\n", dwCertEncodingType,
      debugstr_w(pszX500), dwStrType, pvReserved, pbEncoded, pcbEncoded,
@@ -828,11 +862,37 @@ BOOL WINAPI CertStrToNameW(DWORD dwCertEncodingType, LPCWSTR pszX500,
         if (ret && token.start)
         {
             PCCRYPT_OID_INFO keyOID;
+            CRYPT_OID_INFO objectIdInfo;
 
             CRYPT_KeynameKeeperFromTokenW(&keeper, &token);
             keyOID = CryptFindOIDInfo(CRYPT_OID_INFO_NAME_KEY, keeper.keyName,
              CRYPT_RDN_ATTR_OID_GROUP_ID);
-            /* TODO: accept an object identifier key, OID.1.2.3.4= or 1.2.3.4= */
+            if (!keyOID)
+            {
+                LPSTR objectId = CRYPT_KeyToObjectId(keeper.keyName);
+                LPSTR *grown = objectId ? CryptMemRealloc(objectIds,
+                 (objectIdCount + 1) * sizeof(*objectIds)) : NULL;
+
+                if (!objectIds && objectId)
+                    grown = CryptMemAlloc(sizeof(*objectIds));
+                if (grown)
+                {
+                    PCCRYPT_OID_INFO known = CryptFindOIDInfo(CRYPT_OID_INFO_OID_KEY,
+                     objectId, CRYPT_RDN_ATTR_OID_GROUP_ID);
+
+                    objectIds = grown;
+                    objectIds[objectIdCount++] = objectId;
+                    memset(&objectIdInfo, 0, sizeof(objectIdInfo));
+                    objectIdInfo.cbSize = sizeof(objectIdInfo);
+                    objectIdInfo.pszOID = objectId;
+                    objectIdInfo.dwGroupId = CRYPT_RDN_ATTR_OID_GROUP_ID;
+                    if (known)
+                        objectIdInfo.ExtraInfo = known->ExtraInfo;
+                    keyOID = &objectIdInfo;
+                }
+                else
+                    CryptMemFree(objectId);
+            }
             if (!keyOID)
             {
                 if (ppszError)
@@ -886,11 +946,24 @@ BOOL WINAPI CertStrToNameW(DWORD dwCertEncodingType, LPCWSTR pszX500,
     CRYPT_FreeKeynameKeeper(&keeper);
     if (ret)
     {
+        if (dwStrType & CERT_NAME_STR_REVERSE_FLAG)
+        {
+            for (i = 0; i < info.cRDN / 2; i++)
+            {
+                CERT_RDN rdn = info.rgRDN[i];
+
+                info.rgRDN[i] = info.rgRDN[info.cRDN - 1 - i];
+                info.rgRDN[info.cRDN - 1 - i] = rdn;
+            }
+        }
         if (ppszError)
             *ppszError = NULL;
         ret = CryptEncodeObjectEx(dwCertEncodingType, X509_NAME, &info,
          0, NULL, pbEncoded, pcbEncoded);
     }
+    for (i = 0; i < objectIdCount; i++)
+        CryptMemFree(objectIds[i]);
+    CryptMemFree(objectIds);
     for (i = 0; i < info.cRDN; i++)
     {
         DWORD j;

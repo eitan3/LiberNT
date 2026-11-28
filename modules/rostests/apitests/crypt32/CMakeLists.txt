@@ -14,6 +14,7 @@ list(APPEND SOURCE
     OtherName.c
     RevocationTimeout.c
     RootProgram.c
+    StrToName.c
     testlist.c)
 
 add_executable(crypt32_apitest ${SOURCE})
