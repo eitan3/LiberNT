@@ -133,6 +133,7 @@ RtlIdentifyDevice(
             return Revision >= RTL_REVISION_8139_CPLUS ? RtlFamily8139 : RtlFamilyNone;
 
         case 0x8125:
+        case 0x8126:
         case 0x8136:
         case 0x8161:
         case 0x8167:
@@ -172,12 +173,45 @@ RtlDisableInterrupts(
 }
 
 static
+BOOLEAN
+RtlReadPhy(
+    _In_ PRTL_ADAPTER Adapter,
+    _In_ ULONG Register,
+    _Out_ PUSHORT Value);
+
+static
+ULONG
+RtlPhySpeed(
+    _In_ USHORT Status)
+{
+    switch (Status & RTL_PHYSR_SPEED_MASK)
+    {
+        case RTL_PHYSR_SPEED_10:
+            return 10;
+
+        case RTL_PHYSR_SPEED_100:
+            return 100;
+
+        case RTL_PHYSR_SPEED_1000:
+            return 1000;
+
+        case RTL_PHYSR_SPEED_2500:
+            return 2500;
+
+        case RTL_PHYSR_SPEED_5000:
+            return 5000;
+    }
+
+    return 0;
+}
+
+static
 VOID
 RtlUpdateLink(
     _In_ PRTL_ADAPTER Adapter)
 {
     PKDNET_SHARED_DATA KdNet = Adapter->KdNet;
-    USHORT Status;
+    USHORT Status, PhyStatus;
 
     if (Adapter->Family == RtlFamily8139)
     {
@@ -202,6 +236,15 @@ RtlUpdateLink(
         return;
     }
 
+    KdNet->LinkDuplex = (Status & RTL_PHYSTATUS_FULLDUP) ? 1 : 0;
+    if ((Adapter->ChipFlags & RTL_CHIP_8126) && RtlReadPhy(Adapter, RTL_PHY_PHYSR, &PhyStatus) &&
+        RtlPhySpeed(PhyStatus) != 0)
+    {
+        KdNet->LinkSpeed = RtlPhySpeed(PhyStatus);
+        *KdNet->LinkState = 1;
+        return;
+    }
+
     if (Status & RTL_PHYSTATUS_2500M)
         KdNet->LinkSpeed = 2500;
     else if (Status & RTL_PHYSTATUS_10M)
@@ -211,7 +254,6 @@ RtlUpdateLink(
     else
         KdNet->LinkSpeed = 1000;
 
-    KdNet->LinkDuplex = (Status & RTL_PHYSTATUS_FULLDUP) ? 1 : 0;
     *KdNet->LinkState = 1;
 }
 
@@ -241,6 +283,8 @@ typedef struct _RTL_CHIP
 
 static const RTL_CHIP RtlChips[] =
 {
+    { 0x7CF, 0x649, RTL_CHIP_GATED | RTL_CHIP_8125 | RTL_CHIP_8126 },
+    { 0x7CF, 0x64A, RTL_CHIP_GATED | RTL_CHIP_8125 | RTL_CHIP_8126 },
     { 0x7CF, 0x609, RTL_CHIP_GATED | RTL_CHIP_8125 },
     { 0x7CF, 0x641, RTL_CHIP_GATED | RTL_CHIP_8125 },
     { 0x7CF, 0x681, RTL_CHIP_GATED | RTL_CHIP_8125 },
@@ -484,11 +528,21 @@ RtlStart8125(
     RtlWrite16(Adapter, RTL_REG_0382_8125, 0x221B);
     RtlWrite32(Adapter, RTL_REG_RSS_8125, 0);
     RtlWrite16(Adapter, RTL_REG_QUEUES_8125, 0);
+    if (Adapter->ChipFlags & RTL_CHIP_8126)
+    {
+        /* FIXME: the Gen3 ZRXDC non-compliance bit at PCI configuration offset 0x890 is left as the firmware set it */
+        RtlWrite8(Adapter, RTL_REG_00D8_8126, RtlRead8(Adapter, RTL_REG_00D8_8126) & ~RTL_00D8_8126_CLEAR);
+    }
+
     for (i = 0; i < RTL_NUMBER_OF(Rtl8125Setup); i++)
         RtlModifyController(Adapter, Rtl8125Setup[i].Register, Rtl8125Setup[i].Clear, Rtl8125Setup[i].Set);
 
+    if (Adapter->ChipFlags & RTL_CHIP_8126)
+        RtlModifyController(Adapter, 0xEA1C, 0x0300, 0x0000);
+
     RtlModifyController(Adapter, RTL_OCP_TX_FIFO_8125, 0x0700,
-                        Adapter->ChipId == RTL_ID_8125B ? 0x0200 : 0x0300);
+                        Adapter->ChipId == RTL_ID_8125B ? 0x0200 :
+                        (Adapter->ChipFlags & RTL_CHIP_8126) ? 0x0400 : 0x0300);
     RtlModifyController(Adapter, RTL_OCP_TX_QUEUES_8125, 0x0C30,
                         Adapter->ChipId == RTL_ID_8125B ? 0x0000 : 0x0020);
     RtlModifyController(Adapter, RTL_OCP_TCAM_8125, 0, 0x0001);

@@ -39,6 +39,7 @@
 #define RTL_REG_CPCR            0xE0
 #define RTL_REG_RDSAR           0xE4
 #define RTL_REG_MTPS            0xEC
+#define RTL_REG_00D8_8126       0xD8
 #define RTL_REG_MISC            0xF0
 #define RTL_REG_0382_8125       0x382
 #define RTL_REG_TCAM_8125       0x1880
@@ -116,12 +117,15 @@
 #define RTL_CHIP_GATED          0x08
 #define RTL_CHIP_NO_PHY         0x10
 #define RTL_CHIP_8125           0x20
+#define RTL_CHIP_8126           0x40
 
 #define RTL_ID_8168EVL_MASK     0x07C8
 #define RTL_ID_8168EVL          0x02C8
 #define RTL_ID_8168G            0x04C0
 #define RTL_ID_8125A            0x0609
 #define RTL_ID_8125B            0x0641
+#define RTL_ID_8126A_2          0x0649
+#define RTL_ID_8126A_3          0x064A
 
 #define RTL_MSR_LINKB           0x04
 #define RTL_MSR_SPEED_10        0x08
@@ -133,6 +137,15 @@
 #define RTL_PHYSTATUS_100M      0x08
 #define RTL_PHYSTATUS_2500M     0x0400
 #define RTL_PMCH_PHY_POWER      0xC0
+
+#define RTL_PHY_PHYSR           0x1A
+#define RTL_PHYSR_SPEED_MASK    0x0630
+#define RTL_PHYSR_SPEED_10      0x0000
+#define RTL_PHYSR_SPEED_100     0x0010
+#define RTL_PHYSR_SPEED_1000    0x0020
+#define RTL_PHYSR_SPEED_2500    0x0210
+#define RTL_PHYSR_SPEED_5000    0x0220
+#define RTL_00D8_8126_CLEAR     0x02
 
 #define RTL_OCP_DESCRIPTOR_8125 0xEB58
 #define RTL_OCP_TCAM_8125       0xEB54
