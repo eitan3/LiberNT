@@ -245,7 +245,7 @@ LoadDevices(HWND hwndDlg, PDEVICE_PAGE Page)
         IMMDevice_Release(pDefaultComm);
     }
 
-    if (SUCCEEDED(IMMDeviceEnumerator_EnumAudioEndpoints(Page->Enumerator, Page->Flow, DEVICE_STATE_ACTIVE, &pCollection)))
+    if (SUCCEEDED(IMMDeviceEnumerator_EnumAudioEndpoints(Page->Enumerator, Page->Flow, DEVICE_STATE_ACTIVE | DEVICE_STATE_UNPLUGGED, &pCollection)))
         IMMDeviceCollection_GetCount(pCollection, &Count);
 
     for (Index = 0; Index < Count && Page->Count < MAX_DEVICES; Index++)
@@ -253,6 +253,7 @@ LoadDevices(HWND hwndDlg, PDEVICE_PAGE Page)
         DEVICE_ROW *Row = &Page->Rows[Page->Count];
         IMMDevice *pDevice = NULL;
         IPropertyStore *pProps = NULL;
+        DWORD State = DEVICE_STATE_ACTIVE;
         WCHAR Name[128] = L"", Desc[128] = L"", Adapter[128] = L"";
         LVITEMW Item;
 
@@ -272,6 +273,7 @@ LoadDevices(HWND hwndDlg, PDEVICE_PAGE Page)
             IPropertyStore_Release(pProps);
         }
         IMMDevice_Activate(pDevice, &IID_IAudioMeterInformation, CLSCTX_INPROC_SERVER, NULL, (void **)&Row->Meter);
+        IMMDevice_GetState(pDevice, &State);
         IMMDevice_Release(pDevice);
         Row->Default = DefaultId && !wcscmp(DefaultId, Row->Id);
         Row->DefaultComm = DefaultCommId && !wcscmp(DefaultCommId, Row->Id);
@@ -286,7 +288,9 @@ LoadDevices(HWND hwndDlg, PDEVICE_PAGE Page)
 
         StringCchCopyW(Line, _countof(Line), Adapter[0] ? Adapter : Name);
         ListView_SetItemText(Page->List, Page->Count, 1, Line);
-        LoadStringW(hApplet, Row->Default ? IDS_DEVICE_DEFAULT : Row->DefaultComm ? IDS_DEVICE_DEFAULT_COMM : IDS_DEVICE_READY,
+        /* A jack with nothing plugged is listed as not connected (LEG-1) */
+        LoadStringW(hApplet, State == DEVICE_STATE_UNPLUGGED ? IDS_DEVICE_NOTCONNECTED :
+                    Row->Default ? IDS_DEVICE_DEFAULT : Row->DefaultComm ? IDS_DEVICE_DEFAULT_COMM : IDS_DEVICE_READY,
                     Status, _countof(Status));
         ListView_SetItemText(Page->List, Page->Count, 2, Status);
         if (Row->Default)

@@ -300,6 +300,7 @@ BEGIN
     IDS_DEVICE_DEFAULT "Default Device"
     IDS_DEVICE_READY "Ready"
     IDS_DEVICE_DEFAULT_COMM "Default Communication Device"
+    IDS_DEVICE_NOTCONNECTED "Not connected"
     IDS_NO_ENDPOINT_DSP "No audio output device is available. This PC routes audio through the Intel Smart Sound DSP, which LiberNT does not support yet."
     IDS_SET_DEFAULT_FAILED "The default device could not be changed. The setting is as it was."
     IDS_SPEAKER_VOLUME "Speaker Volume"

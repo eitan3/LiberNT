@@ -176,7 +176,8 @@ AudioDevices(EDataFlow flow, std::vector<std::wstring> &ids, std::vector<std::ws
         preferred->GetId(&preferredId);
         preferred->Release();
     }
-    if (SUCCEEDED(enumerator->EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE, &collection)))
+    /* A jack with nothing plugged is listed too, as not connected (LEG-1): it is no default while it is unplugged */
+    if (SUCCEEDED(enumerator->EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE | DEVICE_STATE_UNPLUGGED, &collection)))
     {
         collection->GetCount(&count);
         for (UINT i = 0; i < count; i++)
@@ -185,10 +186,20 @@ AudioDevices(EDataFlow flow, std::vector<std::wstring> &ids, std::vector<std::ws
             LPWSTR id = NULL;
             if (SUCCEEDED(collection->Item(i, &device)) && SUCCEEDED(device->GetId(&id)))
             {
-                if (preferredId && !wcscmp(id, preferredId))
+                DWORD state = DEVICE_STATE_ACTIVE;
+                std::wstring name = AudioName(device);
+
+                device->GetState(&state);
+                if (state == DEVICE_STATE_UNPLUGGED)
+                {
+                    std::wstring notConnected = Str(IDS_AUDIO_NOT_CONNECTED);
+                    if (!notConnected.empty())
+                        name += L" (" + notConnected + L")";
+                }
+                else if (preferredId && !wcscmp(id, preferredId))
                     *selected = (int)ids.size();
                 ids.push_back(id);
-                names.push_back(AudioName(device));
+                names.push_back(name);
                 CoTaskMemFree(id);
             }
             if (device)
@@ -198,6 +209,25 @@ AudioDevices(EDataFlow flow, std::vector<std::wstring> &ids, std::vector<std::ws
     }
     CoTaskMemFree(preferredId);
     enumerator->Release();
+}
+
+/* Whether the endpoint is active now: a jack that is unplugged takes no choice */
+static bool
+AudioEndpointActive(const std::wstring &id)
+{
+    IMMDeviceEnumerator *enumerator = AudioEnumerator();
+    IMMDevice *device = NULL;
+    DWORD state = 0;
+    bool active = false;
+
+    if (enumerator && SUCCEEDED(enumerator->GetDevice(id.c_str(), &device)))
+    {
+        active = SUCCEEDED(device->GetState(&state)) && state == DEVICE_STATE_ACTIVE;
+        device->Release();
+    }
+    if (enumerator)
+        enumerator->Release();
+    return active;
 }
 
 static IAudioEndpointVolume *
@@ -303,8 +333,16 @@ AddAudioGroup(PageBuilder &page, EDataFlow flow)
     }
     page.Choice(Str(output ? IDS_OUTPUT_DEVICE : IDS_INPUT_DEVICE), Str(output ? IDS_OUTPUT_DESC : IDS_INPUT_DESC),
                 output ? L"speaker_2_20_regular" : L"mic_20_regular", names, selected,
-                [flow, ids](int index) { SetPreferredAudio(flow, ids[index]); });
-    AddAudioFormat(page, flow, ids[selected]);
+                [host = page.Host, flow, ids](int index)
+                {
+                    /* A jack that is unplugged takes no choice: the list is shown again with the default on it (LEG-1) */
+                    if (AudioEndpointActive(ids[index]))
+                        SetPreferredAudio(flow, ids[index]);
+                    else
+                        host->Refresh();
+                });
+    if (selected >= 0)
+        AddAudioFormat(page, flow, ids[selected]);
     volume = AudioVolume(flow);
     if (volume)
     {

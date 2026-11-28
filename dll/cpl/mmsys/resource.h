@@ -133,6 +133,7 @@
 #define IDS_DEVICE_DEFAULT        1027
 #define IDS_DEVICE_READY          1028
 #define IDS_DEVICE_DEFAULT_COMM   1029
+#define IDS_DEVICE_NOTCONNECTED   1034
 
 /* Sounds Image List */
 #define IMAGE_SOUND_SECTION  0
