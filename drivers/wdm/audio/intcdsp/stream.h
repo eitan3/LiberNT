@@ -432,8 +432,11 @@ IntcDspStreamsIdle(
  * The pending teardowns finished with no transition of their own (N8-02,
  * the public poll): under the lock the prologue's drain, as every
  * transition runs it; how many stay pending is returned, a release that
- * met the busy transport again left as it was. A manager that is not up,
- * or faulted, is not asked, and a call at a raised IRQL drains nothing.
+ * met the busy transport again left as it was. The lock is taken only if
+ * it is free (N14-05): a transition holding it (a boot at an open) is not
+ * waited for, the call drains nothing and answers 0, and the idle work
+ * item's drain finishes what stayed. A manager that is not up, or faulted,
+ * is not asked, and a call at a raised IRQL drains nothing.
  */
 UINT32
 IntcDspStreamsTeardownPoll(
@@ -564,6 +567,17 @@ IntcDspStreamsDeviceBootEnd(
 VOID
 IntcDspStreamsTopologyRefused(
     _Inout_ PINTCDSP_STREAMS Streams);
+
+/*
+ * Whether a model the firmware refused is remembered (the flag above),
+ * read without the lock: the answer decides a line alone, the pin's own
+ * at its open (N14-04), and the open that follows asks the manager under
+ * the lock itself; a flag set or cleared between the two is one line more
+ * or one less, never a stream.
+ */
+BOOLEAN
+IntcDspStreamsModelRefused(
+    _In_ PINTCDSP_STREAMS Streams);
 
 /*
  * The poll of an asynchronous exception (E1c): the firmware posted a crash

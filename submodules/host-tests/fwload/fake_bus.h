@@ -212,6 +212,8 @@ extern PVOID FakeBusWaitContext;
  */
 extern LONG FakeBusLockDepth;
 extern KIRQL FakeBusIrql;
+/* Whether a transition of another thread holds the stream manager's lock, as the host cannot have one: the try of the teardown poll (a wait of no time on the mutex, N14-05) answers STATUS_TIMEOUT while it is set */
+extern LONG FakeBusLockContended;
 #endif
 
 #endif

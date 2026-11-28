@@ -32,7 +32,7 @@ extern "C" {
 DEFINE_GUID(GUID_INTELDSP_AUDIO_INTERFACE,
     0x798afb7e, 0x6311, 0x4b18, 0x91, 0xc7, 0x1d, 0xf3, 0x39, 0x0c, 0x7d, 0x33);
 
-#define INTELDSP_AUDIO_INTERFACE_VERSION   2   /* 2: TeardownPoll (N8-02) */
+#define INTELDSP_AUDIO_INTERFACE_VERSION   3   /* 2: TeardownPoll (N8-02); 3: ModelRefused (N14-04) */
 /* a PCM's name as the topology gives it: softplg.h SOFTPLG_TEXT_BYTES (44 characters and the terminator) */
 #define INTELDSP_ENDPOINT_NAME_BYTES       45
 /* the formats one endpoint offers: a host copier of the P3 topologies carries three, a shipped one up to nine */
@@ -98,6 +98,8 @@ typedef _Must_inspect_result_ NTSTATUS(*PINTELDSP_GET_CONTROL)(_In_ PVOID Contex
 typedef _Must_inspect_result_ NTSTATUS(*PINTELDSP_SET_CONTROL)(_In_ PVOID Context, _In_ ULONG EndpointIndex, _In_ INTELDSP_CONTROL Control, _In_ LONG Value);
 /* the drain of the pending teardowns (N8-02): asked from the pin's position property as the idle work item asks it, so that a free that met a busy transport is finished with no further transition of the stream's own; answers how many stay pending; nothing is sent while a request is in progress */
 typedef UINT32(*PINTELDSP_TEARDOWN_POLL)(_In_ PVOID Context);
+/* whether a model the firmware refused is remembered (N12-02): the pin's own line at its open is the first refusal's alone, the opens after it print nothing (N14-04) */
+typedef BOOLEAN(*PINTELDSP_MODEL_REFUSED)(_In_ PVOID Context);
 
 typedef struct _INTELDSP_AUDIO_INTERFACE
 {
@@ -121,6 +123,7 @@ typedef struct _INTELDSP_AUDIO_INTERFACE
     PINTELDSP_GET_CONTROL GetControl;
     PINTELDSP_SET_CONTROL SetControl;
     PINTELDSP_TEARDOWN_POLL TeardownPoll;
+    PINTELDSP_MODEL_REFUSED ModelRefused;
 } INTELDSP_AUDIO_INTERFACE, *PINTELDSP_AUDIO_INTERFACE;
 
 #ifdef __cplusplus

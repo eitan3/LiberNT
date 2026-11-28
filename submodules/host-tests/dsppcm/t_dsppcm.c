@@ -678,6 +678,7 @@ typedef enum _FAKE_KIND
     KGetControl,
     KSetControl,
     KTeardownPoll,
+    KModelRefused,
     KKindCount
 } FAKE_KIND;
 
@@ -753,6 +754,7 @@ static NTSTATUS FakeCloseStream(PVOID Context, HANDLE Stream) { return FakeRecor
 static NTSTATUS FakeGetControl(PVOID Context, ULONG EndpointIndex, INTELDSP_CONTROL Control, PLONG Value) { G->A[KGetControl] = EndpointIndex; G->Control[KGetControl] = Control; if (NT_SUCCESS(FakeRecord(KGetControl, Context, NULL))) *Value = -1234; return G->Result[KGetControl]; }
 static NTSTATUS FakeSetControl(PVOID Context, ULONG EndpointIndex, INTELDSP_CONTROL Control, LONG Value) { G->A[KSetControl] = EndpointIndex; G->Control[KSetControl] = Control; G->B[KSetControl] = (ULONG)Value; return FakeRecord(KSetControl, Context, NULL); }
 static UINT32 FakeTeardownPoll(PVOID Context) { FakeRecord(KTeardownPoll, Context, NULL); return G->A[KTeardownPoll]; }
+static BOOLEAN FakeModelRefused(PVOID Context) { FakeRecord(KModelRefused, Context, NULL); return (BOOLEAN)G->A[KModelRefused]; }
 
 static
 VOID
@@ -779,6 +781,7 @@ FakeInit(
     F->Iface.GetControl = FakeGetControl;
     F->Iface.SetControl = FakeSetControl;
     F->Iface.TeardownPoll = FakeTeardownPoll;
+    F->Iface.ModelRefused = FakeModelRefused;
     F->Mdl = (PMDL)0x1111u;
     F->Bytes = 32768;
     F->Offset = 0;

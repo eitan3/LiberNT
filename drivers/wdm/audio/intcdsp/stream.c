@@ -1299,6 +1299,14 @@ IntcDspStreamsTopologyRefused(
     IntcDspStreamsUnlock(Streams);
 }
 
+/* Whether a refused model is remembered (the flag above), read without the lock (stream.h) */
+BOOLEAN
+IntcDspStreamsModelRefused(
+    _In_ PINTCDSP_STREAMS Streams)
+{
+    return Streams->ModelRefused;
+}
+
 /* The end of a transition a request failed in: the fault's release when the link was lost, the status otherwise */
 static
 NTSTATUS
@@ -1480,10 +1488,14 @@ IntcDspStreamsTeardownPoll(
     _Inout_ PINTCDSP_STREAMS Streams)
 {
     UINT32 S, Pending = 0;
+    LARGE_INTEGER NoWait;
 
     if (KeGetCurrentIrql() != PASSIVE_LEVEL)
         return 0;
-    IntcDspStreamsLock(Streams);
+    /* the try (N14-05): a wait of no time takes a mutex that is free and the holder's own, and answers STATUS_TIMEOUT for one a transition holds */
+    NoWait.QuadPart = 0;
+    if (KeWaitForSingleObject(&Streams->Lock, Executive, KernelMode, FALSE, &NoWait) != STATUS_SUCCESS)
+        return 0;
     IntcDspStreamsDrain(Streams);
     for (S = 0; S < INTCDSP_STREAMS_MAX; S++)
         if (Streams->Stream[S].State == IntcDspStreamStateTeardown)

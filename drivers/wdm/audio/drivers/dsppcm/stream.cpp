@@ -169,6 +169,7 @@ DSPPCM_AllocateStream(
     HANDLE Opened = NULL;
     ULONG Index, SampleRate, Channels, ValidBits, ContainerBits;
     NTSTATUS Status;
+    BOOLEAN Remembered;
 
     if (!Stream || !DataFormat || Pin != DSPPCM_WAVE_STREAM_PIN)
         return STATUS_INVALID_PARAMETER;
@@ -180,10 +181,13 @@ DSPPCM_AllocateStream(
         DSPPCM_LOG("endpoint '%s' %s: the pin's format is refused, 0x%08lx\n", Endpoint->Name, Capture ? "capture" : "render", Status);
         return Status;
     }
+    /* a model the firmware refused is remembered by the manager, and the opens after the first are refused without a line (N12-02): the pin's line is the first refusal's alone (N14-04), so the flag is read before the open that may set it */
+    Remembered = Interface->ModelRefused(Interface->Context);
     Status = Interface->OpenStream(Interface->Context, Miniport->GetEndpointIndex(), Capture, DataFormat, &Opened);
     if (!NT_SUCCESS(Status))
     {
-        DSPPCM_LOG("endpoint '%s' %s: the DSP gives no stream, 0x%08lx\n", Endpoint->Name, Capture ? "capture" : "render", Status);
+        if (!Remembered)
+            DSPPCM_LOG("endpoint '%s' %s: the DSP gives no stream, 0x%08lx\n", Endpoint->Name, Capture ? "capture" : "render", Status);
         return Status;
     }
     This = new (NonPagedPool, TAG_DSPPCM) CMiniportWaveRTStream(NULL, Miniport->GetEndpointIndex(), Capture, Interface, Opened);

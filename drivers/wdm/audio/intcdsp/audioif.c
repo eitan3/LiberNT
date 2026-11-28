@@ -573,6 +573,15 @@ IntcDspAudioTeardownPoll(
     return IntcDspStreamsTeardownPoll(&IntcDspAudioDevice(Context)->Streams);
 }
 
+/* Whether a refused model is remembered (N14-04): the manager's flag, read without the lock */
+static
+BOOLEAN
+IntcDspAudioModelRefused(
+    _In_ PVOID Context)
+{
+    return IntcDspStreamsModelRefused(&IntcDspAudioDevice(Context)->Streams);
+}
+
 /* The interface of one child: the routines in the order of the structure, the child's PDO context as theirs */
 static
 VOID
@@ -601,6 +610,7 @@ IntcDspAudioInterfaceFill(
     Interface->GetControl = IntcDspAudioGetControl;
     Interface->SetControl = IntcDspAudioSetControl;
     Interface->TeardownPoll = IntcDspAudioTeardownPoll;
+    Interface->ModelRefused = IntcDspAudioModelRefused;
 }
 
 static

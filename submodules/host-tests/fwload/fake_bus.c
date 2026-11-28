@@ -665,6 +665,7 @@ FAKE_BUS_WAIT_HOOK FakeBusWaitHook;
 PVOID FakeBusWaitContext;
 LONG FakeBusLockDepth;
 KIRQL FakeBusIrql;
+LONG FakeBusLockContended;
 
 /* The host's mutex of the stream manager: made as nothing, taken without a wait (KeWaitForSingleObject below), and given back with the depth it was taken to.
  * Its limit (R8-10): a depth counter with no owner. It proves that every take has its release, which a test reads as FakeBusLockDepth == 0 at its end; it would not see a take by the holder itself, a release by another, or a wait that should have blocked, since the host runs one thread and a real mutex's contention is not modelled */
@@ -718,6 +719,14 @@ KeWaitForSingleObject(
     /* a wait without a timeout is the stream manager's lock, which nothing else holds on a host that runs one thread */
     if (Timeout == NULL)
     {
+        FakeBusLockDepth++;
+        return STATUS_SUCCESS;
+    }
+    /* a wait of no time is the try of the teardown poll (N14-05): taken when free, STATUS_TIMEOUT when a test says a transition holds it */
+    if (Timeout->QuadPart == 0)
+    {
+        if (FakeBusLockContended)
+            return STATUS_TIMEOUT;
         FakeBusLockDepth++;
         return STATUS_SUCCESS;
     }

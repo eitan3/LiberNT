@@ -5874,7 +5874,7 @@ CheckStreamTeardownPoll(
     STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
     HANDLE Render = NULL, Capture = NULL;
     PINTCDSP_STREAM Stream;
-    UINT32 Pcm, Sx;
+    UINT32 Pcm, Sx, Requests;
 
     CHECK(S != NULL);
     if (S == NULL)
@@ -5901,6 +5901,16 @@ CheckStreamTeardownPoll(
     Stream = IntcDspStreamOf(&S->Streams, Capture);
     CHECK(Stream != NULL && Stream->State == IntcDspStreamStateTeardown);
     CHECK(StreamLogCount(S, "its pending teardown is done") == 0);
+    /* a transition holds the lock elsewhere (N14-05): the poll does not wait for it, drains nothing and answers 0; the request lock is not asked, the teardown stays for the idle work item's drain */
+    FakeBusLockContended = 1;
+    Requests = S->H.LockAttempts;
+    CHECK_EQ(IntcDspStreamsTeardownPoll(&S->Streams), 0);
+    CHECK_EQ(S->H.LockAttempts, Requests);
+    Stream = IntcDspStreamOf(&S->Streams, Capture);
+    CHECK(Stream != NULL && Stream->State == IntcDspStreamStateTeardown);
+    CHECK(StreamLogCount(S, "its pending teardown is done") == 0);
+    FakeBusLockContended = 0;
+    CHECK_EQ(FakeBusLockDepth, 0);
     /* the transport free: the poll finishes it with no transition, the object freed since its pin closed it */
     S->H.LockBusyFromRequest = 0;
     CHECK_EQ(IntcDspStreamsTeardownPoll(&S->Streams), 0);
@@ -5986,6 +5996,7 @@ CheckStreamModelRefused(
     /* the manager down as a D0 entry without a boot or an idle power-down leaves it: not ready, in need of a boot, its operations kept */
     IntcDspStreamsRelease(&S->Streams);
     CHECK(!S->Streams.Ready && S->Streams.NeedsBoot && !S->Streams.Faulted && !S->Streams.ModelRefused);
+    CHECK_EQ(IntcDspStreamsModelRefused(&S->Streams), FALSE);
     S->Ops.Boot = StreamBootAtOpen;
     /* the first open boots the DSP and the firmware's limits refuse the model: refused with its line, remembered */
     S->BootRefuses = TRUE;
@@ -5993,6 +6004,8 @@ CheckStreamModelRefused(
     CHECK(Stream == NULL);
     CHECK_EQ(S->Boots, 1);
     CHECK_EQ(S->Streams.ModelRefused, TRUE);
+    /* the pin asks the flag before its open, for its line (N14-04): the first refusal's line printed, the flag set by it */
+    CHECK_EQ(IntcDspStreamsModelRefused(&S->Streams), TRUE);
     CHECK(!S->Streams.Ready && S->Streams.NeedsBoot && !S->Streams.Faulted);
     CHECK_EQ(S->Streams.Path[Pcm].Open, 0);
     Lines = StreamLogCount(S, "boot at stream open failed: ");
@@ -6003,6 +6016,8 @@ CheckStreamModelRefused(
         Stream = (HANDLE)(UINT_PTR)0x1234;
         CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, I & 1, 48000, 2, 32, 32, &Stream), STATUS_DEVICE_NOT_READY);
         CHECK(Stream == NULL);
+        /* remembered before each of them: the pin's line is not printed */
+        CHECK_EQ(IntcDspStreamsModelRefused(&S->Streams), TRUE);
     }
     CHECK_EQ(S->Boots, 1);
     CHECK_EQ(StreamLogCount(S, "boot at stream open failed: "), Lines);
@@ -6010,10 +6025,12 @@ CheckStreamModelRefused(
     /* the release of a D0 exit forgets it: the next open boots once more, refused again as the limits answer as before, its line, remembered again */
     IntcDspStreamsRelease(&S->Streams);
     CHECK_EQ(S->Streams.ModelRefused, FALSE);
+    CHECK_EQ(IntcDspStreamsModelRefused(&S->Streams), FALSE);
     CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Stream), STATUS_DEVICE_NOT_READY);
     CHECK(Stream == NULL);
     CHECK_EQ(S->Boots, 2);
     CHECK_EQ(S->Streams.ModelRefused, TRUE);
+    CHECK_EQ(IntcDspStreamsModelRefused(&S->Streams), TRUE);
     CHECK_EQ(StreamLogCount(S, "boot at stream open failed: "), Lines + 1);
     /* the firmware runs the model now: after the release the open boots, the manager starts on the model and the open goes through; nothing is remembered */
     S->BootRefuses = FALSE;
@@ -6023,6 +6040,7 @@ CheckStreamModelRefused(
     CHECK_EQ(S->Boots, 3);
     CHECK(S->Streams.Ready && !S->Streams.Faulted && !S->Streams.NeedsBoot);
     CHECK_EQ(S->Streams.ModelRefused, FALSE);
+    CHECK_EQ(IntcDspStreamsModelRefused(&S->Streams), FALSE);
     CHECK_EQ(IntcDspStreamClose(&S->Streams, Stream), STATUS_SUCCESS);
     StreamStop(S);
     free(S);
@@ -6033,6 +6051,7 @@ CheckStreamModelRefused(
     {
         IntcDspStreamsTopologyRefused(&T->Streams);
         CHECK_EQ(T->Streams.ModelRefused, FALSE);
+        CHECK_EQ(IntcDspStreamsModelRefused(&T->Streams), FALSE);
         free(T);
     }
 }

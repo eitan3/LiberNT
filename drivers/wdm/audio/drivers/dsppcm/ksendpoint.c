@@ -211,7 +211,7 @@ DsppcmStreamPosition(
     /* a position is asked of a stream with its buffer */
     if (BufferSize == 0)
         return STATUS_INVALID_PARAMETER;
-    /* the position property is asked while the stream runs, by the pin's own thread at PASSIVE_LEVEL: the pending teardowns are drained here as the idle work item drains them, so a free that met a busy transport ends without waiting for another transition (N8-02) */
+    /* the position property is asked while the stream runs, by the pin's own thread at PASSIVE_LEVEL: the pending teardowns are drained here as the idle work item drains them, without a wait for a transition that holds the lock (N8-02, N14-05), so a free that met a busy transport ends without waiting for another transition */
     Interface->TeardownPoll(Interface->Context);
     Status = Interface->GetPositionRegister(Interface->Context, Stream, &Register);
     if (!NT_SUCCESS(Status))
