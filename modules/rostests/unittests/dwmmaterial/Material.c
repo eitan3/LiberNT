@@ -714,6 +714,16 @@ static void TestMicaWindow(void)
     Window.BackdropType = DWM_BACKDROP_MAIN;
     ok(DwmLiberClassifyMica(&Window) && Window.BackdropType == DWM_BACKDROP_MAIN,
        "an app's DWMSBT_MAINWINDOW frame is mica in the Liber experience\n");
+
+    MicaFrame(&Window);
+    Window.BackdropRegion = DWM_BACKDROP_REGION_WINDOW;
+    ok(DwmLiberClassifyMica(&Window) && Window.BackdropRegion == DWM_BACKDROP_REGION_NONCLIENT,
+       "transient glass over a whole window only puts mica under the frame\n");
+    MicaFrame(&Window);
+    Window.BackdropType = DWM_BACKDROP_MAIN;
+    Window.BackdropRegion = DWM_BACKDROP_REGION_WINDOW;
+    ok(DwmLiberClassifyMica(&Window) && Window.BackdropRegion == DWM_BACKDROP_REGION_WINDOW,
+       "an app that asks for mica over its whole window keeps it\n");
 }
 
 static void TestMicaPixel(void)

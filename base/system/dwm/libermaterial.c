@@ -672,6 +672,8 @@ DwmLiberClassifyMica(
     {
         return FALSE;
     }
+    if (Window->BackdropType == DWM_BACKDROP_TRANSIENT)
+        Window->BackdropRegion = DWM_BACKDROP_REGION_NONCLIENT;
     Window->BackdropType = DWM_BACKDROP_MAIN;
     Window->LiberMaterial = DWM_LIBER_MATERIAL_PACK(LIBER_MATERIAL_MICA + 1, FALSE, DWM_LIBER_LAYER_WINDOW, 0,
                                                     DWM_LIBER_EDGE_NONE, 0);
