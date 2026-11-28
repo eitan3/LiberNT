@@ -1,0 +1,80 @@
+; PROJECT:     LiberNT Realtek RTL8125/RTL8126 Ethernet Driver
+; LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+; PURPOSE:     Installation file for RTL8125 (2.5 GbE) and RTL8126 (5 GbE) controllers
+; COPYRIGHT:   Copyright 2026 The LiberNT contributors
+
+[Version]
+Signature  = "$Windows NT$"
+LayoutFile = layout.inf
+Class      = Net
+ClassGUID  = {4D36E972-E325-11CE-BFC1-08002BE10318}
+Provider   = %LiberNT%
+DriverVer  = 11/28/2026,1.00
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[Manufacturer]
+%RealtekMfg% = RealtekMfg,NTamd64,NTarm64
+
+[RealtekMfg.NTamd64]
+%RTL8125.DeviceDesc% = RTL8125_Inst.ndi,PCI\VEN_10EC&DEV_8125
+%RTL8126.DeviceDesc% = RTL8125_Inst.ndi,PCI\VEN_10EC&DEV_8126
+
+[RealtekMfg.NTarm64]
+%RTL8125.DeviceDesc% = RTL8125_Inst.ndi,PCI\VEN_10EC&DEV_8125
+%RTL8126.DeviceDesc% = RTL8125_Inst.ndi,PCI\VEN_10EC&DEV_8126
+
+[RTL8125_Inst.ndi.NT]
+Characteristics    = 0x4 ; NCF_PHYSICAL
+BusType            = 5   ; PCIBus
+*IfType            = 6
+*MediaType         = 0
+*PhysicalMediaType = 14
+AddReg             = RTL8125_AddReg.NT, RTL8125_Params.NT
+CopyFiles          = RTL8125_CopyFiles.NT
+
+[RTL8125_Inst.ndi.NT.HW]
+AddReg = RTL8125_HwAddReg.NT
+
+[RTL8125_CopyFiles.NT]
+rtl8125.sys
+
+[RTL8125_AddReg.NT]
+HKR, Ndi,            Service,    0, "rtl8125"
+HKR, Ndi\Interfaces, UpperRange, 0, "ndis5"
+HKR, Ndi\Interfaces, LowerRange, 0, "ethernet"
+
+[RTL8125_Params.NT]
+HKR, Ndi\Params\NetworkAddress, ParamDesc, 0, %NetworkAddress%
+HKR, Ndi\Params\NetworkAddress, Type,      0, "edit"
+HKR, Ndi\Params\NetworkAddress, LimitText, 0, "12"
+HKR, Ndi\Params\NetworkAddress, UpperCase, 0, "1"
+HKR, Ndi\Params\NetworkAddress, Optional,  0, "1"
+HKR, Ndi\Params\NetworkAddress, Default,   0, ""
+
+[RTL8125_HwAddReg.NT]
+HKR, Interrupt Management,,0x00000010
+HKR, Interrupt Management\MessageSignaledInterruptProperties,,0x00000010
+HKR, Interrupt Management\MessageSignaledInterruptProperties,MSISupported,0x00010001,1
+HKR, Interrupt Management\MessageSignaledInterruptProperties,MessageNumberLimit,0x00010001,1
+
+[RTL8125_Inst.ndi.NT.Services]
+AddService = rtl8125, 0x00000002, RTL8125_Service_Inst
+
+[RTL8125_Service_Inst]
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\rtl8125.sys
+LoadOrderGroup = NDIS
+
+[Strings]
+; Non-localizable
+LiberNT    = "LiberNT Project"
+RealtekMfg = "Realtek"
+
+; Localizable
+RTL8125.DeviceDesc = "Realtek RTL8125 2.5GbE Ethernet Controller"
+RTL8126.DeviceDesc = "Realtek RTL8126 5GbE Ethernet Controller"
+NetworkAddress     = "Network Address"
