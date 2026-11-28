@@ -1038,7 +1038,8 @@ MupGetProviderInformation(VOID)
             InitializeProvider(Providers, ProviderCount);
             ++ProviderCount;
 
-            Providers = Coma + 1;
+            if (!End)
+                Providers = Coma + 1;
         } while (!End);
     }
 
