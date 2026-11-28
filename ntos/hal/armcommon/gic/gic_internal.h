@@ -254,6 +254,8 @@
 #define GICD_TYPER_RSS              (1u << 26)  /* Range selector support (GICv3.1+) */
 #define GICD_TYPER_NUM_LPIS_SHIFT   11
 #define GICD_TYPER_NUM_LPIS_MASK    0x1F
+#define GICD_TYPER_IDBITS_SHIFT     19
+#define GICD_TYPER_IDBITS_MASK      0x1F
 #define GICD_TYPER_ESPI_RANGE_SHIFT 27
 #define GICD_TYPER_ESPI_RANGE_MASK  0x1F
 

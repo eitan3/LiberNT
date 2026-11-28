@@ -802,11 +802,13 @@ HalpGicDetectVersion(VOID)
 
     if (Typer & GICD_TYPER_LPIS)
     {
-        ULONG LpiBits = ((Typer >> GICD_TYPER_NUM_LPIS_SHIFT) & GICD_TYPER_NUM_LPIS_MASK) + 1;
-        if (LpiBits > 0)
-        {
-            HalpGicVersionInfo.MaxLpiId = (1UL << (LpiBits + 8192)) - 1;
-        }
+        ULONG NumLpis = (Typer >> GICD_TYPER_NUM_LPIS_SHIFT) & GICD_TYPER_NUM_LPIS_MASK;
+        ULONG IdBits = ((Typer >> GICD_TYPER_IDBITS_SHIFT) & GICD_TYPER_IDBITS_MASK) + 1;
+
+        if (NumLpis != 0)
+            HalpGicVersionInfo.MaxLpiId = 8192 + (1UL << (NumLpis + 1)) - 1;
+        else
+            HalpGicVersionInfo.MaxLpiId = (IdBits >= 32) ? MAXULONG : (1UL << IdBits) - 1;
     }
 
     /*
