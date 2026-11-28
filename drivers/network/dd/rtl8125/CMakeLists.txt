@@ -17,6 +17,7 @@ list(APPEND SOURCE
     init.c
     interrupt.c
     oid.c
+    power.c
     rtl8125.h
     rtl8125hw.h)
 

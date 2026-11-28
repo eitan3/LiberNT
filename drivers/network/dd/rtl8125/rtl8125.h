@@ -38,6 +38,19 @@
                                      NDIS_PACKET_TYPE_BROADCAST | \
                                      NDIS_PACKET_TYPE_PROMISCUOUS)
 
+#define RT25_OFFLOAD_TX_IP4         0x0001
+#define RT25_OFFLOAD_TX_TCP4        0x0002
+#define RT25_OFFLOAD_TX_UDP4        0x0004
+#define RT25_OFFLOAD_TX_TCP6        0x0008
+#define RT25_OFFLOAD_TX_UDP6        0x0010
+#define RT25_OFFLOAD_RX_IP4         0x0100
+#define RT25_OFFLOAD_RX_TCP4        0x0200
+#define RT25_OFFLOAD_RX_UDP4        0x0400
+#define RT25_OFFLOAD_RX_TCP6        0x0800
+#define RT25_OFFLOAD_RX_UDP6        0x1000
+#define RT25_OFFLOAD_RX_ANY         0x1F00
+#define RT25_OFFLOAD_ALL            0x1F1F
+
 C_ASSERT(RT25_RING_SIZE % RT25_BUFFERS_PER_CHUNK == 0);
 
 typedef enum _RT25_STATE
@@ -67,6 +80,7 @@ typedef struct _RT25_TX_BUFFER
     PUCHAR VirtualAddress;
     ULONG64 PhysicalAddress;
     ULONG Length;
+    ULONG Options;
 } RT25_TX_BUFFER, *PRT25_TX_BUFFER;
 
 typedef struct _RT25_ADAPTER
@@ -88,6 +102,7 @@ typedef struct _RT25_ADAPTER
     ULONG MaxSpeedMbps;
     const char *ChipName;
 
+    NDIS_SPIN_LOCK StateLock;
     NDIS_SPIN_LOCK PhyLock;
     NDIS_SPIN_LOCK RxLock;
     NDIS_SPIN_LOCK TxLock;
@@ -111,6 +126,16 @@ typedef struct _RT25_ADAPTER
     volatile LONG State;
     BOOLEAN HardwareRunning;
     BOOLEAN SurpriseRemoved;
+
+    ULONG Offload;
+    BOOLEAN EncapsulationIPv4;
+    BOOLEAN EncapsulationIPv6;
+
+    NDIS_DEVICE_POWER_STATE PowerState;
+    ULONG EnabledWakePatterns;
+    ULONG WakeUpFlags;
+    ULONG MagicPatternId;
+    BOOLEAN MagicPatternAdded;
 
     ULONG PacketFilter;
     ULONG Lookahead;
@@ -228,6 +253,28 @@ Rt25EnableInterrupts(
     _In_ PRT25_ADAPTER Adapter);
 
 VOID
+Rt25ResumeInterrupts(
+    _In_ PRT25_ADAPTER Adapter);
+
+VOID
+Rt25QuiesceHardware(
+    _In_ PRT25_ADAPTER Adapter);
+
+VOID
+Rt25ApplyChecksumConfig(
+    _In_ PRT25_ADAPTER Adapter);
+
+VOID
+Rt25ArmWake(
+    _In_ PRT25_ADAPTER Adapter,
+    _In_ BOOLEAN Magic,
+    _In_ BOOLEAN LinkChange);
+
+VOID
+Rt25DisarmWake(
+    _In_ PRT25_ADAPTER Adapter);
+
+VOID
 Rt25DisableInterrupts(
     _In_ PRT25_ADAPTER Adapter);
 
@@ -260,6 +307,28 @@ Rt25ReclaimTransmit(
 MINIPORT_SEND_NET_BUFFER_LISTS Rt25SendNetBufferLists;
 MINIPORT_RETURN_NET_BUFFER_LISTS Rt25ReturnNetBufferLists;
 MINIPORT_CANCEL_SEND Rt25CancelSend;
+
+NDIS_STATUS
+Rt25PrepareBus(
+    _In_ PRT25_ADAPTER Adapter);
+
+VOID
+Rt25FillOffload(
+    _In_ ULONG Mask,
+    _Out_ PNDIS_OFFLOAD Offload);
+
+VOID
+Rt25IndicateOffloadConfig(
+    _In_ PRT25_ADAPTER Adapter);
+
+NDIS_STATUS
+Rt25SetPower(
+    _In_ PRT25_ADAPTER Adapter,
+    _In_ NDIS_DEVICE_POWER_STATE PowerState);
+
+VOID
+Rt25FillPmCapabilities(
+    _Out_ PNDIS_PM_CAPABILITIES Capabilities);
 
 NDIS_STATUS
 Rt25RegisterInterrupt(

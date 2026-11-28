@@ -53,6 +53,46 @@ HKR, Ndi\Params\NetworkAddress, UpperCase, 0, "1"
 HKR, Ndi\Params\NetworkAddress, Optional,  0, "1"
 HKR, Ndi\Params\NetworkAddress, Default,   0, ""
 
+HKR, Ndi\Params\*IPChecksumOffloadIPv4,       ParamDesc, 0, %IPChksumV4%
+HKR, Ndi\Params\*IPChecksumOffloadIPv4,       Type,      0, "enum"
+HKR, Ndi\Params\*IPChecksumOffloadIPv4,       Default,   0, "3"
+HKR, Ndi\Params\*IPChecksumOffloadIPv4\enum,  "0",       0, %Disabled%
+HKR, Ndi\Params\*IPChecksumOffloadIPv4\enum,  "1",       0, %TxEnabled%
+HKR, Ndi\Params\*IPChecksumOffloadIPv4\enum,  "2",       0, %RxEnabled%
+HKR, Ndi\Params\*IPChecksumOffloadIPv4\enum,  "3",       0, %RxTxEnabled%
+
+HKR, Ndi\Params\*TCPChecksumOffloadIPv4,       ParamDesc, 0, %TcpChksumV4%
+HKR, Ndi\Params\*TCPChecksumOffloadIPv4,       Type,      0, "enum"
+HKR, Ndi\Params\*TCPChecksumOffloadIPv4,       Default,   0, "3"
+HKR, Ndi\Params\*TCPChecksumOffloadIPv4\enum,  "0",       0, %Disabled%
+HKR, Ndi\Params\*TCPChecksumOffloadIPv4\enum,  "1",       0, %TxEnabled%
+HKR, Ndi\Params\*TCPChecksumOffloadIPv4\enum,  "2",       0, %RxEnabled%
+HKR, Ndi\Params\*TCPChecksumOffloadIPv4\enum,  "3",       0, %RxTxEnabled%
+
+HKR, Ndi\Params\*UDPChecksumOffloadIPv4,       ParamDesc, 0, %UdpChksumV4%
+HKR, Ndi\Params\*UDPChecksumOffloadIPv4,       Type,      0, "enum"
+HKR, Ndi\Params\*UDPChecksumOffloadIPv4,       Default,   0, "3"
+HKR, Ndi\Params\*UDPChecksumOffloadIPv4\enum,  "0",       0, %Disabled%
+HKR, Ndi\Params\*UDPChecksumOffloadIPv4\enum,  "1",       0, %TxEnabled%
+HKR, Ndi\Params\*UDPChecksumOffloadIPv4\enum,  "2",       0, %RxEnabled%
+HKR, Ndi\Params\*UDPChecksumOffloadIPv4\enum,  "3",       0, %RxTxEnabled%
+
+HKR, Ndi\Params\*TCPChecksumOffloadIPv6,       ParamDesc, 0, %TcpChksumV6%
+HKR, Ndi\Params\*TCPChecksumOffloadIPv6,       Type,      0, "enum"
+HKR, Ndi\Params\*TCPChecksumOffloadIPv6,       Default,   0, "3"
+HKR, Ndi\Params\*TCPChecksumOffloadIPv6\enum,  "0",       0, %Disabled%
+HKR, Ndi\Params\*TCPChecksumOffloadIPv6\enum,  "1",       0, %TxEnabled%
+HKR, Ndi\Params\*TCPChecksumOffloadIPv6\enum,  "2",       0, %RxEnabled%
+HKR, Ndi\Params\*TCPChecksumOffloadIPv6\enum,  "3",       0, %RxTxEnabled%
+
+HKR, Ndi\Params\*UDPChecksumOffloadIPv6,       ParamDesc, 0, %UdpChksumV6%
+HKR, Ndi\Params\*UDPChecksumOffloadIPv6,       Type,      0, "enum"
+HKR, Ndi\Params\*UDPChecksumOffloadIPv6,       Default,   0, "3"
+HKR, Ndi\Params\*UDPChecksumOffloadIPv6\enum,  "0",       0, %Disabled%
+HKR, Ndi\Params\*UDPChecksumOffloadIPv6\enum,  "1",       0, %TxEnabled%
+HKR, Ndi\Params\*UDPChecksumOffloadIPv6\enum,  "2",       0, %RxEnabled%
+HKR, Ndi\Params\*UDPChecksumOffloadIPv6\enum,  "3",       0, %RxTxEnabled%
+
 [RTL8125_HwAddReg.NT]
 HKR, Interrupt Management,,0x00000010
 HKR, Interrupt Management\MessageSignaledInterruptProperties,,0x00000010
@@ -78,3 +118,12 @@ RealtekMfg = "Realtek"
 RTL8125.DeviceDesc = "Realtek RTL8125 2.5GbE Ethernet Controller"
 RTL8126.DeviceDesc = "Realtek RTL8126 5GbE Ethernet Controller"
 NetworkAddress     = "Network Address"
+IPChksumV4         = "IPv4 Checksum Offload"
+TcpChksumV4        = "TCP Checksum Offload (IPv4)"
+UdpChksumV4        = "UDP Checksum Offload (IPv4)"
+TcpChksumV6        = "TCP Checksum Offload (IPv6)"
+UdpChksumV6        = "UDP Checksum Offload (IPv6)"
+Disabled           = "Disabled"
+TxEnabled          = "Tx Enabled"
+RxEnabled          = "Rx Enabled"
+RxTxEnabled        = "Rx & Tx Enabled"
