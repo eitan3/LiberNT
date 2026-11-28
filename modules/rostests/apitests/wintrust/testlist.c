@@ -12,6 +12,7 @@ extern void func_SignedCatalog(void);
 extern void func_SipCaps(void);
 extern void func_TrustHelpers(void);
 extern void func_TrustSteps(void);
+extern void func_TrustedRoot(void);
 
 const struct test winetest_testlist[] =
 {
@@ -26,5 +27,6 @@ const struct test winetest_testlist[] =
     { "SipCaps", func_SipCaps },
     { "TrustHelpers", func_TrustHelpers },
     { "TrustSteps", func_TrustSteps },
+    { "TrustedRoot", func_TrustedRoot },
     { 0, 0 }
 };

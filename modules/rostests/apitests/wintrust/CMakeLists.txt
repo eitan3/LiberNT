@@ -11,6 +11,7 @@ list(APPEND SOURCE
     SipCaps.c
     TrustHelpers.c
     TrustSteps.c
+    TrustedRoot.c
     testlist.c)
 
 add_executable(wintrust_apitest ${SOURCE})

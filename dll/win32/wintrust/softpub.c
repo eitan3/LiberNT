@@ -1652,7 +1652,9 @@ BOOL WINAPI SoftpubCheckCert(CRYPT_PROVIDER_DATA *data, DWORD idxSigner,
         {
             sgnr->pasCertChain[i].dwConfidence =
              WINTRUST_TrustStatusToConfidence(simpleChain->rgpElement[i]->TrustStatus.dwErrorStatus);
-            if (!(simpleChain->rgpElement[i]->TrustStatus.dwErrorStatus & CERT_TRUST_IS_UNTRUSTED_ROOT))
+            if (i == simpleChain->cElement - 1 &&
+                (simpleChain->rgpElement[i]->TrustStatus.dwInfoStatus & CERT_TRUST_IS_SELF_SIGNED) &&
+                !(simpleChain->rgpElement[i]->TrustStatus.dwErrorStatus & CERT_TRUST_IS_UNTRUSTED_ROOT))
                 sgnr->pasCertChain[i].fTrustedRoot = TRUE;
             if (simpleChain->rgpElement[i]->TrustStatus.dwInfoStatus & CERT_TRUST_IS_SELF_SIGNED)
                 sgnr->pasCertChain[i].fSelfSigned = TRUE;
