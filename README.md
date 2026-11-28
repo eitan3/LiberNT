@@ -306,7 +306,7 @@ LiberNT is an independent project. It is not affiliated with, endorsed by or spo
 
 ## About
 
-LiberNT is built by the **LiberNT contributors**. It was started by [Ahmed Arif](https://github.com/ahmedarif193) and is maintained by [Ahmed Arif](https://github.com/ahmedarif193), [Ostap Brehin](https://github.com/osbre) and [Vivyy](https://github.com/enginelesscc).
+LiberNT is built by the **LiberNT contributors**. It was started by [Ahmed Arif](https://github.com/ahmedarif193) and is maintained by [Ahmed Arif](https://github.com/ahmedarif193), [Ostap Brehin](https://github.com/osbre), [Vivyy](https://github.com/enginelesscc) and [mikuta0407](https://github.com/mikuta0407).
 
 - [Visit the LiberNT organization](https://github.com/LiberNT)
 - [Website](https://libernt.com)

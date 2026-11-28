@@ -8,6 +8,7 @@ LiberNT is available thanks to the work of:
 - Alula (git@alula.me)
 - Ostap Brehin (https://github.com/osbre)
 - Vivyy (https://github.com/enginelesscc)
+- mikuta0407 (https://github.com/mikuta0407)
 
 To be listed here, add your name to this section in your pull request.
 
