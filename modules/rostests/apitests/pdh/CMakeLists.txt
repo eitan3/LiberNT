@@ -1,5 +1,6 @@
 
 list(APPEND SOURCE
+    CounterSamples.c
     FormatFromRawValue.c
     ProcessorFrequency.c
     testlist.c)

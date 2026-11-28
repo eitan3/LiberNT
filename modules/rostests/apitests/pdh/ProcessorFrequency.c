@@ -30,6 +30,9 @@ ReadCounter(PDH_HQUERY Query, PCWSTR Path, PDH_STATUS *AddStatus)
     *AddStatus = PdhAddEnglishCounterW(Query, Path, 0, &Counter);
     if (*AddStatus != ERROR_SUCCESS)
         return -1;
+    if (PdhCollectQueryData(Query) != ERROR_SUCCESS)
+        return -2;
+    Sleep(50);
     if (PdhCollectQueryData(Query) != ERROR_SUCCESS ||
         PdhGetFormattedCounterValue(Counter, PDH_FMT_LONG | PDH_FMT_NOCAP100, NULL, &Value) != ERROR_SUCCESS)
         return -2;

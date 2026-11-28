@@ -80,9 +80,9 @@ struct counter
     void (CALLBACK *collect)( struct counter * );   /* collect callback */
     union value     one;                            /* first value */
     union value     two;                            /* second value */
-    ULONGLONG       previous_total;                 /* prior processor time sample */
-    ULONGLONG       previous_idle;                  /* prior processor idle sample */
-    BOOL            have_previous;                  /* processor time sample valid */
+    union value     previous_one;                   /* first value of the prior sample */
+    union value     previous_two;                   /* second value of the prior sample */
+    BOOL            have_previous;                  /* prior sample valid */
 };
 
 #define PDH_MAGIC_COUNTER   0x50444831 /* 'PDH1' */
@@ -150,15 +150,78 @@ struct source
     LONGLONG        base;                           /* samples per second */
 };
 
+static ULONG processor_index_from_path( const WCHAR *path );
+
+static ULONGLONG precise_time_100ns( void )
+{
+    LARGE_INTEGER counter, frequency;
+
+    QueryPerformanceCounter( &counter );
+    QueryPerformanceFrequency( &frequency );
+    return (ULONGLONG)(counter.QuadPart / frequency.QuadPart) * 10000000 +
+           (ULONGLONG)(counter.QuadPart % frequency.QuadPart) * 10000000 / frequency.QuadPart;
+}
+
+static BOOL query_processor_times( const WCHAR *path, ULONGLONG *busy, ULONGLONG *idle, ULONGLONG *total,
+                                   ULONG *processors )
+{
+    SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION *performance;
+    SYSTEM_INFO info;
+    ULONG index, count, i, returned = 0, used = 0;
+    NTSTATUS status;
+
+    *busy = *idle = *total = 0;
+    GetSystemInfo( &info );
+    count = info.dwNumberOfProcessors;
+    if (!count || !(performance = calloc( count, sizeof(*performance) ))) return FALSE;
+    status = NtQuerySystemInformation( SystemProcessorPerformanceInformation,
+                                       performance, count * sizeof(*performance), &returned );
+    if (status < 0)
+    {
+        free( performance );
+        return FALSE;
+    }
+    index = processor_index_from_path( path );
+    for (i = 0; i < count; ++i)
+    {
+        ULONGLONG all = performance[i].KernelTime.QuadPart + performance[i].UserTime.QuadPart;
+
+        if (index < count && i != index) continue;
+        *total += all;
+        *idle += performance[i].IdleTime.QuadPart;
+        *busy += all > (ULONGLONG)performance[i].IdleTime.QuadPart ? all - performance[i].IdleTime.QuadPart : 0;
+        used++;
+    }
+    free( performance );
+    if (!used) return FALSE;
+    *processors = used;
+    return TRUE;
+}
+
 static void CALLBACK collect_processor_time( struct counter *counter )
 {
-    counter->two.largevalue = 500000; /* FIXME */
+    ULONGLONG busy, idle, total;
+    LARGE_INTEGER now;
+    ULONG processors;
+
+    if (!query_processor_times( counter->path, &busy, &idle, &total, &processors ))
+    {
+        counter->status = PDH_CSTATUS_INVALID_DATA;
+        return;
+    }
+    NtQuerySystemTime( &now );
+    counter->one.largevalue = idle / processors;
+    counter->two.largevalue = now.QuadPart;
     counter->status = PDH_CSTATUS_VALID_DATA;
 }
 
 static void CALLBACK collect_uptime( struct counter *counter )
 {
-    counter->two.largevalue = GetTickCount64();
+    LARGE_INTEGER now;
+
+    NtQuerySystemTime( &now );
+    counter->two.largevalue = now.QuadPart;
+    counter->one.largevalue = now.QuadPart - (LONGLONG)GetTickCount64() * 10000;
     counter->status = PDH_CSTATUS_VALID_DATA;
 }
 
@@ -236,7 +299,7 @@ static void CALLBACK collect_processor_frequency( struct counter *counter )
         counter->status = PDH_CSTATUS_INVALID_DATA;
         return;
     }
-    counter->one.longvalue = maximum;
+    counter->one.largevalue = maximum;
     counter->two.largevalue = 0;
     counter->status = PDH_CSTATUS_VALID_DATA;
 }
@@ -250,9 +313,16 @@ static void CALLBACK collect_processor_performance( struct counter *counter )
         counter->status = PDH_CSTATUS_INVALID_DATA;
         return;
     }
-    /* FIXME: an instantaneous frequency ratio, not the performance averaged over the sample interval */
-    counter->one.longvalue = (ULONG)(((ULONGLONG)current * 100) / maximum);
-    counter->two.largevalue = 0;
+    {
+        ULONGLONG now = precise_time_100ns() / 1000, performance = ((ULONGLONG)current * 100) / maximum;
+
+        /* FIXME: integrates the frequency ratio read at each sample, not the processor's own performance accounting */
+        if (counter->have_previous && now >= (ULONGLONG)counter->two.largevalue)
+            counter->one.largevalue += performance * (now - counter->two.largevalue);
+        else
+            counter->one.largevalue = performance * now;
+        counter->two.largevalue = now;
+    }
     counter->status = PDH_CSTATUS_VALID_DATA;
 }
 
@@ -265,57 +335,24 @@ static void CALLBACK collect_maximum_frequency_percent( struct counter *counter 
         counter->status = PDH_CSTATUS_INVALID_DATA;
         return;
     }
-    counter->one.longvalue = (ULONG)(((ULONGLONG)current * 100) / maximum);
+    counter->one.largevalue = ((ULONGLONG)current * 100) / maximum;
     counter->two.largevalue = 0;
     counter->status = PDH_CSTATUS_VALID_DATA;
 }
 
 static void CALLBACK collect_processor_utility( struct counter *counter )
 {
-    SYSTEM_PROCESSOR_PERFORMANCE_INFORMATION *performance;
-    SYSTEM_INFO info;
-    ULONG index, count, i, returned = 0;
-    ULONGLONG total = 0, idle = 0, delta_total, delta_idle, utility = 0;
-    NTSTATUS status;
+    ULONGLONG busy, idle, total;
+    ULONG processors;
 
-    GetSystemInfo( &info );
-    count = info.dwNumberOfProcessors;
-    if (!count || !(performance = calloc( count, sizeof(*performance) )))
+    if (!query_processor_times( counter->path, &busy, &idle, &total, &processors ))
     {
         counter->status = PDH_CSTATUS_INVALID_DATA;
         return;
     }
-    status = NtQuerySystemInformation( SystemProcessorPerformanceInformation,
-                                       performance, count * sizeof(*performance),
-                                       &returned );
-    if (status < 0)
-    {
-        free( performance );
-        counter->status = PDH_CSTATUS_INVALID_DATA;
-        return;
-    }
-
-    index = processor_index_from_path( counter->path );
-    for (i = 0; i < count; ++i)
-    {
-        if (index < count && i != index) continue;
-        total += performance[i].KernelTime.QuadPart + performance[i].UserTime.QuadPart;
-        idle += performance[i].IdleTime.QuadPart;
-    }
-    free( performance );
-
-    if (counter->have_previous && total > counter->previous_total)
-    {
-        delta_total = total - counter->previous_total;
-        delta_idle = idle - counter->previous_idle;
-        if (delta_idle < delta_total)
-            utility = ((delta_total - delta_idle) * 100) / delta_total;
-    }
-    counter->previous_total = total;
-    counter->previous_idle = idle;
-    counter->have_previous = TRUE;
-    counter->one.largevalue = utility;
-    counter->two.largevalue = 100;
+    /* FIXME: busy time share, not scaled by the processor performance as the utility is */
+    counter->one.largevalue = busy * 100;
+    counter->two.largevalue = precise_time_100ns() * processors;
     counter->status = PDH_CSTATUS_VALID_DATA;
 }
 
@@ -332,13 +369,13 @@ static void CALLBACK collect_processor_utility( struct counter *counter )
 /* counter source registry */
 static const struct source counter_sources[] =
 {
-    { 6,   L"\\Processor(_Total)\\% Processor Time", collect_processor_time, TYPE_PROCESSOR_TIME, -5, 10000000 },
-    { 6,   L"\\Processor Information(_Total)\\% Processor Time", collect_processor_time, TYPE_PROCESSOR_TIME, -5, 10000000 },
+    { 6,   L"\\Processor(_Total)\\% Processor Time", collect_processor_time, TYPE_PROCESSOR_TIME, 0, 10000000 },
+    { 6,   L"\\Processor Information(_Total)\\% Processor Time", collect_processor_time, TYPE_PROCESSOR_TIME, 0, 10000000 },
     { 2774, L"\\Processor Information(*)\\Processor Frequency", collect_processor_frequency, PERF_COUNTER_RAWCOUNT, 0, 0 },
     { 2776, L"\\Processor Information(*)\\% of Maximum Frequency", collect_maximum_frequency_percent, PERF_COUNTER_RAWCOUNT, 0, 0 },
-    { 2788, L"\\Processor Information(*)\\% Processor Performance", collect_processor_performance, PERF_COUNTER_RAWCOUNT, 0, 0 },
+    { 2788, L"\\Processor Information(*)\\% Processor Performance", collect_processor_performance, TYPE_PROCESSOR_UTILITY, 0, 0 },
     { 2792, L"\\Processor Information(*)\\% Processor Utility", collect_processor_utility, TYPE_PROCESSOR_UTILITY, 0, 0 },
-    { 674, L"\\System\\System Up Time",              collect_uptime,         TYPE_UPTIME,         -3, 1000 }
+    { 674, L"\\System\\System Up Time",              collect_uptime,         TYPE_UPTIME,         0, 10000000 }
 };
 
 static const WCHAR pdh_objectsW[] = L"Processor\0Processor Information\0System\0";
@@ -530,51 +567,52 @@ PDH_STATUS WINAPI PdhAddEnglishCounterW( PDH_HQUERY query, LPCWSTR path,
 }
 
 /* caller must hold counter lock */
-static PDH_STATUS format_value( struct counter *counter, DWORD format, union value *raw1,
-                                union value *raw2, PDH_FMT_COUNTERVALUE *value )
+static PDH_STATUS calculate_raw_counter( DWORD type, const LONGLONG *timebase, const PDH_RAW_COUNTER *raw1,
+                                         const PDH_RAW_COUNTER *raw2, double *result, BOOL *percent );
+
+static PDH_STATUS format_counter( struct counter *counter, DWORD format, const PDH_RAW_COUNTER *raw1,
+                                  const PDH_RAW_COUNTER *raw2, PDH_FMT_COUNTERVALUE *value )
 {
+    LONGLONG timebase = counter->base;
+    PDH_STATUS ret;
+    double result;
+    BOOL percent;
     LONG factor;
 
+    if (!(format & (PDH_FMT_LONG | PDH_FMT_LARGE | PDH_FMT_DOUBLE))) return PDH_INVALID_ARGUMENT;
+
+    if ((ret = calculate_raw_counter( counter->type, &timebase, raw1, raw2, &result, &percent )))
+    {
+        value->largeValue = 0;
+        value->CStatus = ret;
+        return ret == PDH_CSTATUS_INVALID_DATA ? PDH_INVALID_DATA : ret;
+    }
     factor = counter->scale ? counter->scale : counter->defaultscale;
-    if (counter->type == PERF_COUNTER_RAWCOUNT)
-    {
-        if (format & PDH_FMT_LONG) value->longValue = raw1->longvalue;
-        else if (format & PDH_FMT_LARGE) value->largeValue = raw1->longvalue;
-        else if (format & PDH_FMT_DOUBLE) value->doubleValue = raw1->longvalue;
-        else return PDH_INVALID_ARGUMENT;
-        return ERROR_SUCCESS;
-    }
-    if (counter->type == TYPE_PROCESSOR_UTILITY)
-    {
-        double utility = raw2->largevalue ?
-                         (double)raw1->largevalue * 100.0 / raw2->largevalue : 0.0;
-        if (format & PDH_FMT_LONG) value->longValue = (LONG)utility;
-        else if (format & PDH_FMT_LARGE) value->largeValue = (LONGLONG)utility;
-        else if (format & PDH_FMT_DOUBLE) value->doubleValue = utility;
-        else return PDH_INVALID_ARGUMENT;
-        return ERROR_SUCCESS;
-    }
-    if (format & PDH_FMT_LONG)
-    {
-        if (format & PDH_FMT_1000) value->longValue = raw2->longvalue * 1000;
-        else value->longValue = raw2->longvalue * pow( 10, factor );
-    }
-    else if (format & PDH_FMT_LARGE)
-    {
-        if (format & PDH_FMT_1000) value->largeValue = raw2->largevalue * 1000;
-        else value->largeValue = raw2->largevalue * pow( 10, factor );
-    }
-    else if (format & PDH_FMT_DOUBLE)
-    {
-        if (format & PDH_FMT_1000) value->doubleValue = raw2->doublevalue * 1000;
-        else value->doubleValue = raw2->doublevalue * pow( 10, factor );
-    }
-    else
-    {
-        WARN("unknown format %lx\n", format);
-        return PDH_INVALID_ARGUMENT;
-    }
+    if (factor && !(format & PDH_FMT_NOSCALE)) result *= pow( 10, factor );
+    if (percent && !(counter->type & PERF_MULTI_COUNTER) && !(format & PDH_FMT_NOCAP100) && result > 100.0)
+        result = 100.0;
+    if (format & PDH_FMT_1000) result *= 1000.0;
+
+    value->CStatus = PDH_CSTATUS_VALID_DATA;
+    if (format & PDH_FMT_LONG) value->longValue = (LONG)result;
+    else if (format & PDH_FMT_LARGE) value->largeValue = (LONGLONG)result;
+    else value->doubleValue = result;
     return ERROR_SUCCESS;
+}
+
+static PDH_STATUS format_counter_sample( struct counter *counter, DWORD format, PDH_FMT_COUNTERVALUE *value )
+{
+    PDH_RAW_COUNTER raw1, raw2;
+
+    ZeroMemory( &raw1, sizeof(raw1) );
+    ZeroMemory( &raw2, sizeof(raw2) );
+    raw1.FirstValue = counter->one.largevalue;
+    raw1.SecondValue = counter->two.largevalue;
+    raw1.MultiCount = 1;
+    raw2.FirstValue = counter->previous_one.largevalue;
+    raw2.SecondValue = counter->previous_two.largevalue;
+    raw2.MultiCount = 1;
+    return format_counter( counter, format, &raw1, counter->have_previous ? &raw2 : NULL, value );
 }
 
 /***********************************************************************
@@ -598,8 +636,7 @@ PDH_STATUS WINAPI PdhCalculateCounterFromRawValue( PDH_HCOUNTER handle, DWORD fo
         return PDH_INVALID_HANDLE;
     }
 
-    ret = format_value( counter, format, (union value *)&raw1->SecondValue,
-                                         (union value *)&raw2->SecondValue, value );
+    ret = raw1 ? format_counter( counter, format, raw1, raw2, value ) : PDH_INVALID_ARGUMENT;
 
     LeaveCriticalSection( &pdh_handle_cs );
     return ret;
@@ -731,6 +768,7 @@ PDH_STATUS WINAPI PdhFormatFromRawValue( DWORD type, DWORD format, LONGLONG *tim
 
     if ((ret = calculate_raw_counter( type, timebase, raw1, raw2, &result, &percent )))
     {
+        value->largeValue = 0;
         value->CStatus = ret;
         return ret;
     }
@@ -806,6 +844,9 @@ static void collect_query_data( struct query *query )
         SYSTEMTIME time;
         struct counter *counter = LIST_ENTRY( item, struct counter, entry );
 
+        counter->previous_one = counter->one;
+        counter->previous_two = counter->two;
+        counter->have_previous = !counter->status && (counter->stamp.dwLowDateTime || counter->stamp.dwHighDateTime);
         counter->collect( counter );
 
         GetLocalTime( &time );
@@ -1145,11 +1186,8 @@ PDH_STATUS WINAPI PdhGetFormattedCounterValue( PDH_HCOUNTER handle, DWORD format
         LeaveCriticalSection( &pdh_handle_cs );
         return PDH_INVALID_DATA;
     }
-    if (!(ret = format_value( counter, format, &counter->one, &counter->two, value )))
-    {
-        value->CStatus = ERROR_SUCCESS;
-        if (type) *type = counter->type;
-    }
+    if (!(ret = format_counter_sample( counter, format, value )) && type)
+        *type = counter->type;
 
     LeaveCriticalSection( &pdh_handle_cs );
     return ret;
@@ -1172,7 +1210,7 @@ static PDH_STATUS get_formatted_counter_array( PDH_HCOUNTER handle, DWORD format
         return PDH_MORE_DATA;
     }
 
-    if (!(ret = format_value( counter, format, &counter->one, &counter->two, &value )))
+    if (!(ret = format_counter_sample( counter, format, &value )))
     {
         PPDH_FMT_COUNTERVALUE_ITEM_W item = buffer;
         char *name = (char *)buffer + sizeof(PDH_FMT_COUNTERVALUE_ITEM_W);
