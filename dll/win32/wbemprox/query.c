@@ -1032,16 +1032,18 @@ done:
     return hr;
 }
 
-BOOL is_result_prop( const struct view *view, const WCHAR *name )
+BOOL is_result_prop( const struct view *view, const struct table *table, const WCHAR *name )
 {
     const struct property *prop = view->proplist;
+    UINT column;
+
     if (!prop) return TRUE;
     while (prop)
     {
         if (!wcsicmp( prop->name, name )) return TRUE;
         prop = prop->next;
     }
-    return FALSE;
+    return get_column_index( table, name, &column ) == S_OK && (table->columns[column].type & COL_FLAG_KEY);
 }
 
 static BOOL is_system_prop( const WCHAR *name )
@@ -1440,9 +1442,10 @@ HRESULT get_propval( const struct view *view, UINT index, const WCHAR *name, VAR
     if ((hr = map_view_index( view, index, &table_index, &result_index )) != S_OK) return hr;
 
     if (is_system_prop( name )) return get_system_propval( view, table_index, result_index, name, ret, type, flavor );
-    if (!view->result_count || !is_result_prop( view, name )) return WBEM_E_NOT_FOUND;
+    if (!view->result_count) return WBEM_E_NOT_FOUND;
 
     table = view->table[table_index];
+    if (!is_result_prop( view, table, name )) return WBEM_E_NOT_FOUND;
     hr = get_column_index( table, name, &column );
     if (hr != S_OK || is_method( table, column )) return WBEM_E_NOT_FOUND;
 
@@ -1693,7 +1696,7 @@ HRESULT get_properties( const struct view *view, UINT index, LONG flags, SAFEARR
     {
         for (i = 0; i < table->num_cols; i++)
         {
-            if (!is_method( table, i ) && is_result_prop( view, table->columns[i].name )) count++;
+            if (!is_method( table, i ) && is_result_prop( view, table, table->columns[i].name )) count++;
         }
     }
 
@@ -1717,7 +1720,7 @@ HRESULT get_properties( const struct view *view, UINT index, LONG flags, SAFEARR
     {
         for (i = 0; i < table->num_cols; i++)
         {
-            if (is_method( table, i ) || !is_result_prop( view, table->columns[i].name )) continue;
+            if (is_method( table, i ) || !is_result_prop( view, table, table->columns[i].name )) continue;
 
             str = SysAllocString( table->columns[i].name );
             if (!str || SafeArrayPutElement( sa, &j, str ) != S_OK)

@@ -578,7 +578,7 @@ static HRESULT WINAPI class_object_Next(
         else
         {
             if (is_method( table, i - view_idx_start )) continue;
-            if (!is_result_prop( view, table->columns[i - view_idx_start].name )) continue;
+            if (!is_result_prop( view, table, table->columns[i - view_idx_start].name )) continue;
             if (!(prop = SysAllocString( table->columns[i - view_idx_start].name ))) return E_OUTOFMEMORY;
         }
         if (obj->record)

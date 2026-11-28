@@ -247,7 +247,7 @@ HRESULT to_longlong( VARIANT *, LONGLONG *, CIMTYPE * );
 SAFEARRAY *to_safearray( const struct array *, CIMTYPE );
 VARTYPE to_vartype( CIMTYPE );
 void destroy_array( struct array *, CIMTYPE );
-BOOL is_result_prop( const struct view *, const WCHAR * );
+BOOL is_result_prop( const struct view *, const struct table *, const WCHAR * );
 HRESULT get_properties( const struct view *, UINT, LONG, SAFEARRAY ** );
 HRESULT get_object( enum wbm_namespace, const WCHAR *, IWbemClassObject ** );
 BSTR get_method_name( enum wbm_namespace, const WCHAR *, UINT );

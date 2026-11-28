@@ -3,6 +3,7 @@ list(APPEND SOURCE
     common.c
     decoupled.c
     PhysicalMemory.c
+    Projection.c
     repository.c
     testlist.c)
 
