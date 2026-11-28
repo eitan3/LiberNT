@@ -556,6 +556,14 @@ CheckGain(
     CHECK_EQ(DsploopGainWord(-5 * 65536, 0), 0x47FACCF0);
     CHECK_EQ(DsploopGainWord(-5 * 65536 - 32768, 0), (int32_t)(((int64_t)0x47FACCF0 + Minus6 + 1) / 2));
     CHECK_EQ(DsploopGainWord(-6 * 65536 + 1, 0), (int32_t)(((int64_t)0x47FACCF0 + (int64_t)Minus6 * 65535 + 32768) / 65536));
+    /* N14-17 (ruling (a)): the mapping is the node's. The endpoint's answer maps the scalar last set to decibels in user mode (the tray's 92 % is -96 + 0.92 x 96 = -7.68 dB), while the node's step is the driver's (1 dB) and the stream runs at the step nearest the request, -8.00 dB: dsploop scales its expectation by the node's level, the whole decibel's word, and the scalar's word stands about 4 % above it (the run that matched no frame) */
+    {
+        float ScalarDb = -96.0f + 0.92f * 96.0f;
+        int32_t ScalarLevel = (int32_t)floorf(ScalarDb * 65536.0f + 0.5f);
+        int64_t Node = DsploopGainWord(-8 * 65536, 0), Scalar = DsploopGainWord(ScalarLevel, 0);
+        CHECK(fabs((double)Node / 2147483648.0 - pow(10.0, -8.0 / 20.0)) <= 1.0 / 2147483648.0);
+        CHECK(Scalar > Node && Scalar * 100 / Node >= 103 && Scalar * 100 / Node <= 104);
+    }
     /* the word falls with the level, and the whole decibels are 2^31 x 10^(-dB/20) within a unit */
     for (F = 0; F < 96; F++)
     {

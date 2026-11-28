@@ -37,6 +37,8 @@
 #define DSPLOOP_RENDER_BUFFER    1000000
 /* the wall-clock budget of a run, in milliseconds: the two seconds of audio with room for a slow guest */
 #define DSPLOOP_RUN_MS           15000
+/* how far upstream of the endpoint's connector the volume and mute nodes are looked for */
+#define DSPLOOP_TOPOLOGY_DEPTH   8
 
 /* A run's outcome */
 #define DSPLOOP_OK               0
@@ -77,6 +79,116 @@ EndpointOfDspPcm(
         CoTaskMemFree(FilterId);
     }
     return Found;
+}
+
+/*
+ * The level the driver answers, from the KS volume node of the endpoint's topology (N14-17, ruling (a)):
+ * IAudioEndpointVolume::GetMasterVolumeLevel answers the scalar last set, as user mode maps it to
+ * decibels (audiovolume.c endpoint_volume_db_from_scalar: the tray's 92 % is -7.68 dB), while the
+ * node's step is the driver's (INTELDSP_VOLUME_STEP, 1 dB) and the stream runs at the step nearest
+ * the request (-8.00 dB). The node's KSPROPERTY_AUDIO_VOLUMELEVEL answers that level, in 1/65536
+ * decibels, as the tray reads it: through the topology's control interface, the node part's
+ * IKsControl. The node is found by its subtype, walking upstream from the endpoint's connector.
+ * A topology without control interfaces (mmdevapi's today, FD-01/02) answers E_NOINTERFACE, and
+ * the caller falls back to the endpoint's scalar with a line.
+ */
+static
+HRESULT
+NodePartOfSubtype(
+    IPart *Part,
+    REFGUID Subtype,
+    UINT Depth,
+    _Out_ IPart **Found)
+{
+    IPartsList *List = NULL;
+    IPart *Next;
+    PartType Type;
+    GUID Id;
+    UINT Count = 0, I;
+    HRESULT hr;
+
+    *Found = NULL;
+    if (Depth > DSPLOOP_TOPOLOGY_DEPTH)
+        return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    hr = IPart_GetPartType(Part, &Type);
+    if (SUCCEEDED(hr) && Type == Subunit && SUCCEEDED(IPart_GetSubType(Part, &Id)) && IsEqualGUID(&Id, Subtype))
+    {
+        IPart_AddRef(Part);
+        *Found = Part;
+        return S_OK;
+    }
+    hr = IPart_EnumPartsIncoming(Part, &List);
+    if (FAILED(hr))
+        return hr;
+    if (SUCCEEDED(IPartsList_GetCount(List, &Count)))
+    {
+        for (I = 0; I < Count && *Found == NULL; I++)
+        {
+            if (SUCCEEDED(IPartsList_GetPart(List, I, &Next)))
+            {
+                hr = NodePartOfSubtype(Next, Subtype, Depth + 1, Found);
+                IPart_Release(Next);
+            }
+        }
+    }
+    IPartsList_Release(List);
+    return *Found != NULL ? S_OK : HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+}
+
+/* A KS property of the node of a subtype, read through the node part's control interface */
+static
+HRESULT
+ReadNodeProperty(
+    IMMDevice *Device,
+    REFGUID Subtype,
+    ULONG PropertyId,
+    _Out_writes_bytes_(Bytes) PVOID Value,
+    ULONG Bytes)
+{
+    IDeviceTopology *Topology = NULL;
+    IConnector *Connector = NULL;
+    IPart *Part = NULL, *Node = NULL;
+    IKsControl *Control = NULL;
+    KSP_NODE Request;
+    UINT NodeId = 0;
+    ULONG Returned = 0;
+    HRESULT hr;
+
+    hr = IMMDevice_Activate(Device, &IID_IDeviceTopology, CLSCTX_INPROC_SERVER, NULL, (void **)&Topology);
+    if (FAILED(hr))
+        return hr;
+    hr = IDeviceTopology_GetConnector(Topology, 0, &Connector);
+    if (SUCCEEDED(hr))
+    {
+        hr = IConnector_QueryInterface(Connector, &IID_IPart, (void **)&Part);
+        IConnector_Release(Connector);
+    }
+    IDeviceTopology_Release(Topology);
+    if (SUCCEEDED(hr))
+    {
+        hr = NodePartOfSubtype(Part, Subtype, 0, &Node);
+        IPart_Release(Part);
+    }
+    if (SUCCEEDED(hr))
+    {
+        hr = IPart_GetLocalId(Node, &NodeId);
+        if (SUCCEEDED(hr))
+            hr = IPart_Activate(Node, CLSCTX_INPROC_SERVER, &IID_IKsControl, (void **)&Control);
+        IPart_Release(Node);
+    }
+    if (SUCCEEDED(hr))
+    {
+        ZeroMemory(&Request, sizeof(Request));
+        Request.Property.Set = KSPROPSETID_Audio;
+        Request.Property.Id = PropertyId;
+        Request.Property.Flags = KSPROPERTY_TYPE_GET;
+        Request.NodeId = NodeId;
+        hr = Control->lpVtbl->KsProperty(Control, &Request.Property, sizeof(Request), Value, Bytes, &Returned);
+        if (hr != S_OK || Returned != Bytes)
+            hr = FAILED(hr) ? hr : E_UNEXPECTED;
+        Control->lpVtbl->Release(Control);
+    }
+    return hr;
 }
 
 /* The active endpoint of a flow that is one of the DSP's PCM */
@@ -522,11 +634,12 @@ START_TEST(dsploop)
     UINT RunsCompared = 0;
     int Result;
     BOOL Held = FALSE;
-    /* the gain the DSP forwards the PCM's streams at: the endpoint's master volume and mute as the driver keeps them (N14-02) */
+    /* the gain the DSP forwards the PCM's streams at: the volume node's level and the mute node's state as the driver keeps them (N14-02, N14-17) */
     IAudioEndpointVolume *Volume = NULL;
     float LevelDb = 0.0f;
     BOOL Mute = FALSE;
     LONG Level = 0;
+    BOOL NodeLevel = FALSE;
     uint32_t Gain = DSPLOOP_GAIN_UNITY;
 
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
@@ -549,23 +662,35 @@ START_TEST(dsploop)
         apitest_missing("dsploop: no active capture endpoint of the DSP's PCM (" DSPPCM_ID_TEXT "; 0x%08lx)\n", hr);
         goto Done;
     }
-    /* the level the stream starts at is the driver's, in 1/65536 dB (the node's range), read as decibels and rounded back; a volume the endpoint does not give leaves the expectation unscaled and a failure */
-    hr = IMMDevice_Activate(Render, &IID_IAudioEndpointVolume, CLSCTX_ALL, NULL, (void **)&Volume);
-    if (SUCCEEDED(hr))
-    {
-        hr = IAudioEndpointVolume_GetMasterVolumeLevel(Volume, &LevelDb);
-        if (SUCCEEDED(hr))
-            hr = IAudioEndpointVolume_GetMute(Volume, &Mute);
-        IAudioEndpointVolume_Release(Volume);
-    }
-    ok(hr == S_OK, "dsploop: the endpoint's master volume 0x%08lx\n", hr);
+    /* the level the stream starts at is the node's, in 1/65536 decibels, the driver's own answer (N14-17); a topology without control interfaces leaves the endpoint's scalar, in decibels as user mode maps it and rounded back, which at a coarse step is not the level the stream runs at */
+    hr = ReadNodeProperty(Render, &KSNODETYPE_VOLUME, KSPROPERTY_AUDIO_VOLUMELEVEL, &Level, sizeof(Level));
+    if (hr == S_OK)
+        hr = ReadNodeProperty(Render, &KSNODETYPE_MUTE, KSPROPERTY_AUDIO_MUTE, &Mute, sizeof(Mute));
     if (hr == S_OK)
     {
-        Level = (LONG)floorf(LevelDb * 65536.0f + 0.5f);
-        Gain = DsploopGainWord(Level, Mute);
+        NodeLevel = TRUE;
+        LevelDb = (float)Level / 65536.0f;
     }
-    trace("dsploop: the endpoint's master volume %.2f dB (level %ld), mute %d: the expectation scaled by the gain 0x%08x, the tolerance %d LSB\n",
-          LevelDb, Level, Mute, Gain, DsploopToleranceAtGain(16, Gain));
+    else
+    {
+        trace("dsploop: the volume node's level is not reachable through the topology's control interface (0x%08lx): the endpoint's scalar instead\n", hr);
+        hr = IMMDevice_Activate(Render, &IID_IAudioEndpointVolume, CLSCTX_ALL, NULL, (void **)&Volume);
+        if (SUCCEEDED(hr))
+        {
+            hr = IAudioEndpointVolume_GetMasterVolumeLevel(Volume, &LevelDb);
+            if (SUCCEEDED(hr))
+                hr = IAudioEndpointVolume_GetMute(Volume, &Mute);
+            IAudioEndpointVolume_Release(Volume);
+        }
+        if (hr == S_OK)
+            Level = (LONG)floorf(LevelDb * 65536.0f + 0.5f);
+    }
+    ok(hr == S_OK, "dsploop: the endpoint's volume node 0x%08lx\n", hr);
+    if (hr == S_OK)
+        Gain = DsploopGainWord(Level, Mute);
+    trace("dsploop: the volume node: %.2f dB (level %ld, %s), mute %d: the expectation scaled by the gain 0x%08x, the tolerance %d LSB\n",
+          LevelDb, Level, NodeLevel ? "the driver's level" : "the scalar last set, the node unreachable",
+          Mute, Gain, DsploopToleranceAtGain(16, Gain));
     /* the hold (N12-03): one pin open and not running, the runs not made, their count not judged */
     if (HoldSeconds() != 0)
     {
