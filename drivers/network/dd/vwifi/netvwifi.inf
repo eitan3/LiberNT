@@ -1,6 +1,6 @@
 ; LiberNT Virtual Native 802.11 (dot11) Miniport Installation File
 ; Software-only Native 802.11 miniport; root-enumerated virtual device
-; (instantiated at boot via the Enum\Root seed in hivesys.inf).
+; (not enumerated at boot: its ROOT\VWIFI device is installed manually with this file).
 ; Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
 
 [Version]
