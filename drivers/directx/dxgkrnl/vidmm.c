@@ -3682,13 +3682,17 @@ DxgkVidMmCreateOpenResource(
     BOOLEAN CleanupTransferred = FALSE;
     BOOLEAN OpenSucceeded = FALSE;
     BOOLEAN KmdTransactionStarted = FALSE;
+    BOOLEAN MiniportBindings;
     NTSTATUS Status = STATUS_SUCCESS;
 
     PAGED_CODE();
     if (Device == NULL || Device->Adapter == NULL || BackingResource == NULL || BackingAllocations == NULL || AllocationCount == 0 || OutResource == NULL || OutAllocationHandles == NULL)
         return STATUS_INVALID_PARAMETER;
     Adapter = Device->Adapter;
-    if (BackingResource->Adapter != Adapter || BackingResource->BackingResource != NULL || DXGK_CB_FULL(Adapter, DxgkDdiOpenAllocation) == NULL || DXGK_CB_FULL(Adapter, DxgkDdiCloseAllocation) == NULL)
+    /* An adapter without the open DDIs (display-only) can only share the system allocations dxgkrnl backs itself;
+     * their opens need no miniport binding. */
+    MiniportBindings = DXGK_CB_FULL(Adapter, DxgkDdiOpenAllocation) != NULL && DXGK_CB_FULL(Adapter, DxgkDdiCloseAllocation) != NULL;
+    if (BackingResource->Adapter != Adapter || BackingResource->BackingResource != NULL || (!MiniportBindings && BackingResource->MiniportHandle != NULL))
         return STATUS_NOT_SUPPORTED;
     if (!DxgkVidMmSharedAccessAllowed(BackingResource, Device->OwnerProcess))
         return STATUS_ACCESS_DENIED;
@@ -3725,8 +3729,9 @@ DxgkVidMmCreateOpenResource(
     Resource->OpenAllocationCapacity = AllocationCount;
     Resource->OpenAllocations = ExAllocatePoolWithTag(NonPagedPool, (SIZE_T)AllocationCount * sizeof(*Resource->OpenAllocations), TAG_VIDMM_RESOURCE);
     Resource->OpenBindingScratch = ExAllocatePoolWithTag(NonPagedPool, (SIZE_T)AllocationCount * sizeof(*Resource->OpenBindingScratch), TAG_VIDMM_RESOURCE);
-    OpenBindingGroup = DxgkpVidMmCreateOpenBindingGroup(AllocationCount);
-    if (Resource->OpenAllocations == NULL || Resource->OpenBindingScratch == NULL || OpenBindingGroup == NULL)
+    if (MiniportBindings)
+        OpenBindingGroup = DxgkpVidMmCreateOpenBindingGroup(AllocationCount);
+    if (Resource->OpenAllocations == NULL || Resource->OpenBindingScratch == NULL || (MiniportBindings && OpenBindingGroup == NULL))
     {
         Status = STATUS_INSUFFICIENT_RESOURCES;
         goto Cleanup;
@@ -3748,6 +3753,11 @@ DxgkVidMmCreateOpenResource(
         if (BackingAllocation == NULL || BackingAllocation->Adapter != Adapter || BackingAllocation->BackingAllocation != NULL || Offset > TotalPrivateDriverDataSize || BackingAllocation->PrivateDriverDataSize > TotalPrivateDriverDataSize - Offset)
         {
             Status = STATUS_INVALID_PARAMETER;
+            goto Cleanup;
+        }
+        if (!MiniportBindings && BackingAllocation->MiniportHandle != NULL)
+        {
+            Status = STATUS_NOT_SUPPORTED;
             goto Cleanup;
         }
         Allocation = ExAllocatePoolWithTag(NonPagedPool, sizeof(*Allocation), TAG_VIDMM_ALLOC);
@@ -3801,44 +3811,47 @@ DxgkVidMmCreateOpenResource(
     ExReleaseFastMutex(&DxgkVidMmAllocationListLock);
     AllocationsPublished = TRUE;
 
-    RtlZeroMemory(&OpenArgs, sizeof(OpenArgs));
-    OpenArgs.NumAllocations = AllocationCount;
-    OpenArgs.pOpenAllocation = OpenInfo;
-    OpenArgs.pPrivateDriverData = ResourcePrivateDriverData;
-    OpenArgs.PrivateDriverSize = ResourcePrivateDriverDataSize;
-    if (!DxgkAcquireMiniportCallback(Adapter))
+    if (MiniportBindings)
     {
-        Status = STATUS_DEVICE_NOT_READY;
-        goto Cleanup;
-    }
-    Status = DXGK_CB_FULL(Adapter, DxgkDdiOpenAllocation)(Device->hMiniportDevice, &OpenArgs);
-    DxgkReleaseMiniportCallback(Adapter);
-    if (!NT_SUCCESS(Status))
-        goto Cleanup;
-    OpenSucceeded = TRUE;
-    for (Index = 0; Index < AllocationCount; ++Index)
-    {
-        if (OpenInfo[Index].hDeviceSpecificAllocation == NULL)
+        RtlZeroMemory(&OpenArgs, sizeof(OpenArgs));
+        OpenArgs.NumAllocations = AllocationCount;
+        OpenArgs.pOpenAllocation = OpenInfo;
+        OpenArgs.pPrivateDriverData = ResourcePrivateDriverData;
+        OpenArgs.PrivateDriverSize = ResourcePrivateDriverDataSize;
+        if (!DxgkAcquireMiniportCallback(Adapter))
         {
-            Status = STATUS_INVALID_PARAMETER;
+            Status = STATUS_DEVICE_NOT_READY;
             goto Cleanup;
         }
-        Resource->OpenBindingScratch[CloseCount++] = OpenInfo[Index].hDeviceSpecificAllocation;
+        Status = DXGK_CB_FULL(Adapter, DxgkDdiOpenAllocation)(Device->hMiniportDevice, &OpenArgs);
+        DxgkReleaseMiniportCallback(Adapter);
+        if (!NT_SUCCESS(Status))
+            goto Cleanup;
+        OpenSucceeded = TRUE;
+        for (Index = 0; Index < AllocationCount; ++Index)
+        {
+            if (OpenInfo[Index].hDeviceSpecificAllocation == NULL)
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                goto Cleanup;
+            }
+            Resource->OpenBindingScratch[CloseCount++] = OpenInfo[Index].hDeviceSpecificAllocation;
+        }
+        ExAcquireFastMutex(&DxgkVidMmAllocationListLock);
+        OpenBindingGroup->MiniportDeviceHandle = Device->hMiniportDevice;
+        for (Index = 0; Index < AllocationCount; ++Index)
+        {
+            DxgkpVidMmReferenceOpenBindingGroup(OpenBindingGroup);
+            Resource->OpenAllocations[Index]->OpenBindingHandle = OpenInfo[Index].hDeviceSpecificAllocation;
+            Resource->OpenAllocations[Index]->OpenBindingGroupIndex = Index;
+            Resource->OpenAllocations[Index]->OpenBindingGroup = OpenBindingGroup;
+            OpenBindingGroup->Allocations[Index] = Resource->OpenAllocations[Index];
+            OpenBindingGroup->OpenHandles[Index] = OpenInfo[Index].hDeviceSpecificAllocation;
+        }
+        ExReleaseFastMutex(&DxgkVidMmAllocationListLock);
+        DxgkpVidMmDereferenceOpenBindingGroup(OpenBindingGroup);
+        OpenBindingGroup = NULL;
     }
-    ExAcquireFastMutex(&DxgkVidMmAllocationListLock);
-    OpenBindingGroup->MiniportDeviceHandle = Device->hMiniportDevice;
-    for (Index = 0; Index < AllocationCount; ++Index)
-    {
-        DxgkpVidMmReferenceOpenBindingGroup(OpenBindingGroup);
-        Resource->OpenAllocations[Index]->OpenBindingHandle = OpenInfo[Index].hDeviceSpecificAllocation;
-        Resource->OpenAllocations[Index]->OpenBindingGroupIndex = Index;
-        Resource->OpenAllocations[Index]->OpenBindingGroup = OpenBindingGroup;
-        OpenBindingGroup->Allocations[Index] = Resource->OpenAllocations[Index];
-        OpenBindingGroup->OpenHandles[Index] = OpenInfo[Index].hDeviceSpecificAllocation;
-    }
-    ExReleaseFastMutex(&DxgkVidMmAllocationListLock);
-    DxgkpVidMmDereferenceOpenBindingGroup(OpenBindingGroup);
-    OpenBindingGroup = NULL;
 
     DxgkpVidMmTrackBacking(Adapter);
     for (Index = 0; Index < AllocationCount; ++Index)
