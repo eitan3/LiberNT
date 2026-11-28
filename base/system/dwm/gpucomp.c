@@ -987,6 +987,8 @@ static BOOL DwmGpuComposeMaterial(const DWM_WIN *Window, GLuint Texture, BOOL Fr
                        const RECT *Cover, const RECT *SceneCover);
 static GLuint g_shadowProgram;
 static struct { GLint Owner, Size, Sigma, Opacity, ScreenHeight, Offset, WindowAlpha, Radius; } g_shadowLoc;
+static GLuint g_edgeProgram;
+static struct { GLint Owner, Size, Color, ScreenHeight, Radius, Bevel, Weight; } g_edgeLoc;
 /* Locations belong to this linked program and are refreshed after context
  * recreation. Never resolve uniform names in the per-window draw path. */
 typedef struct _DWM_GPU_MATERIAL_PROGRAM
@@ -1669,6 +1671,9 @@ DwmGpuComposeShutdown(void)
         if (g_shadowProgram != 0)
             pglDeleteProgram(g_shadowProgram);
         g_shadowProgram = 0;
+        if (g_edgeProgram != 0)
+            pglDeleteProgram(g_edgeProgram);
+        g_edgeProgram = 0;
         wglMakeCurrent(NULL, NULL);
         wglDeleteContext(g_composeContext);
         g_composeContext = NULL;
@@ -2816,16 +2821,16 @@ DwmGpuComposeMaterial(const DWM_WIN *Window, GLuint Texture, BOOL Frame,
 
 static BOOL
 DwmGpuComposeShadowMeasured(const RECT *Bounds, LONGLONG X, LONGLONG Y,
-                    LONG Width, LONG Height, LONG Offset, LONG WideExtent,
-                    LONG Radius, BOOL Active, ULONG WideOpacity, ULONG TightOpacity,
-                    ULONG WindowAlpha)
+                    LONG Width, LONG Height, const DWM_GPU_SHADOW *Shadow,
+                    LONG Radius, ULONG WindowAlpha)
 {
     LONG InnerLeft, InnerTop, InnerRight, InnerBottom;
     ULONG Corner;
     GLuint Vertex, Fragment;
     GLint Linked = GL_FALSE;
 
-    if (!g_composeActive || Width <= 0 || Height <= 0 || WideExtent <= 0)
+    if (!g_composeActive || Width <= 0 || Height <= 0 ||
+        !(Shadow->WideSigma > 0.0f) || !(Shadow->TightSigma > 0.0f))
         return FALSE;
     if (WindowAlpha == 0)
         return TRUE;
@@ -2863,11 +2868,10 @@ DwmGpuComposeShadowMeasured(const RECT *Bounds, LONGLONG X, LONGLONG Y,
     pglUseProgram(g_shadowProgram);
     pglUniform2f(g_shadowLoc.Owner, (GLfloat)X, (GLfloat)Y);
     pglUniform2f(g_shadowLoc.Size, Width, Height);
-    pglUniform2f(g_shadowLoc.Sigma, WideExtent / 3.0f,
-                WideExtent * (Active ? 2.0f : 1.0f) / 9.0f);
-    pglUniform2f(g_shadowLoc.Opacity, WideOpacity, TightOpacity);
+    pglUniform2f(g_shadowLoc.Sigma, Shadow->WideSigma, Shadow->TightSigma);
+    pglUniform2f(g_shadowLoc.Opacity, (GLfloat)Shadow->WideOpacity, (GLfloat)Shadow->TightOpacity);
     pglUniform1f(g_shadowLoc.ScreenHeight, g_composeHeight);
-    pglUniform1f(g_shadowLoc.Offset, Offset);
+    pglUniform2f(g_shadowLoc.Offset, (GLfloat)Shadow->WideOffset, (GLfloat)Shadow->TightOffset);
     pglUniform1f(g_shadowLoc.WindowAlpha, WindowAlpha);
     pglUniform1f(g_shadowLoc.Radius, (GLfloat)Radius);
     glEnable(GL_BLEND);
@@ -2904,14 +2908,102 @@ DwmGpuComposeShadowMeasured(const RECT *Bounds, LONGLONG X, LONGLONG Y,
 
 BOOL
 DwmGpuComposeShadow(const RECT *Bounds, LONGLONG X, LONGLONG Y,
-                    LONG Width, LONG Height, LONG Offset, LONG WideExtent,
-                    LONG Radius, BOOL Active, ULONG WideOpacity, ULONG TightOpacity,
-                    ULONG WindowAlpha)
+                    LONG Width, LONG Height, const DWM_GPU_SHADOW *Shadow,
+                    LONG Radius, ULONG WindowAlpha)
 {
     DPT_SCOPE Trace = DptBegin(&g_DwmPresentTrace, DPT_SHADOW);
     BOOL Result = DwmD3dIsActive() ?
-                    DwmD3dShadow(Bounds, X, Y, Width, Height, Offset, WideExtent, Radius, Active, WideOpacity, TightOpacity, WindowAlpha) :
-                    DwmGpuComposeShadowMeasured(Bounds, X, Y, Width, Height, Offset, WideExtent, Radius, Active, WideOpacity, TightOpacity, WindowAlpha);
+                    DwmD3dShadow(Bounds, X, Y, Width, Height, Shadow, Radius, WindowAlpha) :
+                    DwmGpuComposeShadowMeasured(Bounds, X, Y, Width, Height, Shadow, Radius, WindowAlpha);
     DptEnd(&g_DwmPresentTrace, Trace, Result, 0);
     return Result;
+}
+
+static BOOL
+DwmGpuComposeFrameEdgeGl(const RECT *Bounds, LONGLONG X, LONGLONG Y, LONG Width, LONG Height,
+                         LONG Radius, ULONG Color, BOOL Bevel, ULONG WindowAlpha)
+{
+    GLuint Vertex, Fragment;
+    GLint Linked = GL_FALSE;
+
+    if (!g_composeActive)
+        return FALSE;
+    if ((Color >> 24) == 0 || WindowAlpha == 0 || !DwmGpuDamageIntersects(Bounds, &g_composeDamage.Draw))
+        return TRUE;
+    if (g_edgeProgram == 0)
+    {
+        Vertex = DwmGpuCompile(GL_VERTEX_SHADER, DwmGpuBlurVertexSource);
+        Fragment = DwmGpuCompile(GL_FRAGMENT_SHADER, DwmGpuFrameEdgeSource);
+        if (Vertex && Fragment)
+        {
+            g_edgeProgram = pglCreateProgram();
+            if (g_edgeProgram)
+            {
+                pglAttachShader(g_edgeProgram, Vertex);
+                pglAttachShader(g_edgeProgram, Fragment);
+                pglLinkProgram(g_edgeProgram);
+                pglGetProgramiv(g_edgeProgram, GL_LINK_STATUS, &Linked);
+            }
+        }
+        if (Vertex) pglDeleteShader(Vertex);
+        if (Fragment) pglDeleteShader(Fragment);
+        if (!Linked)
+        {
+            if (g_edgeProgram) pglDeleteProgram(g_edgeProgram);
+            g_edgeProgram = 0;
+            return FALSE;
+        }
+#define EDGE_LOCATION(Name) g_edgeLoc.Name = pglGetUniformLocation(g_edgeProgram, "u" #Name)
+        EDGE_LOCATION(Owner); EDGE_LOCATION(Size); EDGE_LOCATION(Color);
+        EDGE_LOCATION(ScreenHeight); EDGE_LOCATION(Radius); EDGE_LOCATION(Bevel); EDGE_LOCATION(Weight);
+#undef EDGE_LOCATION
+    }
+    pglUseProgram(g_edgeProgram);
+    pglUniform2f(g_edgeLoc.Owner, (GLfloat)X, (GLfloat)Y);
+    pglUniform2f(g_edgeLoc.Size, (GLfloat)Width, (GLfloat)Height);
+    pglUniform3f(g_edgeLoc.Color, ((Color >> 16) & 0xFFu) / 255.0f, ((Color >> 8) & 0xFFu) / 255.0f,
+                 (Color & 0xFFu) / 255.0f);
+    pglUniform1f(g_edgeLoc.ScreenHeight, (GLfloat)g_composeHeight);
+    pglUniform1f(g_edgeLoc.Radius, (GLfloat)Radius);
+    pglUniform1f(g_edgeLoc.Bevel, Bevel ? 1.0f : 0.0f);
+    pglUniform1f(g_edgeLoc.Weight, (GLfloat)((Color >> 24) * WindowAlpha));
+    glEnable(GL_BLEND);
+    DwmGpuComposeQuad(Bounds->left, Bounds->top, Bounds->right, Bounds->bottom, 1.0f);
+    pglUseProgram(0);
+    return glGetError() == GL_NO_ERROR;
+}
+
+static BOOL
+DwmGpuComposeFrameEdgePart(LONGLONG X, LONGLONG Y, LONG Width, LONG Height, LONG Radius, ULONG Color,
+                           BOOL Bevel, ULONG WindowAlpha, LONGLONG Left, LONGLONG Top, LONGLONG Right,
+                           LONGLONG Bottom)
+{
+    RECT Part;
+
+    if (Right <= Left || Bottom <= Top || Left < LONG_MIN || Top < LONG_MIN || Right > LONG_MAX || Bottom > LONG_MAX)
+        return TRUE;
+    SetRect(&Part, (LONG)Left, (LONG)Top, (LONG)Right, (LONG)Bottom);
+    return DwmD3dIsActive() ? DwmD3dFrameEdge(&Part, X, Y, Width, Height, Radius, Color, Bevel, WindowAlpha)
+                            : DwmGpuComposeFrameEdgeGl(&Part, X, Y, Width, Height, Radius, Color, Bevel, WindowAlpha);
+}
+
+BOOL
+DwmGpuComposeFrameEdge(LONGLONG X, LONGLONG Y, LONG Width, LONG Height, LONG Radius,
+                       ULONG Outline, ULONG Bevel, ULONG WindowAlpha)
+{
+    LONG Outset = DWM_LIBER_FRAME_OUTSET, BottomBand;
+
+    if (Width <= 0 || Height <= 0 || Radius < 0 || Radius > min(Width, Height) / 2 || WindowAlpha > 255)
+        return FALSE;
+    BottomBand = max(Height - Radius - Outset, Radius + Outset);
+    return DwmGpuComposeFrameEdgePart(X, Y, Width, Height, Radius, Outline, FALSE, WindowAlpha,
+                                      X - Outset, Y - Outset, X + Width + Outset, Y + Radius + Outset) &&
+           DwmGpuComposeFrameEdgePart(X, Y, Width, Height, Radius, Outline, FALSE, WindowAlpha,
+                                      X - Outset, Y + BottomBand, X + Width + Outset, Y + Height + Outset) &&
+           DwmGpuComposeFrameEdgePart(X, Y, Width, Height, Radius, Outline, FALSE, WindowAlpha,
+                                      X - Outset, Y + Radius + Outset, X, Y + BottomBand) &&
+           DwmGpuComposeFrameEdgePart(X, Y, Width, Height, Radius, Outline, FALSE, WindowAlpha,
+                                      X + Width, Y + Radius + Outset, X + Width + Outset, Y + BottomBand) &&
+           DwmGpuComposeFrameEdgePart(X, Y, Width, Height, Radius, Bevel, TRUE, WindowAlpha,
+                                      X, Y, X + Width, Y + Radius + Outset);
 }

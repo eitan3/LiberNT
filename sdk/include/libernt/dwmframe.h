@@ -267,6 +267,13 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
 #define DWM_LWA_ALPHA    0x00000002u
 
 /* Compositor-owned attributes carried in the unused high LayerFlags bits. */
+/* Liber window chrome: elevation shadow, and the DWM_LIBER_EDGE_* outline drawn DWM_LIBER_FRAME_OUTSET px outside */
+#define DWM_WINDOW_LIBER_EDGE_SHIFT 20
+#define DWM_WINDOW_LIBER_EDGE_MASK  0x00300000u
+#define DWM_WINDOW_LIBER_FRAME      0x00800000u
+#define DWM_WINDOW_LIBER_EDGE(Flags) (((ULONG)(Flags) & DWM_WINDOW_LIBER_EDGE_MASK) >> DWM_WINDOW_LIBER_EDGE_SHIFT)
+#define DWM_WINDOW_LIBER_EDGE_PACK(Edge) (((ULONG)(Edge) << DWM_WINDOW_LIBER_EDGE_SHIFT) & DWM_WINDOW_LIBER_EDGE_MASK)
+#define DWM_LIBER_FRAME_OUTSET      1
 #define DWM_WINDOW_FRAME_ALPHA 0x01000000u
 #define DWM_WINDOW_DX_SCANOUT  0x02000000u /* see DWM_DX_PUBLISH_SCANOUT */
 #define DWM_WINDOW_DX_RETAINED 0x04000000u /* see DWM_DX_PUBLISH_RETAINED */
@@ -352,6 +359,22 @@ static __inline ULONG
 DwmLiberWindowCornerRadius(ULONG Dpi)
 {
     return DWM_CORNER_RADIUS_LIBER_96 * (Dpi ? Dpi : 96u) / 96u;
+}
+
+static __inline ULONG
+DwmLiberFrameEdgeFor(BOOLEAN Zoomed, BOOLEAN Snapped, ULONG CornerRadius)
+{
+    if (Zoomed)
+        return DWM_LIBER_EDGE_NONE;
+    if (Snapped)
+        return DWM_LIBER_EDGE_SEAM;
+    return CornerRadius != 0 ? DWM_LIBER_EDGE_WINDOW : DWM_LIBER_EDGE_NONE;
+}
+
+static __inline ULONG
+DwmLiberFrameEdge(ULONG LayerFlags)
+{
+    return (LayerFlags & DWM_WINDOW_LIBER_FRAME) ? DWM_WINDOW_LIBER_EDGE(LayerFlags) : DWM_LIBER_EDGE_NONE;
 }
 
 #define DWM_LIBER_MATERIAL_ULTRATHIN  1u

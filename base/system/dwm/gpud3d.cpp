@@ -140,7 +140,7 @@ struct ConstantBuffer
     ConstantBuffer *Next;
 };
 
-enum Shader { Solid, Copy, Window, Filter, Shadow, BlurCopy, PointerSprite, ShaderCount };
+enum Shader { Solid, Copy, Window, Filter, Shadow, BlurCopy, PointerSprite, FrameEdge, ShaderCount };
 
 /* Disjoint rectangles repaired separately, so distant damage does not
  * redraw everything between it. */
@@ -644,7 +644,7 @@ BOOL CreateShaders()
     CompileProc Compile = (CompileProc)GetProcAddress(State.Compiler, "D3DCompile");
     if (Compile == NULL)
         return FALSE;
-    const char *Entries[] = {"QuadVS", "SolidPS", "CopyPS", "WindowPS", "FilterPS", "ShadowPS", "BlurCopyPS", "PointerPS"};
+    const char *Entries[] = {"QuadVS", "SolidPS", "CopyPS", "WindowPS", "FilterPS", "ShadowPS", "BlurCopyPS", "PointerPS", "EdgePS"};
     for (ULONG Index = 0; Index < ARRAYSIZE(Entries); ++Index)
     {
         ID3DBlob *Bytecode = NULL, *Errors = NULL;
@@ -2628,10 +2628,10 @@ DwmD3dBlurWindow(const DWM_WIN *Window, const RECTL *Rectangles, LONG OriginX, L
 
 BOOL
 DwmD3dShadow(const RECT *Bounds, LONGLONG X, LONGLONG Y, LONG Width, LONG Height,
-              LONG Offset, LONG WideExtent, LONG Radius, BOOL Active, ULONG WideOpacity,
-              ULONG TightOpacity, ULONG WindowAlpha)
+              const DWM_GPU_SHADOW *Params, LONG Radius, ULONG WindowAlpha)
 {
-    if (!State.Active || Bounds == NULL || Width <= 0 || Height <= 0 || WideExtent <= 0)
+    if (!State.Active || Bounds == NULL || Params == NULL || Width <= 0 || Height <= 0 ||
+        !(Params->WideSigma > 0.0f) || !(Params->TightSigma > 0.0f))
         return FALSE;
     if (WindowAlpha == 0 || !DrawIntersects(*Bounds))
         return TRUE;
@@ -2641,13 +2641,14 @@ DwmD3dShadow(const RECT *Bounds, LONGLONG X, LONGLONG Y, LONG Width, LONG Height
     Data.SourceSize[1] = (FLOAT)Height;
     Data.CaptureRect[0] = (FLOAT)X;
     Data.CaptureRect[1] = (FLOAT)Y;
-    Data.Shadow[0] = WideExtent / 3.0f;
-    Data.Shadow[1] = WideExtent * (Active ? 2.0f : 1.0f) / 9.0f;
-    Data.Shadow[2] = (FLOAT)WideOpacity;
-    Data.Shadow[3] = (FLOAT)TightOpacity;
+    Data.Shadow[0] = Params->WideSigma;
+    Data.Shadow[1] = Params->TightSigma;
+    Data.Shadow[2] = (FLOAT)Params->WideOpacity;
+    Data.Shadow[3] = (FLOAT)Params->TightOpacity;
     Data.Extra[0] = (FLOAT)Radius;
-    Data.Extra[1] = (FLOAT)Offset;
+    Data.Extra[1] = (FLOAT)Params->WideOffset;
     Data.Extra[2] = (FLOAT)WindowAlpha;
+    Data.Extra[3] = (FLOAT)Params->TightOffset;
     LONG L = (LONG)max(Bounds->left, min(Bounds->right, X));
     LONG T = (LONG)max(Bounds->top, min(Bounds->bottom, Y));
     LONG R = (LONG)max(Bounds->left, min(Bounds->right, X + Width));
@@ -2668,6 +2669,30 @@ DwmD3dShadow(const RECT *Bounds, LONGLONG X, LONGLONG Y, LONG Width, LONG Height
             return FALSE;
     }
     return TRUE;
+}
+
+BOOL
+DwmD3dFrameEdge(const RECT *Bounds, LONGLONG X, LONGLONG Y, LONG Width, LONG Height,
+                LONG Radius, ULONG Color, BOOL Bevel, ULONG WindowAlpha)
+{
+    if (!State.Active || Bounds == NULL || Width <= 0 || Height <= 0 || Radius < 0)
+        return FALSE;
+    if ((Color >> 24) == 0 || WindowAlpha == 0 || !DrawIntersects(*Bounds))
+        return TRUE;
+    Constants Data = {};
+    Data.SourceSize[0] = (FLOAT)Width;
+    Data.SourceSize[1] = (FLOAT)Height;
+    Data.CaptureRect[0] = (FLOAT)X;
+    Data.CaptureRect[1] = (FLOAT)Y;
+    Data.Brush[0] = ((Color >> 16) & 0xFFu) / 255.0f;
+    Data.Brush[1] = ((Color >> 8) & 0xFFu) / 255.0f;
+    Data.Brush[2] = (Color & 0xFFu) / 255.0f;
+    Data.Brush[3] = 1.0f;
+    Data.Extra[0] = (FLOAT)Radius;
+    Data.Extra[1] = (FLOAT)((Color >> 24) * WindowAlpha);
+    Data.Extra[2] = Bevel ? 1.0f : 0.0f;
+    SetRectangle(Data, Bounds->left, Bounds->top, Bounds->right, Bounds->bottom);
+    return Draw(State.Canvas, FrameEdge, ClipDraw(*Bounds), Data, NULL, NULL, TRUE);
 }
 
 void

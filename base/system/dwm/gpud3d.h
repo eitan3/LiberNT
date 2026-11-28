@@ -32,8 +32,9 @@ BOOL DwmD3dBlurRect(const RECT *Rect, ULONG Radius);
 BOOL DwmD3dBlurWindow(const DWM_WIN *Window, const RECTL *Rectangles,
                       LONG OriginX, LONG OriginY, ULONG Radius, FLOAT Saturation);
 BOOL DwmD3dShadow(const RECT *Bounds, LONGLONG X, LONGLONG Y, LONG Width,
-                  LONG Height, LONG Offset, LONG WideExtent, LONG Radius, BOOL Active,
-                  ULONG WideOpacity, ULONG TightOpacity, ULONG WindowAlpha);
+                  LONG Height, const DWM_GPU_SHADOW *Shadow, LONG Radius, ULONG WindowAlpha);
+BOOL DwmD3dFrameEdge(const RECT *Bounds, LONGLONG X, LONGLONG Y, LONG Width, LONG Height,
+                     LONG Radius, ULONG Color, BOOL Bevel, ULONG WindowAlpha);
 void DwmD3dBlurStats(ULONGLONG *Filtered, ULONGLONG *Reused);
 BOOL DwmD3dClientCopiesRetired(void);
 BOOL DwmD3dHasPointerImage(void);

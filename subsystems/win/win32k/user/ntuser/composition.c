@@ -287,6 +287,24 @@ IntCompositionCornerRadius(_In_ PWND Wnd)
     }
 }
 
+static ULONG
+IntCompositionLiberChrome(_In_ PWND Wnd, _In_ ULONG CornerRadius)
+{
+    ULONG Edge;
+
+    ASSERT(Wnd != NULL);
+    if (!g_bLiberExperience || (Wnd->style & WS_CHILD) || (Wnd->style & WS_CAPTION) != WS_CAPTION ||
+        Wnd->fnid == FNID_MENU)
+    {
+        return 0;
+    }
+    Edge = DwmLiberFrameEdgeFor((Wnd->style & (WS_MINIMIZE | WS_MAXIMIZE)) != 0, IntIsWindowSnapped(Wnd),
+                                CornerRadius);
+    ASSERT(Edge != DWM_LIBER_EDGE_GLASS);
+    ASSERT(Edge != DWM_LIBER_EDGE_WINDOW || CornerRadius != 0);
+    return DWM_WINDOW_LIBER_FRAME | DWM_WINDOW_LIBER_EDGE_PACK(Edge);
+}
+
 /* dwm.exe is the ONLY compositor (Windows model — win32k tracks redirection
  * and damage, never composes). Attach enables redirection; detach or a
  * silent dwm (watchdog on g_DwmLastFrameTime, bumped by every GetFrame)
@@ -3806,6 +3824,8 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
             {
                 lf |= DWM_WINDOW_DARK;
             }
+            lf &= ~(DWM_WINDOW_LIBER_FRAME | DWM_WINDOW_LIBER_EDGE_MASK);
+            lf |=IntCompositionLiberChrome(w, g_DwmFrameWindows[count].CornerRadius);
             g_DwmFrameWindows[count].Alpha = alpha;
             g_DwmFrameWindows[count].ColorKey = (ULONG)key;
             if (e->Redirect.DxFlags & DWM_DX_PUBLISH_PREMULTIPLIED)

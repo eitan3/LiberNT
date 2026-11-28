@@ -95,10 +95,20 @@ BOOL DwmGpuComposeBlurWindow(const struct _DWM_WIN *Window,
                              const RECTL *Rectangles,
                              LONG OriginX, LONG OriginY, ULONG Radius, FLOAT Saturation);
 
+typedef struct _DWM_GPU_SHADOW
+{
+    FLOAT WideSigma, TightSigma;
+    LONG WideOffset, TightOffset;
+    ULONG WideOpacity, TightOpacity;
+} DWM_GPU_SHADOW;
+
 BOOL DwmGpuComposeShadow(const RECT *Bounds, LONGLONG X, LONGLONG Y,
-                          LONG Width, LONG Height, LONG Offset, LONG WideExtent,
-                          LONG Radius, BOOL Active, ULONG WideOpacity,
-                          ULONG TightOpacity, ULONG WindowAlpha);
+                          LONG Width, LONG Height, const DWM_GPU_SHADOW *Shadow,
+                          LONG Radius, ULONG WindowAlpha);
+
+/* Outline and top bevel colors are 0xAARRGGBB; a zero alpha skips that layer. */
+BOOL DwmGpuComposeFrameEdge(LONGLONG X, LONGLONG Y, LONG Width, LONG Height, LONG Radius,
+                            ULONG Outline, ULONG Bevel, ULONG WindowAlpha);
 
 /* TRUE when the frame's copies of new client publications have completed on
  * the GPU, so they may be acknowledged before the frame is presented. */
