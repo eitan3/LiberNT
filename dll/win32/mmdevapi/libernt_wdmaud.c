@@ -39,6 +39,7 @@
 #include "reactos_render_engine.h"
 #include "reactos_wavert.h"
 #include "pcm_sample.h"
+#include "endpoint_props.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
 
@@ -931,21 +932,9 @@ static void fill_endpoint_ids(struct get_endpoint_ids_params *params)
 
 static DWORD channel_mask_from_count(WORD channels)
 {
-    switch (channels)
-    {
-        case 1:
-            return KSAUDIO_SPEAKER_MONO;
-        case 2:
-            return KSAUDIO_SPEAKER_STEREO;
-        case 4:
-            return KSAUDIO_SPEAKER_QUAD;
-        case 6:
-            return KSAUDIO_SPEAKER_5POINT1;
-        case 8:
-            return KSAUDIO_SPEAKER_7POINT1;
-        default:
-            return KSAUDIO_SPEAKER_DIRECTOUT;
-    }
+    DWORD mask;
+
+    return endpoint_physical_speakers(channels, &mask) ? mask : KSAUDIO_SPEAKER_DIRECTOUT;
 }
 
 static void set_pcm_format(WAVEFORMATEXTENSIBLE *fmt, DWORD samples_per_sec, WORD bits_per_sample, WORD channels);
@@ -4779,6 +4768,105 @@ static NTSTATUS reactos_set_volumes(struct set_volumes_params *params)
     return STATUS_SUCCESS;
 }
 
+/* Whether a property key is Key */
+static BOOL is_property_key(const PROPERTYKEY *prop, const PROPERTYKEY *key)
+{
+    return prop->pid == key->pid && IsEqualGUID(&prop->fmtid, &key->fmtid);
+}
+
+/*
+ * The properties devenum.c asks the driver for (set_driver_prop_value). The
+ * adapter path is the filter the endpoint's wave pin is connected to, as
+ * reactos_wave_connector finds it: the property an app can key an endpoint on,
+ * as it names the device and not a display name or an index. The form factor
+ * is read from that path, and the speakers from the endpoint's own format
+ * (endpoint_props.h). A property with no source is not answered.
+ */
+static NTSTATUS reactos_get_prop_value(struct get_prop_value_params *params)
+{
+    /* devenum.c's devicepath_key, and sdk/include/psdk/mmdeviceapi.idl's PKEY_AudioEndpoint_FormFactor and PKEY_AudioEndpoint_PhysicalSpeakers */
+    static const PROPERTYKEY devicepath_key = {
+        {0xb3f8fa53, 0x0004, 0x438e, {0x90, 0x03, 0x51, 0xa4, 0x6e, 0x13, 0x9b, 0xfc}}, 2
+    };
+    static const PROPERTYKEY formfactor_key = {
+        {0x1da5d803, 0xd492, 0x4edd, {0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e}}, 0
+    };
+    static const PROPERTYKEY speakers_key = {
+        {0x1da5d803, 0xd492, 0x4edd, {0x8c, 0x23, 0xe0, 0xc0, 0xff, 0xee, 0x7f, 0x0e}}, 3
+    };
+
+    PROPVARIANT *value = params->value;
+    WAVEFORMATEXTENSIBLE format;
+    DWORD answer;
+    WCHAR *path;
+    ULONG pin;
+    unsigned int size;
+    HRESULT hr;
+
+    if (is_property_key(params->prop, &devicepath_key))
+    {
+        hr = reactos_wave_connector(params->guid, &path, &pin);
+        if (FAILED(hr))
+        {
+            params->result = hr;
+            return STATUS_SUCCESS;
+        }
+        size = (lstrlenW(path) + 1) * sizeof(WCHAR);
+        /* the caller allocates the string's buffer and asks again */
+        if (params->buffer && *params->buffer_size >= size)
+        {
+            memcpy(params->buffer, path, size);
+            value->vt = VT_LPWSTR;
+            value->pwszVal = params->buffer;
+            hr = S_OK;
+        }
+        else
+        {
+            hr = E_NOT_SUFFICIENT_BUFFER;
+        }
+        free(path);
+        *params->buffer_size = size;
+        params->result = hr;
+        return STATUS_SUCCESS;
+    }
+
+    if (is_property_key(params->prop, &formfactor_key))
+    {
+        hr = reactos_wave_connector(params->guid, &path, &pin);
+        if (SUCCEEDED(hr))
+        {
+            hr = endpoint_form_factor(path, params->flow, &answer) ? S_OK : E_NOTIMPL;
+            if (hr == S_OK)
+            {
+                value->vt = VT_UI4;
+                value->ulVal = answer;
+            }
+            free(path);
+        }
+        params->result = hr;
+        return STATUS_SUCCESS;
+    }
+
+    if (is_property_key(params->prop, &speakers_key))
+    {
+        if (reactos_driver_device_format(params->device, params->flow, &format) &&
+            endpoint_physical_speakers(format.Format.nChannels, &answer))
+        {
+            value->vt = VT_UI4;
+            value->ulVal = answer;
+            params->result = S_OK;
+        }
+        else
+        {
+            params->result = E_NOTIMPL;
+        }
+        return STATUS_SUCCESS;
+    }
+
+    params->result = E_NOTIMPL;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS reactos_mmdevapi_call(unsigned int code, void *args)
 {
     switch (code)
@@ -4876,11 +4964,7 @@ NTSTATUS reactos_mmdevapi_call(unsigned int code, void *args)
             return reactos_is_started(args);
 
         case get_prop_value:
-        {
-            struct get_prop_value_params *params = args;
-            params->result = E_NOTIMPL;
-            return STATUS_SUCCESS;
-        }
+            return reactos_get_prop_value(args);
 
         case midi_init:
         {

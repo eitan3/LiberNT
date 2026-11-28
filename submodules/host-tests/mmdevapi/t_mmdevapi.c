@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT host-native tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The device enumerator's notification clients and the diff of a device set (dll/win32/mmdevapi/devenum_notif.h, the code mmdevapi.dll compiles): the three device callbacks per verdict on every registered client and none for an unchanged set, a client unregistering itself or another under a callback, a walk under a callback, the dead wrappers freed when the last walk ends; the control interface of a part that stands for a KS node (dll/win32/mmdevapi/devicetopology_control.h): the request the driver sees through a fake KS channel and which parts stand for a node; under ASan and UBSan
+ * PURPOSE:     The device enumerator's notification clients and the diff of a device set (dll/win32/mmdevapi/devenum_notif.h, the code mmdevapi.dll compiles): the three device callbacks per verdict on every registered client and none for an unchanged set, a client unregistering itself or another under a callback, a walk under a callback, the dead wrappers freed when the last walk ends; the control interface of a part that stands for a KS node (dll/win32/mmdevapi/devicetopology_control.h): the request the driver sees through a fake KS channel and which parts stand for a node; what two properties of an endpoint are answered from (dll/win32/mmdevapi/endpoint_props.h): the form factor by the path of the endpoint's connector, the physical speakers by the channel count, and the paths and counts that answer nothing; under ASan and UBSan
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -1058,6 +1058,160 @@ check_unplug_plug_sequence(void)
     CHECK_EQ(seq.count, 0);
 }
 
+/* ---- What an endpoint's properties are answered from (endpoint_props.h) ---- */
+
+/* What the Windows headers give the unit: EDataFlow, WORD, the speaker positions and the masks ksmedia.h builds
+ * of them, and the EndpointFormFactor members of mmdeviceapi.idl */
+typedef enum _EDataFlow
+{
+    eRender,
+    eCapture,
+    eAll
+} EDataFlow;
+typedef wchar_t WCHAR;
+typedef unsigned short WORD;
+#define SPEAKER_FRONT_LEFT              0x1
+#define SPEAKER_FRONT_RIGHT             0x2
+#define SPEAKER_FRONT_CENTER            0x4
+#define SPEAKER_LOW_FREQUENCY           0x8
+#define SPEAKER_BACK_LEFT               0x10
+#define SPEAKER_BACK_RIGHT              0x20
+#define SPEAKER_FRONT_LEFT_OF_CENTER    0x40
+#define SPEAKER_FRONT_RIGHT_OF_CENTER   0x80
+#define KSAUDIO_SPEAKER_MONO            (SPEAKER_FRONT_CENTER)
+#define KSAUDIO_SPEAKER_STEREO          (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT)
+#define KSAUDIO_SPEAKER_QUAD            (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | \
+                                         SPEAKER_BACK_LEFT  | SPEAKER_BACK_RIGHT)
+#define KSAUDIO_SPEAKER_5POINT1         (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | \
+                                         SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY | \
+                                         SPEAKER_BACK_LEFT  | SPEAKER_BACK_RIGHT)
+#define KSAUDIO_SPEAKER_7POINT1         (SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT | \
+                                         SPEAKER_FRONT_CENTER | SPEAKER_LOW_FREQUENCY | \
+                                         SPEAKER_BACK_LEFT | SPEAKER_BACK_RIGHT | \
+                                         SPEAKER_FRONT_LEFT_OF_CENTER | SPEAKER_FRONT_RIGHT_OF_CENTER)
+enum
+{
+    RemoteNetworkDevice = 0,
+    Speakers = 1,
+    LineLevel = 2,
+    Headphones = 3,
+    Microphone = 4,
+    Headset = 5,
+    Handset = 6,
+    UnknownDigitalPassthrough = 7,
+    SPDIF = 8,
+    DigitalAudioDisplayDevice = 9,
+    UnknownFormFactor = 10
+};
+
+#include "endpoint_props.h"
+
+/* A device interface path of the codec driver's subdevices, and of the DSP's PCM */
+#define CODEC L"\\\\?\\hdaudio#func_01&ven_10de&dev_0083#4&267bb7d1&0&0001#{6994ad04-93ef-11d0-a3cc-00a0c9223196}\\"
+#define DSP L"\\\\?\\intcdsp#pcm&ctlr_ven_8086&ctlr_dev_7f50#4&aeefd634&0&1000000000#{6994ad04-93ef-11d0-a3cc-00a0c9223196}\\"
+
+/*
+ * The form factor of an endpoint from the path of its connector: the codec driver's kinds for the flow each
+ * belongs to, the ordinal and the case the path may carry, a kind without a member or of the other flow, the
+ * DSP's PCM (no jack), and a path that tells nothing (not answered, the value left as it was).
+ */
+static void check_endpoint_form_factor(void)
+{
+    DWORD value, untouched;
+
+    /* the kinds of the codec driver, for the flow each belongs to */
+    CHECK(endpoint_form_factor(CODEC L"eLineOutTopo", eRender, &value));
+    CHECK_EQ(value, LineLevel);
+    CHECK(endpoint_form_factor(CODEC L"eSpeakerTopo", eRender, &value));
+    CHECK_EQ(value, Speakers);
+    CHECK(endpoint_form_factor(CODEC L"eHeadphoneTopo", eRender, &value));
+    CHECK_EQ(value, Headphones);
+    CHECK(endpoint_form_factor(CODEC L"eMicInTopo", eCapture, &value));
+    CHECK_EQ(value, Microphone);
+    CHECK(endpoint_form_factor(CODEC L"eLineInTopo", eCapture, &value));
+    CHECK_EQ(value, LineLevel);
+
+    /* an ordinal, the case, and the wave subdevice of the same pin */
+    CHECK(endpoint_form_factor(CODEC L"eLineOut2Topo", eRender, &value));
+    CHECK_EQ(value, LineLevel);
+    CHECK(endpoint_form_factor(CODEC L"ELINEOUT10TOPO", eRender, &value));
+    CHECK_EQ(value, LineLevel);
+    CHECK(endpoint_form_factor(CODEC L"eMicInWave", eCapture, &value));
+    CHECK_EQ(value, Microphone);
+
+    /* a kind of the other flow, and a kind without a member: an unknown form factor */
+    CHECK(endpoint_form_factor(CODEC L"eMicInTopo", eRender, &value));
+    CHECK_EQ(value, UnknownFormFactor);
+    CHECK(endpoint_form_factor(CODEC L"eSpeakerTopo", eCapture, &value));
+    CHECK_EQ(value, UnknownFormFactor);
+    CHECK(endpoint_form_factor(CODEC L"eCDInTopo", eRender, &value));
+    CHECK_EQ(value, UnknownFormFactor);
+    CHECK(endpoint_form_factor(CODEC L"eOtherWave", eCapture, &value));
+    CHECK_EQ(value, UnknownFormFactor);
+
+    /* the kinds the enumeration names as the driver does */
+    CHECK(endpoint_form_factor(CODEC L"eSpdifOutTopo", eRender, &value));
+    CHECK_EQ(value, SPDIF);
+    CHECK(endpoint_form_factor(CODEC L"eHDMIOutTopo", eRender, &value));
+    CHECK_EQ(value, DigitalAudioDisplayDevice);
+
+    /* the DSP's PCM: no jack, whichever subdevice, controller, case or flow */
+    CHECK(endpoint_form_factor(DSP L"LoopbackTopo", eRender, &value));
+    CHECK_EQ(value, UnknownFormFactor);
+    CHECK(endpoint_form_factor(DSP L"LoopbackInTopo", eCapture, &value));
+    CHECK_EQ(value, UnknownFormFactor);
+    CHECK(endpoint_form_factor(
+        L"\\\\?\\INTCDSP#PCM&CTLR_VEN_8086&CTLR_DEV_7E28#00#{6994ad04-93ef-11d0-a3cc-00a0c9223196}\\LoopbackWave",
+        eRender, &value));
+    CHECK_EQ(value, UnknownFormFactor);
+    CHECK(endpoint_is_dsp_pcm(L"intcdsp#pcm&ctlr_ven_8086&ctlr_dev_7f50#00"));
+    CHECK(endpoint_is_dsp_pcm(L"intcdsp\\pcm&ctlr_ven_8086&ctlr_dev_7f50\\00"));
+    CHECK(endpoint_is_dsp_pcm(L"intcdsp#pcm&ctlr_ven_8086&ctlr_dev_7f50"));
+
+    /* what is not the DSP's PCM */
+    CHECK(!endpoint_is_dsp_pcm(L"\\\\?\\intcdsp#pcm&ctlr_ven_8086&ctlr_dev_7f51#00"));
+    CHECK(!endpoint_is_dsp_pcm(L"\\\\?\\hdaudio#intcdsp#pcm&ctlr_ven_8086&ctlr_dev_7f50#00"));
+    CHECK(!endpoint_is_dsp_pcm(L"\\\\?\\intcdspother#pcm&ctlr_ven_8086&ctlr_dev_7f50#00"));
+    CHECK(!endpoint_is_dsp_pcm(L"\\\\?\\intcdsp#other&ctlr_ven_8086&ctlr_dev_7f50#00"));
+    CHECK(!endpoint_is_dsp_pcm(L"\\\\?\\intcdsp#pcm&ctlr_ven_8086&ctlr_dev_7f5"));
+
+    /* a path that tells nothing: not answered, the value untouched */
+    untouched = value = 0xdeadbeef;
+    CHECK(!endpoint_form_factor(CODEC L"LoopbackTopo", eRender, &value));
+    CHECK(!endpoint_form_factor(CODEC L"eSpeaker", eRender, &value));
+    CHECK(!endpoint_form_factor(CODEC L"eSpeakerMixer", eRender, &value));
+    CHECK(!endpoint_form_factor(CODEC L"Topology", eRender, &value));
+    CHECK(!endpoint_form_factor(CODEC L"eHeadphoneTopo2", eRender, &value));
+    CHECK(!endpoint_form_factor(L"", eRender, &value));
+    CHECK_EQ(value, untouched);
+}
+
+/* The physical speakers from the channel count: the mask for 1, 2, 4, 6 and 8 channels, nothing for any other count */
+static void check_endpoint_physical_speakers(void)
+{
+    DWORD value, untouched;
+
+    CHECK(endpoint_physical_speakers(1, &value));
+    CHECK_EQ(value, 0x4);
+    CHECK(endpoint_physical_speakers(2, &value));
+    CHECK_EQ(value, 0x3);
+    CHECK(endpoint_physical_speakers(4, &value));
+    CHECK_EQ(value, 0x33);
+    CHECK(endpoint_physical_speakers(6, &value));
+    CHECK_EQ(value, 0x3f);
+    CHECK(endpoint_physical_speakers(8, &value));
+    CHECK_EQ(value, 0xff);
+
+    untouched = value = 0xdeadbeef;
+    CHECK(!endpoint_physical_speakers(0, &value));
+    CHECK(!endpoint_physical_speakers(3, &value));
+    CHECK(!endpoint_physical_speakers(5, &value));
+    CHECK(!endpoint_physical_speakers(7, &value));
+    CHECK(!endpoint_physical_speakers(10, &value));
+    CHECK(!endpoint_physical_speakers(0xffff, &value));
+    CHECK_EQ(value, untouched);
+}
+
 int
 main(
     void)
@@ -1073,6 +1227,8 @@ main(
     check_node_parts();
     check_default_pick();
     check_unplug_plug_sequence();
+    check_endpoint_form_factor();
+    check_endpoint_physical_speakers();
 
     printf("mmdevapi: %d checks, %d failures\n", Checks, Failures);
     return Failures != 0;
