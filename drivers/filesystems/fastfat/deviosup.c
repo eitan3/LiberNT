@@ -1762,8 +1762,13 @@ Return Value:
             // Allocate and build a partial Mdl for the request.
             //
 
+#ifdef __REACTOS__
+            Mdl = IoAllocateMdl( (PCHAR)((ULONG_PTR)MasterIrp->UserBuffer +
+                                         IoRuns[UnwindRunCount].Offset),
+#else
             Mdl = IoAllocateMdl( (PCHAR)MasterIrp->UserBuffer +
                                  IoRuns[UnwindRunCount].Offset,
+#endif
                                  IoRuns[UnwindRunCount].ByteCount,
                                  FALSE,
                                  FALSE,
@@ -1782,8 +1787,13 @@ Return Value:
 
             IoBuildPartialMdl( MasterIrp->MdlAddress,
                                Mdl,
+#ifdef __REACTOS__
+                               (PCHAR)((ULONG_PTR)MasterIrp->UserBuffer +
+                                       IoRuns[UnwindRunCount].Offset),
+#else
                                (PCHAR)MasterIrp->UserBuffer +
                                IoRuns[UnwindRunCount].Offset,
+#endif
                                IoRuns[UnwindRunCount].ByteCount );
 
             //

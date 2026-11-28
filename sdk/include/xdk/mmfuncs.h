@@ -117,7 +117,7 @@ $if (_WDMDDK_)
  *     _In_ PMDL  Mdl)
  */
 #define MmGetMdlVirtualAddress(_Mdl) \
-  ((PVOID) ((PCHAR) ((_Mdl)->StartVa) + (_Mdl)->ByteOffset))
+  ((PVOID) ((ULONG_PTR) ((_Mdl)->StartVa) + (_Mdl)->ByteOffset))
 
 #define MmGetProcedureAddress(Address) (Address)
 #define MmLockPagableCodeSection(Address) MmLockPagableDataSection(Address)

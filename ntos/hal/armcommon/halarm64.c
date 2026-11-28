@@ -4394,7 +4394,7 @@ HalpArm64GetScatterGatherRequirements(
     {
         ULONG Available = MmGetMdlByteCount(Mdl) - (ULONG)CurrentOffset;
         ULONG Chunk = min(Remaining, Available);
-        PVOID CurrentVa = (PUCHAR)MmGetMdlVirtualAddress(Mdl) + CurrentOffset;
+        PVOID CurrentVa = (PVOID)((ULONG_PTR)MmGetMdlVirtualAddress(Mdl) + CurrentOffset);
         ULONG Pages = (ULONG)ADDRESS_AND_SIZE_TO_SPAN_PAGES(CurrentVa, Chunk);
 
         if (Pages > MAXULONG - MapRegisters)
@@ -4566,7 +4566,7 @@ HalpArm64BuildScatterGatherListInternal(
     {
         ULONG Available = MmGetMdlByteCount(Mdl) - (ULONG)CurrentOffset;
         ULONG Chunk = min(Remaining, Available);
-        PUCHAR CurrentVa = (PUCHAR)MmGetMdlVirtualAddress(Mdl) + CurrentOffset;
+        PUCHAR CurrentVa = (PUCHAR)((ULONG_PTR)MmGetMdlVirtualAddress(Mdl) + CurrentOffset);
 
         while (Chunk)
         {
@@ -4589,7 +4589,7 @@ HalpArm64BuildScatterGatherListInternal(
             ScatterGatherList->Elements[ElementCount].Length = MappedLength;
             ScatterGatherList->Elements[ElementCount].Reserved = 0;
             ElementCount++;
-            CurrentVa += MappedLength;
+            CurrentVa = (PUCHAR)((ULONG_PTR)CurrentVa + MappedLength);
             Chunk -= MappedLength;
             Remaining -= MappedLength;
         }
@@ -4942,7 +4942,7 @@ HalpArm64FlushAdapterBuffersEx(
     {
         ULONG Available = MmGetMdlByteCount(Mdl) - (ULONG)CurrentOffset;
         ULONG Chunk = min(Remaining, Available);
-        PVOID CurrentVa = (PUCHAR)MmGetMdlVirtualAddress(Mdl) + CurrentOffset;
+        PVOID CurrentVa = (PVOID)((ULONG_PTR)MmGetMdlVirtualAddress(Mdl) + CurrentOffset);
 
         if (!IoFlushAdapterBuffers((PADAPTER_OBJECT)DmaAdapter,
                                    Mdl,
