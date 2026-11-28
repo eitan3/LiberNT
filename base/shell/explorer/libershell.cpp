@@ -56,6 +56,13 @@ VOID LiberShell_ApplyMaterial(LiberUI::Surface *pSurface, const LiberUI::ThemeTo
 }
 
 static LiberUI::Accent CurrentAccent(VOID);
+static int g_TaskbarReserve = LIBER_TASKBAR_DOCK;
+
+VOID LiberShell_SetTaskbarReserve(int reserveDip)
+{
+    ATLASSERT(reserveDip > 0);
+    g_TaskbarReserve = reserveDip;
+}
 
 VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens)
 {
@@ -479,7 +486,7 @@ VOID LiberShell_FlyoutOrigin(const RECT *prcMonitor, UINT dpi, const RECT *prcAn
         pptTopLeft->x = prcMonitor->right - inset - widthPx;
     if (pptTopLeft->x < prcMonitor->left + inset)
         pptTopLeft->x = prcMonitor->left + inset;
-    pptTopLeft->y = prcMonitor->bottom - LiberUI::ScaleToDpi(LIBER_TASKBAR_DOCK + LIBER_FLYOUT_GAP, dpi) - heightPx;
+    pptTopLeft->y = prcMonitor->bottom - LiberUI::ScaleToDpi(g_TaskbarReserve + LIBER_FLYOUT_GAP, dpi) - heightPx;
     if (pptTopLeft->y < prcMonitor->top + inset)
         pptTopLeft->y = prcMonitor->top + inset;
 }

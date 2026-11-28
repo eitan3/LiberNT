@@ -812,3 +812,12 @@
 #define IDS_LIBER_DIM_DESC             889
 #define IDS_LIBER_DIM_NEUTRAL          890
 #define IDS_LIBER_DIM_TINTED           891
+#define IDS_LIBER_TASKBAR              930
+#define IDS_LIBER_TASKBAR_DESC         931
+#define IDS_LIBER_TASKBAR_CAPSULE      932
+#define IDS_LIBER_TASKBAR_ROUNDED      933
+#define IDS_LIBER_TASKBAR_CLASSIC      934
+#define IDS_LIBER_ALIGN                935
+#define IDS_LIBER_ALIGN_DESC           936
+#define IDS_LIBER_ALIGN_CENTER         937
+#define IDS_LIBER_ALIGN_LEFT           938

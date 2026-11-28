@@ -125,7 +125,7 @@ class CLiberPanel : public LiberUI::StackPanel
 {
 public:
     CLiberPanel(LiberUI::Orientation orientation, int gap, float radius, LIBER_MATERIAL_KIND material)
-        : LiberUI::StackPanel(orientation, gap), m_Radius(radius), m_Material(material)
+        : LiberUI::StackPanel(orientation, gap), m_Radius(radius), m_Material(material), m_Plain(FALSE)
     {
     }
 
@@ -133,15 +133,26 @@ protected:
     void PaintOverride(LiberUI::PaintContext &context)
     {
         LiberUI::RectF rc = LiberUI::ToRectF(Bounds());
-        LiberShell_PaintGlass(context, rc, min(m_Radius, rc.Height / 2), m_Material);
+        if (!m_Plain)
+            LiberShell_PaintGlass(context, rc, min(m_Radius, rc.Height / 2), m_Material);
+    }
+
+public:
+    void SetShape(float radius, BOOL plain)
+    {
+        m_Radius = radius;
+        m_Plain = plain;
+        Invalidate();
     }
 
 private:
     float m_Radius;
     LIBER_MATERIAL_KIND m_Material;
+    BOOL m_Plain;
 };
 
 VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens);
+VOID LiberShell_SetTaskbarReserve(int reserveDip);
 #define LIBER_WALLPAPER_CENTER  0
 #define LIBER_WALLPAPER_STRETCH 2
 #define LIBER_WALLPAPER_FIT     6

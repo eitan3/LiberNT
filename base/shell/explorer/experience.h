@@ -19,5 +19,7 @@ BOOL LiberExperience_IsDark(VOID);
 DWORD LiberExperience_SurfaceTint(VOID);
 BOOL LiberExperience_WidgetsEnabled(VOID);
 DWORD LiberExperience_Accent(VOID);
+DWORD LiberExperience_TaskbarStyle(VOID);
+BOOL LiberExperience_TaskbarLeft(VOID);
 VOID LiberExperience_SetDimShade(COLORREF shade);
 BOOL LiberExperience_UiFont(LPWSTR pszFamily, DWORD cchFamily);

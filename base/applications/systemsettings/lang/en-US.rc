@@ -816,4 +816,13 @@ BEGIN
     IDS_LIBER_DIM_DESC "How a bright wallpaper is dimmed in dark mode"
     IDS_LIBER_DIM_NEUTRAL "Neutral"
     IDS_LIBER_DIM_TINTED "Tinted"
+    IDS_LIBER_TASKBAR "Taskbar style"
+    IDS_LIBER_TASKBAR_DESC "The shape of the Liber taskbar"
+    IDS_LIBER_TASKBAR_CAPSULE "Floating dock"
+    IDS_LIBER_TASKBAR_ROUNDED "Rounded rectangle"
+    IDS_LIBER_TASKBAR_CLASSIC "Classic taskbar"
+    IDS_LIBER_ALIGN "Taskbar alignment"
+    IDS_LIBER_ALIGN_DESC "Where the taskbar icons sit"
+    IDS_LIBER_ALIGN_CENTER "Center"
+    IDS_LIBER_ALIGN_LEFT "Left"
 END

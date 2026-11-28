@@ -10,7 +10,29 @@
 #define LIBER_DOCK_MAX_ITEMS 32
 #define LIBER_DOCK_PAD_X     8
 #define LIBER_DOCK_PAD_Y     ((LIBER_DOCK_HEIGHT - LIBER_DOCK_CELL) / 2)
+#define LIBER_CLASSIC_PAD    ((LIBER_TASKBAR_CLASSIC - LIBER_CLASSIC_CELL) / 2)
 #define LIBER_DOCK_CELL_GAP  2
+#define LIBER_TONGUE_HEIGHT  3
+#define LIBER_TONGUE_RUNNING 8
+
+#define LIBER_TASKBAR_STYLE_CAPSULE 0
+#define LIBER_TASKBAR_STYLE_ROUNDED 1
+#define LIBER_TASKBAR_STYLE_CLASSIC 2
+
+typedef struct _LIBER_DOCK_METRICS
+{
+    UINT Style;
+    BOOL Left;
+    BOOL Touched;
+    int Height;
+    int Cell;
+    int Icon;
+    int PadX;
+    int PadY;
+    int Radius;
+    int Reserve;
+    int Gap;
+} LIBER_DOCK_METRICS;
 #define LIBER_TRAY_INSET     12
 #define LIBER_DOCK_HOP       10
 #define LIBER_DOCK_STACK_OFFSET 4
@@ -22,10 +44,15 @@ typedef struct _LIBER_DOCK_LAYOUT
 {
     RECT Dock;
     RECT Tray;
+    int DockWidthDip;
+    int CellsLeft;
 } LIBER_DOCK_LAYOUT;
 
+VOID LiberDock_Metrics(UINT style, BOOL left, BOOL touched, LIBER_DOCK_METRICS *pMetrics);
+
 BOOL LiberDock_IsTaskWindow(HWND hwnd);
-VOID LiberDock_Layout(const RECT *prcMonitor, UINT dpi, UINT cells, int trayWidthDip, LIBER_DOCK_LAYOUT *pLayout);
+VOID LiberDock_Layout(const RECT *prcMonitor, UINT dpi, UINT cells, int trayWidthDip, const LIBER_DOCK_METRICS *pMetrics,
+                      LIBER_DOCK_LAYOUT *pLayout);
 BOOL LiberDock_SameApp(LPCWSTR pszTarget, LPCWSTR pszImage);
 VOID LiberDock_AppName(LPCWSTR pszPath, LPWSTR pszName, UINT cchName);
 #define LIBER_PREVIEW_THUMB_W 200
@@ -38,14 +65,16 @@ VOID LiberPreview_Hide(VOID);
 BOOL LiberPreview_IsOpen(VOID);
 BOOL LiberPreview_Contains(POINT screen);
 VOID LiberPreview_Destroy(VOID);
-int LiberDock_Width(UINT cells);
+int LiberDock_Width(const LIBER_DOCK_METRICS *pMetrics, UINT cells);
 double LiberDock_HopOffset(double progress);
 BOOL LiberDock_LanguageLabel(LANGID langId, LPWSTR pszLabel, UINT cchLabel);
 int LiberDock_SystemPillWidth(BOOL bBattery);
-VOID LiberDock_WorkArea(const RECT *prcMonitor, UINT dpi, RECT *prcWork);
-VOID LiberDock_CellRect(const RECT *prcDock, UINT dpi, UINT cell, RECT *prcCell);
+VOID LiberDock_WorkArea(const RECT *prcMonitor, UINT dpi, const LIBER_DOCK_METRICS *pMetrics, RECT *prcWork);
+VOID LiberDock_CellRect(const RECT *prcDock, UINT dpi, const LIBER_DOCK_METRICS *pMetrics, int cellsLeftDip, UINT cell,
+                        RECT *prcCell);
 #define LIBER_BLUR_BAND_LAYERS 4
-VOID LiberDock_BlurBand(const RECT *prcMonitor, UINT dpi, UINT layer, RECT *prcBand);
+VOID LiberDock_BlurBand(const RECT *prcMonitor, UINT dpi, const LIBER_DOCK_METRICS *pMetrics, UINT layer,
+                        RECT *prcBand);
 
 struct ITrayWindow;
 HRESULT LiberDock_Start(ITrayWindow *Tray);

@@ -816,4 +816,13 @@ BEGIN
     IDS_LIBER_DIM_DESC "Comment un fond d'écran clair est assombri en mode sombre"
     IDS_LIBER_DIM_NEUTRAL "Neutre"
     IDS_LIBER_DIM_TINTED "Teinté"
+    IDS_LIBER_TASKBAR "Style de la barre des tâches"
+    IDS_LIBER_TASKBAR_DESC "La forme de la barre des tâches Liber"
+    IDS_LIBER_TASKBAR_CAPSULE "Dock flottant"
+    IDS_LIBER_TASKBAR_ROUNDED "Rectangle arrondi"
+    IDS_LIBER_TASKBAR_CLASSIC "Barre des tâches classique"
+    IDS_LIBER_ALIGN "Alignement de la barre des tâches"
+    IDS_LIBER_ALIGN_DESC "Position des icônes de la barre des tâches"
+    IDS_LIBER_ALIGN_CENTER "Centre"
+    IDS_LIBER_ALIGN_LEFT "Gauche"
 END
