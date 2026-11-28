@@ -530,7 +530,7 @@ IntcDspAudioSetControl(
     switch (Control)
     {
         case IntcDspControlVolume:
-            /* the level is kept on the node's steps from unity down, the nearest one; the firmware is not told until the gain module is (plan C5) */
+            /* the level is kept on the node's steps from unity down, the nearest one, and the PCM's gain module is told it (E3) */
             Endpoint = &Pdo->PcmState.Endpoint[EndpointIndex];
             Minimum = Endpoint->VolumeMinimum;
             Maximum = Endpoint->VolumeMaximum;
@@ -547,10 +547,10 @@ IntcDspAudioSetControl(
                     Value = Minimum;
             }
             Pdo->PcmState.Volume[EndpointIndex] = Value;
-            return STATUS_SUCCESS;
+            return IntcDspStreamsGainSet(&Pdo->Dev->Streams, Pdo->Pcm, Value, Pdo->PcmState.Mute[EndpointIndex]);
         case IntcDspControlMute:
             Pdo->PcmState.Mute[EndpointIndex] = Value ? TRUE : FALSE;
-            return STATUS_SUCCESS;
+            return IntcDspStreamsGainSet(&Pdo->Dev->Streams, Pdo->Pcm, Pdo->PcmState.Volume[EndpointIndex], Pdo->PcmState.Mute[EndpointIndex]);
         default:
             return STATUS_INVALID_PARAMETER;
     }

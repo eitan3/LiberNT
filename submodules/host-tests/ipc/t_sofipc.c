@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "shim.h"
 
@@ -2062,6 +2063,20 @@ StreamRender(
  */
 static
 void
+StreamWireGain(
+    STREAM_HARNESS* S,
+    PFAKE_BUS_STREAM Capture,
+    PFAKE_DSP_MODULE Module,
+    UINT32 Frames,
+    UINT32 FrameBytes);
+
+static
+INT32
+StreamGainModule(
+    const STREAM_HARNESS* S);
+
+static
+void
 StreamPeriod(
     STREAM_HARNESS* S,
     PFAKE_BUS_STREAM Capture,
@@ -2070,6 +2085,7 @@ StreamPeriod(
     PFAKE_BUS_STREAM Render = StreamRender(S);
     PUCHAR Damage, Source;
     UINT32 FrameBytes, Frames, I;
+    INT32 GainModule;
 
     FrameBytes = Capture->Format.NumberOfChannels * (Capture->Format.ContainerSize / 8);
     Frames = (UINT32)(Capture->Bytes / FrameBytes);
@@ -2082,6 +2098,10 @@ StreamPeriod(
     for (I = 0; I < Frames; I++)
         memcpy((PUCHAR)Capture->Memory + (SIZE_T)I * FrameBytes,
                (PUCHAR)Render->Memory + (SIZE_T)((I + Frames - S->Latency) % Frames) * FrameBytes, FrameBytes);
+    /* the gain module between the two copiers scales what the wire forwarded: its target volume in Q1.31, the one its initialization or the last set left in the fake's table, applied sample by sample in double precision, the host copiers' widening and narrowing included; unity and silence are the extremes */
+    GainModule = StreamGainModule(S);
+    if (GainModule >= 0)
+        StreamWireGain(S, Capture, &S->H.Dsp->Module[GainModule], Frames, FrameBytes);
     if (S->DamageFrame == 0 || S->DamageFrame >= Frames)
         return;
     /* the sample in its container's width: 16 bits, or 32 for 24 valid bits and more */
@@ -2091,6 +2111,74 @@ StreamPeriod(
         *(INT16*)Damage = (INT16)(*(INT16*)Source + 5);
     else
         *(INT32*)Damage = *(INT32*)Source + 5;
+}
+
+/* The gain module's instance in the fake's table, whatever instance id the boot gave it (a module's instances count up within a boot): its index, or FAKE_DSP_NO_MODULE */
+static
+INT32
+StreamGainModule(
+    const STREAM_HARNESS* S)
+{
+    UINT32 I;
+
+    for (I = 0; I < FAKE_DSP_MODULES; I++)
+    {
+        if (S->H.Dsp->Module[I].Used && S->H.Dsp->Module[I].Id == 7)
+            return (INT32)I;
+    }
+    return FAKE_DSP_NO_MODULE;
+}
+
+/*
+ * The wire's gain (E3): the fake's gain module forwards its buffer under
+ * its target volume, the word the manager's initialization (the entry at
+ * the configuration's end) or its last set (the entry alone) left, in
+ * Q1.31. Each sample is widened to 32 bits as a host copier takes it (the
+ * valid bits in the high part), scaled in double precision, rounded half
+ * away from zero, saturated, and narrowed back; a different arithmetic
+ * from the driver's on purpose, so that the self-test's one-unit tolerance
+ * is what is tested.
+ */
+static
+void
+StreamWireGain(
+    STREAM_HARNESS* S,
+    PFAKE_BUS_STREAM Capture,
+    PFAKE_DSP_MODULE Module,
+    UINT32 Frames,
+    UINT32 FrameBytes)
+{
+    UINT32 Volume = Module->Words == 16 ? Module->Config[11] : Module->Words == 6 ? Module->Config[1] : 0x7fffffff;
+    ULONG Width = Capture->Format.ContainerSize / 8, Shift = 32 - Capture->Format.ContainerSize;
+    INT64 Low = Capture->Format.ValidBitsPerSample < Capture->Format.ContainerSize ? ((INT64)1 << (Capture->Format.ContainerSize - Capture->Format.ValidBitsPerSample)) - 1 : 0;
+    double Scale = ldexp((double)Volume, Shift - 31);
+    UINT32 I, Channel;
+    double Scaled;
+    INT64 Wide;
+
+    if (Volume == 0x7fffffff)
+        return;
+    for (I = 0; I < Frames; I++)
+    {
+        for (Channel = 0; Channel < Capture->Format.NumberOfChannels; Channel++)
+        {
+            PUCHAR At = (PUCHAR)Capture->Memory + (SIZE_T)I * FrameBytes + Channel * Width;
+            INT32 Sample = Width == 2 ? *(INT16*)At : *(INT32*)At;
+
+            Scaled = (double)Sample * Scale;
+            Wide = (INT64)(Scaled >= 0 ? Scaled + 0.5 : Scaled - 0.5);
+            if (Wide > 0x7FFFFFFF)
+                Wide = 0x7FFFFFFF;
+            if (Wide < -0x80000000LL)
+                Wide = -0x80000000LL;
+            Wide >>= Shift;
+            Wide &= ~Low;
+            if (Width == 2)
+                *(INT16*)At = (INT16)Wide;
+            else
+                *(INT32*)At = (INT32)Wide;
+        }
+    }
 }
 
 /*
@@ -2366,11 +2454,14 @@ CheckStreamGolden(
     CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Config[SOFTPLG_COPIER_OUT_FORMAT_WORD + 1], 32);
     CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Config[SOFTPLG_COPIER_OUT_FORMAT_WORD + 5], (1u << 16) | (32u << 8) | 2);
     CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Config[SOFTPLG_COPIER_DMA_BUFFER_WORD], 2 * S->H.Dsp->Module[CaptureCopier].Config[2]);
-    /* the gain: a base configuration of 10 words, no gateway */
+    /* the gain: the base configuration of 10 words and its volume entry of 6 (every channel, unity: the PCM's level, no fade), no gateway */
     CHECK(!S->H.Dsp->Module[Gain].Copier);
-    CHECK_EQ(S->H.Dsp->Module[Gain].Words, 10);
+    CHECK_EQ(S->H.Dsp->Module[Gain].Words, 16);
     CHECK_EQ(S->H.Dsp->Module[Gain].Config[1], S->H.Dsp->Module[Gain].Config[2]);
     CHECK_EQ(S->H.Dsp->Module[Gain].Config[4], 48000);
+    CHECK_EQ(S->H.Dsp->Module[Gain].Config[SOFTPLG_GAIN_ENTRY_WORD], 0xffffffff);
+    CHECK_EQ(S->H.Dsp->Module[Gain].Config[SOFTPLG_GAIN_ENTRY_WORD + 1], 0x7fffffff);
+    CHECK_EQ(S->H.Dsp->Module[Gain].Config[SOFTPLG_GAIN_ENTRY_WORD + 2], 0);
     /* the binds: the gain behind the host-output copier, the host-input copier behind the gain */
     CHECK_EQ(S->H.Dsp->Module[Gain].Src, Playback);
     CHECK_EQ(S->H.Dsp->Module[CaptureCopier].Src, Gain);
@@ -5468,6 +5559,297 @@ CheckStreamIdleTimer(
     free(S);
 }
 
+/* The trace rows of one message: the kind, the primary and the extension as sent */
+static
+UINT32
+StreamTraceCount(
+    const STREAM_HARNESS* S,
+    UINT32 Kind,
+    UINT32 Primary,
+    UINT32 Extension)
+{
+    UINT32 I, Count = 0;
+
+    for (I = 0; I < S->Streams.TraceCount; I++)
+    {
+        if (S->Streams.Trace[I].Kind == Kind && S->Streams.Trace[I].Primary == Primary && S->Streams.Trace[I].Extension == Extension)
+            Count++;
+    }
+    return Count;
+}
+
+/*
+ * (i27) The gain module's words (E3): the level to a Q1.31 gain at the
+ * node's boundaries and on its 1 dB step, between two steps, muted; the
+ * volume entry; the sample arithmetic the self-test expects at every
+ * depth; and what is refused.
+ */
+static
+void
+CheckStreamGainValues(
+    void)
+{
+    SOFIPC4_GAIN_CONFIG Entry;
+    INTCDSP_COMPARE Compare;
+    UINT8 Buffer[64];
+    UINT32 K, Word, Previous = 0x7fffffff;
+    double Linear;
+
+    /* unity at 0 dB and above; the words at -1, -6 and -96 dB; below the node's range the last word; mute is 0 at any level */
+    CHECK_EQ(IntcDspGainOfLevel(0, FALSE), 0x7fffffff);
+    CHECK_EQ(IntcDspGainOfLevel(65536, FALSE), 0x7fffffff);
+    CHECK_EQ(IntcDspGainOfLevel(-65536, FALSE), 0x721482c0);
+    CHECK_EQ(IntcDspGainOfLevel(-6 * 65536, FALSE), 0x4026e73d);
+    CHECK_EQ(IntcDspGainOfLevel(-96 * 65536, FALSE), 0x84f3);
+    CHECK_EQ(IntcDspGainOfLevel(-97 * 65536, FALSE), 0x84f3);
+    CHECK_EQ(IntcDspGainOfLevel(-1000L * 65536L, FALSE), 0x84f3);
+    CHECK_EQ(IntcDspGainOfLevel(0, TRUE), 0);
+    CHECK_EQ(IntcDspGainOfLevel(-6 * 65536, TRUE), 0);
+    /* the 1 dB step: every word is 2^31 x 10^(-dB/20) within one, and the words fall strictly */
+    for (K = 1; K <= 96; K++)
+    {
+        Word = IntcDspGainOfLevel(-(LONG)(K * 65536), FALSE);
+        Linear = pow(10.0, -(double)K / 20.0) * 2147483648.0;
+        CHECK(fabs((double)Word - Linear) <= 1.0);
+        CHECK(Word < Previous);
+        Previous = Word;
+    }
+    /* between two steps the straight line: -6.5 dB the midpoint of -6 and -7, rounded */
+    CHECK_EQ(IntcDspGainOfLevel(-6 * 65536 - 32768, FALSE), (0x4026e73d + 0x392ced8e + 1) / 2);
+    /* the entry: every channel, the word, no fade, no duration; 24 bytes */
+    CHECK_EQ(sizeof(SOFIPC4_GAIN_CONFIG), 24);
+    RtlZeroMemory(&Entry, sizeof(Entry));
+    IntcDspGainEntry(0x4026e73d, &Entry);
+    CHECK_EQ(Entry.ChannelId, 0xffffffff);
+    CHECK_EQ(Entry.TargetVolume, 0x4026e73d);
+    CHECK_EQ(Entry.CurveType, 0);
+    CHECK_EQ(Entry.Reserved, 0);
+    CHECK_EQ(Entry.CurveDuration, 0);
+    /* the arithmetic: unity is the sample itself; one half rounds in the 32-bit domain and narrows; the valid bits sit in the high part and the bits below them are clear; a zero gain is silence; the largest sample under -6 dB is the rounded product */
+    CHECK_EQ(IntcDspGainApply(1000, 16, 16, 0x7fffffff), 1000);
+    CHECK_EQ(IntcDspGainApply(-1000, 32, 32, 0x7fffffff), -1000);
+    CHECK_EQ(IntcDspGainApply(1001, 16, 16, 0x40000000), 500);
+    CHECK_EQ(IntcDspGainApply(-1001, 16, 16, 0x40000000), -501);
+    CHECK_EQ(IntcDspGainApply(-1, 16, 16, 0x40000000), -1);
+    CHECK_EQ(IntcDspGainApply(0x7fffff00, 32, 24, 0x7fffffff), 0x7fffff00);
+    CHECK_EQ(IntcDspGainApply(0x7fffff00, 32, 24, 0x4026e73d), 0x4026e600);
+    CHECK_EQ(IntcDspGainApply(0x12345600, 32, 24, 0x40000000), 0x091a2b00);
+    CHECK_EQ(IntcDspGainApply(0x12345678, 32, 32, 0), 0);
+    CHECK_EQ(IntcDspGainApply(0x7fffffff, 32, 32, 0x4026e73d), 1076291388);
+    CHECK_EQ(IntcDspGainApply(16384, 16, 16, 0x4026e73d), 8211);
+    CHECK_EQ(IntcDspGainApply(-32768, 16, 16, 0x4026e73d), -16423);
+    /* the product is rounded in the 32-bit domain, half up: one and three under one half, minus one at zero */
+    CHECK_EQ(IntcDspGainApply(1, 32, 32, 0x40000000), 1);
+    CHECK_EQ(IntcDspGainApply(3, 32, 32, 0x40000000), 2);
+    CHECK_EQ(IntcDspGainApply(-1, 32, 32, 0x40000000), 0);
+    CHECK_EQ(IntcDspGainApply(2, 32, 32, 0x4026e73d), 1);
+    /* a compare at a valid-bit count no container carries is refused: nothing compared */
+    RtlZeroMemory(&Compare, sizeof(Compare));
+    IntcDspStreamCompareGain(Buffer, Buffer, sizeof(Buffer), 2, 32, 33, 0, 0x4026e73d, &Compare);
+    CHECK_EQ(Compare.Samples, 0);
+    RtlZeroMemory(&Compare, sizeof(Compare));
+    IntcDspStreamCompareGain(Buffer, Buffer, sizeof(Buffer), 2, 32, 32, 0, 0x7fffffff, &Compare);
+    CHECK(Compare.Matched);
+}
+
+/*
+ * (i28) A PCM's level reaches its gain module (E3): with no stream the
+ * level is kept and nothing is sent; the next stream initializes the gain
+ * at the level and sends it the entry, the message's bytes golden; with the
+ * instance up a change is sent at once, muted and back; a power-down keeps
+ * the level and the next boot's first stream is told it again; a PCM the
+ * manager keeps no level for is refused.
+ */
+static
+void
+CheckStreamGainSet(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    HANDLE Render = NULL, Capture = NULL;
+    PFAKE_DSP_MODULE Module;
+    NTSTATUS Status;
+    UINT32 Pcm, Gain, Requests;
+    const LONG Minus6 = -6L * 65536L, Minus12 = -12L * 65536L;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    /* the manager up, no stream: kept, one line, no request */
+    Requests = S->H.Dsp->TransportRequests;
+    CHECK_EQ(IntcDspStreamsGainSet(&S->Streams, Pcm, Minus6, FALSE), STATUS_SUCCESS);
+    CHECK_EQ(S->Streams.Gain[Pcm].Level, Minus6);
+    CHECK(!S->Streams.Gain[Pcm].Mute);
+    CHECK(S->Streams.Gain[Pcm].Kept);
+    CHECK_EQ(S->H.Dsp->TransportRequests, Requests);
+    CHECK(StreamLogCount(S, "gain: -6.00 dB, mute 0, kept until the DSP runs the PCM again\n") == 1);
+    /* the next stream: the gain initialized at the level, then told it: one set, the golden bytes */
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, TRUE, 48000, 2, 32, 32, &Capture), STATUS_SUCCESS);
+    memset(S->Log, 0, sizeof(S->Log));
+    S->LogBytes = 0;
+    Status = IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2);
+    if (!NT_SUCCESS(Status))
+        fprintf(stderr, "%s", S->Log);
+    CHECK_EQ(Status, STATUS_SUCCESS);
+    /* the gain's instance in the fake's table, from its first build on */
+    Gain = (UINT32)StreamGainModule(S);
+    CHECK((INT32)Gain >= 0);
+    if ((INT32)Gain < 0)
+        return;
+    Module = &S->H.Dsp->Module[Gain];
+    /* the set: module 7 instance 0, a large-configuration set (type 4, the target a module), parameter 0, 24 bytes, one block (init and final) */
+    CHECK_EQ(StreamTraceCount(S, INTCDSP_TRACE_IPC, 0x44000007, 0x30000018), 1);
+    CHECK_EQ(Module->Words, 6);
+    CHECK_EQ(Module->Config[0], 0xffffffff);
+    CHECK_EQ(Module->Config[1], 0x4026e73d);
+    CHECK_EQ(Module->Config[2], 0);
+    CHECK_EQ(Module->Config[3], 0);
+    CHECK_EQ(Module->Config[4], 0);
+    CHECK_EQ(Module->Config[5], 0);
+    CHECK(!S->Streams.Gain[Pcm].Kept);
+    CHECK(StreamLogCount(S, "gain: -6.00 dB, mute 0\n") == 1);
+    /* the instance up: a change goes at once, the level kept with its mute */
+    memset(S->Log, 0, sizeof(S->Log));
+    S->LogBytes = 0;
+    CHECK_EQ(IntcDspStreamsGainSet(&S->Streams, Pcm, Minus12, TRUE), STATUS_SUCCESS);
+    CHECK_EQ(StreamTraceCount(S, INTCDSP_TRACE_IPC, 0x44000007, 0x30000018), 2);
+    CHECK_EQ(Module->Words, 6);
+    CHECK_EQ(Module->Config[1], 0);
+    CHECK_EQ(S->Streams.Gain[Pcm].Level, Minus12);
+    CHECK(S->Streams.Gain[Pcm].Mute && !S->Streams.Gain[Pcm].Kept);
+    CHECK(StreamLogCount(S, "gain: -12.00 dB, mute 1\n") == 1);
+    memset(S->Log, 0, sizeof(S->Log));
+    S->LogBytes = 0;
+    CHECK_EQ(IntcDspStreamsGainSet(&S->Streams, Pcm, Minus12, FALSE), STATUS_SUCCESS);
+    CHECK_EQ(StreamTraceCount(S, INTCDSP_TRACE_IPC, 0x44000007, 0x30000018), 3);
+    CHECK_EQ(Module->Config[1], 0x2026f310);
+    CHECK(StreamLogCount(S, "gain: -12.00 dB, mute 0\n") == 1);
+    /* a level at unity and not muted is sent too when asked: the words of the entry are unity */
+    memset(S->Log, 0, sizeof(S->Log));
+    S->LogBytes = 0;
+    CHECK_EQ(IntcDspStreamsGainSet(&S->Streams, Pcm, 0, FALSE), STATUS_SUCCESS);
+    CHECK_EQ(Module->Config[1], 0x7fffffff);
+    CHECK(StreamLogCount(S, "gain: 0.00 dB, mute 0\n") == 1);
+    CHECK_EQ(IntcDspStreamsGainSet(&S->Streams, Pcm, Minus6, FALSE), STATUS_SUCCESS);
+    /* a PCM the manager keeps no level for is refused, and nothing is sent */
+    Requests = S->H.Dsp->TransportRequests;
+    CHECK_EQ(IntcDspStreamsGainSet(&S->Streams, INTCDSP_GAIN_PCMS_MAX, 0, FALSE), STATUS_NOT_SUPPORTED);
+    CHECK_EQ(IntcDspStreamsGainSet(&S->Streams, INTCDSP_GAIN_PCMS_MAX + 1, 0, TRUE), STATUS_NOT_SUPPORTED);
+    CHECK_EQ(S->H.Dsp->TransportRequests, Requests);
+    /* the power-down: the level is the manager's still, kept for the next build; the next boot's first stream initializes the gain at it and is told it */
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Capture), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    IntcDspStreamsRelease(&S->Streams);
+    CHECK(S->Streams.Gain[Pcm].Kept);
+    CHECK_EQ(S->Streams.Gain[Pcm].Level, Minus6);
+    StreamBoot(S, NULL);
+    IntcDspStreamsInit(&S->Streams, S->State, IntcDspStreamsBytes(S->Model), S->Model, &S->H.Ipc, &S->Bus.Interface, &S->Ops);
+    CHECK(S->Streams.Ready);
+    memset(S->Log, 0, sizeof(S->Log));
+    S->LogBytes = 0;
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    /* the gain's instance in the fake's new table */
+    Gain = (UINT32)StreamGainModule(S);
+    CHECK((INT32)Gain >= 0);
+    if ((INT32)Gain < 0)
+        return;
+    Module = &S->H.Dsp->Module[Gain];
+    CHECK_EQ(StreamTraceCount(S, INTCDSP_TRACE_IPC, 0x44000007, 0x30000018), 1);
+    CHECK_EQ(Module->Config[1], 0x4026e73d);
+    CHECK(!S->Streams.Gain[Pcm].Kept);
+    CHECK(StreamLogCount(S, "gain: -6.00 dB, mute 0\n") == 1);
+    /* the next stream of the same boot: the gain initialized at the level, nothing sent again */
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    memset(S->Log, 0, sizeof(S->Log));
+    S->LogBytes = 0;
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    /* the initialization carried the entry: the base configuration of 10 words and the level's entry of 6 */
+    Module = &S->H.Dsp->Module[StreamGainModule(S)];
+    CHECK_EQ(Module->Words, 16);
+    CHECK_EQ(Module->Config[10], 0xffffffff);
+    CHECK_EQ(Module->Config[11], 0x4026e73d);
+    CHECK_EQ(Module->Config[12], 0);
+    if (StreamLogCount(S, "gain: ") != 0)
+        fprintf(stderr, "DBG5769: %s\n", S->Log);
+    CHECK(StreamLogCount(S, "gain: ") == 0);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    StreamStop(S);
+    free(S);
+    /* a request the firmware refuses: the status is the caller's, and the level is kept for the next build */
+    S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    CHECK_EQ(IntcDspStreamOpen(&S->Streams, Pcm, FALSE, 48000, 2, 32, 32, &Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamAllocate(&S->Streams, Render, IPC4_STREAM_CASE_BUFFER_BYTES, 2), STATUS_SUCCESS);
+    S->H.Dsp->Faults.IpcStatusForType = SofIpc4ModLargeConfigSet;
+    S->H.Dsp->Faults.IpcStatusValue = SofIpc4ErrorInvalidParam;
+    Status = IntcDspStreamsGainSet(&S->Streams, Pcm, Minus6, FALSE);
+    CHECK_EQ(Status, STATUS_DEVICE_PROTOCOL_ERROR);
+    CHECK(S->Streams.Gain[Pcm].Kept);
+    CHECK_EQ(S->Streams.Gain[Pcm].Level, Minus6);
+    CHECK(StreamLogCount(S, "gain: -6.00 dB, mute 0, kept until the DSP runs the PCM again\n") == 1);
+    CHECK_EQ(IntcDspStreamFree(&S->Streams, Render), STATUS_SUCCESS);
+    CHECK_EQ(IntcDspStreamClose(&S->Streams, Render), STATUS_SUCCESS);
+    StreamStop(S);
+    free(S);
+}
+
+/*
+ * (i29) The loopback self-test with its gain step (SelfTest = 3): three
+ * depths at unity, then three at -6 dB, the wire's gain module scaling
+ * what it forwards in its own arithmetic; every captured sample within one
+ * unit of the render as the gain forwards it, six runs matched, the level
+ * the PCM had before kept again.
+ */
+static
+void
+CheckStreamSelfTestGain(
+    void)
+{
+    STREAM_HARNESS* S = (STREAM_HARNESS*)calloc(1, sizeof(*S));
+    NTSTATUS Status;
+    UINT32 Pcm;
+
+    CHECK(S != NULL);
+    if (S == NULL)
+        return;
+    StreamStart(S, NULL);
+    Pcm = StreamPcm(S);
+    /* a level before the test: the test's own levels replace it, and it is kept again at the end */
+    CHECK_EQ(IntcDspStreamsGainSet(&S->Streams, Pcm, -3L * 65536L, FALSE), STATUS_SUCCESS);
+    memset(S->Log, 0, sizeof(S->Log));
+    S->LogBytes = 0;
+    Status = IntcDspLoopbackSelfTestAt(&S->Streams, &S->SelfTestOps, STREAM_FRAMES, TRUE);
+    if (Status != STATUS_SUCCESS)
+        fprintf(stderr, "%s", S->Log);
+    CHECK_EQ(Status, STATUS_SUCCESS);
+    CHECK(StreamLogCount(S, "gain: 0.00 dB, mute 0, kept until the DSP runs the PCM again\n") == 1);
+    CHECK(StreamLogCount(S, "gain: -6.00 dB, mute 0, kept until the DSP runs the PCM again\n") == 1);
+    CHECK(StreamLogCount(S, "gain: -6.00 dB, mute 0\n") == 1);
+    CHECK(StreamLogCount(S, "loopback self-test: the gain step, three depths at -6.00 dB (gain 0x4026e73d)\n") == 1);
+    CHECK(StreamLogCount(S, "max abs error 0, render rms 5794.253, capture rms 5794.253, ok\n") == 1);
+    CHECK(StreamLogCount(S, "max abs error 0, gain 0x4026e73d, render rms 5794.253, capture rms 2903.940, ok\n") == 1);
+    CHECK(StreamLogCount(S, "max abs error 0, gain 0x4026e73d, render rms 379742706.482, capture rms 190322170.081, ok\n") == 1);
+    CHECK(StreamLogCount(S, "max abs error 0, gain 0x4026e73d, render rms 379742706.482, capture rms 190322196.559, ok\n") == 1);
+    CHECK(StreamLogCount(S, "loopback self-test: 6 runs, 6 matched, 0 failed,") == 1);
+    CHECK_EQ(S->Streams.Gain[Pcm].Level, -3L * 65536L);
+    CHECK(S->Streams.Gain[Pcm].Kept);
+    StreamStop(S);
+    free(S);
+}
+
 /*
  * (i26) The pending teardowns finished with no transition of their own
  * (N8-02, the public poll): a free that met the busy transport leaves the
@@ -5622,6 +6004,9 @@ main(
     CheckStreamIdleDecision();
     CheckStreamIdleTimer();
     CheckStreamTeardownPoll();
+    CheckStreamGainValues();
+    CheckStreamGainSet();
+    CheckStreamSelfTestGain();
 
     printf("sofipc: %d checks, %d failures\n", Checks, Failures);
     free(H->Dsp);

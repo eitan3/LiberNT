@@ -71,6 +71,8 @@ DEFINE_GUID(GUID_ADSP_BUS_INTERFACE,
 
 /* The loopback self-test after a boot with a topology (SelfTest = 2): a render and a capture stream of 4096 frames each, the plan's VM-acceptance row */
 #define INTCDSP_SELFTEST_LOOPBACK      2
+/* SelfTest = 3: the loopback self-test, then its three depths again at -6 dB through the PCM's gain module (E3) */
+#define INTCDSP_SELFTEST_GAIN          3
 #define INTCDSP_SELFTEST_FRAMES        4096
 #define INTCDSP_SELFTEST_MAPPINGS      2
 #define INTCDSP_STREAM_LINE_BYTES      384

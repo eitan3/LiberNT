@@ -244,6 +244,18 @@ typedef struct _INTCDSP_HELD
     BOOLEAN Capture;
 } INTCDSP_HELD, *PINTCDSP_HELD;
 
+/* A PCM's level for its gain module (E3, stream.c IntcDspStreamsGainSet): zeroed is unity */
+typedef struct _INTCDSP_GAIN
+{
+    /* in 1/65536 dB from unity down, the level the node keeps */
+    LONG Level;
+    BOOLEAN Mute;
+    /* a change no gain instance was told: the PCM's next path build sends it */
+    BOOLEAN Kept;
+} INTCDSP_GAIN, *PINTCDSP_GAIN;
+
+#define INTCDSP_GAIN_PCMS_MAX            16
+
 /* The buffers a manager may hold for their pins at once: one per stream object of four boots, more than a machine's pins outlive */
 #define INTCDSP_HELD_MAX              (INTCDSP_STREAMS_MAX * 4)
 
@@ -294,6 +306,16 @@ typedef struct _INTCDSP_STREAMS
      * it.
      */
     BOOLEAN DeviceBoot;
+    /*
+     * The level kept for the gain module of each PCM (E3): in 1/65536 dB
+     * from unity down (0 with no mute is unity), the mute flag, and whether
+     * a change found no gain instance to be sent to and waits for the path
+     * build of the PCM's next stream. Kept before Ops like the held
+     * buffers: the level is the user's and outlives every boot, a
+     * power-down and a fault, and the gain widget of the PCM is initialized
+     * at it. A PCM at or beyond INTCDSP_GAIN_PCMS_MAX keeps none.
+     */
+    INTCDSP_GAIN Gain[INTCDSP_GAIN_PCMS_MAX];
     const INTCDSP_STREAMS_OPS* Ops;
     const ADSP_BUS_INTERFACE* Bus;
     SOFIPC_CONTEXT* Ipc;
@@ -407,6 +429,55 @@ IntcDspStreamsIdle(
 UINT32
 IntcDspStreamsTeardownPoll(
     _Inout_ PINTCDSP_STREAMS Streams);
+
+/*
+ * The gain module's word for a level (E3): a linear gain in Q1.31, unity
+ * 0x7fffffff (sofipc4.h), from a level in 1/65536 dB from unity down -- the
+ * whole decibels are a table and a level between two of them the straight
+ * line between their words; 0 and above unity, -96 dB and below the
+ * table's -96 dB, a muted level 0.
+ */
+UINT32
+IntcDspGainOfLevel(
+    LONG Level,
+    BOOLEAN Mute);
+
+/* The volume entry of a gain word as the messages carry it: every channel, no fade (sofipc4.h SOFIPC4_GAIN_CONFIG) */
+VOID
+IntcDspGainEntry(
+    UINT32 Gain,
+    _Out_ SOFIPC4_GAIN_CONFIG* Entry);
+
+/*
+ * A sample in its container as the firmware's volume component forwards it
+ * under a Q1.31 gain: a 16-bit sample widened to 32 bits as a host copier
+ * takes it, the product rounded and shifted, saturated, and back in the
+ * container with the bits below the valid ones clear; unity is the sample
+ * itself. The self-test's expected capture.
+ */
+INT32
+IntcDspGainApply(
+    INT32 Sample,
+    ULONG ContainerBits,
+    ULONG ValidBits,
+    UINT32 Gain);
+
+/*
+ * A PCM's level for its gain module (E3), under the lock: kept on the
+ * manager whatever the DSP's state; sent at once to every gain widget the
+ * PCM reaches that has an instance (the PCM's streams are allocated) with
+ * the line `gain: <dB> dB, mute <n>`; with the DSP not up or no instance,
+ * kept for the path build of the PCM's next stream, which initializes the
+ * widget at the level, sends it and logs the line. The status of the
+ * request that failed, the fault's release when the link was lost.
+ */
+_Must_inspect_result_
+NTSTATUS
+IntcDspStreamsGainSet(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    UINT32 Pcm,
+    LONG Level,
+    BOOLEAN Mute);
 
 /*
  * The first module widget of a model whose module id the manager cannot
@@ -721,6 +792,33 @@ IntcDspStreamCompare(
     ULONG ContainerBits,
     UINT32 StopBytes,
     _Out_ PINTCDSP_COMPARE Compare);
+
+/*
+ * The capture against the render as a Q1.31 gain forwards it (E3): every
+ * sample of the capture must be the render's sample under the gain
+ * (IntcDspGainApply) within one unit of the valid depth, the rounding of
+ * the firmware's arithmetic; at unity the same compare exactly
+ * (IntcDspStreamCompare). The rest as there.
+ */
+VOID
+IntcDspStreamCompareGain(
+    _In_reads_bytes_(Bytes) const PUCHAR Render,
+    _In_reads_bytes_(Bytes) const PUCHAR Capture,
+    SIZE_T Bytes,
+    ULONG Channels,
+    ULONG ContainerBits,
+    ULONG ValidBits,
+    UINT32 StopBytes,
+    UINT32 Gain,
+    _Out_ PINTCDSP_COMPARE Compare);
+
+/* Runs the self-test at 16, 24 and 32 valid bits, Frames frames a buffer; with GainStep the three depths again at -6 dB, the PCM's level kept again for it at the end (SelfTest = 3) */
+NTSTATUS
+IntcDspLoopbackSelfTestAt(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    _In_ const INTCDSP_SELFTEST_OPS* Ops,
+    UINT32 Frames,
+    BOOLEAN GainStep);
 
 /*
  * Runs the self-test at 16, 24 and 32 valid bits, Frames frames a buffer.

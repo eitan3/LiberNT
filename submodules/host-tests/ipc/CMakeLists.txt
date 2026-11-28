@@ -48,3 +48,8 @@ ipc_test(sofipc t_sofipc.c ${REACTOS_HOST_SOURCE_ROOT}/submodules/host-tests/fwl
 target_compile_definitions(sofipc PRIVATE
     FWLOAD_FIXTURE_DIR="${REACTOS_HOST_SOURCE_ROOT}/submodules/host-tests/fwload/fixtures"
     SOFTPLG_FIXTURE_DIR="${REACTOS_HOST_SOURCE_ROOT}/submodules/host-tests/dspparsers/fixtures")
+# the gain cases scale the wire's samples in double precision (ldexp) and check the gain table against 10^(dB/20)
+find_library(MATH_LIBRARY m)
+if(MATH_LIBRARY)
+    target_link_libraries(sofipc PRIVATE ${MATH_LIBRARY})
+endif()

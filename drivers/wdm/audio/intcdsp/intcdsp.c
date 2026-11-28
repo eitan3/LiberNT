@@ -99,13 +99,14 @@ IntcDspReadIpcSettings(
     Dev->SelfTest = 0;
     Dev->UseInterrupts = 0;
     Dev->IpcTimeoutMs = INTCDSP_IPC_TIMEOUT_MS_DEFAULT;
-    /* the two are choices: SelfTest one of the plan's (off, the IPC self-test, the loopback self-test), UseInterrupts off or on; any other value is the default, said once (R1-09) */
+    /* the two are choices: SelfTest one of the plan's (off, the IPC self-test, the loopback self-test, the loopback self-test with the gain step), UseInterrupts off or on; any other value is the default, said once (R1-09) */
     if (NT_SUCCESS(IntcDspReadSetting(INTCDSP_SETTINGS_SELFTEST, &Value)))
     {
-        if (Value <= INTCDSP_SELFTEST_LOOPBACK)
+        if (Value <= INTCDSP_SELFTEST_GAIN)
             Dev->SelfTest = Value;
         else
-            IntcDspLog("SelfTest = %lu is not 0, %u or %u: 0\n", Value, (ULONG)INTCDSP_SELFTEST_IPC, (ULONG)INTCDSP_SELFTEST_LOOPBACK);
+            IntcDspLog("SelfTest = %lu is not 0, %u, %u or %u: 0\n", Value, (ULONG)INTCDSP_SELFTEST_IPC, (ULONG)INTCDSP_SELFTEST_LOOPBACK,
+                       (ULONG)INTCDSP_SELFTEST_GAIN);
     }
     if (NT_SUCCESS(IntcDspReadSetting(INTCDSP_SETTINGS_USEINTERRUPTS, &Value)))
     {
@@ -399,10 +400,10 @@ IntcDspStreamsStart(
     /* a bus without the stream members, or a link that is not ready: the DSP stays as the earlier checkpoints left it, with no stream and no self-test */
     if (!Dev->Streams.Ready)
         return STATUS_SUCCESS;
-    /* the loopback self-test is the opt-in check of the plan at a D0 entry; a boot at an open runs none (E1) */
-    if (!AtOpen && Dev->SelfTest == INTCDSP_SELFTEST_LOOPBACK)
+    /* the loopback self-test is the opt-in check of the plan at a D0 entry, with its gain step at SelfTest = 3 (E3); a boot at an open runs none (E1) */
+    if (!AtOpen && Dev->SelfTest >= INTCDSP_SELFTEST_LOOPBACK)
     {
-        Status = IntcDspLoopbackSelfTest(&Dev->Streams, &Dev->SelfTestOps, INTCDSP_SELFTEST_FRAMES);
+        Status = IntcDspLoopbackSelfTestAt(&Dev->Streams, &Dev->SelfTestOps, INTCDSP_SELFTEST_FRAMES, Dev->SelfTest == INTCDSP_SELFTEST_GAIN);
         /* the manager logged the lines; a fault powered the DSP down, a capture that does not match leaves it up, as the plan's stop rule says */
         IntcDspLog("loopback self-test: %s (0x%08lx), the DSP is %s\n", NT_SUCCESS(Status) ? "ran" : "failed", Status,
                    Dev->Booted ? "left running" : "powered down");

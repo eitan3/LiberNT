@@ -310,6 +310,263 @@ IntcDspNameStream(
     return IntcDspIpcStatus(Result);
 }
 
+/* The end of a transition a request failed in: the fault's release when the link was lost, the status otherwise */
+static
+NTSTATUS
+IntcDspFailed(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    NTSTATUS Status);
+
+/*
+ * The gain word of a level (E3). The level is in 1/65536 dB from unity
+ * down; the gain is linear, 10^(dB/20), in Q1.31 (unity 0x7fffffff, the
+ * firmware's volume component's format: sofipc4.h). The whole decibels
+ * from 0 to -96 are the table, each the rounded 2^31 x 10^(-dB/20); a level
+ * between two of them takes the straight line between their words, which is
+ * within 0.7 % of the curve (the node's levels are whole: its step is 1 dB).
+ * A level at 0 or above is unity, one at -96 dB or below the table's last
+ * word, and a muted level 0.
+ */
+#define INTCDSP_GAIN_DB_MIN               (-96L * 65536L)
+#define INTCDSP_GAIN_TABLE_ENTRIES        97
+
+static const UINT32 IntcDspGainTable[INTCDSP_GAIN_TABLE_ENTRIES] =
+{
+    0x7FFFFFFF, 0x721482C0, 0x65AC8C2F, 0x5A9DF7AC, 0x50C335D4, 0x47FACCF0,
+    0x4026E73D, 0x392CED8E, 0x32F52CFF, 0x2D6A866F, 0x287A26C5, 0x241346F6,
+    0x2026F310, 0x1CA7D768, 0x198A1357, 0x16C310E3, 0x144960C5, 0x12149A60,
+    0x101D3F2E, 0x0E5CA14C, 0x0CCCCCCD, 0x0B68737A, 0x0A2ADAD2, 0x090FCBF8,
+    0x08138562, 0x0732AE18, 0x066A4A53, 0x05B7B15B, 0x05188480, 0x048AA70B,
+    0x040C3714, 0x039B8719, 0x0337184E, 0x02DD958A, 0x028DCEBC, 0x0246B4E4,
+    0x0207567A, 0x01CEDC3D, 0x019C8651, 0x016FA9BB, 0x0147AE14, 0x01240B8C,
+    0x01044915, 0x00E7FACC, 0x00CEC08A, 0x00B8449C, 0x00A43AA2, 0x00925E89,
+    0x008273A6, 0x007443E8, 0x00679F1C, 0x005C5A4F, 0x00524F3B, 0x00495BC1,
+    0x00416179, 0x003A454A, 0x0033EF0C, 0x002E4939, 0x002940A2, 0x0024C42C,
+    0x0020C49C, 0x001D345B, 0x001A074F, 0x001732AE, 0x0014ACDB, 0x00126D43,
+    0x00106C43, 0x000EA30E, 0x000D0B91, 0x000BA064, 0x000A5CB6, 0x00093C3B,
+    0x00083B20, 0x000755FA, 0x000689BF, 0x0005D3BB, 0x00053181, 0x0004A0EC,
+    0x00042010, 0x0003AD38, 0x000346DC, 0x0002EBA3, 0x00029A55, 0x000251DE,
+    0x00021149, 0x0001D7BA, 0x0001A46D, 0x000176B5, 0x00014DF5, 0x000129A4,
+    0x00010945, 0x0000EC6C, 0x0000D2B6, 0x0000BBCC, 0x0000A760, 0x0000952C,
+    0x000084F3
+};
+
+UINT32
+IntcDspGainOfLevel(
+    LONG Level,
+    BOOLEAN Mute)
+{
+    ULONG Down, Whole, Part;
+    UINT64 Low, High;
+
+    if (Mute)
+        return 0;
+    if (Level >= 0)
+        return SOFIPC4_GAIN_UNITY;
+    Down = (ULONG)(-(LONGLONG)Level);
+    if (Down >= (ULONG)(-INTCDSP_GAIN_DB_MIN))
+        return IntcDspGainTable[INTCDSP_GAIN_TABLE_ENTRIES - 1];
+    Whole = Down / 65536;
+    Part = Down % 65536;
+    Low = IntcDspGainTable[Whole];
+    if (Part == 0)
+        return (UINT32)Low;
+    High = IntcDspGainTable[Whole + 1];
+    return (UINT32)((Low * (65536 - Part) + High * Part + 32768) / 65536);
+}
+
+/* The volume entry of a gain word: every channel, no fade, so the gain applies to the next period and a stream starts at its level */
+VOID
+IntcDspGainEntry(
+    UINT32 Gain,
+    SOFIPC4_GAIN_CONFIG* Entry)
+{
+    Entry->ChannelId = SOFIPC4_GAIN_ALL_CHANNELS;
+    Entry->TargetVolume = Gain;
+    Entry->CurveType = SOFIPC4_GAIN_CURVE_NONE;
+    Entry->Reserved = 0;
+    Entry->CurveDuration = 0;
+}
+
+/*
+ * A sample in its container as the firmware's volume component forwards it
+ * under a Q1.31 gain: a 16-bit sample is widened to 32 bits as a host
+ * copier takes it (24 valid bits in a 32-bit word already are the high
+ * part), the product rounded and shifted, saturated, and back in the
+ * container with the bits below the valid ones clear, as the capture
+ * copier writes it; unity is the sample itself, the component's
+ * passthrough. The self-test's expected capture and the model's gain are
+ * this arithmetic.
+ */
+INT32
+IntcDspGainApply(
+    INT32 Sample,
+    ULONG ContainerBits,
+    ULONG ValidBits,
+    UINT32 Gain)
+{
+    INT64 Wide, Product;
+    ULONG Shift = 32 - ContainerBits;
+
+    if (Gain == SOFIPC4_GAIN_UNITY || ContainerBits == 0 || ContainerBits > 32 || ValidBits == 0 || ValidBits > ContainerBits)
+        return Sample;
+    Wide = (INT64)Sample * ((INT64)1 << Shift);
+    Product = ((Wide * (INT64)Gain) + ((INT64)1 << 30)) >> 31;
+    if (Product > (INT64)0x7FFFFFFF)
+        Product = (INT64)0x7FFFFFFF;
+    else if (Product < -(INT64)0x80000000)
+        Product = -(INT64)0x80000000;
+    Product >>= Shift;
+    /* the bits below the valid ones are not the sample's: clear them */
+    if (ValidBits < ContainerBits)
+        Product &= (INT64)~(((UINT64)1 << (ContainerBits - ValidBits)) - 1);
+    return (INT32)Product;
+}
+
+/* the whole decibels and the hundredths of a level below unity, for the lines */
+static
+VOID
+IntcDspGainParts(
+    LONG Level,
+    _Out_ PULONG Whole,
+    _Out_ PULONG Hundredths)
+{
+    ULONG Down = Level < 0 ? (ULONG)(-(LONGLONG)Level) : 0;
+
+    *Whole = Down / 65536;
+    *Hundredths = (Down % 65536) * 100 / 65536;
+}
+
+/*
+ * A PCM's gain widget told its level: a large-configuration set of the one
+ * volume entry, parameter id 0, one block. The widget exists (the path
+ * build initialized it); the status of the request that failed, the fault's
+ * release when the link was lost.
+ */
+static
+NTSTATUS
+IntcDspGainSend(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    UINT32 Widget,
+    UINT32 Gain)
+{
+    const SOFTPLG_IPC4_WIDGET* Module = &Streams->Model->Widgets[Widget];
+    SOFIPC4_GAIN_CONFIG Entry;
+    SOFIPC_STATUS Result;
+    SOFIPC4_MSG Msg;
+    const UINT32 Param = SOFIPC4_GAIN_PARAM_VOLUME;
+    UINT32 Flags = SOFIPC4_LARGE_CONFIG_INIT_BLOCK | SOFIPC4_LARGE_CONFIG_FINAL_BLOCK;
+
+    IntcDspGainEntry(Gain, &Entry);
+    Result = SofIpcLargeConfigSet(Streams->Ipc, Module->ModuleId, Streams->WidgetInstance[Widget], Param,
+                                  &Entry, sizeof(Entry));
+    SofIpc4ModuleLargeConfig(&Msg, Module->ModuleId, Streams->WidgetInstance[Widget], Param, sizeof(Entry), Flags, FALSE);
+    IntcDspTrace(Streams, NULL, INTCDSP_TRACE_IPC, Msg.Primary, Msg.Extension,
+                 Result == SofIpcOk ? Streams->Ipc->Last.Status : (UINT32)Result);
+    if (Result == SofIpcOk)
+        return STATUS_SUCCESS;
+    IntcDspStreamLog(Streams, "ipc: %s (%u) 0x%08x|0x%08x %s after %u us; the link is %s\n", SofIpcTypeName(Msg.Primary),
+                     SofIpc4MsgType(&Msg), Msg.Primary | FWLOAD_IPC_BUSY, Msg.Extension, SofIpcStatusName(Result),
+                     (UINT32)Streams->Ipc->Last.ElapsedUs, IntcDspLinkLost(Streams) ? "faulted" : "ready");
+    return IntcDspIpcStatus(Result);
+}
+
+/* The level kept for a PCM's gain: a PCM the manager keeps none for answers unity */
+static
+const INTCDSP_GAIN
+IntcDspGainUnity = { 0, FALSE, FALSE };
+
+static
+const INTCDSP_GAIN*
+IntcDspGainOf(
+    _In_ const INTCDSP_STREAMS* Streams,
+    UINT32 Pcm)
+{
+    return Pcm < INTCDSP_GAIN_PCMS_MAX ? &Streams->Gain[Pcm] : &IntcDspGainUnity;
+}
+
+/* The word of a kept level: the level's, muted or not (IntcDspGainOfLevel) */
+static
+UINT32
+IntcDspGainWord(
+    _In_ const INTCDSP_GAIN* Gain)
+{
+    return IntcDspGainOfLevel(Gain->Level, Gain->Mute);
+}
+
+/* The gain module's line, one per change: the level in dB and the mute, with what became of it */
+static
+VOID
+IntcDspGainLog(
+    _In_ const INTCDSP_STREAMS* Streams,
+    _In_ const INTCDSP_GAIN* Gain,
+    _In_z_ const char* What)
+{
+    ULONG Whole, Hundredths;
+
+    IntcDspGainParts(Gain->Level, &Whole, &Hundredths);
+    IntcDspStreamLog(Streams, "gain: %s%lu.%02lu dB, mute %u%s\n", Gain->Level < 0 ? "-" : "", Whole, Hundredths,
+                     Gain->Mute ? 1 : 0, What);
+}
+
+/*
+ * A PCM's level for its gain module (E3), under the lock: kept on the
+ * manager whatever the DSP's state, and sent at once to every gain widget
+ * the PCM reaches that has an instance (the streams of the PCM are
+ * allocated), with the line of the change; with the DSP not up or no
+ * instance, kept for the path build of the PCM's next stream, which
+ * initializes the widget with the level, sends it and logs the line. The
+ * status of the request that failed, the fault's release when the link was
+ * lost; the level is kept for the next boot either way.
+ */
+NTSTATUS
+IntcDspStreamsGainSet(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    UINT32 Pcm,
+    LONG Level,
+    BOOLEAN Mute)
+{
+    const INTCDSP_GAIN* Gain;
+    NTSTATUS Status = STATUS_SUCCESS;
+    UINT32 W, Sent = 0;
+
+    if (Pcm >= INTCDSP_GAIN_PCMS_MAX)
+        return STATUS_NOT_SUPPORTED;
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return STATUS_INVALID_DEVICE_STATE;
+    IntcDspStreamsLock(Streams);
+    Gain = &Streams->Gain[Pcm];
+    Streams->Gain[Pcm].Level = Level;
+    Streams->Gain[Pcm].Mute = Mute;
+    if (Streams->Ready && !Streams->Faulted && Streams->Model != NULL)
+    {
+        for (W = 0; W < Streams->Model->WidgetCount && NT_SUCCESS(Status); W++)
+        {
+            if (!IntcDspReached(Streams, Pcm, W) || !SoftplgModelIsGain(&Streams->Model->Widgets[W]) ||
+                (Streams->WidgetFlags[W] & INTCDSP_WIDGET_INSTANCE) == 0)
+                continue;
+            Status = IntcDspGainSend(Streams, W, IntcDspGainWord(Gain));
+            if (!NT_SUCCESS(Status))
+                Status = IntcDspFailed(Streams, Status);
+            else
+                Sent++;
+        }
+    }
+    if (Sent != 0 && NT_SUCCESS(Status))
+    {
+        Streams->Gain[Pcm].Kept = FALSE;
+        IntcDspGainLog(Streams, Gain, "");
+    }
+    else
+    {
+        /* nothing was told: the path build of the PCM's next stream tells the widget, initialized at this level */
+        Streams->Gain[Pcm].Kept = TRUE;
+        IntcDspGainLog(Streams, Gain, ", kept until the DSP runs the PCM again");
+    }
+    IntcDspStreamsUnlock(Streams);
+    return Status;
+}
+
 /* The stream a host copier of a PCM names, when one is open for its direction: its tag, and the index of the host copier's format it carries */
 static
 VOID
@@ -525,6 +782,7 @@ IntcDspPathBuild(
     NTSTATUS Status, Step;
     UINT8 Order[INTCDSP_PCM_PIPELINES_MAX];
     UINT32 Count, I, W, E, Instance, Tag, InputFormat, OutputFormat, Source, Sink;
+    PINTCDSP_GAIN Gain;
 
     Count = IntcDspPipelineOrder(Streams, Stream->Pcm, FALSE, Order);
     if (Count == 0xFFFFFFFF || Count == 0)
@@ -580,6 +838,17 @@ IntcDspPathBuild(
             Status = STATUS_INVALID_DEVICE_STATE;
             break;
         }
+        Gain = Stream->Pcm < INTCDSP_GAIN_PCMS_MAX ? &Streams->Gain[Stream->Pcm] : NULL;
+        if (SoftplgModelIsGain(Widget))
+        {
+            /* the gain starts at the level kept for the PCM (E3): the entry's target volume is the kept word, no fade */
+            Config.Words[SOFTPLG_GAIN_ENTRY_WORD] = SOFIPC4_GAIN_ALL_CHANNELS;
+            Config.Words[SOFTPLG_GAIN_ENTRY_WORD + 1] = IntcDspGainWord(IntcDspGainOf(Streams, Stream->Pcm));
+            Config.Words[SOFTPLG_GAIN_ENTRY_WORD + 2] = SOFIPC4_GAIN_CURVE_NONE;
+            Config.Words[SOFTPLG_GAIN_ENTRY_WORD + 3] = 0;
+            Config.Words[SOFTPLG_GAIN_ENTRY_WORD + 4] = 0;
+            Config.Words[SOFTPLG_GAIN_ENTRY_WORD + 5] = 0;
+        }
         SofIpc4ModuleInitInstance(&Msg, Widget->ModuleId, Instance, Streams->PipelineInstance[Widget->Pipeline], Config.Count,
                                   Widget->CoreId, 0);
         Status = IntcDspSend(Streams, Stream, SofIpcClassModule, &Msg, (const UINT8*)Config.Words,
@@ -590,6 +859,18 @@ IntcDspPathBuild(
             Streams->WidgetInstance[W] = (UINT8)Instance;
             Streams->WidgetFlags[W] = INTCDSP_WIDGET_INSTANCE |
                 (IntcDspIsHostCopier(Widget) && Tag != SOFTPLG_STREAM_TAG_NONE ? INTCDSP_WIDGET_NAMED : 0);
+            /* a level kept while the widget had no instance is sent now that it has one, with its line */
+            if (Gain != NULL && Gain->Kept && SoftplgModelIsGain(Widget))
+            {
+                Status = IntcDspGainSend(Streams, W, IntcDspGainWord(Gain));
+                if (NT_SUCCESS(Status))
+                {
+                    IntcDspGainLog(Streams, Gain, "");
+                    Gain->Kept = FALSE;
+                }
+                else
+                    Status = IntcDspFailed(Streams, Status);
+            }
         }
     }
     for (E = 0; E < Model->EdgeCount && NT_SUCCESS(Status); E++)
@@ -826,7 +1107,7 @@ IntcDspStreamsLetGo(
     BOOLEAN NoRequest)
 {
     const SOFTPLG_IPC4_MODEL* Model = Streams->Model;
-    UINT32 Pending = 0, LetGo = 0, Held = 0, Tags = Streams->Freed, Before, S;
+    UINT32 Pending = 0, LetGo = 0, Held = 0, Tags = Streams->Freed, Before, S, P;
 
     for (S = 0; S < INTCDSP_STREAMS_MAX; S++)
     {
@@ -862,6 +1143,12 @@ IntcDspStreamsLetGo(
     RtlZeroMemory(Streams->WidgetInstance, (SIZE_T)Model->WidgetCount * 2);
     RtlZeroMemory(Streams->ModuleInstances, INTCDSP_STREAM_MODULES_MAX);
     Streams->NextPipelineInstance = 1;
+    /* the gain widgets are gone with their instances: a PCM's level is told again to the first stream of its next build (E3) */
+    for (P = 0; P < INTCDSP_GAIN_PCMS_MAX; P++)
+    {
+        if (Streams->Gain[P].Level != 0 || Streams->Gain[P].Mute)
+            Streams->Gain[P].Kept = TRUE;
+    }
     IntcDspStreamLog(Streams, "release: %u streams let go, %u buffers held for their pins, %u tags back\n", LetGo, Held, Streams->Freed - Tags);
     return Pending;
 }
@@ -2454,30 +2741,36 @@ IntcDspRms(
 }
 
 VOID
-IntcDspStreamCompare(
+IntcDspStreamCompareGain(
     _In_reads_bytes_(Bytes) const PUCHAR Render,
     _In_reads_bytes_(Bytes) const PUCHAR Capture,
     SIZE_T Bytes,
     ULONG Channels,
     ULONG ContainerBits,
+    ULONG ValidBits,
     UINT32 StopBytes,
+    UINT32 Gain,
     _Out_ PINTCDSP_COMPARE Compare)
 {
     ULONG Width = ContainerBits / 8, FrameBytes = Channels * Width;
     SIZE_T Frames = FrameBytes != 0 ? Bytes / FrameBytes : 0, Shift = 0, I;
     ULONG Channel;
     UINT32 Offset, BestOffset = 0;
+    /* unity is compared exactly; under a gain the capture may be one unit of the sample's precision from the render scaled (one bit of the valid depth), the rounding of the firmware's arithmetic */
+    INT64 Tolerance = 0;
     UINT64 Differing, BestDiffering = 0, MaxError, BestMaxError = 0;
     /* the mean squares: each as its whole part and the remainder of the running total */
     UINT64 Samples, RenderMean = 0, RenderRest = 0, CaptureMean, CaptureRest, BestCaptureMean = 0;
     UINT64 BestFrame = 0;
     ULONG BestChannel = 0;
-    INT32 RenderSample, CaptureSample, BestRender = 0, BestCapture = 0;
+    INT32 RenderSample, CaptureSample, Expected, BestRender = 0, BestCapture = 0;
     INT64 Error;
 
     RtlZeroMemory(Compare, sizeof(*Compare));
-    if (Frames == 0 || Channels == 0 || (Width != 2 && Width != 4))
+    if (Frames == 0 || Channels == 0 || (Width != 2 && Width != 4) || ValidBits == 0 || ValidBits > ContainerBits)
         return;
+    if (Gain != SOFIPC4_GAIN_UNITY)
+        Tolerance = (INT64)1 << (ContainerBits - ValidBits);
     Samples = (UINT64)Frames * Channels;
     /* the capture stream stood Shift frames into its buffer when it stopped: the compare starts there and goes around the cyclic buffer */
     Shift = (StopBytes % (UINT32)Bytes) / FrameBytes;
@@ -2512,9 +2805,13 @@ IntcDspStreamCompare(
                 RenderSample = IntcDspSample(Render, Frames, FrameBytes, Width, I, Channel);
                 CaptureSample = IntcDspSample(Capture, Frames, FrameBytes, Width, Shift + Offset + I, Channel);
                 IntcDspMeanAdd((UINT64)((INT64)CaptureSample * CaptureSample), Samples, &CaptureMean, &CaptureRest);
-                if (RenderSample == CaptureSample)
+                /* the render as the gain forwards it is what the capture must be, within the tolerance */
+                Expected = IntcDspGainApply(RenderSample, ContainerBits, ValidBits, Gain);
+                if (RenderSample == CaptureSample || Expected == CaptureSample)
                     continue;
-                Error = (INT64)CaptureSample - RenderSample;
+                Error = (INT64)CaptureSample - Expected;
+                if (Error <= Tolerance && Error >= -Tolerance)
+                    continue;
                 if (Error < 0)
                     Error = -Error;
                 if ((UINT64)Error > MaxError)
@@ -2549,6 +2846,20 @@ IntcDspStreamCompare(
     Compare->RenderRms = IntcDspRms(RenderMean, Compare->Samples);
     Compare->CaptureRms = IntcDspRms(BestCaptureMean, Compare->Samples);
     Compare->Matched = BestDiffering == 0;
+}
+
+VOID
+IntcDspStreamCompare(
+    _In_reads_bytes_(Bytes) const PUCHAR Render,
+    _In_reads_bytes_(Bytes) const PUCHAR Capture,
+    SIZE_T Bytes,
+    ULONG Channels,
+    ULONG ContainerBits,
+    UINT32 StopBytes,
+    _Out_ PINTCDSP_COMPARE Compare)
+{
+    /* the render itself is what the capture must be, exactly */
+    IntcDspStreamCompareGain(Render, Capture, Bytes, Channels, ContainerBits, ContainerBits, StopBytes, SOFIPC4_GAIN_UNITY, Compare);
 }
 
 static
@@ -2667,7 +2978,8 @@ IntcDspSelfTestRun(
     _In_ const INTCDSP_SELFTEST_OPS* Ops,
     UINT32 Pcm,
     ULONG ValidBits,
-    UINT32 Frames)
+    UINT32 Frames,
+    UINT32 Gain)
 {
     HANDLE Render = NULL, Capture = NULL;
     PINTCDSP_STREAM RenderStream, CaptureStream;
@@ -2745,8 +3057,8 @@ Release:
         }
         if (NT_SUCCESS(Status))
         {
-            IntcDspStreamCompare((PUCHAR)RenderVa, (PUCHAR)CaptureVa, RenderStream->Bytes, INTCDSP_SELFTEST_CHANNELS, ContainerBits,
-                                 CaptureStop, &Compare);
+            IntcDspStreamCompareGain((PUCHAR)RenderVa, (PUCHAR)CaptureVa, RenderStream->Bytes, INTCDSP_SELFTEST_CHANNELS, ContainerBits,
+                                      ValidBits, CaptureStop, Gain, &Compare);
             if (!Compare.Matched)
                 Status = STATUS_DEVICE_PROTOCOL_ERROR;
         }
@@ -2765,9 +3077,16 @@ Release:
     Freed = Streams->Freed - Freed0;
     if (Compare.Samples != 0 && Compare.Matched)
     {
-        IntcDspStreamLog(Streams, "loopback self-test: %u frames captured after %u ms, offset %u frames, max abs error 0, render rms %u.%03u, capture rms %u.%03u, ok\n",
-                         Frames, ElapsedMs, Compare.Offset, (UINT32)(Compare.RenderRms / 1000), (UINT32)(Compare.RenderRms % 1000),
-                         (UINT32)(Compare.CaptureRms / 1000), (UINT32)(Compare.CaptureRms % 1000));
+        if (Gain == SOFIPC4_GAIN_UNITY)
+            IntcDspStreamLog(Streams, "loopback self-test: %u frames captured after %u ms, offset %u frames, max abs error 0, render rms %u.%03u, capture rms %u.%03u, ok\n",
+                             Frames, ElapsedMs, Compare.Offset, (UINT32)(Compare.RenderRms / 1000), (UINT32)(Compare.RenderRms % 1000),
+                             (UINT32)(Compare.CaptureRms / 1000), (UINT32)(Compare.CaptureRms % 1000));
+        else
+            /* the capture is the render as the gain forwards it, every sample within one unit of the container (IntcDspGainApply) */
+            IntcDspStreamLog(Streams, "loopback self-test: %u frames captured after %u ms, offset %u frames, max abs error %u, gain 0x%08x, render rms %u.%03u, capture rms %u.%03u, ok\n",
+                             Frames, ElapsedMs, Compare.Offset, (UINT32)Compare.MaxError, Gain,
+                             (UINT32)(Compare.RenderRms / 1000), (UINT32)(Compare.RenderRms % 1000),
+                             (UINT32)(Compare.CaptureRms / 1000), (UINT32)(Compare.CaptureRms % 1000));
         if (!NT_SUCCESS(Status))
             IntcDspStreamLog(Streams, "loopback self-test: the capture matched, but a release step failed (0x%08x), failed\n", (UINT32)Status);
     }
@@ -2792,16 +3111,41 @@ Release:
     return Status;
 }
 
+/*
+ * Runs the self-test at 16, 24 and 32 valid bits, Frames frames a buffer,
+ * at the gain module's unity; STATUS_SUCCESS when every depth matched, the
+ * status of the step that failed otherwise, with its line in the log. The
+ * lines are the plan's VM-acceptance row's, one pair per depth, with a
+ * third line for the positions and the release.
+ */
 NTSTATUS
 IntcDspLoopbackSelfTest(
     _Inout_ PINTCDSP_STREAMS Streams,
     _In_ const INTCDSP_SELFTEST_OPS* Ops,
     UINT32 Frames)
 {
+    return IntcDspLoopbackSelfTestAt(Streams, Ops, Frames, FALSE);
+}
+
+/*
+ * The same, and with GainStep the three depths again at -6 dB (SelfTest =
+ * 3): the PCM's gain widget is initialized at that level, every captured
+ * sample is the render as the gain forwards it within one unit of the
+ * container (IntcDspStreamCompareGain), and the level the PCM had before
+ * is kept again for it at the end. A gain step that fails is the last run.
+ */
+NTSTATUS
+IntcDspLoopbackSelfTestAt(
+    _Inout_ PINTCDSP_STREAMS Streams,
+    _In_ const INTCDSP_SELFTEST_OPS* Ops,
+    UINT32 Frames,
+    BOOLEAN GainStep)
+{
     SOFIPC_CONTEXT* Ipc = Streams->Ipc;
-    NTSTATUS Status = STATUS_SUCCESS;
-    UINT32 Pcm, Runs = 0, Matched = 0, D;
+    NTSTATUS Status = STATUS_SUCCESS, Step;
+    UINT32 Pcm, Runs = 0, Matched = 0, D, Word = SOFIPC4_GAIN_UNITY;
     UINT32 Requests, Notifications, Timeouts, Interrupts;
+    INTCDSP_GAIN Saved = { 0, FALSE, FALSE };
 
     if (!Streams->Ready || Streams->Faulted)
     {
@@ -2818,15 +3162,49 @@ IntcDspLoopbackSelfTest(
     Notifications = Ipc->Notifications;
     Timeouts = Ipc->Timeouts;
     Interrupts = Ipc->InterruptCount;
+    if (GainStep)
+    {
+        /* the level the PCM had is put back at the end; the three depths run at unity first */
+        Saved = Streams->Gain[Pcm < INTCDSP_GAIN_PCMS_MAX ? Pcm : 0];
+        Status = IntcDspStreamsGainSet(Streams, Pcm, 0, FALSE);
+        if (!NT_SUCCESS(Status))
+            return Status;
+    }
     for (D = 0; D < INTCDSP_SELFTEST_DEPTHS; D++)
     {
         Runs++;
-        Status = IntcDspSelfTestRun(Streams, Ops, Pcm, IntcDspSelfTestDepths[D], Frames);
+        Status = IntcDspSelfTestRun(Streams, Ops, Pcm, IntcDspSelfTestDepths[D], Frames, Word);
         if (NT_SUCCESS(Status))
             Matched++;
         /* the stop rule of the plan: the first run that does not match is the last */
         if (!NT_SUCCESS(Status))
             break;
+    }
+    if (GainStep && NT_SUCCESS(Status))
+    {
+        /* the gain step: the three depths at -6 dB, the PCM's gain initialized at the level */
+        Status = IntcDspStreamsGainSet(Streams, Pcm, -6L * 65536L, FALSE);
+        if (NT_SUCCESS(Status))
+        {
+            Word = IntcDspGainOfLevel(-6L * 65536L, FALSE);
+            IntcDspStreamLog(Streams, "loopback self-test: the gain step, three depths at -6.00 dB (gain 0x%08x)\n", Word);
+            for (D = 0; D < INTCDSP_SELFTEST_DEPTHS; D++)
+            {
+                Runs++;
+                Status = IntcDspSelfTestRun(Streams, Ops, Pcm, IntcDspSelfTestDepths[D], Frames, Word);
+                if (NT_SUCCESS(Status))
+                    Matched++;
+                if (!NT_SUCCESS(Status))
+                    break;
+            }
+        }
+    }
+    if (GainStep)
+    {
+        /* the level the PCM had is kept again for it: no instance is up here, so the next stream of the PCM is told */
+        Step = IntcDspStreamsGainSet(Streams, Pcm, Saved.Level, Saved.Mute);
+        if (NT_SUCCESS(Status) && !NT_SUCCESS(Step))
+            Status = Step;
     }
     IntcDspStreamLog(Streams, "loopback self-test: %u runs, %u matched, %u failed, %u requests, %u notifications, %u timeouts, %u DSP interrupts, %s\n",
                      Runs, Matched, Runs - Matched, Ipc->Requests - Requests, Ipc->Notifications - Notifications,

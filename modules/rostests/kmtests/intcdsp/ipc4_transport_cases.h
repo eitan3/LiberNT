@@ -159,7 +159,7 @@ static const IPC4_STREAM_CASE Ipc4StreamTrace[] =
     { "allocate: create pipeline 1",             INTCDSP_TRACE_IPC,         0, IPC4_STREAM_CASE_RENDER_TAG,  0x11010000, 0 },
     { "allocate: init the host-output copier",   INTCDSP_TRACE_IPC,         0, IPC4_STREAM_CASE_RENDER_TAG,  0x40000005, 0x00010015 },
     { "allocate: init the host-input copier",    INTCDSP_TRACE_IPC,         0, IPC4_STREAM_CASE_RENDER_TAG,  0x40010005, 0x00010015 },
-    { "allocate: init the gain",                 INTCDSP_TRACE_IPC,         0, IPC4_STREAM_CASE_RENDER_TAG,  0x40000007, 0x0001000a },
+    { "allocate: init the gain",                 INTCDSP_TRACE_IPC,         0, IPC4_STREAM_CASE_RENDER_TAG,  0x40000007, 0x00010010 },
     { "allocate: bind the copier to the gain",   INTCDSP_TRACE_IPC,         0, IPC4_STREAM_CASE_RENDER_TAG,  0x45000005, 0x00000007 },
     { "allocate: bind the gain to the copier",   INTCDSP_TRACE_IPC,         0, IPC4_STREAM_CASE_RENDER_TAG,  0x45000007, 0x00010005 },
     { "allocate: the capture buffer",            INTCDSP_TRACE_BUFFER,      1, IPC4_STREAM_CASE_CAPTURE_TAG, 0, 0 },
