@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT host-native tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The device enumerator's notification clients and the diff of a device set (dll/win32/mmdevapi/devenum_notif.h, the code mmdevapi.dll compiles): the three device callbacks per verdict on every registered client and none for an unchanged set, a client unregistering itself or another under a callback, a walk under a callback, the dead wrappers freed when the last walk ends; under ASan and UBSan
+ * PURPOSE:     The device enumerator's notification clients and the diff of a device set (dll/win32/mmdevapi/devenum_notif.h, the code mmdevapi.dll compiles): the three device callbacks per verdict on every registered client and none for an unchanged set, a client unregistering itself or another under a callback, a walk under a callback, the dead wrappers freed when the last walk ends; the control interface of a part that stands for a KS node (dll/win32/mmdevapi/devicetopology_control.h): the request the driver sees through a fake KS channel and which parts stand for a node; under ASan and UBSan
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -535,6 +535,296 @@ check_register_under_walk(
     CHECK_EQ(seeded.walks, 0);
 }
 
+/* ---- The control interface of a part (devicetopology_control.h) ---- */
+
+/* What ks.h and the Windows headers give the unit: HRESULT, BOOL, the KS request headers as ks.h lays them out
+ * on amd64 (ULONG 32 bits), the IOCTLs of the four KS requests, S_OK and E_INVALIDARG */
+typedef long HRESULT;
+typedef int BOOL;
+typedef unsigned int ULONG;
+typedef void *HANDLE;
+#define ZeroMemory(p, n) memset((p), 0, (n))
+typedef struct _KSPROPERTY
+{
+    GUID Set;
+    ULONG Id;
+    ULONG Flags;
+} KSPROPERTY;
+typedef struct _KSMETHOD
+{
+    GUID Set;
+    ULONG Id;
+    ULONG Flags;
+} KSMETHOD;
+typedef struct _KSEVENT
+{
+    GUID Set;
+    ULONG Id;
+    ULONG Flags;
+} KSEVENT;
+typedef struct _KSP_NODE
+{
+    KSPROPERTY Property;
+    ULONG NodeId;
+    ULONG Reserved;
+} KSP_NODE;
+typedef struct _KSM_NODE
+{
+    KSMETHOD Method;
+    ULONG NodeID;
+    ULONG Reserved;
+} KSM_NODE;
+typedef struct _KSE_NODE
+{
+    KSEVENT Event;
+    ULONG NodeId;
+    ULONG Reserved;
+} KSE_NODE;
+#define FILE_DEVICE_KS 0x47
+#define METHOD_NEITHER 3
+#define FILE_ANY_ACCESS 0
+#define CTL_CODE(d, f, m, a) (((d) << 16) | ((a) << 14) | ((f) << 2) | (m))
+#define IOCTL_KS_PROPERTY CTL_CODE(FILE_DEVICE_KS, 0x000, METHOD_NEITHER, FILE_ANY_ACCESS)
+#define IOCTL_KS_ENABLE_EVENT CTL_CODE(FILE_DEVICE_KS, 0x001, METHOD_NEITHER, FILE_ANY_ACCESS)
+#define IOCTL_KS_DISABLE_EVENT CTL_CODE(FILE_DEVICE_KS, 0x002, METHOD_NEITHER, FILE_ANY_ACCESS)
+#define IOCTL_KS_METHOD CTL_CODE(FILE_DEVICE_KS, 0x003, METHOD_NEITHER, FILE_ANY_ACCESS)
+#define S_OK 0
+#define E_INVALIDARG ((HRESULT)0x80070057)
+
+#include "devicetopology_control.h"
+
+/* The property set of the audio nodes, a value of the test's own (KSPROPSETID_Audio) */
+static const GUID AudioPropertySet = {0x45b0c0a3, 0x8ede, 0x11d0, {0xa0, 0x8c, 0x00, 0xa0, 0xc9, 0x22, 0x31, 0x96}};
+#define NODE 3
+#define GET 0x1
+
+/*
+ * A fake KS channel: the driver's side of the IOCTL. The handle is the fake itself; every request is
+ * recorded as it arrives (the code, the request's bytes, the data buffer) and answered as told.
+ */
+#define REQUEST_BYTES 64
+typedef struct _FAKE_CHANNEL
+{
+    struct ks_channel channel;
+    int calls;
+    DWORD code;
+    unsigned char request[REQUEST_BYTES];
+    ULONG request_size;
+    void *data;
+    ULONG data_size;
+    HRESULT result;
+    ULONG returned;
+} FAKE_CHANNEL;
+
+static
+void
+fake_channel_init(
+    FAKE_CHANNEL *fake);
+
+static
+HRESULT
+fake_request(
+    HANDLE filter,
+    DWORD code,
+    const void *in,
+    ULONG in_size,
+    void *out,
+    ULONG out_size,
+    ULONG *returned)
+{
+    FAKE_CHANNEL *fake = (FAKE_CHANNEL *)filter;
+
+    ++fake->calls;
+    fake->code = code;
+    fake->request_size = in_size;
+    memset(fake->request, 0, sizeof(fake->request));
+    if (in_size)
+        memcpy(fake->request, in, in_size < sizeof(fake->request) ? in_size : sizeof(fake->request));
+    fake->data = out;
+    fake->data_size = out_size;
+    *returned = fake->returned;
+    return fake->result;
+}
+
+static
+void
+fake_channel_init(
+    FAKE_CHANNEL *fake)
+{
+    memset(fake, 0, sizeof(*fake));
+    fake->channel.filter = fake;
+    fake->channel.request = fake_request;
+}
+
+/* What the driver sees of a request: its code, its bytes, the data buffer and length */
+#define CHECK_REQUEST(fake, code_, size_, data_, data_size_) \
+    do { \
+        CHECK_EQ((fake)->calls, 1); \
+        CHECK_EQ((fake)->code, (DWORD)(code_)); \
+        CHECK_EQ((fake)->request_size, (size_)); \
+        CHECK((fake)->data == (data_)); \
+        CHECK_EQ((fake)->data_size, (data_size_)); \
+    } while (0)
+
+/* A property of the node: a KSP_NODE of the part's node, the caller's header and the data as the driver takes them */
+static
+void
+check_node_property(
+    void)
+{
+    FAKE_CHANNEL fake;
+    KSPROPERTY property;
+    KSP_NODE callers, seen;
+    ULONG returned, level = 0;
+    HRESULT hr;
+
+    fake_channel_init(&fake);
+    fake.returned = sizeof(level);
+    memset(&property, 0, sizeof(property));
+    property.Set = AudioPropertySet;
+    property.Id = 7;
+    property.Flags = GET;
+    hr = ks_node_property(&fake.channel, NODE, &property, sizeof(property), &level, sizeof(level), &returned);
+    CHECK_EQ(hr, S_OK);
+    CHECK_REQUEST(&fake, IOCTL_KS_PROPERTY, sizeof(KSP_NODE), &level, sizeof(level));
+    memcpy(&seen, fake.request, sizeof(seen));
+    CHECK(IsEqualGUID(&seen.Property.Set, &AudioPropertySet));
+    CHECK_EQ(seen.Property.Id, 7);
+    CHECK_EQ(seen.Property.Flags, GET);
+    CHECK_EQ(seen.NodeId, NODE);
+    CHECK_EQ(seen.Reserved, 0);
+    CHECK_EQ(returned, sizeof(level));
+
+    /* the caller's buffer is a KSP_NODE naming another node and a reserved word: the driver sees the part's node and no reserved word */
+    fake_channel_init(&fake);
+    memset(&callers, 0, sizeof(callers));
+    callers.Property = property;
+    callers.NodeId = 0x00020000u | NODE;
+    callers.Reserved = 0xdeadbeef;
+    hr = ks_node_property(&fake.channel, NODE, &callers.Property, sizeof(callers), &level, sizeof(level), &returned);
+    CHECK_EQ(hr, S_OK);
+    CHECK_REQUEST(&fake, IOCTL_KS_PROPERTY, sizeof(KSP_NODE), &level, sizeof(level));
+    memcpy(&seen, fake.request, sizeof(seen));
+    CHECK_EQ(seen.NodeId, NODE);
+    CHECK_EQ(seen.Reserved, 0);
+
+    /* the driver's failure and the bytes it reports are the caller's */
+    fake_channel_init(&fake);
+    fake.result = (HRESULT)0x80070490;
+    fake.returned = 4;
+    returned = 0;
+    hr = ks_node_property(&fake.channel, NODE, &property, sizeof(property), NULL, 0, &returned);
+    CHECK_EQ(hr, (HRESULT)0x80070490);
+    CHECK_EQ(returned, 4);
+    CHECK_REQUEST(&fake, IOCTL_KS_PROPERTY, sizeof(KSP_NODE), NULL, 0);
+
+    /* a header too short to be a property, or none, is not the driver's to judge */
+    fake_channel_init(&fake);
+    CHECK_EQ(ks_node_property(&fake.channel, NODE, &property, sizeof(property) - 1, &level, sizeof(level), &returned), E_INVALIDARG);
+    CHECK_EQ(ks_node_property(&fake.channel, NODE, NULL, sizeof(property), &level, sizeof(level), &returned), E_INVALIDARG);
+    CHECK_EQ(fake.calls, 0);
+}
+
+/* A method of the node: a KSM_NODE through IOCTL_KS_METHOD */
+static
+void
+check_node_method(
+    void)
+{
+    FAKE_CHANNEL fake;
+    KSMETHOD method;
+    KSM_NODE seen;
+    ULONG returned = 0, value = 0;
+    HRESULT hr;
+
+    fake_channel_init(&fake);
+    fake.returned = sizeof(value);
+    memset(&method, 0, sizeof(method));
+    method.Set = AudioPropertySet;
+    method.Id = 9;
+    method.Flags = 0x3;
+    hr = ks_node_method(&fake.channel, NODE, &method, sizeof(method), &value, sizeof(value), &returned);
+    CHECK_EQ(hr, S_OK);
+    CHECK_REQUEST(&fake, IOCTL_KS_METHOD, sizeof(KSM_NODE), &value, sizeof(value));
+    memcpy(&seen, fake.request, sizeof(seen));
+    CHECK(IsEqualGUID(&seen.Method.Set, &AudioPropertySet));
+    CHECK_EQ(seen.Method.Id, 9);
+    CHECK_EQ(seen.Method.Flags, 0x3);
+    CHECK_EQ(seen.NodeID, NODE);
+    CHECK_EQ(seen.Reserved, 0);
+    CHECK_EQ(returned, sizeof(value));
+
+    fake_channel_init(&fake);
+    CHECK_EQ(ks_node_method(&fake.channel, NODE, &method, sizeof(method) - 1, &value, sizeof(value), &returned), E_INVALIDARG);
+    CHECK_EQ(fake.calls, 0);
+}
+
+/* An event of the node: enabled as a KSE_NODE, disabled by the data alone */
+static
+void
+check_node_event(
+    void)
+{
+    FAKE_CHANNEL fake;
+    KSEVENT event;
+    KSE_NODE seen;
+    unsigned char data[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    ULONG returned = 0;
+    HRESULT hr;
+
+    fake_channel_init(&fake);
+    memset(&event, 0, sizeof(event));
+    event.Set = AudioPropertySet;
+    event.Id = 5;
+    event.Flags = 0x1;
+    hr = ks_node_event(&fake.channel, NODE, &event, sizeof(event), data, sizeof(data), &returned);
+    CHECK_EQ(hr, S_OK);
+    CHECK_REQUEST(&fake, IOCTL_KS_ENABLE_EVENT, sizeof(KSE_NODE), data, sizeof(data));
+    memcpy(&seen, fake.request, sizeof(seen));
+    CHECK(IsEqualGUID(&seen.Event.Set, &AudioPropertySet));
+    CHECK_EQ(seen.Event.Id, 5);
+    CHECK_EQ(seen.Event.Flags, 0x1);
+    CHECK_EQ(seen.NodeId, NODE);
+    CHECK_EQ(seen.Reserved, 0);
+
+    /* no event: the data is the request of the disabling, nothing is answered */
+    fake_channel_init(&fake);
+    hr = ks_node_event(&fake.channel, NODE, NULL, 0, data, sizeof(data), &returned);
+    CHECK_EQ(hr, S_OK);
+    CHECK_EQ(fake.calls, 1);
+    CHECK_EQ(fake.code, (DWORD)IOCTL_KS_DISABLE_EVENT);
+    CHECK_EQ(fake.request_size, sizeof(data));
+    CHECK(memcmp(fake.request, data, sizeof(data)) == 0);
+    CHECK(fake.data == NULL);
+    CHECK_EQ(fake.data_size, 0);
+
+    /* an event too short is refused before the driver */
+    fake_channel_init(&fake);
+    CHECK_EQ(ks_node_event(&fake.channel, NODE, &event, sizeof(event) - 1, data, sizeof(data), &returned), E_INVALIDARG);
+    CHECK_EQ(fake.calls, 0);
+}
+
+/* Which parts stand for a node: a subunit of a filter's topology, by its index; a connector, a part of an
+ * endpoint's own topology (no path) and an id of no kind stand for none */
+static
+void
+check_node_parts(
+    void)
+{
+    ULONG node = ~0u;
+    static const char path[] = "filter interface path";
+
+    CHECK(part_node_id(PART_ID(PART_KIND_SUBUNIT, NODE), path, &node));
+    CHECK_EQ(node, NODE);
+    CHECK(part_node_id(PART_ID(PART_KIND_SUBUNIT, 0), path, &node));
+    CHECK_EQ(node, 0);
+    node = ~0u;
+    CHECK(!part_node_id(PART_ID(PART_KIND_CONNECTOR, NODE), path, &node));
+    CHECK(!part_node_id(PART_ID(PART_KIND_SUBUNIT, NODE), NULL, &node));
+    CHECK(!part_node_id(0, path, &node));
+    CHECK_EQ(node, ~0u);
+}
+
 int
 main(
     void)
@@ -544,6 +834,10 @@ main(
     check_unregister_other();
     check_nested_walk();
     check_register_under_walk();
+    check_node_property();
+    check_node_method();
+    check_node_event();
+    check_node_parts();
 
     printf("mmdevapi: %d checks, %d failures\n", Checks, Failures);
     return Failures != 0;

@@ -28,16 +28,12 @@
 #include "wine/debug.h"
 
 #include "mmdevapi_private.h"
+#include "devicetopology_control.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(mmdevapi);
 
 #define FILTER_ID_PREFIX L"{2}."
 #define FILTER_ID_PREFIX_LENGTH 4
-#define PART_KIND_CONNECTOR 1
-#define PART_KIND_SUBUNIT 2
-#define PART_ID(kind, index) (((UINT)(kind) << 16) | (index))
-#define PART_KIND(id) ((id) >> 16)
-#define PART_INDEX(id) ((id) & 0xffff)
 #define KS_STRING_BYTES 1024
 #define KS_PHYSICAL_BYTES 4096
 
@@ -48,6 +44,8 @@ static const GUID speaker_type = {STATIC_KSNODETYPE_SPEAKER};
 static const GUID microphone_type = {STATIC_KSNODETYPE_MICROPHONE};
 static const GUID line_connector_type = {STATIC_KSNODETYPE_LINE_CONNECTOR};
 static const GUID spdif_type = {STATIC_KSNODETYPE_SPDIF_INTERFACE};
+static const GUID ks_control_iid = {0x28f54685, 0x06fd, 0x11d2, {0xb2, 0x7a, 0x00, 0xa0, 0xc9, 0x22, 0x31, 0x96}};
+#define KS_CONTROL_NAME L"IKsControl"
 
 struct filter_pin
 {
@@ -104,6 +102,24 @@ struct parts_list
     IPart *parts[];
 };
 
+/* The control interface of a part that is a node: its channel is the filter of the topology's path */
+struct ks_control
+{
+    IKsControl IKsControl_iface;
+    LONG ref;
+    struct topology *topology;
+    ULONG node;
+    struct ks_channel channel;
+};
+
+struct control_interface
+{
+    IControlInterface IControlInterface_iface;
+    LONG ref;
+    const GUID *iid;
+    const WCHAR *name;
+};
+
 struct filter_device
 {
     IMMDevice IMMDevice_iface;
@@ -117,6 +133,8 @@ static const IConnectorVtbl connector_vtbl;
 static const ISubUnitVtbl subunit_vtbl;
 static const IPartsListVtbl parts_list_vtbl;
 static const IMMDeviceVtbl filter_device_vtbl;
+static const IKsControlVtbl ks_control_vtbl;
+static const IControlInterfaceVtbl control_interface_vtbl;
 
 static HRESULT filter_topology_create(const WCHAR *id, struct topology **out);
 
@@ -148,6 +166,16 @@ static inline struct parts_list *impl_from_IPartsList(IPartsList *iface)
 static inline struct filter_device *impl_from_IMMDevice(IMMDevice *iface)
 {
     return CONTAINING_RECORD(iface, struct filter_device, IMMDevice_iface);
+}
+
+static inline struct ks_control *impl_from_IKsControl(IKsControl *iface)
+{
+    return CONTAINING_RECORD(iface, struct ks_control, IKsControl_iface);
+}
+
+static inline struct control_interface *impl_from_IControlInterface(IControlInterface *iface)
+{
+    return CONTAINING_RECORD(iface, struct control_interface, IControlInterface_iface);
 }
 
 static WCHAR *heap_wcsdup(const WCHAR *string)
@@ -984,29 +1012,245 @@ static HRESULT WINAPI part_GetSubType(IPart *iface, GUID *subtype)
     return S_OK;
 }
 
+static BOOL part_node(const struct part *part, ULONG *node)
+{
+    return part_node_id(part->local_id, part->topology->path, node);
+}
+
+/* The KS channel of a control interface: DeviceIoControl of the filter handle, a failure as HRESULT_FROM_WIN32 */
+static HRESULT ks_channel_request(HANDLE filter, DWORD code, const void *in, ULONG in_size, void *out,
+                                  ULONG out_size, ULONG *returned)
+{
+    if (!DeviceIoControl(filter, code, (void *)in, in_size, out, out_size, returned, NULL))
+        return HRESULT_FROM_WIN32(GetLastError());
+    return S_OK;
+}
+
+static NTSTATUS WINAPI ks_control_QueryInterface(IKsControl *iface, REFIID riid, void **ppv)
+{
+    struct ks_control *This = impl_from_IKsControl(iface);
+
+    TRACE("(%p)->(%s, %p)\n", This, debugstr_guid(riid), ppv);
+
+    if (!ppv)
+        return E_POINTER;
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &ks_control_iid))
+    {
+        *ppv = &This->IKsControl_iface;
+        iface->lpVtbl->AddRef(iface);
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG WINAPI ks_control_AddRef(IKsControl *iface)
+{
+    struct ks_control *This = impl_from_IKsControl(iface);
+    ULONG ref = InterlockedIncrement(&This->ref);
+
+    TRACE("(%p) new ref %lu\n", This, ref);
+    assert(ref > 1);
+    return ref;
+}
+
+static ULONG WINAPI ks_control_Release(IKsControl *iface)
+{
+    struct ks_control *This = impl_from_IKsControl(iface);
+    ULONG ref = InterlockedDecrement(&This->ref);
+
+    TRACE("(%p) new ref %lu\n", This, ref);
+    assert(ref != ~0u);
+    if (!ref)
+    {
+        CloseHandle(This->channel.filter);
+        IDeviceTopology_Release(&This->topology->IDeviceTopology_iface);
+        free(This);
+    }
+    return ref;
+}
+
+static NTSTATUS WINAPI ks_control_KsProperty(IKsControl *iface, PKSPROPERTY Property, ULONG PropertyLength,
+                                             PVOID PropertyData, ULONG DataLength, ULONG *BytesReturned)
+{
+    struct ks_control *This = impl_from_IKsControl(iface);
+
+    TRACE("(%p)->(%p, %lu, %p, %lu, %p)\n", This, Property, PropertyLength, PropertyData, DataLength, BytesReturned);
+
+    return ks_node_property(&This->channel, This->node, Property, PropertyLength, PropertyData, DataLength,
+                            BytesReturned);
+}
+
+static NTSTATUS WINAPI ks_control_KsMethod(IKsControl *iface, PKSMETHOD Method, ULONG MethodLength,
+                                           PVOID MethodData, ULONG DataLength, ULONG *BytesReturned)
+{
+    struct ks_control *This = impl_from_IKsControl(iface);
+
+    TRACE("(%p)->(%p, %lu, %p, %lu, %p)\n", This, Method, MethodLength, MethodData, DataLength, BytesReturned);
+
+    return ks_node_method(&This->channel, This->node, Method, MethodLength, MethodData, DataLength, BytesReturned);
+}
+
+static NTSTATUS WINAPI ks_control_KsEvent(IKsControl *iface, PKSEVENT Event, ULONG EventLength,
+                                          PVOID EventData, ULONG DataLength, ULONG *BytesReturned)
+{
+    struct ks_control *This = impl_from_IKsControl(iface);
+
+    TRACE("(%p)->(%p, %lu, %p, %lu, %p)\n", This, Event, EventLength, EventData, DataLength, BytesReturned);
+
+    return ks_node_event(&This->channel, This->node, Event, EventLength, EventData, DataLength, BytesReturned);
+}
+
+static const IKsControlVtbl ks_control_vtbl =
+{
+    ks_control_QueryInterface,
+    ks_control_AddRef,
+    ks_control_Release,
+    ks_control_KsProperty,
+    ks_control_KsMethod,
+    ks_control_KsEvent,
+};
+
+/* The control interface of a node of the topology: the filter of the topology's path is opened for it */
+static HRESULT ks_control_create(struct topology *topology, ULONG node, IKsControl **out)
+{
+    struct ks_control *control;
+    HRESULT hr;
+
+    if (!(control = calloc(1, sizeof(*control))))
+        return E_OUTOFMEMORY;
+    control->channel.filter = CreateFileW(topology->path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING,
+                                          FILE_ATTRIBUTE_NORMAL, NULL);
+    if (control->channel.filter == INVALID_HANDLE_VALUE)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        WARN("Opening %s failed, error %lu.\n", debugstr_w(topology->path), GetLastError());
+        free(control);
+        return hr;
+    }
+    control->channel.request = ks_channel_request;
+    control->IKsControl_iface.lpVtbl = &ks_control_vtbl;
+    control->ref = 1;
+    control->topology = topology;
+    control->node = node;
+    IDeviceTopology_AddRef(&topology->IDeviceTopology_iface);
+    *out = &control->IKsControl_iface;
+    return S_OK;
+}
+
+static HRESULT WINAPI control_interface_QueryInterface(IControlInterface *iface, REFIID riid, void **ppv)
+{
+    struct control_interface *This = impl_from_IControlInterface(iface);
+
+    TRACE("(%p)->(%s, %p)\n", This, debugstr_guid(riid), ppv);
+
+    if (!ppv)
+        return E_POINTER;
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IControlInterface))
+    {
+        *ppv = &This->IControlInterface_iface;
+        IControlInterface_AddRef(iface);
+        return S_OK;
+    }
+    *ppv = NULL;
+    return E_NOINTERFACE;
+}
+
+static ULONG WINAPI control_interface_AddRef(IControlInterface *iface)
+{
+    struct control_interface *This = impl_from_IControlInterface(iface);
+    ULONG ref = InterlockedIncrement(&This->ref);
+
+    TRACE("(%p) new ref %lu\n", This, ref);
+    assert(ref > 1);
+    return ref;
+}
+
+static ULONG WINAPI control_interface_Release(IControlInterface *iface)
+{
+    struct control_interface *This = impl_from_IControlInterface(iface);
+    ULONG ref = InterlockedDecrement(&This->ref);
+
+    TRACE("(%p) new ref %lu\n", This, ref);
+    assert(ref != ~0u);
+    if (!ref)
+        free(This);
+    return ref;
+}
+
+static HRESULT WINAPI control_interface_GetName(IControlInterface *iface, LPWSTR *name)
+{
+    struct control_interface *This = impl_from_IControlInterface(iface);
+
+    TRACE("(%p)->(%p)\n", This, name);
+
+    if (!name)
+        return E_POINTER;
+    return co_wcsdup(This->name, name);
+}
+
+static HRESULT WINAPI control_interface_GetIID(IControlInterface *iface, GUID *iid)
+{
+    struct control_interface *This = impl_from_IControlInterface(iface);
+
+    TRACE("(%p)->(%p)\n", This, iid);
+
+    if (!iid)
+        return E_POINTER;
+    *iid = *This->iid;
+    return S_OK;
+}
+
+static const IControlInterfaceVtbl control_interface_vtbl =
+{
+    control_interface_QueryInterface,
+    control_interface_AddRef,
+    control_interface_Release,
+    control_interface_GetName,
+    control_interface_GetIID,
+};
+
+static HRESULT control_interface_create(const GUID *iid, const WCHAR *name, IControlInterface **out)
+{
+    struct control_interface *control;
+
+    if (!(control = calloc(1, sizeof(*control))))
+        return E_OUTOFMEMORY;
+    control->IControlInterface_iface.lpVtbl = &control_interface_vtbl;
+    control->ref = 1;
+    control->iid = iid;
+    control->name = name;
+    *out = &control->IControlInterface_iface;
+    return S_OK;
+}
+
+/* A part that is a node has one control interface, IKsControl; the others have none */
 static HRESULT WINAPI part_GetControlInterfaceCount(IPart *iface, UINT *count)
 {
     struct part *This = impl_from_IPart(iface);
+    ULONG node;
 
     TRACE("(%p)->(%p)\n", This, count);
 
     if (!count)
         return E_POINTER;
-    /* FIXME: adapter parts report no control interfaces; Windows lists the KS controls of each part */
-    *count = 0;
+    *count = part_node(This, &node) ? 1 : 0;
     return S_OK;
 }
 
 static HRESULT WINAPI part_GetControlInterface(IPart *iface, UINT index, IControlInterface **control)
 {
     struct part *This = impl_from_IPart(iface);
+    ULONG node;
 
     TRACE("(%p)->(%u, %p)\n", This, index, control);
 
     if (!control)
         return E_POINTER;
     *control = NULL;
-    return E_INVALIDARG;
+    if (index || !part_node(This, &node))
+        return E_INVALIDARG;
+    return control_interface_create(&ks_control_iid, KS_CONTROL_NAME, control);
 }
 
 static HRESULT WINAPI part_EnumPartsIncoming(IPart *iface, IPartsList **parts)
@@ -1048,11 +1292,20 @@ static HRESULT WINAPI part_Activate(IPart *iface, DWORD clsctx, REFIID riid, voi
 {
     struct part *This = impl_from_IPart(iface);
 
-    FIXME("(%p)->(%#lx, %s, %p) - stub\n", This, clsctx, debugstr_guid(riid), ppv);
+    TRACE("(%p)->(%#lx, %s, %p)\n", This, clsctx, debugstr_guid(riid), ppv);
 
     if (!ppv)
         return E_POINTER;
     *ppv = NULL;
+    if (IsEqualIID(riid, &ks_control_iid))
+    {
+        ULONG node;
+
+        if (part_node(This, &node))
+            return ks_control_create(This->topology, node, (IKsControl **)ppv);
+        return E_NOINTERFACE;
+    }
+    FIXME("(%p)->(%#lx, %s, %p) - stub\n", This, clsctx, debugstr_guid(riid), ppv);
     /* TODO: control interfaces (IAudioVolumeLevel, IAudioMute, IKsJackDescription, ...) */
     return E_NOINTERFACE;
 }

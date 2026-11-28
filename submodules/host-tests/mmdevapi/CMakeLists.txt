@@ -1,6 +1,6 @@
 # PROJECT:     LiberNT host-native tests
 # LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
-# PURPOSE:     The device enumerator's notification clients and the diff of a device set (dll/win32/mmdevapi/devenum_notif.h, the code mmdevapi.dll compiles): the three device callbacks per verdict on every registered client and none for an unchanged set, a client unregistering itself or another under a callback, a walk under a callback, the dead wrappers freed when the last walk ends; under ASan and UBSan
+# PURPOSE:     The device enumerator's notification clients and the diff of a device set (dll/win32/mmdevapi/devenum_notif.h, the code mmdevapi.dll compiles): the three device callbacks per verdict on every registered client and none for an unchanged set, a client unregistering itself or another under a callback, a walk under a callback, the dead wrappers freed when the last walk ends; the control interface of a part that stands for a KS node (dll/win32/mmdevapi/devicetopology_control.h): the request the driver sees through a fake KS channel and which parts stand for a node; under ASan and UBSan
 # COPYRIGHT:   Copyright 2026 LiberNT contributors
 
 add_executable(mmdevapi t_mmdevapi.c)
