@@ -14,6 +14,38 @@ using namespace LiberUI;
 
 #define LIBER_PREVIEW_PAD     8
 #define LIBER_PREVIEW_TITLE_H 28
+#define WM_LIBER_PREVIEW_DONE (WM_APP + 1)
+
+typedef struct _LIBER_PREVIEW_CAPTURE
+{
+    HWND Sink;
+    ULONG Generation;
+    UINT Count;
+    HWND Windows[LIBER_PREVIEW_MAX];
+    HICON Thumbs[LIBER_PREVIEW_MAX];
+    SIZE Sizes[LIBER_PREVIEW_MAX];
+} LIBER_PREVIEW_CAPTURE;
+
+static HICON CaptureThumbnail(HWND hwnd, SIZE *pSize);
+
+static DWORD WINAPI CaptureThread(LPVOID param)
+{
+    LIBER_PREVIEW_CAPTURE *capture = (LIBER_PREVIEW_CAPTURE *)param;
+
+    ATLASSERT(capture && capture->Count <= LIBER_PREVIEW_MAX);
+    for (UINT i = 0; i < capture->Count; i++)
+        capture->Thumbs[i] = CaptureThumbnail(capture->Windows[i], &capture->Sizes[i]);
+    if (!PostMessageW(capture->Sink, WM_LIBER_PREVIEW_DONE, capture->Generation, (LPARAM)capture))
+    {
+        for (UINT i = 0; i < capture->Count; i++)
+        {
+            if (capture->Thumbs[i])
+                DestroyIcon(capture->Thumbs[i]);
+        }
+        delete capture;
+    }
+    return 0;
+}
 
 static HICON CaptureThumbnail(HWND hwnd, SIZE *pSize)
 {
@@ -21,7 +53,7 @@ static HICON CaptureThumbnail(HWND hwnd, SIZE *pSize)
     HICON icon = NULL;
 
     pSize->cx = pSize->cy = 0;
-    if (IsIconic(hwnd) || !GetWindowRect(hwnd, &rc) || IsRectEmpty(&rc))
+    if (!IsWindow(hwnd) || IsIconic(hwnd) || IsHungAppWindow(hwnd) || !GetWindowRect(hwnd, &rc) || IsRectEmpty(&rc))
         return NULL;
     SIZE window = { rc.right - rc.left, rc.bottom - rc.top };
     SIZE limit = { LIBER_PREVIEW_THUMB_W, LIBER_PREVIEW_THUMB_H };
@@ -29,7 +61,15 @@ static HICON CaptureThumbnail(HWND hwnd, SIZE *pSize)
     HDC screen = GetDC(NULL);
     HDC full = CreateCompatibleDC(screen), scaled = CreateCompatibleDC(screen);
     HBITMAP fullBitmap = CreateCompatibleBitmap(screen, window.cx, window.cy);
-    HBITMAP color = CreateCompatibleBitmap(screen, thumb.cx, thumb.cy);
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
+    bmi.bmiHeader.biWidth = thumb.cx;
+    bmi.bmiHeader.biHeight = -thumb.cy;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    DWORD *pixels = NULL;
+    HBITMAP color = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, (void **)&pixels, NULL, 0);
     HBITMAP mask = CreateBitmap(thumb.cx, thumb.cy, 1, 1, NULL);
 
     if (full && scaled && fullBitmap && color && mask)
@@ -40,6 +80,9 @@ static HICON CaptureThumbnail(HWND hwnd, SIZE *pSize)
             SetStretchBltMode(scaled, HALFTONE);
             SetBrushOrgEx(scaled, 0, 0, NULL);
             StretchBlt(scaled, 0, 0, thumb.cx, thumb.cy, full, 0, 0, window.cx, window.cy, SRCCOPY);
+            GdiFlush();
+            for (LONG i = 0; i < thumb.cx * thumb.cy; i++)
+                pixels[i] |= 0xFF000000u;
             SelectObject(scaled, oldScaled);
             ICONINFO info = { TRUE, 0, 0, mask, color };
             icon = CreateIconIndirect(&info);
@@ -95,7 +138,7 @@ public:
     {
         m_Title[0] = 0;
         GetWindowTextW(hwnd, m_Title, _countof(m_Title));
-        m_Thumb = CaptureThumbnail(hwnd, &m_ThumbSize);
+        m_ThumbSize.cx = m_ThumbSize.cy = 0;
         SetSize(LIBER_PREVIEW_THUMB_W + 2 * LIBER_PREVIEW_PAD,
                 LIBER_PREVIEW_TITLE_H + LIBER_PREVIEW_THUMB_H + 2 * LIBER_PREVIEW_PAD);
         SetHitTestable(TRUE);
@@ -108,6 +151,15 @@ public:
     }
 
     HWND Window() const { return m_hwnd; }
+
+    void SetThumb(HICON thumb, SIZE size)
+    {
+        if (m_Thumb)
+            DestroyIcon(m_Thumb);
+        m_Thumb = thumb;
+        m_ThumbSize = size;
+        Invalidate();
+    }
 
     void OnPointerUp(POINT pt)
     {
@@ -169,13 +221,15 @@ private:
 class CLiberPreview final : public IControlListener
 {
 public:
-    CLiberPreview() : m_Root(NULL), m_Count(0)
+    CLiberPreview() : m_Root(NULL), m_Count(0), m_Sink(NULL), m_Generation(0)
     {
         ZeroMemory(m_Columns, sizeof(m_Columns));
     }
 
     ~CLiberPreview()
     {
+        if (m_Sink)
+            DestroyWindow(m_Sink);
         Clear();
         m_Surface.SetRoot(NULL);
         m_Surface.Destroy();
@@ -193,6 +247,8 @@ public:
             m_Root = new CPreviewPanel();
             m_Surface.SetRoot(m_Root);
         }
+        if (IsOpen() && SameWindows(windows, count))
+            return TRUE;
         Clear();
         for (UINT i = 0; i < count && m_Count < _countof(m_Columns); i++)
         {
@@ -205,6 +261,7 @@ public:
         }
         if (!m_Count)
             return FALSE;
+        StartCapture();
         LiberShell_BuildTokens(&m_Tokens);
         LiberShell_ApplyFont(&m_Surface);
         m_Surface.SetTokens(&m_Tokens);
@@ -260,6 +317,86 @@ public:
     }
 
 private:
+    BOOL SameWindows(const HWND *windows, UINT count) const
+    {
+        UINT live = 0;
+        for (UINT i = 0; i < count && live < _countof(m_Columns); i++)
+        {
+            if (!IsWindow(windows[i]))
+                continue;
+            if (live >= m_Count || m_Columns[live]->Window() != windows[i])
+                return FALSE;
+            live++;
+        }
+        return live == m_Count;
+    }
+
+    static LRESULT CALLBACK SinkProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+    {
+        CLiberPreview *self = (CLiberPreview *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+
+        if (msg != WM_LIBER_PREVIEW_DONE)
+            return DefWindowProcW(hwnd, msg, wParam, lParam);
+        LIBER_PREVIEW_CAPTURE *capture = (LIBER_PREVIEW_CAPTURE *)lParam;
+        BOOL current = self && (ULONG)wParam == self->m_Generation;
+        ATLASSERT(capture && capture->Count <= LIBER_PREVIEW_MAX);
+        for (UINT i = 0; i < capture->Count; i++)
+        {
+            if (current && self->Adopt(capture->Windows[i], capture->Thumbs[i], capture->Sizes[i]))
+                continue;
+            if (capture->Thumbs[i])
+                DestroyIcon(capture->Thumbs[i]);
+        }
+        delete capture;
+        if (current && self->IsOpen())
+            self->m_Surface.Render(AnimationClock::Now());
+        return 0;
+    }
+
+    BOOL Adopt(HWND hwnd, HICON thumb, SIZE size)
+    {
+        if (!thumb)
+            return FALSE;
+        for (UINT i = 0; i < m_Count; i++)
+        {
+            if (m_Columns[i]->Window() == hwnd)
+            {
+                m_Columns[i]->SetThumb(thumb, size);
+                return TRUE;
+            }
+        }
+        return FALSE;
+    }
+
+    void StartCapture()
+    {
+        if (!m_Sink)
+        {
+            WNDCLASSW wc = {};
+            wc.lpfnWndProc = SinkProc;
+            wc.hInstance = GetModuleHandleW(NULL);
+            wc.lpszClassName = L"LiberPreviewSink";
+            RegisterClassW(&wc);
+            m_Sink = CreateWindowExW(0, wc.lpszClassName, NULL, 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, wc.hInstance, NULL);
+            if (!m_Sink)
+                return;
+            SetWindowLongPtrW(m_Sink, GWLP_USERDATA, (LONG_PTR)this);
+        }
+        LIBER_PREVIEW_CAPTURE *capture = new LIBER_PREVIEW_CAPTURE();
+        if (!capture)
+            return;
+        capture->Sink = m_Sink;
+        capture->Generation = ++m_Generation;
+        capture->Count = m_Count;
+        for (UINT i = 0; i < m_Count; i++)
+            capture->Windows[i] = m_Columns[i]->Window();
+        HANDLE thread = CreateThread(NULL, 0, CaptureThread, capture, 0, NULL);
+        if (thread)
+            CloseHandle(thread);
+        else
+            delete capture;
+    }
+
     void Clear()
     {
         for (UINT i = 0; i < m_Count; i++)
@@ -276,6 +413,8 @@ private:
     CPreviewPanel *m_Root;
     CPreviewColumn *m_Columns[LIBER_PREVIEW_MAX];
     UINT m_Count;
+    HWND m_Sink;
+    ULONG m_Generation;
 };
 
 static CLiberPreview *g_pLiberPreview;
