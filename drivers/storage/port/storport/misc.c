@@ -263,7 +263,8 @@ TranslateResourceListAddress(
     STOR_PHYSICAL_ADDRESS IoAddress,
     ULONG NumberOfBytes,
     BOOLEAN InIoSpace,
-    PPHYSICAL_ADDRESS TranslatedAddress)
+    PPHYSICAL_ADDRESS TranslatedAddress,
+    PBOOLEAN TranslatedInIoSpace)
 {
     PCM_FULL_RESOURCE_DESCRIPTOR FullDescriptorA, FullDescriptorT;
     PCM_PARTIAL_RESOURCE_DESCRIPTOR PartialDescriptorA, PartialDescriptorT;
@@ -292,6 +293,7 @@ TranslateResourceListAddress(
                     {
                         TranslatedAddress->QuadPart = PartialDescriptorT->u.Port.Start.QuadPart +
                                                       (IoAddress.QuadPart - PartialDescriptorA->u.Port.Start.QuadPart);
+                        *TranslatedInIoSpace = (PartialDescriptorT->Type == CmResourceTypePort);
                         return TRUE;
                     }
                     break;
@@ -306,6 +308,7 @@ TranslateResourceListAddress(
                     {
                         TranslatedAddress->QuadPart = PartialDescriptorT->u.Memory.Start.QuadPart +
                                                       (IoAddress.QuadPart - PartialDescriptorA->u.Memory.Start.QuadPart);
+                        *TranslatedInIoSpace = FALSE;
                         return TRUE;
                     }
                     break;

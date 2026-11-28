@@ -660,7 +660,8 @@ TranslateResourceListAddress(
     STOR_PHYSICAL_ADDRESS IoAddress,
     ULONG NumberOfBytes,
     BOOLEAN InIoSpace,
-    PPHYSICAL_ADDRESS TranslatedAddress);
+    PPHYSICAL_ADDRESS TranslatedAddress,
+    PBOOLEAN TranslatedInIoSpace);
 
 NTSTATUS
 GetResourceListInterrupt(

@@ -2953,6 +2953,7 @@ StorPortGetDeviceBase(
 {
     PMINIPORT_DEVICE_EXTENSION MiniportExtension;
     PHYSICAL_ADDRESS TranslatedAddress;
+    BOOLEAN TranslatedInIoSpace;
     PVOID MappedAddress;
     NTSTATUS Status;
 
@@ -2972,7 +2973,8 @@ StorPortGetDeviceBase(
                                       IoAddress,
                                       NumberOfBytes,
                                       InIoSpace,
-                                      &TranslatedAddress))
+                                      &TranslatedAddress,
+                                      &TranslatedInIoSpace))
     {
         DPRINT1("Checkpoint!\n");
         return NULL;
@@ -2981,7 +2983,7 @@ StorPortGetDeviceBase(
     DPRINT("Translated Address: 0x%I64x\n", TranslatedAddress.QuadPart);
 
     /* In I/O space */
-    if (InIoSpace)
+    if (TranslatedInIoSpace)
     {
         DPRINT1("Translated Address: %p\n", (PVOID)(ULONG_PTR)TranslatedAddress.QuadPart);
         return (PVOID)(ULONG_PTR)TranslatedAddress.QuadPart;
