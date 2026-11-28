@@ -9,6 +9,7 @@
 #define _TABLES_H_
 
 NTSTATUS NTAPI PropertyHandler_JackDescription(IN PPCPROPERTY_REQUEST PropertyRequest);
+NTSTATUS NTAPI EventHandler_JackChange(IN PPCEVENT_REQUEST EventRequest);
 NTSTATUS NTAPI PropertyHandler_ChannelConfig(IN PPCPROPERTY_REQUEST PropertyRequest);
 NTSTATUS NTAPI PropertyHandler_SpeakerGeometry(IN PPCPROPERTY_REQUEST PropertyRequest);
 NTSTATUS NTAPI PropertyHandler_Volume(IN PPCPROPERTY_REQUEST PropertyRequest);
@@ -105,7 +106,30 @@ static PCPROPERTY_ITEM TopologyProperty[] =
     }
 };
 
-DEFINE_PCAUTOMATION_TABLE_PROP(TopologyAutomationTable, TopologyProperty);
+/* The topology's jack change event (LEG-1): the adapter tells it on every change of a pin's presence, to the clients that enabled it */
+static PCEVENT_ITEM JackEvent[] =
+{
+    {
+        &KSEVENTSETID_PinCapsChange,
+        KSEVENT_PINCAPS_JACKINFOCHANGE,
+        KSEVENT_TYPE_ENABLE | KSEVENT_TYPE_BASICSUPPORT,
+        EventHandler_JackChange
+    }
+};
+
+static const PCAUTOMATION_TABLE TopologyAutomationTable =
+{
+    sizeof(PCPROPERTY_ITEM),
+    1,
+    TopologyProperty,
+    sizeof(PCMETHOD_ITEM),
+    0,
+    NULL,
+    sizeof(PCEVENT_ITEM),
+    1,
+    JackEvent,
+    0
+};
 
 static PCNODE_DESCRIPTOR DacNode[] = {{0, &WaveAutomationTable, &KSNODETYPE_DAC, NULL}};
 

@@ -99,6 +99,23 @@ typedef struct
     UCHAR DisplayPortCapable : 1;
 } PIN_CAPABILITIES, *PPIN_CAPABILITIES;
 
+class CFunctionGroupNode;
+
+/* A pin complex with presence detect, followed by the driver while the device runs (LEG-1) */
+typedef struct
+{
+    CFunctionGroupNode *Node;
+    UCHAR CodecAddress;
+    UCHAR PinId;
+    UCHAR Tag;
+    UCHAR Present;
+    UCHAR Registered;
+} HDAUDIO_JACK, *PHDAUDIO_JACK;
+
+#define HDAUDIO_MAX_JACKS             16
+#define HDAUDIO_MAX_JACK_TOPOLOGIES   8
+#define HDAUDIO_UNSOLICITED_SLOTS     8
+
 template <typename... Interfaces> class CUnknownImpl : public Interfaces...
 {
   private:
@@ -285,10 +302,18 @@ class CAdapterCommon : public CUnknownImpl<IAdapterPowerManagement>
         return m_CodecAddress;
     }
 
+    /* The jack pins' presence (LEG-1) */
+    VOID NTAPI RegisterJackPortEvents(PPORTEVENTS PortEvents);
+    BOOLEAN NTAPI RegisterJackPin(IN PVOID Node, IN ULONG PinId, IN PIN_CAPABILITIES PinCaps);
+    VOID NTAPI StopJacks();
+    VOID NTAPI RecordUnsolicited(HDAUDIO_CODEC_RESPONSE Response);
+
     IMP_IAdapterPowerManagement;
     CAdapterCommon(IUnknown* OuterUnknown) :
-        Interface(), m_CodecAddress(0), m_FunctionGroupStartNode(0), RevisionId(0), VendorId(0), m_Tags(),
-        m_TagIndex(0), m_WaveRTOutPortUnknown(NULL), m_WaveRTInPortUnknown(NULL), m_TopoOutPortUnknown(NULL),
+        Interface(), m_CodecAddress(0), m_FunctionGroupStartNode(0), RevisionId(0), VendorId(0), m_Jacks(),
+        m_JackCount(0), m_JackPortEvents(), m_JackWorkItem(NULL), m_Unsolicited(), m_UnsolicitedIndex(0),
+        m_UnsolicitedTold(0), m_JackPending(0), m_JackWorkActive(0), m_JackCallbacks(0), m_JackStopping(FALSE),
+        m_WaveRTOutPortUnknown(NULL), m_WaveRTInPortUnknown(NULL), m_TopoOutPortUnknown(NULL),
         m_TopoInPortUnknown(NULL), m_WaveInDataRange(), m_WaveInDataRanges(), m_WaveOutDataRange(),
         m_WaveOutDataRanges(), m_ClaimedConverters(), m_ClaimedConverterCount(0), m_SubdeviceNames(),
         m_PowerState(PowerDeviceUnspecified)
@@ -318,13 +343,26 @@ class CAdapterCommon : public CUnknownImpl<IAdapterPowerManagement>
     friend NTSTATUS NTAPI EventHandler_Volume(IN PPCEVENT_REQUEST EventRequest);
 
   private:
+    static VOID NTAPI JackWorkRoutine(PDEVICE_OBJECT DeviceObject, PVOID Context);
+    VOID NTAPI ProcessJackChanges();
+    friend VOID NTAPI HDAUDIO_UnsolicitedResponseCallback(HDAUDIO_CODEC_RESPONSE Param, PVOID Context);
+
     HDAUDIO_BUS_INTERFACE_V2 Interface;
     UCHAR m_CodecAddress;
     UCHAR m_FunctionGroupStartNode;
     UINT16 RevisionId;
     UINT16 VendorId;
-    UCHAR m_Tags[64];
-    ULONG m_TagIndex;
+    HDAUDIO_JACK m_Jacks[HDAUDIO_MAX_JACKS];
+    ULONG m_JackCount;
+    PPORTEVENTS m_JackPortEvents[HDAUDIO_MAX_JACK_TOPOLOGIES];
+    PIO_WORKITEM m_JackWorkItem;
+    HDAUDIO_CODEC_RESPONSE m_Unsolicited[HDAUDIO_UNSOLICITED_SLOTS];
+    volatile LONG m_UnsolicitedIndex;
+    LONG m_UnsolicitedTold;
+    volatile LONG m_JackPending;
+    volatile LONG m_JackWorkActive;
+    volatile LONG m_JackCallbacks;
+    BOOLEAN m_JackStopping;
     PUNKNOWN m_WaveRTOutPortUnknown;
     PUNKNOWN m_WaveRTInPortUnknown;
     PUNKNOWN m_TopoOutPortUnknown;
@@ -378,6 +416,7 @@ class CFunctionGroupNode
     NTSTATUS NTAPI ActivateAmplifier(IN ULONG NodeId, IN ULONG Input, IN ULONG Index);
     NTSTATUS NTAPI GetPinCapabilities(IN ULONG NodeId, OUT PPIN_CAPABILITIES PinCaps);
     NTSTATUS NTAPI GetPinSense(IN ULONG NodeId, IN PULONG DevicePresent);
+    NTSTATUS NTAPI GetPinSenseRaw(IN ULONG NodeId, OUT PULONG RawSense);
     NTSTATUS NTAPI GetVolumeKnob(IN ULONG NodeId, OUT PUCHAR Direct, OUT PUCHAR Volume);
     NTSTATUS NTAPI SetVolumeKnob(IN ULONG NodeId, IN UCHAR Direct, IN UCHAR Volume);
     NTSTATUS NTAPI GetVolumeCapabilities(IN ULONG NodeId, IN PUCHAR Delta, IN PUCHAR NumSteps);
@@ -493,7 +532,7 @@ class CMiniportTopology : public CUnknownImpl<IMiniportTopology>
         CFunctionGroupNode *Node,
         CAdapterCommon *Adapter,
         PPCFILTER_DESCRIPTOR Filter)
-        : m_Port(0), m_Node(Node), m_Adapter(Adapter), m_FilterDescription(Filter), m_PinCount(0), mAmps()
+        : m_Port(0), m_PortEvents(NULL), m_Node(Node), m_Adapter(Adapter), m_FilterDescription(Filter), m_PinCount(0), mAmps()
     {
         for (ULONG Index = 0; Index < AssociatedPinCount && Index < ARRAYSIZE(m_PinIds); Index++)
             m_PinIds[m_PinCount++] = AssociatedPinIds[Index];
@@ -501,6 +540,8 @@ class CMiniportTopology : public CUnknownImpl<IMiniportTopology>
     virtual ~CMiniportTopology()
     {
         HdaFreeAmpSet(&mAmps);
+        if (m_PortEvents)
+            m_PortEvents->Release();
     }
 
     CFunctionGroupNode*
@@ -519,6 +560,14 @@ class CMiniportTopology : public CUnknownImpl<IMiniportTopology>
     GetPort()
     {
         return m_Port;
+    }
+
+    /* The jack change event a client enabled on this topology goes to the port's event list, where the adapter's telling finds it (LEG-1) */
+    VOID
+    AddJackEvent(PKSEVENT_ENTRY EventEntry)
+    {
+        if (m_PortEvents)
+            m_PortEvents->AddEventToEventList(EventEntry);
     }
 
     ULONG
@@ -552,6 +601,7 @@ class CMiniportTopology : public CUnknownImpl<IMiniportTopology>
 
   private:
     PPORTTOPOLOGY m_Port;
+    PPORTEVENTS m_PortEvents;
     CFunctionGroupNode *m_Node;
     CAdapterCommon *m_Adapter;
     PPCFILTER_DESCRIPTOR m_FilterDescription;

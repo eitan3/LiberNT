@@ -64,6 +64,9 @@ CMiniportTopology::Init(
 {
     m_Port = Port;
     m_Port->AddRef();
+    /* the port's event list carries the jack change event to the clients that enabled it on this topology (LEG-1) */
+    if (NT_SUCCESS(m_Port->QueryInterface(IID_IPortEvents, (PVOID *)&m_PortEvents)) && m_Adapter)
+        m_Adapter->RegisterJackPortEvents(m_PortEvents);
     /* the amplifiers of the volume and mute are found once, then the saved levels go into them (R1-11, R1-12) */
     HDAUDIO_InitAmplifiers(this);
     HDAUDIO_RestoreMasterSettings(this);

@@ -63,32 +63,56 @@ PropertyHandler_JackDescription(IN PPCPROPERTY_REQUEST PropertyRequest)
         return STATUS_INVALID_PARAMETER;
     }
 
+    /*
+     * The answer is read live: a pin that is a jack with presence detect and
+     * nothing plugged leaves the endpoint not connected, and any other pin, or
+     * a plugged one, connects it. The pin that decided and why are told (LEG-1).
+     */
     BOOL IsConnected = (Miniport->GetPinCount() == 0);
+    ULONG Decider = (ULONG)-1;
+    ULONG DeciderSense = 0;
+    PCSTR Why = "no pin";
+
     for (ULONG Index = 0; Index < Miniport->GetPinCount() && !IsConnected; Index++)
     {
         PIN_CONFIGURATION_DEFAULT PinConfig;
         PIN_CAPABILITIES PinCaps;
-        ULONG DevicePresent = 0;
+        ULONG RawSense = 0;
+        BOOLEAN Connected = TRUE;
         ULONG PinId = Miniport->GetPinId(Index);
 
         if (!NT_SUCCESS(Node->GetPinConfigurationDefault(PinId, &PinConfig)))
         {
-            IsConnected = TRUE;
+            Decider = PinId;
+            Why = "configuration unreadable";
             break;
         }
         if (PinConfig.PortConnectivity == 0x1)
             continue;
 
-        if (!NT_SUCCESS(Node->GetPinCapabilities(PinId, &PinCaps)) ||
-            PinConfig.PortConnectivity == 0x2 ||
-            (PinConfig.Misc & 0x1) ||
-            !PinCaps.PresenceDetectCapable ||
-            !NT_SUCCESS(Node->GetPinSense(PinId, &DevicePresent)) ||
-            DevicePresent)
+        Decider = PinId;
+        if (!NT_SUCCESS(Node->GetPinCapabilities(PinId, &PinCaps)))
+            Why = "capabilities unreadable";
+        else if (PinConfig.PortConnectivity == 0x2)
+            Why = "fixed device";
+        else if (PinConfig.Misc & 0x1)
+            Why = "jack detect override";
+        else if (!PinCaps.PresenceDetectCapable)
+            Why = "no presence detect";
+        else if (!NT_SUCCESS(Node->GetPinSenseRaw(PinId, &RawSense)))
+            Why = "pin sense unreadable";
+        else
         {
-            IsConnected = TRUE;
+            Connected = ((RawSense >> 31) & 0x1) != 0;
+            Why = Connected ? "plugged" : "not plugged";
         }
+
+        DeciderSense = RawSense;
+        IsConnected = Connected;
     }
+
+    DPRINT1("HDAUDIO: jack description of a topology of %u pin(s): IsConnected %u by pin %u (%s, pin sense raw %08x)\n",
+            Miniport->GetPinCount(), IsConnected, Decider, Why, DeciderSense);
 
     PIN_CONFIGURATION_DEFAULT PinConfiguration;
     Status = Node->GetPinConfigurationDefault(Miniport->GetPinCount() ? Miniport->GetPinId(0) : Node->GetStartNodeId(),
@@ -111,6 +135,38 @@ PropertyHandler_JackDescription(IN PPCPROPERTY_REQUEST PropertyRequest)
 
     Miniport->Release();
     return Status;
+}
+
+/*
+ * The jack change event of a topology (LEG-1): enabled, its entry goes to the
+ * port's event list, where the adapter's telling of a change finds it, and the
+ * list's disable takes it from. Its removal and its support need nothing here.
+ */
+NTSTATUS
+NTAPI
+EventHandler_JackChange(IN PPCEVENT_REQUEST EventRequest)
+{
+    CMiniportTopology *Miniport;
+
+    if (!EventRequest || !EventRequest->MajorTarget)
+        return STATUS_INVALID_PARAMETER;
+
+    switch (EventRequest->Verb)
+    {
+        case PCEVENT_VERB_ADD:
+            if (!EventRequest->EventEntry)
+                return STATUS_INVALID_PARAMETER;
+            Miniport = (CMiniportTopology *)EventRequest->MajorTarget;
+            Miniport->AddJackEvent(EventRequest->EventEntry);
+            return STATUS_SUCCESS;
+
+        case PCEVENT_VERB_REMOVE:
+        case PCEVENT_VERB_SUPPORT:
+            return STATUS_SUCCESS;
+
+        default:
+            return STATUS_INVALID_PARAMETER;
+    }
 }
 
 NTSTATUS

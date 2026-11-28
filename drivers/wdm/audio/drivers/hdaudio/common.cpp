@@ -935,6 +935,10 @@ CAdapterCommon::Initialize(IN PDEVICE_OBJECT DeviceObject, IN PIRP Irp, IN PRESO
         DPRINT1("HDAUDIO: Failed to acquire bus interface Status %x\n", Status);
         return Status;
     }
+    /* the jack pins' presence is read again from a work item when the codec tells (LEG-1) */
+    m_JackWorkItem = IoAllocateWorkItem(DeviceObject);
+    if (!m_JackWorkItem)
+        DPRINT1("HDAUDIO: Failed to allocate the jack work item\n");
     // get resource information
     GetResourceInformation();
     DPRINT("HDAUDIO: CodecAddress %u FunctionGroupStartNode %u\n", m_CodecAddress, m_FunctionGroupStartNode);
@@ -1260,10 +1264,259 @@ CAdapterCommon::ProcessAdcNodes(
     return STATUS_SUCCESS;
 }
 
+/*
+ * The codec told an unsolicited response (LEG-1): the bus driver calls this at
+ * DISPATCH_LEVEL, with its interrupt lock released, so nothing is asked of the
+ * codec here; the response is kept for the work item.
+ */
 VOID NTAPI
 HDAUDIO_UnsolicitedResponseCallback(HDAUDIO_CODEC_RESPONSE Param, PVOID Context)
 {
-    UNIMPLEMENTED;
+    ((CAdapterCommon *)Context)->RecordUnsolicited(Param);
+}
+
+/*
+ * A pin complex is told here with its capabilities when the device starts
+ * (LEG-1): its configuration, whether it can detect presence and its sense as
+ * the codec answered it. With presence detect the pin is followed from now on:
+ * the codec's unsolicited responses for it are enabled whether or not
+ * something is plugged now, so that an unplug is told as well as a plug, and
+ * its presence is read again whenever the codec tells. TRUE when it is followed.
+ */
+BOOLEAN
+NTAPI
+CAdapterCommon::RegisterJackPin(IN PVOID Node, IN ULONG PinId, IN PIN_CAPABILITIES PinCaps)
+{
+    CFunctionGroupNode *PinNode = (CFunctionGroupNode *)Node;
+    PIN_CONFIGURATION_DEFAULT PinConfiguration;
+    PHDAUDIO_JACK Jack;
+    UCHAR UnsolCapable = 0, NodeType = 0, Tag = 0, Present;
+    ULONG RawSense = 0;
+    NTSTATUS Status;
+
+    Status = PinNode->GetPinConfigurationDefault(PinId, &PinConfiguration);
+    if (!NT_SUCCESS(Status))
+        RtlZeroMemory(&PinConfiguration, sizeof(PinConfiguration));
+
+    /* a sense the codec does not answer is taken as present, as the jack description takes it */
+    Status = PinNode->GetPinSenseRaw(PinId, &RawSense);
+    Present = NT_SUCCESS(Status) ? (UCHAR)((RawSense >> 31) & 0x1) : 1;
+
+    if (!PinCaps.PresenceDetectCapable || m_JackCount >= HDAUDIO_MAX_JACKS)
+    {
+        DPRINT1(
+            "HDAUDIO: pin %u cfg port %x dev %x loc %x assoc %x seq %x presence-detect %u: pin sense raw %08x present %u, not followed\n",
+            PinId, PinConfiguration.PortConnectivity, PinConfiguration.DefaultDevice, PinConfiguration.Location,
+            PinConfiguration.DefaultAssociation, PinConfiguration.Sequence, PinCaps.PresenceDetectCapable, RawSense,
+            Present);
+        return FALSE;
+    }
+
+    Jack = &m_Jacks[m_JackCount++];
+    Jack->Node = PinNode;
+    Jack->CodecAddress = m_CodecAddress;
+    Jack->PinId = (UCHAR)PinId;
+    Jack->Present = Present;
+
+    Status = PinNode->GetFunctionGroupType(PinId, &UnsolCapable, &NodeType);
+    if (NT_SUCCESS(Status) && UnsolCapable)
+    {
+        Status = Interface.RegisterEventCallback(Interface.Context, HDAUDIO_UnsolicitedResponseCallback, (PVOID)this, &Tag);
+        if (NT_SUCCESS(Status))
+        {
+            Status = PinNode->EnableUnsolicitedResponse(PinId, 1, Tag);
+            if (NT_SUCCESS(Status))
+            {
+                Jack->Tag = Tag;
+                Jack->Registered = TRUE;
+            }
+            else
+            {
+                DPRINT1("Warning: EnableUnsolicitedResponse failed with %x\n", Status);
+                Interface.UnregisterEventCallback(Interface.Context, Tag);
+            }
+        }
+        else
+        {
+            DPRINT1("Warning: RegisterEventCallback failed with %x\n", Status);
+        }
+    }
+
+    DPRINT1(
+        "HDAUDIO: pin %u cfg port %x dev %x loc %x assoc %x seq %x presence-detect %u: pin sense raw %08x present %u, followed%s\n",
+        PinId, PinConfiguration.PortConnectivity, PinConfiguration.DefaultDevice, PinConfiguration.Location,
+        PinConfiguration.DefaultAssociation, PinConfiguration.Sequence, PinCaps.PresenceDetectCapable, RawSense, Present,
+        Jack->Registered ? "" : ", without unsolicited responses");
+    if (Jack->Registered)
+        DPRINT1("HDAUDIO: pin %u unsolicited responses enabled, tag %u\n", PinId, Jack->Tag);
+    return TRUE;
+}
+
+/* A topology's port, whose event list carries the jack change event to the clients that enabled it on that topology (LEG-1) */
+VOID NTAPI
+CAdapterCommon::RegisterJackPortEvents(PPORTEVENTS PortEvents)
+{
+    for (ULONG Index = 0; Index < HDAUDIO_MAX_JACK_TOPOLOGIES; Index++)
+    {
+        if (m_JackPortEvents[Index] == PortEvents)
+            return;
+        if (!m_JackPortEvents[Index])
+        {
+            PortEvents->AddRef();
+            m_JackPortEvents[Index] = PortEvents;
+            return;
+        }
+    }
+}
+
+/* The response is kept, and the work item asked for, once for as many as come while it waits or runs */
+VOID NTAPI
+CAdapterCommon::RecordUnsolicited(HDAUDIO_CODEC_RESPONSE Response)
+{
+    ULONG Index;
+
+    InterlockedIncrement(&m_JackCallbacks);
+    Index = (ULONG)(InterlockedIncrement(&m_UnsolicitedIndex) - 1) % HDAUDIO_UNSOLICITED_SLOTS;
+    m_Unsolicited[Index] = Response;
+    InterlockedExchange(&m_JackPending, 1);
+    if (m_JackWorkItem && !m_JackStopping && !InterlockedCompareExchange(&m_JackWorkActive, 1, 0))
+        IoQueueWorkItem(m_JackWorkItem, JackWorkRoutine, DelayedWorkQueue, (PVOID)this);
+    InterlockedDecrement(&m_JackCallbacks);
+}
+
+VOID NTAPI
+CAdapterCommon::JackWorkRoutine(PDEVICE_OBJECT DeviceObject, PVOID Context)
+{
+    UNREFERENCED_PARAMETER(DeviceObject);
+    ((CAdapterCommon *)Context)->ProcessJackChanges();
+}
+
+/*
+ * The followed pins' sense is read again at PASSIVE_LEVEL after the codec's
+ * unsolicited responses (LEG-1): each response is told with the pin its tag
+ * names and that pin's presence now, and a presence that changed is told and
+ * raises the topologies' jack change event. The presence the driver keeps is
+ * the one read here, so a change is told even if a client read the pin's
+ * sense in between.
+ */
+VOID NTAPI
+CAdapterCommon::ProcessJackChanges()
+{
+    HDAUDIO_CODEC_RESPONSE Response;
+    PHDAUDIO_JACK Jack, Named;
+    ULONG Index, Told, RawSense;
+    UCHAR Present;
+    BOOLEAN Changed;
+
+    for (;;)
+    {
+        InterlockedExchange(&m_JackPending, 0);
+        Changed = FALSE;
+
+        for (Index = 0; Index < m_JackCount; Index++)
+        {
+            Jack = &m_Jacks[Index];
+            if (!NT_SUCCESS(Jack->Node->GetPinSenseRaw(Jack->PinId, &RawSense)))
+                continue;
+            Present = (UCHAR)((RawSense >> 31) & 0x1);
+            if (Present != Jack->Present)
+            {
+                DPRINT1("HDAUDIO: jack pin %u presence %u -> %u (pin sense raw %08x)\n", Jack->PinId, Jack->Present, Present,
+                        RawSense);
+                Jack->Present = Present;
+                Changed = TRUE;
+            }
+        }
+
+        Told = (ULONG)InterlockedCompareExchange(&m_UnsolicitedIndex, 0, 0);
+        Index = (ULONG)m_UnsolicitedTold;
+        if (Told - Index > HDAUDIO_UNSOLICITED_SLOTS)
+            Index = Told - HDAUDIO_UNSOLICITED_SLOTS;
+        for (; Index != Told; Index++)
+        {
+            Response = m_Unsolicited[Index % HDAUDIO_UNSOLICITED_SLOTS];
+            Named = NULL;
+            for (ULONG Followed = 0; Followed < m_JackCount; Followed++)
+            {
+                if (m_Jacks[Followed].Registered && m_Jacks[Followed].CodecAddress == Response.SDataIn &&
+                    m_Jacks[Followed].Tag == Response.Unsolicited.Tag)
+                {
+                    Named = &m_Jacks[Followed];
+                    break;
+                }
+            }
+            if (Named)
+                DPRINT1("HDAUDIO: unsolicited response: codec %u tag %u response %08x names pin %u, presence now %u\n",
+                        Response.SDataIn, Response.Unsolicited.Tag, Response.Response, Named->PinId, Named->Present);
+            else
+                DPRINT1("HDAUDIO: unsolicited response: codec %u tag %u response %08x names no followed pin\n",
+                        Response.SDataIn, Response.Unsolicited.Tag, Response.Response);
+        }
+        m_UnsolicitedTold = Index;
+
+        if (Changed)
+        {
+            for (Index = 0; Index < HDAUDIO_MAX_JACK_TOPOLOGIES; Index++)
+            {
+                if (m_JackPortEvents[Index])
+                    m_JackPortEvents[Index]->GenerateEventList(const_cast<GUID *>(&KSEVENTSETID_PinCapsChange),
+                                                              KSEVENT_PINCAPS_JACKINFOCHANGE, FALSE, 0, FALSE, 0);
+            }
+        }
+
+        if (!InterlockedCompareExchange(&m_JackPending, 0, 0))
+            break;
+    }
+
+    InterlockedExchange(&m_JackWorkActive, 0);
+    /* a response that came between the last look and the release asks for the work item again */
+    if (InterlockedCompareExchange(&m_JackPending, 0, 0) && m_JackWorkItem && !m_JackStopping &&
+        !InterlockedCompareExchange(&m_JackWorkActive, 1, 0))
+    {
+        IoQueueWorkItem(m_JackWorkItem, JackWorkRoutine, DelayedWorkQueue, (PVOID)this);
+    }
+}
+
+/*
+ * The pins are followed no more, before the adapter goes with the device's
+ * removal (LEG-1): the codec is told to send no more unsolicited responses
+ * and the callbacks are dropped, the ones still telling are waited for, then
+ * the work item, which is freed with the ports' event lists it tells.
+ */
+VOID NTAPI
+CAdapterCommon::StopJacks()
+{
+    LARGE_INTEGER HalfSecond;
+    ULONG Index;
+
+    m_JackStopping = TRUE;
+    HalfSecond.QuadPart = -5000000;
+
+    for (Index = 0; Index < m_JackCount; Index++)
+    {
+        if (!m_Jacks[Index].Registered)
+            continue;
+        m_Jacks[Index].Node->EnableUnsolicitedResponse(m_Jacks[Index].PinId, 0, m_Jacks[Index].Tag);
+        Interface.UnregisterEventCallback(Interface.Context, m_Jacks[Index].Tag);
+        m_Jacks[Index].Registered = FALSE;
+    }
+
+    while (InterlockedCompareExchange(&m_JackCallbacks, 0, 0) || InterlockedCompareExchange(&m_JackWorkActive, 0, 0))
+        KeDelayExecutionThread(KernelMode, FALSE, &HalfSecond);
+
+    if (m_JackWorkItem)
+    {
+        IoFreeWorkItem(m_JackWorkItem);
+        m_JackWorkItem = NULL;
+    }
+    for (Index = 0; Index < HDAUDIO_MAX_JACK_TOPOLOGIES; Index++)
+    {
+        if (m_JackPortEvents[Index])
+        {
+            m_JackPortEvents[Index]->Release();
+            m_JackPortEvents[Index] = NULL;
+        }
+    }
 }
 
 NTSTATUS
@@ -1334,7 +1587,6 @@ CAdapterCommon::ProcessOutputNodes(
 
         PIN_CAPABILITIES PinCaps;
         Status = OutNode->GetPinCapabilities(PinNodes[NodeIndex], &PinCaps);
-        ULONG DevicePresent = 0;
         if (NT_SUCCESS(Status))
         {
             DPRINT(
@@ -1347,40 +1599,8 @@ CAdapterCommon::ProcessOutputNodes(
                 continue;
             }
 
-            if (PinCaps.PresenceDetectCapable)
-            {
-                Status = OutNode->GetPinSense(PinNodes[NodeIndex], &DevicePresent);
-                if (NT_SUCCESS(Status))
-                {
-                    DPRINT("HDAUDIO: PinNode %u DevicePresent %x\n", PinNodes[NodeIndex], DevicePresent);
-                    if (!DevicePresent)
-                    {
-                        UCHAR UnsolCapable, NodeType;
-                        Status = OutNode->GetFunctionGroupType(PinNodes[NodeIndex], &UnsolCapable, &NodeType);
-                        DPRINT("HDAUDIO: GetFunctionGroupType Status %x Unsolicited %x, NodeType %x\n", Status, UnsolCapable, NodeType);
-                        if (NT_SUCCESS(Status) && UnsolCapable)
-                        {
-                            Status = Interface.RegisterEventCallback(
-                            Interface.Context, HDAUDIO_UnsolicitedResponseCallback, (PVOID)this, &m_Tags[m_TagIndex]);
-                            if (!NT_SUCCESS(Status))
-                            {
-                                DPRINT1("Warning: RegisterEventCallback failed with %x\n", Status);
-                                continue;
-                            }
-
-                            // enable Unsolicited Response
-                            DPRINT("Enable Unsolicited Response...\n");
-                            Status = OutNode->EnableUnsolicitedResponse(PinNodes[NodeIndex], 1, m_Tags[m_TagIndex]);
-                            if (!NT_SUCCESS(Status))
-                            {
-                                DPRINT1("Warning: EnableUnsolicitedResponse failed with %x\n", Status);
-                                continue;
-                            }
-                            m_TagIndex++;
-                        }
-                    }
-                }
-            }
+            /* the pin's presence is read and told, and followed from now on when it can change (LEG-1) */
+            RegisterJackPin((PVOID)OutNode, PinNodes[NodeIndex], PinCaps);
 
             if (PinCaps.EAPDCapable)
             {
@@ -1635,41 +1855,8 @@ CAdapterCommon::ProcessInputNodes(
             continue;
         }
 
-        if (PinCaps.PresenceDetectCapable)
-        {
-            ULONG DevicePresent = 0;
-            Status = OutNode->GetPinSense(PinNodes[NodeIndex], &DevicePresent);
-            if (NT_SUCCESS(Status))
-            {
-                DPRINT("HDAUDIO: PinNode %u DevicePresent %x\n", PinNodes[NodeIndex], DevicePresent);
-                if (!DevicePresent)
-                {
-                    UCHAR UnsolCapable, NodeType;
-                    Status = OutNode->GetFunctionGroupType(PinNodes[NodeIndex], &UnsolCapable, &NodeType);
-                    DPRINT("HDAUDIO: GetFunctionGroupType Status %x Unsolicited %x, NodeType %x\n", Status, UnsolCapable, NodeType);
-                    if (NT_SUCCESS(Status) && UnsolCapable)
-                    {
-                        Status = Interface.RegisterEventCallback(
-                        Interface.Context, HDAUDIO_UnsolicitedResponseCallback, (PVOID)this, &m_Tags[m_TagIndex]);
-                        if (!NT_SUCCESS(Status))
-                        {
-                            DPRINT1("Warning: RegisterEventCallback failed with %x\n", Status);
-                            continue;
-                        }
-
-                        // enable Unsolicited Response
-                        DPRINT("Enable Unsolicited Response...\n");
-                        Status = OutNode->EnableUnsolicitedResponse(PinNodes[NodeIndex], 1, m_Tags[m_TagIndex]);
-                        if (!NT_SUCCESS(Status))
-                        {
-                            DPRINT1("Warning: EnableUnsolicitedResponse failed with %x\n", Status);
-                            continue;
-                        }
-                        m_TagIndex++;
-                    }
-                }
-            }
-        }
+        /* the pin's presence is read and told, and followed from now on when it can change (LEG-1) */
+        RegisterJackPin((PVOID)OutNode, PinNodes[NodeIndex], PinCaps);
 
         if (PinCaps.EAPDCapable)
         {

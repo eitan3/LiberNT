@@ -31,6 +31,8 @@ HDAUDIO_Pnp(
         DeviceExtension = (PHDAUDIO_DEVICE_EXTENSION)DeviceObject->DeviceExtension;
         if (DeviceExtension->AdapterCommon)
         {
+            /* the codec tells the jack pins' presence no more (LEG-1) */
+            DeviceExtension->AdapterCommon->StopJacks();
             DeviceExtension->AdapterCommon->Release();
             DeviceExtension->AdapterCommon = NULL;
         }

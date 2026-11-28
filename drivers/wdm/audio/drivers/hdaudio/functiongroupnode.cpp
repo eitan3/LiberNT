@@ -801,7 +801,8 @@ CFunctionGroupNode::EnableUnsolicitedResponse(
     ULONG Response = 0;
     NTSTATUS Status;
 
-    Verb = (m_CodecAddress << 28) | (NodeId << 20) | (AC_VERB_SET_UNSOLICITED_ENABLE << 8) | Enable | Tag;
+    Verb = (m_CodecAddress << 28) | (NodeId << 20) | (AC_VERB_SET_UNSOLICITED_ENABLE << 8) |
+           (Enable ? AC_UNSOL_ENABLED : 0) | (Tag & AC_UNSOL_TAG);
     Status = m_Adapter->TransferVerb(Verb, &Response);
     if (!NT_SUCCESS(Status))
     {
@@ -981,6 +982,22 @@ CFunctionGroupNode::GetPinSense(
     IN ULONG NodeId,
     IN PULONG DevicePresent)
 {
+    ULONG RawSense;
+    NTSTATUS Status;
+
+    Status = GetPinSenseRaw(NodeId, &RawSense);
+    if (NT_SUCCESS(Status))
+        *DevicePresent = (RawSense >> 31) & 0x1;
+    return Status;
+}
+
+/* The pin's sense answer as the codec gave it: bit 31 is the presence (LEG-1) */
+NTSTATUS
+NTAPI
+CFunctionGroupNode::GetPinSenseRaw(
+    IN ULONG NodeId,
+    OUT PULONG RawSense)
+{
     ULONG Verb;
     ULONG Response = 0;
     NTSTATUS Status;
@@ -992,7 +1009,7 @@ CFunctionGroupNode::GetPinSense(
         DPRINT1("HDAUDIO: GetPinSense failed with %x\n", Status);
         return Status;
     }
-    *DevicePresent = (Response >> 31) & 0x1;
+    *RawSense = Response;
     return STATUS_SUCCESS;
 }
 
