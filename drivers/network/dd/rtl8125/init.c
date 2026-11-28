@@ -45,14 +45,14 @@ Rt25SetGeneralAttributes(
     Attributes.Header.Size = NDIS_SIZEOF_MINIPORT_ADAPTER_GENERAL_ATTRIBUTES_REVISION_2;
     Attributes.MediaType = NdisMedium802_3;
     Attributes.PhysicalMediumType = NdisPhysicalMedium802_3;
-    Attributes.MtuSize = RT25_MTU;
+    Attributes.MtuSize = Adapter->MaxFrame - RT25_ETH_HEADER;
     Attributes.MaxXmitLinkSpeed = MaxSpeed;
     Attributes.MaxRcvLinkSpeed = MaxSpeed;
     Attributes.XmitLinkSpeed = Adapter->LinkSpeed;
     Attributes.RcvLinkSpeed = Adapter->LinkSpeed;
     Attributes.MediaConnectState = Adapter->MediaConnectState;
     Attributes.MediaDuplexState = Adapter->MediaDuplexState;
-    Attributes.LookaheadSize = RT25_MTU;
+    Attributes.LookaheadSize = Adapter->MaxFrame - RT25_ETH_HEADER;
     Attributes.MacOptions = RT25_MAC_OPTIONS;
     Attributes.SupportedPacketFilters = RT25_SUPPORTED_FILTERS;
     Attributes.MaxMulticastListSize = RT25_MAX_MULTICAST;
@@ -64,7 +64,8 @@ Rt25SetGeneralAttributes(
     Attributes.ConnectionType = NET_IF_CONNECTION_DEDICATED;
     Attributes.IfType = IF_TYPE_ETHERNET_CSMACD;
     Attributes.IfConnectorPresent = TRUE;
-    Attributes.SupportedPauseFunctions = NdisPauseFunctionsUnsupported;
+    Attributes.SupportedPauseFunctions = Adapter->MaxFrame > RT25_MAX_FRAME ? NdisPauseFunctionsUnsupported :
+                                                                             NdisPauseFunctionsSendAndReceive;
     Attributes.AutoNegotiationFlags = NDIS_LINK_STATE_XMIT_LINK_SPEED_AUTO_NEGOTIATED |
                                       NDIS_LINK_STATE_RCV_LINK_SPEED_AUTO_NEGOTIATED |
                                       NDIS_LINK_STATE_DUPLEX_AUTO_NEGOTIATED;
@@ -73,6 +74,13 @@ Rt25SetGeneralAttributes(
                                      NDIS_STATISTICS_XMIT_ERROR_SUPPORTED |
                                      NDIS_STATISTICS_RCV_ERROR_SUPPORTED |
                                      NDIS_STATISTICS_RCV_NO_BUFFER_SUPPORTED |
+                                     NDIS_STATISTICS_RCV_CRC_ERROR_SUPPORTED |
+                                     NDIS_STATISTICS_DIRECTED_FRAMES_RCV_SUPPORTED |
+                                     NDIS_STATISTICS_MULTICAST_FRAMES_RCV_SUPPORTED |
+                                     NDIS_STATISTICS_BROADCAST_FRAMES_RCV_SUPPORTED |
+                                     NDIS_STATISTICS_DIRECTED_FRAMES_XMIT_SUPPORTED |
+                                     NDIS_STATISTICS_MULTICAST_FRAMES_XMIT_SUPPORTED |
+                                     NDIS_STATISTICS_BROADCAST_FRAMES_XMIT_SUPPORTED |
                                      NDIS_STATISTICS_BYTES_RCV_SUPPORTED |
                                      NDIS_STATISTICS_BYTES_XMIT_SUPPORTED;
     Attributes.SupportedOidList = (PNDIS_OID)Rt25SupportedOids;
@@ -91,13 +99,14 @@ Rt25RegisterDma(
 {
     NDIS_SG_DMA_DESCRIPTION Description;
 
-    /* NdisMAllocateSharedMemory needs a DMA registration; no scatter-gather lists are built. */
+    /* NdisMAllocateSharedMemory needs a DMA registration. Sends are copied, because this NDIS
+     * allocates for every scatter-gather list, which costs more than copying a standard frame. */
     NdisZeroMemory(&Description, sizeof(Description));
     Description.Header.Type = NDIS_OBJECT_TYPE_SG_DMA_DESCRIPTION;
     Description.Header.Revision = NDIS_SG_DMA_DESCRIPTION_REVISION_1;
     Description.Header.Size = NDIS_SIZEOF_SG_DMA_DESCRIPTION_REVISION_1;
     Description.Flags = NDIS_SG_DMA_64_BIT_ADDRESS;
-    Description.MaximumPhysicalMapping = RT25_BUFFER_SIZE;
+    Description.MaximumPhysicalMapping = RT25_MAX_BUFFER_SIZE;
     Description.ProcessSGListHandler = NULL;
     Description.SharedMemAllocateCompleteHandler = NULL;
 
@@ -270,9 +279,32 @@ Rt25ReadConfiguration(
         { NDIS_STRING_CONST("*TCPChecksumOffloadIPv6"), RT25_OFFLOAD_TX_TCP6, RT25_OFFLOAD_RX_TCP6 },
         { NDIS_STRING_CONST("*UDPChecksumOffloadIPv6"), RT25_OFFLOAD_TX_UDP6, RT25_OFFLOAD_RX_UDP6 }
     };
+    static const NDIS_STRING SettingNames[] =
+    {
+        NDIS_STRING_CONST("*JumboPacket"),
+        NDIS_STRING_CONST("*SpeedDuplex"),
+        NDIS_STRING_CONST("*FlowControl"),
+        NDIS_STRING_CONST("*EEE")
+    };
+    ULONG Eee = Adapter->EeeEnabled;
+    PULONG Settings[] = { &Adapter->MaxFrame, &Adapter->SpeedDuplex, &Adapter->FlowControl, &Eee };
     PNDIS_CONFIGURATION_PARAMETER Parameter;
     NDIS_STRING Keyword;
     ULONG i;
+
+    C_ASSERT(sizeof(SettingNames) / sizeof(SettingNames[0]) == sizeof(Settings) / sizeof(Settings[0]));
+    for (i = 0; i < sizeof(Settings) / sizeof(Settings[0]); i++)
+    {
+        Keyword = SettingNames[i];
+        NdisReadConfiguration(&Status, &Parameter, Configuration, &Keyword, NdisParameterInteger);
+        if (Status == NDIS_STATUS_SUCCESS && Parameter->ParameterType == NdisParameterInteger)
+            *Settings[i] = Parameter->ParameterData.IntegerData;
+    }
+
+    Adapter->MaxFrame = Rt25MaxFrameFromJumbo(Adapter->MaxFrame);
+    if (Adapter->FlowControl > RT25_FLOW_BOTH)
+        Adapter->FlowControl = RT25_FLOW_BOTH;
+    Adapter->EeeEnabled = Eee != 0;
 
     /* Standard *ChecksumOffload keywords: 0 off, 1 transmit, 2 receive, 3 both. */
     for (i = 0; i < sizeof(Keywords) / sizeof(Keywords[0]); i++)
@@ -321,6 +353,7 @@ Rt25ReleaseAdapter(
         Adapter->RegisterBase = NULL;
     }
 
+    NdisFreeSpinLock(&Adapter->TallyLock);
     NdisFreeSpinLock(&Adapter->TxLock);
     NdisFreeSpinLock(&Adapter->RxLock);
     NdisFreeSpinLock(&Adapter->PhyLock);
@@ -348,7 +381,10 @@ Rt25InitializeEx(
 
     NdisZeroMemory(Adapter, sizeof(*Adapter));
     Adapter->MiniportHandle = MiniportAdapterHandle;
-    Adapter->Lookahead = RT25_MTU;
+    Adapter->MaxFrame = RT25_MAX_FRAME;
+    Adapter->SpeedDuplex = RT25_SPEED_AUTO;
+    Adapter->FlowControl = RT25_FLOW_BOTH;
+    Adapter->PauseFunctions = NdisPauseFunctionsUnknown;
     Adapter->State = Rt25StatePaused;
     Adapter->LinkSpeed = NDIS_LINK_SPEED_UNKNOWN;
     Adapter->MediaConnectState = MediaConnectStateUnknown;
@@ -359,6 +395,7 @@ Rt25InitializeEx(
     NdisAllocateSpinLock(&Adapter->PhyLock);
     NdisAllocateSpinLock(&Adapter->RxLock);
     NdisAllocateSpinLock(&Adapter->TxLock);
+    NdisAllocateSpinLock(&Adapter->TallyLock);
 
     Status = Rt25SetRegistrationAttributes(Adapter);
     if (Status != NDIS_STATUS_SUCCESS)
@@ -378,6 +415,7 @@ Rt25InitializeEx(
 
     Rt25ReadMacAddress(Adapter);
     Rt25ReadConfiguration(Adapter);
+    Adapter->Lookahead = Adapter->MaxFrame - RT25_ETH_HEADER;
 
     Status = Rt25RegisterDma(Adapter);
     if (Status != NDIS_STATUS_SUCCESS)
@@ -483,7 +521,9 @@ Rt25CheckForHang(
     /* Backs up the link-change interrupt, which some boards do not raise for every transition. */
     Rt25UpdateLinkState(Adapter);
 
+    /* No TX_OK interrupt, so an idle sender's ring is reclaimed here; the tally read stops 16-bit counters wrapping. */
     Rt25ReclaimTransmit(Adapter);
+    Rt25UpdateTally(Adapter);
     return FALSE;
 }
 

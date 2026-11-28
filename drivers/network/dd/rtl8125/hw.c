@@ -371,26 +371,118 @@ Rt25StartMac(
     Rt25Write32(Adapter, RT25_REG_MISC, Rt25Read32(Adapter, RT25_REG_MISC) & ~RT25_MISC_RECEIVE_GATE);
 }
 
+/* FIXME: the MAC-side EEE bits follow observed r8169 behaviour and are untested on RTL8125/RTL8126 hardware */
+static
+VOID
+Rt25ConfigureEee(
+    _In_ PRT25_ADAPTER Adapter)
+{
+    USHORT Value, Advertise = 0, Advertise2 = 0;
+
+    /* Turning EEE off only withdraws the advertisement, so no low-power idle is ever negotiated. */
+    if (Adapter->EeeEnabled)
+    {
+        Advertise = RT25_EEE_ADV_100 | RT25_EEE_ADV_1000;
+        if (Adapter->MaxSpeedMbps >= 2500)
+            Advertise2 |= RT25_EEE_ADV2_2500;
+        if (Adapter->MaxSpeedMbps >= 5000)
+            Advertise2 |= RT25_EEE_ADV2_5000;
+        Rt25ModifyMacOcp(Adapter, RT25_OCP_EEE_MAC, 0, RT25_OCP_EEE_MAC_LPI);
+        Rt25ModifyMacOcp(Adapter, RT25_OCP_EEE_TIMER, 0, RT25_OCP_EEE_TIMER_ENABLE);
+    }
+
+    if (Rt25ReadPhyOcp(Adapter, RT25_PHY_OCP_EEE_ADV, &Value))
+    {
+        Rt25WritePhyOcp(Adapter, RT25_PHY_OCP_EEE_ADV,
+                        (USHORT)((Value & ~(RT25_EEE_ADV_100 | RT25_EEE_ADV_1000)) | Advertise));
+    }
+
+    if (Rt25ReadPhyOcp(Adapter, RT25_PHY_OCP_EEE_ADV2, &Value))
+    {
+        Rt25WritePhyOcp(Adapter, RT25_PHY_OCP_EEE_ADV2,
+                        (USHORT)((Value & ~(RT25_EEE_ADV2_2500 | RT25_EEE_ADV2_5000)) | Advertise2));
+    }
+}
+
 static
 VOID
 Rt25StartPhy(
     _In_ PRT25_ADAPTER Adapter)
 {
-    USHORT Value;
+    RT25_ADVERTISEMENT Current, Wanted;
+    ULONG FlowControl = Adapter->FlowControl;
+
+    /* These controllers do not support pause frames together with jumbo frames. */
+    if (Adapter->MaxFrame > RT25_MAX_FRAME)
+        FlowControl = RT25_FLOW_OFF;
 
     /* TODO: apply Realtek's PHY parameter patches; only the advertisement is set here. */
     NdisAcquireSpinLock(&Adapter->PhyLock);
 
-    if (Rt25ReadPhy(Adapter, RT25_PHY_ADVERTISE, &Value))
-        Rt25WritePhy(Adapter, RT25_PHY_ADVERTISE, Value | RT25_ADVERTISE_10_100);
-    if (Rt25ReadPhy(Adapter, RT25_PHY_CTRL1000, &Value))
-        Rt25WritePhy(Adapter, RT25_PHY_CTRL1000, Value | RT25_CTRL1000_FULL);
-    if (Rt25ReadPhyOcp(Adapter, RT25_PHY_OCP_AN_10GBT_CTRL, &Value))
-        Rt25WritePhyOcp(Adapter, RT25_PHY_OCP_AN_10GBT_CTRL, Rt25MultiGigAdvertise(Value, Adapter->MaxSpeedMbps));
+    if (Rt25ReadPhy(Adapter, RT25_PHY_ADVERTISE, &Current.Advertise) &&
+        Rt25ReadPhy(Adapter, RT25_PHY_CTRL1000, &Current.Ctrl1000) &&
+        Rt25ReadPhyOcp(Adapter, RT25_PHY_OCP_AN_10GBT_CTRL, &Current.MultiGig))
+    {
+        if (!Rt25LinkAdvertisement(Adapter->SpeedDuplex, Adapter->MaxSpeedMbps, FlowControl, &Current, &Wanted))
+        {
+            DPRINT1("RTL8125: speed setting %lu is not available, negotiating all speeds\n", Adapter->SpeedDuplex);
+            Rt25LinkAdvertisement(RT25_SPEED_AUTO, Adapter->MaxSpeedMbps, FlowControl, &Current, &Wanted);
+        }
 
+        Rt25WritePhy(Adapter, RT25_PHY_ADVERTISE, Wanted.Advertise);
+        Rt25WritePhy(Adapter, RT25_PHY_CTRL1000, Wanted.Ctrl1000);
+        Rt25WritePhyOcp(Adapter, RT25_PHY_OCP_AN_10GBT_CTRL, Wanted.MultiGig);
+    }
+    else
+    {
+        DPRINT1("RTL8125: PHY advertisement registers not readable, keeping the PHY defaults\n");
+    }
+
+    Rt25ConfigureEee(Adapter);
     Rt25WritePhy(Adapter, RT25_PHY_BMCR, RT25_BMCR_ANENABLE | RT25_BMCR_ANRESTART);
 
     NdisReleaseSpinLock(&Adapter->PhyLock);
+}
+
+static
+BOOLEAN
+Rt25TallyCommand(
+    _In_ PRT25_ADAPTER Adapter,
+    _In_ ULONG Command)
+{
+    ULONG i;
+
+    Rt25Write32(Adapter, RT25_REG_COUNTER_HIGH, (ULONG)((ULONG64)Adapter->TallyPhysical.QuadPart >> 32));
+    Rt25Write32(Adapter, RT25_REG_COUNTER_LOW, Adapter->TallyPhysical.LowPart | Command);
+    for (i = 0; i < 1000; i++)
+    {
+        if (!(Rt25Read32(Adapter, RT25_REG_COUNTER_LOW) & (RT25_COUNTER_RESET | RT25_COUNTER_DUMP)))
+            return TRUE;
+        Rt25Stall(10);
+    }
+
+    return FALSE;
+}
+
+/* Folds the controller's error counters into the running totals and clears them. */
+VOID
+Rt25UpdateTally(
+    _In_ PRT25_ADAPTER Adapter)
+{
+    RT25_TALLY Snapshot;
+
+    if (!Adapter->TallyVirtual)
+        return;
+
+    NdisAcquireSpinLock(&Adapter->TallyLock);
+    if (Adapter->HardwareRunning && !Adapter->SurpriseRemoved && Rt25TallyCommand(Adapter, RT25_COUNTER_DUMP))
+    {
+        KeMemoryBarrier();
+        NdisMoveMemory(&Snapshot, Adapter->TallyVirtual, sizeof(Snapshot));
+        Rt25AccumulateTally(&Adapter->Tally, &Snapshot);
+        Rt25TallyCommand(Adapter, RT25_COUNTER_RESET);
+    }
+    NdisReleaseSpinLock(&Adapter->TallyLock);
 }
 
 VOID
@@ -467,7 +559,7 @@ Rt25StartHardware(
     if (Adapter->Offload & RT25_OFFLOAD_RX_ANY)
         Command |= RT25_CPCR_RXCHKSUM;
     Rt25Write16(Adapter, RT25_REG_CPCR, Command);
-    Rt25Write16(Adapter, RT25_REG_RMS, RT25_RECEIVE_SIZE);
+    Rt25Write16(Adapter, RT25_REG_RMS, (USHORT)Adapter->ReceiveSize);
     Rt25StartMac(Adapter);
 
     Rt25Write32(Adapter, RT25_REG_TNPDS + 4, Adapter->TxRingPhysical.HighPart);
@@ -484,6 +576,14 @@ Rt25StartHardware(
     NdisReleaseSpinLock(&Adapter->StateLock);
     Rt25ApplyReceiveFilter(Adapter);
 
+    /* Counts left from firmware or a wake period are not ours. */
+    if (Adapter->TallyVirtual)
+    {
+        NdisAcquireSpinLock(&Adapter->TallyLock);
+        Rt25TallyCommand(Adapter, RT25_COUNTER_RESET);
+        NdisReleaseSpinLock(&Adapter->TallyLock);
+    }
+
     Rt25Write8(Adapter, RT25_REG_PMCH, Rt25Read8(Adapter, RT25_REG_PMCH) | RT25_PMCH_PHY_POWER);
     Rt25StartPhy(Adapter);
     Rt25Write32(Adapter, RT25_REG_ISR, 0xFFFFFFFF);
@@ -496,6 +596,7 @@ Rt25StopHardware(
 {
     ULONG i;
 
+    Rt25UpdateTally(Adapter);
     Rt25QuiesceHardware(Adapter);
     if (!Adapter->RegisterBase || Adapter->SurpriseRemoved)
         return;
@@ -583,6 +684,7 @@ Rt25RefreshLink(
     NDIS_MEDIA_CONNECT_STATE Connect = MediaConnectStateDisconnected;
     NDIS_MEDIA_DUPLEX_STATE Duplex = MediaDuplexStateUnknown;
     ULONG64 Speed = NDIS_LINK_SPEED_UNKNOWN;
+    NDIS_SUPPORTED_PAUSE_FUNCTIONS Pause = NdisPauseFunctionsUnknown;
     ULONG SpeedMbps;
     USHORT Status, PhyStatus;
     BOOLEAN Changed;
@@ -605,14 +707,21 @@ Rt25RefreshLink(
         if (SpeedMbps == 0)
             SpeedMbps = Rt25MacSpeedMbps(Status);
         Speed = (ULONG64)SpeedMbps * 1000000;
+        Pause = (NDIS_SUPPORTED_PAUSE_FUNCTIONS)Rt25PauseFromStatus(Status,
+                                                                    NdisPauseFunctionsSendOnly,
+                                                                    NdisPauseFunctionsReceiveOnly,
+                                                                    NdisPauseFunctionsSendAndReceive,
+                                                                    NdisPauseFunctionsUnsupported);
     }
 
     Changed = Connect != Adapter->MediaConnectState ||
               Duplex != Adapter->MediaDuplexState ||
-              Speed != Adapter->LinkSpeed;
+              Speed != Adapter->LinkSpeed ||
+              Pause != Adapter->PauseFunctions;
     Adapter->MediaConnectState = Connect;
     Adapter->MediaDuplexState = Duplex;
     Adapter->LinkSpeed = Speed;
+    Adapter->PauseFunctions = Pause;
     if (Changed)
         Adapter->LinkSequence++;
 
@@ -641,7 +750,7 @@ Rt25FillLinkState(
     LinkState->MediaDuplexState = Adapter->MediaDuplexState;
     LinkState->XmitLinkSpeed = Adapter->LinkSpeed;
     LinkState->RcvLinkSpeed = Adapter->LinkSpeed;
-    LinkState->PauseFunctions = NdisPauseFunctionsUnsupported;
+    LinkState->PauseFunctions = Adapter->PauseFunctions;
     LinkState->AutoNegotiationFlags = NDIS_LINK_STATE_XMIT_LINK_SPEED_AUTO_NEGOTIATED |
                                       NDIS_LINK_STATE_RCV_LINK_SPEED_AUTO_NEGOTIATED |
                                       NDIS_LINK_STATE_DUPLEX_AUTO_NEGOTIATED;

@@ -25,9 +25,9 @@
 #define RT25_DRIVER_VERSION         0x0100
 #define RT25_MAX_MULTICAST          32
 #define RT25_CHUNK_SIZE             0x10000
-#define RT25_BUFFERS_PER_CHUNK      (RT25_CHUNK_SIZE / RT25_BUFFER_SIZE)
-#define RT25_CHUNKS                 (RT25_RING_SIZE / RT25_BUFFERS_PER_CHUNK)
+#define RT25_MAX_CHUNKS             64
 #define RT25_RING_BYTES             (RT25_RING_SIZE * sizeof(RT25_DESCRIPTOR))
+#define RT25_TALLY_BYTES            PAGE_SIZE
 
 #define RT25_MAC_OPTIONS            (NDIS_MAC_OPTION_TRANSFERS_NOT_PEND | \
                                      NDIS_MAC_OPTION_COPY_LOOKAHEAD_DATA | \
@@ -51,7 +51,7 @@
 #define RT25_OFFLOAD_RX_ANY         0x1F00
 #define RT25_OFFLOAD_ALL            0x1F1F
 
-C_ASSERT(RT25_RING_SIZE % RT25_BUFFERS_PER_CHUNK == 0);
+C_ASSERT(RT25_RING_SIZE <= RT25_MAX_CHUNKS * (RT25_CHUNK_SIZE / RT25_MAX_BUFFER_SIZE));
 
 typedef enum _RT25_STATE
 {
@@ -81,6 +81,7 @@ typedef struct _RT25_TX_BUFFER
     ULONG64 PhysicalAddress;
     ULONG Length;
     ULONG Options;
+    UCHAR Cast;
 } RT25_TX_BUFFER, *PRT25_TX_BUFFER;
 
 typedef struct _RT25_ADAPTER
@@ -106,13 +107,19 @@ typedef struct _RT25_ADAPTER
     NDIS_SPIN_LOCK PhyLock;
     NDIS_SPIN_LOCK RxLock;
     NDIS_SPIN_LOCK TxLock;
+    NDIS_SPIN_LOCK TallyLock;
 
     PRT25_DESCRIPTOR RxRing;
     NDIS_PHYSICAL_ADDRESS RxRingPhysical;
     PRT25_DESCRIPTOR TxRing;
     NDIS_PHYSICAL_ADDRESS TxRingPhysical;
-    RT25_CHUNK RxChunks[RT25_CHUNKS];
-    RT25_CHUNK TxChunks[RT25_CHUNKS];
+    ULONG MaxFrame;
+    ULONG ReceiveSize;
+    ULONG BufferSize;
+    ULONG BuffersPerChunk;
+    ULONG ChunkCount;
+    RT25_CHUNK RxChunks[RT25_MAX_CHUNKS];
+    RT25_CHUNK TxChunks[RT25_MAX_CHUNKS];
     RT25_RX_BUFFER RxBuffers[RT25_RING_SIZE];
     RT25_TX_BUFFER TxBuffers[RT25_RING_SIZE];
     ULONG RxNext;
@@ -147,7 +154,11 @@ typedef struct _RT25_ADAPTER
     NDIS_MEDIA_CONNECT_STATE MediaConnectState;
     NDIS_MEDIA_DUPLEX_STATE MediaDuplexState;
     ULONG64 LinkSpeed;
+    NDIS_SUPPORTED_PAUSE_FUNCTIONS PauseFunctions;
     ULONG LinkSequence;
+    ULONG SpeedDuplex;
+    ULONG FlowControl;
+    BOOLEAN EeeEnabled;
 
     ULONG64 TxPackets;
     ULONG64 TxBytes;
@@ -156,6 +167,14 @@ typedef struct _RT25_ADAPTER
     ULONG64 RxBytes;
     ULONG64 RxErrors;
     ULONG64 RxNoBuffer;
+    ULONG64 TxMulticast;
+    ULONG64 TxBroadcast;
+    ULONG64 RxMulticast;
+    ULONG64 RxBroadcast;
+
+    PRT25_TALLY TallyVirtual;
+    NDIS_PHYSICAL_ADDRESS TallyPhysical;
+    RT25_TALLY_TOTALS Tally;
 } RT25_ADAPTER, *PRT25_ADAPTER;
 
 FORCEINLINE
@@ -258,6 +277,10 @@ Rt25ResumeInterrupts(
 
 VOID
 Rt25QuiesceHardware(
+    _In_ PRT25_ADAPTER Adapter);
+
+VOID
+Rt25UpdateTally(
     _In_ PRT25_ADAPTER Adapter);
 
 VOID

@@ -11,6 +11,8 @@
 
 #define RT25_REG_IDR0               0x0000
 #define RT25_REG_MAR0               0x0008
+#define RT25_REG_COUNTER_LOW        0x0010
+#define RT25_REG_COUNTER_HIGH       0x0014
 #define RT25_REG_TNPDS              0x0020
 #define RT25_REG_INT_CFG0           0x0034
 #define RT25_REG_CR                 0x0037
@@ -48,6 +50,9 @@
 
 #define RT25_TPPOLL_NPQ             0x0001
 
+#define RT25_COUNTER_RESET          0x00000001
+#define RT25_COUNTER_DUMP           0x00000008
+
 #define RT25_TCR_DEFAULT            0x03000700
 #define RT25_TCR_AUTO_FIFO          0x00000080
 #define RT25_TCR_EMPTY              0x00000800
@@ -83,8 +88,9 @@
 #define RT25_INT_RX_FIFO_OVER       0x00000040
 #define RT25_INT_TX_DESC_UNAVAIL    0x00000080
 #define RT25_INT_SYSTEM_ERROR       0x00008000
-#define RT25_INT_MASK               (RT25_INT_RX_OK | RT25_INT_RX_ERR | RT25_INT_TX_OK | \
-                                     RT25_INT_TX_ERR | RT25_INT_LINK_CHANGE)
+/* No TX_OK: sends complete at once from bounce buffers, and the next send reclaims the ring. */
+#define RT25_INT_MASK               (RT25_INT_RX_OK | RT25_INT_RX_ERR | RT25_INT_TX_ERR | \
+                                     RT25_INT_LINK_CHANGE)
 #define RT25_INT_RX_EVENTS          (RT25_INT_RX_OK | RT25_INT_RX_ERR | RT25_INT_RX_OVERFLOW | \
                                      RT25_INT_RX_FIFO_OVER)
 #define RT25_INT_TX_EVENTS          (RT25_INT_TX_OK | RT25_INT_TX_ERR | RT25_INT_TX_DESC_UNAVAIL)
@@ -92,6 +98,8 @@
 #define RT25_PHYSTATUS_FULL_DUPLEX  0x0001
 #define RT25_PHYSTATUS_LINK         0x0002
 #define RT25_PHYSTATUS_10M          0x0004
+#define RT25_PHYSTATUS_RX_PAUSE     0x0020
+#define RT25_PHYSTATUS_TX_PAUSE     0x0040
 #define RT25_PHYSTATUS_100M         0x0008
 #define RT25_PHYSTATUS_2500M        0x0400
 
@@ -128,23 +136,42 @@
 #define RT25_OCP_TALLY              0xEA84
 #define RT25_OCP_WOL_MAGIC          0xC0B6
 #define RT25_OCP_WOL_MAGIC_ENABLE   0x0001
+#define RT25_OCP_EEE_MAC            0xE040
+#define RT25_OCP_EEE_MAC_LPI        0x0003
+#define RT25_OCP_EEE_TIMER          0xEB62
+#define RT25_OCP_EEE_TIMER_ENABLE   0x0006
 
 #define RT25_PHY_BMCR               0x00
 #define RT25_PHY_ADVERTISE          0x04
 #define RT25_PHY_CTRL1000           0x09
 #define RT25_PHY_PHYSR              0x1A
 #define RT25_PHY_OCP_AN_10GBT_CTRL  0xA5D4
+#define RT25_PHY_OCP_EEE_ADV        0xA5D0
+#define RT25_PHY_OCP_EEE_ADV2       0xA6D4
 
 #define RT25_BMCR_ANRESTART         0x0200
 #define RT25_BMCR_ISOLATE           0x0400
 #define RT25_BMCR_PDOWN             0x0800
 #define RT25_BMCR_ANENABLE          0x1000
 
+#define RT25_ADVERTISE_10_HALF      0x0020
+#define RT25_ADVERTISE_10_FULL      0x0040
+#define RT25_ADVERTISE_100_HALF     0x0080
+#define RT25_ADVERTISE_100_FULL     0x0100
 #define RT25_ADVERTISE_10_100       0x01E0
+#define RT25_ADVERTISE_PAUSE        0x0400
+#define RT25_ADVERTISE_ASYM_PAUSE   0x0800
+#define RT25_CTRL1000_HALF          0x0100
 #define RT25_CTRL1000_FULL          0x0200
 
 #define RT25_AN_10GBT_ADV_2500      0x0080
 #define RT25_AN_10GBT_ADV_5000      0x0100
+
+/* Clause 45 EEE advertisement bits (7.60 and 7.62) as the PHY maps them into OCP space. */
+#define RT25_EEE_ADV_100            0x0002
+#define RT25_EEE_ADV_1000           0x0004
+#define RT25_EEE_ADV2_2500          0x0001
+#define RT25_EEE_ADV2_5000          0x0002
 
 #define RT25_PHYSR_SPEED_MASK       0x0630
 #define RT25_PHYSR_SPEED_10         0x0000
@@ -184,13 +211,62 @@ typedef struct _RT25_DESCRIPTOR
 C_ASSERT(sizeof(RT25_DESCRIPTOR) == 16);
 
 #define RT25_RING_SIZE              256
-#define RT25_BUFFER_SIZE            2048
-#define RT25_RECEIVE_SIZE           1536
 #define RT25_CRC_SIZE               4
+#define RT25_VLAN_TAG_SIZE          4
 #define RT25_ETH_HEADER             14
 #define RT25_MTU                    1500
 #define RT25_MAX_FRAME              1514
+#define RT25_JUMBO_FRAME            9014
 #define RT25_MIN_FRAME              60
+#define RT25_MAX_BUFFER_SIZE        9216
+
+/* *SpeedDuplex values; 2500 and 5000 are this driver's own for the multi-gigabit speeds. */
+#define RT25_SPEED_AUTO             0
+#define RT25_SPEED_10_HALF          1
+#define RT25_SPEED_10_FULL          2
+#define RT25_SPEED_100_HALF         3
+#define RT25_SPEED_100_FULL         4
+#define RT25_SPEED_1000_FULL        6
+#define RT25_SPEED_2500_FULL        2500
+#define RT25_SPEED_5000_FULL        5000
+
+/* *FlowControl values. */
+#define RT25_FLOW_OFF               0
+#define RT25_FLOW_TX                1
+#define RT25_FLOW_RX                2
+#define RT25_FLOW_BOTH              3
+
+/* Leading part of the tally block; RTL8125-class chips append more counters after it. */
+typedef struct _RT25_TALLY
+{
+    ULONG64 TxPackets;
+    ULONG64 RxPackets;
+    ULONG64 TxErrors;
+    ULONG RxErrors;
+    USHORT RxMissed;
+    USHORT AlignErrors;
+    ULONG TxOneCollision;
+    ULONG TxMultiCollision;
+    ULONG64 RxUnicast;
+    ULONG64 RxBroadcast;
+    ULONG RxMulticast;
+    USHORT TxAborted;
+    USHORT TxUnderrun;
+} RT25_TALLY, *PRT25_TALLY;
+
+C_ASSERT(sizeof(RT25_TALLY) == 64);
+
+typedef struct _RT25_TALLY_TOTALS
+{
+    ULONG64 TxErrors;
+    ULONG64 RxErrors;
+    ULONG64 RxMissed;
+    ULONG64 AlignErrors;
+    ULONG64 TxOneCollision;
+    ULONG64 TxMultiCollision;
+    ULONG64 TxAborted;
+    ULONG64 TxUnderrun;
+} RT25_TALLY_TOTALS, *PRT25_TALLY_TOTALS;
 
 #define RT25_CHIP_8125A             0x01
 #define RT25_CHIP_8125B             0x02
@@ -293,9 +369,10 @@ Rt25NextIndex(
 FORCEINLINE
 ULONG
 Rt25RxArmFlags(
-    _In_ ULONG Index)
+    _In_ ULONG Index,
+    _In_ ULONG BufferSize)
 {
-    ULONG Flags = RT25_DESC_OWN | RT25_BUFFER_SIZE;
+    ULONG Flags = RT25_DESC_OWN | (BufferSize & RT25_DESC_LENGTH_MASK);
 
     if (Index == RT25_RING_SIZE - 1)
         Flags |= RT25_DESC_EOR;
@@ -318,7 +395,8 @@ Rt25TxFlags(
 FORCEINLINE
 ULONG
 Rt25RxFrameLength(
-    _In_ ULONG Flags)
+    _In_ ULONG Flags,
+    _In_ ULONG ReceiveSize)
 {
     ULONG Length = Flags & RT25_DESC_LENGTH_MASK;
 
@@ -326,7 +404,7 @@ Rt25RxFrameLength(
         (Flags & (RT25_DESC_FS | RT25_DESC_LS)) != (RT25_DESC_FS | RT25_DESC_LS) ||
         (Flags & RT25_RX_DESC_RES) ||
         Length < RT25_ETH_HEADER + RT25_CRC_SIZE ||
-        Length > RT25_RECEIVE_SIZE)
+        Length > ReceiveSize)
     {
         return 0;
     }
@@ -361,25 +439,169 @@ Rt25ReceiveConfig(
 }
 
 FORCEINLINE
-USHORT
-Rt25MultiGigAdvertise(
-    _In_ USHORT Current,
-    _In_ ULONG MaxSpeedMbps)
-{
-    Current &= ~(RT25_AN_10GBT_ADV_2500 | RT25_AN_10GBT_ADV_5000);
-    if (MaxSpeedMbps >= 2500)
-        Current |= RT25_AN_10GBT_ADV_2500;
-    if (MaxSpeedMbps >= 5000)
-        Current |= RT25_AN_10GBT_ADV_5000;
-    return Current;
-}
-
-FORCEINLINE
 ULONG
 Rt25TxPaddedLength(
     _In_ ULONG Length)
 {
     return Length < RT25_MIN_FRAME ? RT25_MIN_FRAME : Length;
+}
+
+#define RT25_CAST_UNICAST           0
+#define RT25_CAST_MULTICAST         1
+#define RT25_CAST_BROADCAST         2
+
+FORCEINLINE
+UCHAR
+Rt25CastType(
+    _In_reads_(6) const UCHAR *Destination)
+{
+    if (!(Destination[0] & 1))
+        return RT25_CAST_UNICAST;
+    if ((Destination[0] & Destination[1] & Destination[2] & Destination[3] & Destination[4] & Destination[5]) == 0xFF)
+        return RT25_CAST_BROADCAST;
+    return RT25_CAST_MULTICAST;
+}
+
+/* *JumboPacket gives the largest frame without the CRC; anything outside 1514-9014 means standard frames. */
+FORCEINLINE
+ULONG
+Rt25MaxFrameFromJumbo(
+    _In_ ULONG JumboPacket)
+{
+    if (JumboPacket < RT25_MAX_FRAME || JumboPacket > RT25_JUMBO_FRAME)
+        return RT25_MAX_FRAME;
+    return JumboPacket;
+}
+
+/* The RMS limit covers one VLAN tag and the CRC; 1536 for standard frames. */
+FORCEINLINE
+ULONG
+Rt25ReceiveSize(
+    _In_ ULONG MaxFrame)
+{
+    return (MaxFrame + RT25_VLAN_TAG_SIZE + RT25_CRC_SIZE + 31) & ~31u;
+}
+
+FORCEINLINE
+ULONG
+Rt25BufferSize(
+    _In_ ULONG MaxFrame)
+{
+    return (Rt25ReceiveSize(MaxFrame) + 1023) & ~1023u;
+}
+
+typedef struct _RT25_ADVERTISEMENT
+{
+    USHORT Advertise;
+    USHORT Ctrl1000;
+    USHORT MultiGig;
+} RT25_ADVERTISEMENT, *PRT25_ADVERTISEMENT;
+
+/* Builds the autonegotiation words for a *SpeedDuplex choice; FALSE when the chip cannot do that speed. */
+FORCEINLINE
+BOOLEAN
+Rt25LinkAdvertisement(
+    _In_ ULONG SpeedDuplex,
+    _In_ ULONG MaxSpeedMbps,
+    _In_ ULONG FlowControl,
+    _In_ const RT25_ADVERTISEMENT *Current,
+    _Out_ PRT25_ADVERTISEMENT Result)
+{
+    USHORT Advertise = 0, Ctrl1000 = 0, MultiGig = 0;
+
+    switch (SpeedDuplex)
+    {
+        case RT25_SPEED_AUTO:
+            Advertise = RT25_ADVERTISE_10_100;
+            Ctrl1000 = RT25_CTRL1000_FULL;
+            if (MaxSpeedMbps >= 2500)
+                MultiGig |= RT25_AN_10GBT_ADV_2500;
+            if (MaxSpeedMbps >= 5000)
+                MultiGig |= RT25_AN_10GBT_ADV_5000;
+            break;
+
+        case RT25_SPEED_10_HALF:
+            Advertise = RT25_ADVERTISE_10_HALF;
+            break;
+
+        case RT25_SPEED_10_FULL:
+            Advertise = RT25_ADVERTISE_10_FULL;
+            break;
+
+        case RT25_SPEED_100_HALF:
+            Advertise = RT25_ADVERTISE_100_HALF;
+            break;
+
+        case RT25_SPEED_100_FULL:
+            Advertise = RT25_ADVERTISE_100_FULL;
+            break;
+
+        case RT25_SPEED_1000_FULL:
+            Ctrl1000 = RT25_CTRL1000_FULL;
+            break;
+
+        case RT25_SPEED_2500_FULL:
+            if (MaxSpeedMbps < 2500)
+                return FALSE;
+            MultiGig = RT25_AN_10GBT_ADV_2500;
+            break;
+
+        case RT25_SPEED_5000_FULL:
+            if (MaxSpeedMbps < 5000)
+                return FALSE;
+            MultiGig = RT25_AN_10GBT_ADV_5000;
+            break;
+
+        default:
+            return FALSE;
+    }
+
+    /* 802.3 Annex 28B: symmetric pause, or asymmetric toward the side that only receives. */
+    if (FlowControl == RT25_FLOW_BOTH)
+        Advertise |= RT25_ADVERTISE_PAUSE;
+    else if (FlowControl == RT25_FLOW_RX)
+        Advertise |= RT25_ADVERTISE_PAUSE | RT25_ADVERTISE_ASYM_PAUSE;
+    else if (FlowControl == RT25_FLOW_TX)
+        Advertise |= RT25_ADVERTISE_ASYM_PAUSE;
+
+    Result->Advertise = (USHORT)((Current->Advertise &
+                                  ~(RT25_ADVERTISE_10_100 | RT25_ADVERTISE_PAUSE | RT25_ADVERTISE_ASYM_PAUSE)) |
+                                 Advertise);
+    Result->Ctrl1000 = (USHORT)((Current->Ctrl1000 & ~(RT25_CTRL1000_FULL | RT25_CTRL1000_HALF)) | Ctrl1000);
+    Result->MultiGig = (USHORT)((Current->MultiGig & ~(RT25_AN_10GBT_ADV_2500 | RT25_AN_10GBT_ADV_5000)) |
+                                MultiGig);
+    return TRUE;
+}
+
+FORCEINLINE
+ULONG
+Rt25PauseFromStatus(
+    _In_ USHORT MacStatus,
+    _In_ ULONG SendOnly,
+    _In_ ULONG ReceiveOnly,
+    _In_ ULONG Both,
+    _In_ ULONG None)
+{
+    BOOLEAN Tx = (MacStatus & RT25_PHYSTATUS_TX_PAUSE) != 0, Rx = (MacStatus & RT25_PHYSTATUS_RX_PAUSE) != 0;
+
+    return Tx && Rx ? Both : Tx ? SendOnly : Rx ? ReceiveOnly : None;
+}
+
+/* Adds one tally snapshot; the controller counters are reset after every dump. */
+FORCEINLINE
+VOID
+Rt25AccumulateTally(
+    _Inout_ PRT25_TALLY_TOTALS Totals,
+    _In_ const RT25_TALLY *Tally)
+{
+    Totals->TxErrors += Tally->TxErrors;
+    Totals->RxErrors += Tally->RxErrors;
+    Totals->RxMissed += Tally->RxMissed;
+    Totals->AlignErrors += Tally->AlignErrors;
+    Totals->TxOneCollision += Tally->TxOneCollision;
+    Totals->TxMultiCollision += Tally->TxMultiCollision;
+    Totals->TxAborted += Tally->TxAborted;
+    Totals->TxUnderrun += Tally->TxUnderrun;
 }
 
 FORCEINLINE
