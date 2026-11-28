@@ -32,7 +32,30 @@ static PCPROPERTY_ITEM WaveProperty[] =
     }
 };
 
-DEFINE_PCAUTOMATION_TABLE_PROP(WaveAutomationTable, WaveProperty);
+/* The jack change event (LEG-1): the adapter tells it on every change of a pin's presence, to the clients that enabled it on a topology or on a wave filter */
+static PCEVENT_ITEM JackEvent[] =
+{
+    {
+        &KSEVENTSETID_PinCapsChange,
+        KSEVENT_PINCAPS_JACKINFOCHANGE,
+        KSEVENT_TYPE_ENABLE | KSEVENT_TYPE_BASICSUPPORT,
+        EventHandler_JackChange
+    }
+};
+
+static const PCAUTOMATION_TABLE WaveAutomationTable =
+{
+    sizeof(PCPROPERTY_ITEM),
+    1,
+    WaveProperty,
+    sizeof(PCMETHOD_ITEM),
+    0,
+    NULL,
+    sizeof(PCEVENT_ITEM),
+    1,
+    JackEvent,
+    0
+};
 
 static PCPROPERTY_ITEM VolumeProperty[] = 
 {
@@ -103,17 +126,6 @@ static PCPROPERTY_ITEM TopologyProperty[] =
         KSPROPERTY_JACK_DESCRIPTION,
         KSPROPERTY_TYPE_GET | KSPROPERTY_TYPE_BASICSUPPORT,
         PropertyHandler_JackDescription
-    }
-};
-
-/* The topology's jack change event (LEG-1): the adapter tells it on every change of a pin's presence, to the clients that enabled it */
-static PCEVENT_ITEM JackEvent[] =
-{
-    {
-        &KSEVENTSETID_PinCapsChange,
-        KSEVENT_PINCAPS_JACKINFOCHANGE,
-        KSEVENT_TYPE_ENABLE | KSEVENT_TYPE_BASICSUPPORT,
-        EventHandler_JackChange
     }
 };
 

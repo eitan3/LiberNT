@@ -105,6 +105,9 @@ CMiniportWaveRT::Init(
 {
     m_Port = Port;
     m_Port->AddRef();
+    /* the port's event list carries the jack change event to the clients that enabled it on this wave filter (LEG-1) */
+    if (NT_SUCCESS(m_Port->QueryInterface(IID_IPortEvents, (PVOID *)&m_PortEvents)) && m_Adapter)
+        m_Adapter->RegisterJackPortEvents(m_PortEvents);
     return STATUS_SUCCESS;
 }
 

@@ -622,14 +622,24 @@ class CMiniportWaveRT : public CUnknownImpl<IMiniportWaveRT>
         CFunctionGroupNode *Node,
         CAdapterCommon *Adapter,
         PPCFILTER_DESCRIPTOR Filter)
-        : m_Port(0), m_AssociatedPinCount(AssociatedPinCount), m_AssociatedPins(AssociatedPinIds), m_Node(Node),
+        : m_Port(0), m_PortEvents(NULL), m_AssociatedPinCount(AssociatedPinCount), m_AssociatedPins(AssociatedPinIds), m_Node(Node),
           m_Adapter(Adapter), m_FilterDescription(Filter)
     {
     }
     virtual ~CMiniportWaveRT()
     {
+        if (m_PortEvents)
+            m_PortEvents->Release();
         if (m_AssociatedPins)
             ExFreePoolWithTag(m_AssociatedPins, TAG_HDAUDIO);
+    }
+
+    /* The jack change event a client enabled on this wave filter goes to the port's event list, where the adapter's telling finds it (LEG-1) */
+    VOID
+    AddJackEvent(PKSEVENT_ENTRY EventEntry)
+    {
+        if (m_PortEvents)
+            m_PortEvents->AddEventToEventList(EventEntry);
     }
 
     CFunctionGroupNode*
@@ -640,6 +650,7 @@ class CMiniportWaveRT : public CUnknownImpl<IMiniportWaveRT>
 
   private:
     PPORTWAVERT m_Port;
+    PPORTEVENTS m_PortEvents;
     ULONG m_AssociatedPinCount;
     PULONG m_AssociatedPins;
     CFunctionGroupNode *m_Node;

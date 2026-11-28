@@ -138,27 +138,42 @@ PropertyHandler_JackDescription(IN PPCPROPERTY_REQUEST PropertyRequest)
 }
 
 /*
- * The jack change event of a topology (LEG-1): enabled, its entry goes to the
- * port's event list, where the adapter's telling of a change finds it, and the
- * list's disable takes it from. Its removal and its support need nothing here.
+ * The jack change event of a topology or of a wave filter (LEG-1): enabled,
+ * its entry goes to that port's event list, where the adapter's telling of a
+ * change finds it, and the list's disable takes it from. Its removal and its
+ * support need nothing here.
  */
 NTSTATUS
 NTAPI
 EventHandler_JackChange(IN PPCEVENT_REQUEST EventRequest)
 {
-    CMiniportTopology *Miniport;
-
     if (!EventRequest || !EventRequest->MajorTarget)
         return STATUS_INVALID_PARAMETER;
 
     switch (EventRequest->Verb)
     {
         case PCEVENT_VERB_ADD:
+        {
+            PUNKNOWN Miniport = (PUNKNOWN)EventRequest->MajorTarget;
+            CMiniportTopology *Topology = NULL;
+            CMiniportWaveRT *Wave = NULL;
+
             if (!EventRequest->EventEntry)
                 return STATUS_INVALID_PARAMETER;
-            Miniport = (CMiniportTopology *)EventRequest->MajorTarget;
-            Miniport->AddJackEvent(EventRequest->EventEntry);
+            if (NT_SUCCESS(Miniport->QueryInterface(IID_IMiniportTopology, (PVOID *)&Topology)) && Topology)
+            {
+                Topology->AddJackEvent(EventRequest->EventEntry);
+                Topology->Release();
+            }
+            else if (NT_SUCCESS(Miniport->QueryInterface(IID_IMiniportWaveRT, (PVOID *)&Wave)) && Wave)
+            {
+                Wave->AddJackEvent(EventRequest->EventEntry);
+                Wave->Release();
+            }
+            else
+                return STATUS_INVALID_PARAMETER;
             return STATUS_SUCCESS;
+        }
 
         case PCEVENT_VERB_REMOVE:
         case PCEVENT_VERB_SUPPORT:
