@@ -1011,13 +1011,13 @@ IntcDspStreamHoldBuffer(
     Status = Bus->DetachDmaBuffer(Bus->Context, Stream->Handle, &Mdl);
     if (!NT_SUCCESS(Status) || Mdl == NULL)
     {
-        IntcDspStreamLog(Streams, "stream %u: the bus does not detach its buffer of %I64u bytes (0x%08x); it stays with the stream, allocated\n",
-                         Stream->Tag, (UINT64)Stream->Bytes, (UINT32)Status);
+        IntcDspStreamLog(Streams, "stream %u: the bus does not detach its buffer of %u bytes (0x%08x); it stays with the stream, allocated\n",
+                         Stream->Tag, (UINT32)Stream->Bytes, (UINT32)Status);
     }
     else if (Streams->HeldCount >= INTCDSP_HELD_MAX)
     {
-        IntcDspStreamLog(Streams, "stream %u: its buffer of %I64u bytes is held for nobody, the manager's table of held buffers being full; left allocated\n",
-                         Stream->Tag, (UINT64)Stream->Bytes);
+        IntcDspStreamLog(Streams, "stream %u: its buffer of %u bytes is held for nobody, the manager's table of held buffers being full; left allocated\n",
+                         Stream->Tag, (UINT32)Stream->Bytes);
     }
     else
     {
@@ -2397,7 +2397,7 @@ IntcDspStreamFree(
         return STATUS_INVALID_DEVICE_STATE;
     IntcDspStreamsLock(Streams);
     IntcDspStreamsDrain(Streams);
-    /* the free of a buffer held for its pin (R5-01): answered before anything of the manager's state is asked, so it works after a power-down, after a fault and after the release of the hardware; a second free of the word finds nothing */
+    /* the free of a buffer held for its pin (R5-01): answered before anything of the manager's state is asked, so it works after a power-down, after a fault and after the release of the hardware. The word is the key: a pin's own free after a hold returns its buffer once; a second free of the word of a teardown-pending stream returns at once the buffer its first free held when the transport answered busy, the stream staying pending until a drain frees it (N8-01); a free of a word nothing is held for goes on to the stream's free below, which refuses it */
     Held = IntcDspHeldOf(Streams, Handle);
     if (Held != NULL)
     {
