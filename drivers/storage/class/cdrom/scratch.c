@@ -751,7 +751,9 @@ Return Value:
     else
     {
         // The SCSI command has succeeded
-        readWriteContext->DataBuffer += deviceExtension->ScratchContext.ScratchSrb->DataTransferLength;
+        /* An offset in the request's MDL address space, which starts at 0 for an MDL without a virtual address */
+        readWriteContext->DataBuffer = (PUCHAR)((ULONG_PTR)readWriteContext->DataBuffer +
+                                                deviceExtension->ScratchContext.ScratchSrb->DataTransferLength);
         readWriteContext->StartingOffset.QuadPart += deviceExtension->ScratchContext.ScratchSrb->DataTransferLength;
         readWriteContext->TransferedBytes += deviceExtension->ScratchContext.ScratchSrb->DataTransferLength;
         readWriteContext->PacketsCount--;
