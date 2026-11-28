@@ -267,7 +267,6 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
 #define DWM_LWA_ALPHA    0x00000002u
 
 /* Compositor-owned attributes carried in the unused high LayerFlags bits. */
-/* Liber window chrome: elevation shadow, and the DWM_LIBER_EDGE_* outline drawn DWM_LIBER_FRAME_OUTSET px outside */
 #define DWM_WINDOW_LIBER_EDGE_SHIFT 20
 #define DWM_WINDOW_LIBER_EDGE_MASK  0x00300000u
 #define DWM_WINDOW_LIBER_FRAME      0x00800000u
@@ -348,7 +347,6 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
 #define DWM_LIBER_MATERIAL_ALPHA(Packed)     (((ULONG)(Packed) >> 16) & 0xFFu)
 #define DWM_LIBER_MATERIAL_MASK              0x80FF7F7Fu
 
-/* Liber window geometry and motion, shared by win32k, the compositor and their tests */
 #define DWM_CORNER_RADIUS_LIBER_96    12u
 #define DWM_LIBER_ANIM_MINIMIZE_MS    300u
 #define DWM_LIBER_ANIM_RESTORE_MS     340u
@@ -398,7 +396,6 @@ DwmLiberFrameEdge(ULONG LayerFlags)
 #define DWM_LIBER_CAPTION_BUTTON_CY   28
 #define DWM_LIBER_CAPTION_BUTTON_R    4
 
-/* Index 0 is the close button at the right edge; the others follow to its left */
 static __inline void
 DwmLiberCaptionButtonRect(LONG WindowWidth, LONG CaptionHeight, ULONG Dpi, ULONG Index, RECT *Button)
 {

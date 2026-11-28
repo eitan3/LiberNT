@@ -719,7 +719,7 @@ static void ThemeCalculateCaptionButtonsPosEx(WINDOWINFO* wi, HWND hWnd, HTHEME 
                 pwndData->CaptionButtonLeft[i] = FALSE;
                 continue;
             }
-            DwmLiberCaptionButtonRect(rcWindow.right, captionBtnHeight, dpi, index++, &pwndData->rcCaptionButtons[i]);
+            DwmLiberCaptionButtonRect(rcCurrent.right, captionBtnHeight, dpi, index++, &pwndData->rcCaptionButtons[i]);
             if (pwndData->rcCaptionButtons[i].top < topOverhang)
                 OffsetRect(&pwndData->rcCaptionButtons[i], 0, topOverhang - pwndData->rcCaptionButtons[i].top);
             pwndData->CaptionButtonLeft[i] = FALSE;

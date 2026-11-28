@@ -106,7 +106,6 @@ BOOL DwmGpuComposeShadow(const RECT *Bounds, LONGLONG X, LONGLONG Y,
                           LONG Width, LONG Height, const DWM_GPU_SHADOW *Shadow,
                           LONG Radius, ULONG WindowAlpha);
 
-/* Outline and top bevel colors are 0xAARRGGBB; a zero alpha skips that layer. */
 BOOL DwmGpuComposeFrameEdge(LONGLONG X, LONGLONG Y, LONG Width, LONG Height, LONG Radius,
                             ULONG Outline, ULONG Bevel, ULONG WindowAlpha);
 

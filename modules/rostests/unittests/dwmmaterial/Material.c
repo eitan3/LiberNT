@@ -398,6 +398,12 @@ static void TestSnapZones(void)
     UserSnapRect(&work, HTLEFT, 960, 1004, &win);
     ok(UserSnapEdgeFromRect(HTLEFT, &win, &work) == HTLEFT, "a half reads back as a half\n");
     ok(UserSnapEdgeFromRect(HTNOWHERE, &win, &work) == HTNOWHERE, "an unsnapped window stays unsnapped\n");
+    win.bottom -= 16;
+    ok(UserSnapEdgeFromRect(HTLEFT, &win, &work) == HTLEFT, "a half stays a half when the work area grows under it\n");
+    UserSnapRect(&work, HTBOTTOMRIGHT, 960, 502, &win);
+    work.bottom += 16;
+    ok(UserSnapEdgeFromRect(HTRIGHT, &win, &work) == HTBOTTOMRIGHT, "a bottom quarter stays one when the work area grows\n");
+    work.bottom -= 16;
     ok(UserSnapIsQuarter(HTBOTTOMRIGHT) && !UserSnapIsQuarter(HTRIGHT) && UserSnapIsLeft(HTBOTTOMLEFT) &&
            !UserSnapIsLeft(HTTOPRIGHT),
        "edge classification\n");

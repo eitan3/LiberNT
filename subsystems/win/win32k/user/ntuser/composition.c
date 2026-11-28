@@ -3289,7 +3289,7 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
     PWND pwndDesktop, pwndChild;
     PPDEVOBJ ppdev;
     SIZEL sizl = {0, 0};
-    ULONG count = 0, blurRectCount = 0, n = 0, i, OutputBytes;
+    ULONG count = 0, blurRectCount = 0, n = 0, i, OutputBytes, LiberFade;
     LONGLONG now = (LONGLONG)KeQueryInterruptTime();
     LONG dirty, fullDamage;
     BOOL DeferredDamage = FALSE;
@@ -3755,6 +3755,7 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
                 IntCompositionStartTransition(e, w, Request, now);
             }
         }
+        LiberFade = 255;
         g_DwmFrameWindows[count].AnimFlags = 0;
         g_DwmFrameWindows[count].AnimX = 0;
         g_DwmFrameWindows[count].AnimY = 0;
@@ -3777,12 +3778,7 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
                 {
                     ULONG Travel = AnimFlags == DWM_ANIM_MINIMIZE ? e->AnimProgress
                                                                   : COMPOSITION_ANIM_SCALE - e->AnimProgress;
-                    ULONG Fade = DwmLiberMinimizeAlpha(Travel, COMPOSITION_ANIM_SCALE);
-                    if (Fade < 255)
-                    {
-                        g_DwmFrameWindows[count].Alpha = (g_DwmFrameWindows[count].Alpha * Fade) / 255;
-                        g_DwmFrameWindows[count].LayerFlags |= DWM_LWA_ALPHA;
-                    }
+                    LiberFade = DwmLiberMinimizeAlpha(Travel, COMPOSITION_ANIM_SCALE);
                 }
                 g_DwmFrameWindows[count].AnimFlags = AnimFlags;
                 g_DwmFrameWindows[count].AnimX = rcAnim.left;
@@ -3871,6 +3867,12 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
             {
                 g_DwmFrameWindows[count].Alpha =
                     (g_DwmFrameWindows[count].Alpha * TransAlpha) / 255;
+                g_DwmFrameWindows[count].LayerFlags |= DWM_LWA_ALPHA;
+            }
+            ASSERT(LiberFade <= 255);
+            if (LiberFade < 255)
+            {
+                g_DwmFrameWindows[count].Alpha = (g_DwmFrameWindows[count].Alpha * LiberFade) / 255;
                 g_DwmFrameWindows[count].LayerFlags |= DWM_LWA_ALPHA;
             }
         }

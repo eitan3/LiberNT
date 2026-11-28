@@ -318,8 +318,7 @@ IntGetWindowSnapEdge(PWND Wnd)
         Side = HTRIGHT;
     else
         return HTNOWHERE;
-    /* FIXME: Windows 11 keeps a quarter snap in state LiberNT has no field for, so it is read back
-     * from the window rect, and a minimized quarter restores as a half */
+    /* FIXME: no field holds a quarter snap, so it is read from the rect; a minimized quarter restores as a half */
     if (Wnd->style & WS_MINIMIZE)
         return Side;
     UserSystemParametersInfo(SPI_GETWORKAREA, 0, &wa, 0); /* FIXME: MultiMon of PWND */
