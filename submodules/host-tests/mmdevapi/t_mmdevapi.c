@@ -940,6 +940,10 @@ check_default_pick(void)
     CHECK(picked == NULL);
     picked = PICK(0);
     CHECK(picked == NULL);
+    /* the answer without a default: not found as Windows answers it, which a caller may test for, and not E_NOTFOUND (N16-05) */
+    CHECK_EQ((DWORD)notif_default_result(NULL), (DWORD)0x80070490);
+    CHECK((DWORD)notif_default_result(NULL) != (DWORD)0x80004005);
+    CHECK_EQ((DWORD)notif_default_result(&set.devices[SPEAKER]), (DWORD)0);
 
 #undef PICK
 }
