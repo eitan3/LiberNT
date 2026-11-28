@@ -39,6 +39,100 @@ DsploopTolerance(
     return ValidBits == 16 ? 1 : 0;
 }
 
+/* The whole decibels from 0 to -96, each the rounded 2^31 x 10^(-dB/20): stream.c IntcDspGainTable */
+static const uint32_t GainTable[97] =
+{
+    0x7FFFFFFF, 0x721482C0, 0x65AC8C2F, 0x5A9DF7AC, 0x50C335D4, 0x47FACCF0,
+    0x4026E73D, 0x392CED8E, 0x32F52CFF, 0x2D6A866F, 0x287A26C5, 0x241346F6,
+    0x2026F310, 0x1CA7D768, 0x198A1357, 0x16C310E3, 0x144960C5, 0x12149A60,
+    0x101D3F2E, 0x0E5CA14C, 0x0CCCCCCD, 0x0B68737A, 0x0A2ADAD2, 0x090FCBF8,
+    0x08138562, 0x0732AE18, 0x066A4A53, 0x05B7B15B, 0x05188480, 0x048AA70B,
+    0x040C3714, 0x039B8719, 0x0337184E, 0x02DD958A, 0x028DCEBC, 0x0246B4E4,
+    0x0207567A, 0x01CEDC3D, 0x019C8651, 0x016FA9BB, 0x0147AE14, 0x01240B8C,
+    0x01044915, 0x00E7FACC, 0x00CEC08A, 0x00B8449C, 0x00A43AA2, 0x00925E89,
+    0x008273A6, 0x007443E8, 0x00679F1C, 0x005C5A4F, 0x00524F3B, 0x00495BC1,
+    0x00416179, 0x003A454A, 0x0033EF0C, 0x002E4939, 0x002940A2, 0x0024C42C,
+    0x0020C49C, 0x001D345B, 0x001A074F, 0x001732AE, 0x0014ACDB, 0x00126D43,
+    0x00106C43, 0x000EA30E, 0x000D0B91, 0x000BA064, 0x000A5CB6, 0x00093C3B,
+    0x00083B20, 0x000755FA, 0x000689BF, 0x0005D3BB, 0x00053181, 0x0004A0EC,
+    0x00042010, 0x0003AD38, 0x000346DC, 0x0002EBA3, 0x00029A55, 0x000251DE,
+    0x00021149, 0x0001D7BA, 0x0001A46D, 0x000176B5, 0x00014DF5, 0x000129A4,
+    0x00010945, 0x0000EC6C, 0x0000D2B6, 0x0000BBCC, 0x0000A760, 0x0000952C,
+    0x000084F3
+};
+
+uint32_t
+DsploopGainWord(
+    int32_t Level,
+    int Mute)
+{
+    uint32_t Down, Whole, Part;
+    uint64_t Low, High;
+
+    if (Mute)
+        return 0;
+    if (Level >= 0)
+        return DSPLOOP_GAIN_UNITY;
+    Down = (uint32_t)-(int64_t)Level;
+    if (Down >= (uint32_t)(96 * 65536))
+        return GainTable[96];
+    Whole = Down / 65536;
+    Part = Down % 65536;
+    Low = GainTable[Whole];
+    if (Part == 0)
+        return (uint32_t)Low;
+    High = GainTable[Whole + 1];
+    return (uint32_t)((Low * (65536 - Part) + High * Part + 32768) / 65536);
+}
+
+/* One sample in its container as the gain forwards it: stream.c IntcDspGainApply, the same arithmetic */
+static
+int32_t
+GainApply(
+    int32_t Sample,
+    int ContainerBits,
+    uint32_t Gain)
+{
+    int64_t Wide, Product;
+    int Shift = 32 - ContainerBits;
+
+    if (Gain == DSPLOOP_GAIN_UNITY)
+        return Sample;
+    Wide = (int64_t)Sample * ((int64_t)1 << Shift);
+    Product = ((Wide * (int64_t)Gain) + ((int64_t)1 << 30)) >> 31;
+    if (Product > (int64_t)0x7FFFFFFF)
+        Product = (int64_t)0x7FFFFFFF;
+    else if (Product < -(int64_t)0x80000000)
+        Product = -(int64_t)0x80000000;
+    return (int32_t)(Product >> Shift);
+}
+
+int32_t
+DsploopToneSampleAtGain(
+    uint32_t Frame,
+    int ContainerBits,
+    int ValidBits,
+    uint32_t Gain)
+{
+    int32_t Sample = DsploopToneSample(Frame, ValidBits);
+    int Raise = ContainerBits - ValidBits;
+
+    /* the tone in its container, the valid bits in the container's top as the tone is stored */
+    if (Raise != 0)
+        Sample = (int32_t)((int64_t)Sample * ((int64_t)1 << Raise));
+    Sample = GainApply(Sample, ContainerBits, Gain);
+    /* back in the units of the valid bits: the captured word's upper bits are the valid ones (CapturedSample), an arithmetic shift as there */
+    return Raise != 0 ? Sample >> Raise : Sample;
+}
+
+int
+DsploopToleranceAtGain(
+    int ValidBits,
+    uint32_t Gain)
+{
+    return Gain == DSPLOOP_GAIN_UNITY ? DsploopTolerance(ValidBits) : DsploopTolerance(ValidBits) + 1;
+}
+
 /* One captured sample in the units of its valid bits: a little-endian word, of which the upper bits are valid when there are 24 of them in 32 */
 static
 int32_t
@@ -68,6 +162,23 @@ DsploopCompare(
     uint32_t Frames,
     uint32_t MaxOffset,
     int Tolerance,
+    DSPLOOP_MATCH* Match)
+{
+    return DsploopCompareAtGain(Captured, CapturedFrames, Channels, ContainerBits, ValidBits, Frames, MaxOffset, Tolerance,
+                                DSPLOOP_GAIN_UNITY, Match);
+}
+
+int
+DsploopCompareAtGain(
+    const uint8_t* Captured,
+    uint32_t CapturedFrames,
+    unsigned Channels,
+    int ContainerBits,
+    int ValidBits,
+    uint32_t Frames,
+    uint32_t MaxOffset,
+    int Tolerance,
+    uint32_t Gain,
     DSPLOOP_MATCH* Match)
 {
     uint32_t FrameBytes = Channels * (unsigned)(ContainerBits / 8);
@@ -103,7 +214,7 @@ DsploopCompare(
         {
             for (C = 0; C < Channels; C++)
             {
-                int32_t Expected = DsploopToneSample(F, ValidBits);
+                int32_t Expected = DsploopToneSampleAtGain(F, ContainerBits, ValidBits, Gain);
                 int32_t Got = CapturedSample(Captured + (size_t)(First + F) * FrameBytes + C * (unsigned)(ContainerBits / 8), ContainerBits, ValidBits);
                 int64_t Error = Got > Expected ? (int64_t)Got - Expected : (int64_t)Expected - Got;
 
@@ -129,7 +240,7 @@ DsploopCompare(
     {
         for (C = 0; C < Channels; C++)
         {
-            int32_t Expected = DsploopToneSample(F, ValidBits);
+            int32_t Expected = DsploopToneSampleAtGain(F, ContainerBits, ValidBits, Gain);
             int32_t Got = CapturedSample(Captured + (size_t)(Match->Offset + F) * FrameBytes + C * (unsigned)(ContainerBits / 8),
                                          ContainerBits, ValidBits);
             int64_t Error = Got > Expected ? (int64_t)Got - Expected : (int64_t)Expected - Got;

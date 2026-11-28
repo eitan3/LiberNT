@@ -16,11 +16,13 @@
 #include <initguid.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <endpointvolume.h>
 #include <mmreg.h>
 #include <ks.h>
 #include <ksmedia.h>
 #include <devicetopology.h>
 #include <conio.h>
+#include <math.h>
 #include <stdlib.h>
 #include "compare.h"
 
@@ -269,6 +271,7 @@ RunLoop(
     IMMDevice *RenderDevice,
     IMMDevice *CaptureDevice,
     WORD ValidBits,
+    uint32_t Gain,
     const char *Label)
 {
     WAVEFORMATEXTENSIBLE Format;
@@ -281,8 +284,8 @@ RunLoop(
     DWORD Flags, Deadline, Wait, Started = 0, Elapsed = 0;
     UINT64 DevicePosition, QpcPosition;
     HRESULT hr;
-    /* one LSB at 16 valid bits: the render engine dithers its 16-bit narrowing; exact at 24 and 32 */
-    int Tolerance = DsploopTolerance(ValidBits);
+    /* the engine's dither at 16 valid bits, and under a gain the gain's rounding too: one unit more (DsploopToleranceAtGain) */
+    int Tolerance = DsploopToleranceAtGain(ValidBits, Gain);
     int Result = DSPLOOP_FAILED;
 
     ZeroMemory(&Render, sizeof(Render));
@@ -412,19 +415,20 @@ Stopped:
     trace("dsploop%s: %u frames of the tone rendered, %u frames captured in %lu ms\n", Label, Written, Captured, Elapsed);
 
     Held = Captured < DSPLOOP_CAPTURE_FRAMES ? Captured : DSPLOOP_CAPTURE_FRAMES;
-    DsploopCompare(Ring, Held, DSPLOOP_CHANNELS, Wave->wBitsPerSample, ValidBits, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, Tolerance, &Match);
+    DsploopCompareAtGain(Ring, Held, DSPLOOP_CHANNELS, Wave->wBitsPerSample, ValidBits, DSPLOOP_FRAMES, DSPLOOP_MAX_OFFSET, Tolerance, Gain, &Match);
     if (!Match.Matched)
     {
         if (Match.FirstDifference == DSPLOOP_NO_DIFFERENCE)
             trace("dsploop%s: %u frames captured, too few to hold the tone's first cycle\n", Label, Held);
         else
-            trace("dsploop%s: no frame within %u matches the tone's first cycle; from the first frame, first differing sample %u (channel %u): expected %d, captured %d\n",
-                  Label, (UINT32)DSPLOOP_MAX_OFFSET, Match.FirstDifference, Match.Channel, Match.Expected, Match.Captured);
+            trace("dsploop%s: no frame within %u matches the tone's first cycle%s; from the first frame, first differing sample %u (channel %u): expected %d, captured %d\n",
+                  Label, (UINT32)DSPLOOP_MAX_OFFSET, Gain != DSPLOOP_GAIN_UNITY ? " as the gain forwards it" : "", Match.FirstDifference, Match.Channel, Match.Expected, Match.Captured);
         ok(0, "dsploop%s: the tone was not captured (%u frames)\n", Label, Held);
     }
     else
     {
-        trace("dsploop%s: %u frames compared within %d LSB, max abs error %I64d, offset %u%s\n", Label, Match.Compared, Tolerance, Match.MaxError, Match.Offset,
+        trace("dsploop%s: %u frames compared within %d LSB, max abs error %I64d, offset %u%s%s\n", Label, Match.Compared, Tolerance, Match.MaxError, Match.Offset,
+              Gain != DSPLOOP_GAIN_UNITY ? ", the expectation scaled by the gain" : "",
               Match.FirstDifference == DSPLOOP_NO_DIFFERENCE ? ", ok" : "");
         if (Match.FirstDifference != DSPLOOP_NO_DIFFERENCE)
             trace("dsploop%s: first sample beyond %d LSB %u after the offset (channel %u): expected %d, captured %d\n",
@@ -518,6 +522,12 @@ START_TEST(dsploop)
     UINT RunsCompared = 0;
     int Result;
     BOOL Held = FALSE;
+    /* the gain the DSP forwards the PCM's streams at: the endpoint's master volume and mute as the driver keeps them (N14-02) */
+    IAudioEndpointVolume *Volume = NULL;
+    float LevelDb = 0.0f;
+    BOOL Mute = FALSE;
+    LONG Level = 0;
+    uint32_t Gain = DSPLOOP_GAIN_UNITY;
 
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     ok(SUCCEEDED(hr), "CoInitializeEx: 0x%08lx\n", hr);
@@ -539,6 +549,23 @@ START_TEST(dsploop)
         apitest_missing("dsploop: no active capture endpoint of the DSP's PCM (" DSPPCM_ID_TEXT "; 0x%08lx)\n", hr);
         goto Done;
     }
+    /* the level the stream starts at is the driver's, in 1/65536 dB (the node's range), read as decibels and rounded back; a volume the endpoint does not give leaves the expectation unscaled and a failure */
+    hr = IMMDevice_Activate(Render, &IID_IAudioEndpointVolume, CLSCTX_ALL, NULL, (void **)&Volume);
+    if (SUCCEEDED(hr))
+    {
+        hr = IAudioEndpointVolume_GetMasterVolumeLevel(Volume, &LevelDb);
+        if (SUCCEEDED(hr))
+            hr = IAudioEndpointVolume_GetMute(Volume, &Mute);
+        IAudioEndpointVolume_Release(Volume);
+    }
+    ok(hr == S_OK, "dsploop: the endpoint's master volume 0x%08lx\n", hr);
+    if (hr == S_OK)
+    {
+        Level = (LONG)floorf(LevelDb * 65536.0f + 0.5f);
+        Gain = DsploopGainWord(Level, Mute);
+    }
+    trace("dsploop: the endpoint's master volume %.2f dB (level %ld), mute %d: the expectation scaled by the gain 0x%08x, the tolerance %d LSB\n",
+          LevelDb, Level, Mute, Gain, DsploopToleranceAtGain(16, Gain));
     /* the hold (N12-03): one pin open and not running, the runs not made, their count not judged */
     if (HoldSeconds() != 0)
     {
@@ -548,7 +575,7 @@ START_TEST(dsploop)
     }
     for (I = 0; I < ARRAY_SIZE(Runs); I++)
     {
-        Result = RunLoop(Render, Capture, Runs[I].ValidBits, Runs[I].Label);
+        Result = RunLoop(Render, Capture, Runs[I].ValidBits, Gain, Runs[I].Label);
         RunsCompared += Result == DSPLOOP_OK;
         /* the plan's stop rule: a run that does not match ends the test at its first differing sample; a format the engine refuses is a skip, counted by the harness */
         if (Result == DSPLOOP_FAILED)

@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include "compare.h"
 
 /* The run's parameters, as the apitest has them (dsploop.c): one second of tone, a second of latency at most, the capture holding both */
@@ -524,6 +525,116 @@ CheckMidCycle(
     }
 }
 
+/*
+ * The gain (N14-02): the word of a level is the driver's table's, the tone
+ * as the gain forwards it is the driver's arithmetic (stream.c
+ * IntcDspGainApply, the plan's -6 dB figure), and a capture at a level
+ * compares against the scaled tone where the unscaled one finds no match.
+ */
+static
+void
+CheckGain(
+    void)
+{
+    /* container and valid bits of the three depths */
+    static const int Depths[3][2] = { {16, 16}, {32, 24}, {32, 32} };
+    const uint32_t Minus6 = 0x4026E73Du, Half = 0x40000000u;
+    uint8_t* Data;
+    DSPLOOP_MATCH Match;
+    uint32_t F, N;
+    int D;
+
+    /* the table: unity at 0 and above, the whole decibels the table's words, -96 dB and below the last word, muted 0 */
+    CHECK_EQ(DsploopGainWord(0, 0), DSPLOOP_GAIN_UNITY);
+    CHECK_EQ(DsploopGainWord(100 * 65536, 0), DSPLOOP_GAIN_UNITY);
+    CHECK_EQ(DsploopGainWord(-6 * 65536, 0), Minus6);
+    CHECK_EQ(DsploopGainWord(-1 * 65536, 0), 0x721482C0);
+    CHECK_EQ(DsploopGainWord(-96 * 65536, 0), 0x84F3);
+    CHECK_EQ(DsploopGainWord(-200 * 65536, 0), 0x84F3);
+    CHECK_EQ(DsploopGainWord(-6 * 65536, 1), 0);
+    /* between two decibels: the straight line between their words, -5.5 dB halfway between the -5 and the -6 ones, the mean rounded up; a hair from -6 the -6 word less a sixteenth five hundred and thirty fifths of the way */
+    CHECK_EQ(DsploopGainWord(-5 * 65536, 0), 0x47FACCF0);
+    CHECK_EQ(DsploopGainWord(-5 * 65536 - 32768, 0), (int32_t)(((int64_t)0x47FACCF0 + Minus6 + 1) / 2));
+    CHECK_EQ(DsploopGainWord(-6 * 65536 + 1, 0), (int32_t)(((int64_t)0x47FACCF0 + (int64_t)Minus6 * 65535 + 32768) / 65536));
+    /* the word falls with the level, and the whole decibels are 2^31 x 10^(-dB/20) within a unit */
+    for (F = 0; F < 96; F++)
+    {
+        double Linear = pow(10.0, -(double)F / 20.0);
+
+        CHECK(DsploopGainWord(-(int32_t)(F * 65536), 0) > DsploopGainWord(-(int32_t)((F + 1) * 65536), 0));
+        CHECK(fabs((double)DsploopGainWord(-(int32_t)(F * 65536), 0) / 2147483648.0 - Linear) <= 1.0 / 2147483648.0);
+    }
+    /* unity is the sample itself at every depth, mute is silence */
+    for (D = 0; D < 3; D++)
+        for (F = 0; F < 48; F++)
+        {
+            CHECK_EQ(DsploopToneSampleAtGain(F, Depths[D][0], Depths[D][1], DSPLOOP_GAIN_UNITY), DsploopToneSample(F, Depths[D][1]));
+            CHECK_EQ(DsploopToneSampleAtGain(F, Depths[D][0], Depths[D][1], 0), 0);
+        }
+    /* an exact half in Q1.31: the whole halves, and the odd ones the shift's floor: 2139 to 1069, -2139 to -1070; at 24 valid in 32 and at 32 the halves are whole */
+    CHECK_EQ(DsploopToneSampleAtGain(12, 16, 16, Half), 8192);
+    CHECK_EQ(DsploopToneSampleAtGain(1, 16, 16, Half), 1069);
+    CHECK_EQ(DsploopToneSampleAtGain(25, 16, 16, Half), -1070);
+    CHECK_EQ(DsploopToneSampleAtGain(12, 32, 24, Half), DsploopToneSample(12, 24) / 2);
+    CHECK_EQ(DsploopToneSampleAtGain(12, 32, 32, Half), DsploopToneSample(12, 32) / 2);
+    /* the driver's arithmetic at the plan's figure, every depth and frame: the container's whole times the word, rounded, over 2^31, back in the container */
+    for (D = 0; D < 3; D++)
+    {
+        int Shift = 32 - Depths[D][0], Raise = Depths[D][0] - Depths[D][1];
+
+        for (F = 0; F < 48; F++)
+        {
+            int64_t Sample = (int64_t)DsploopToneSample(F, Depths[D][1]) * ((int64_t)1 << Raise);
+            double Wide = (double)Sample * (double)((int64_t)1 << Shift);
+            double Product = floor((Wide * 1076291389.0 + 1073741824.0) / 2147483648.0);
+            int64_t Expected = (int64_t)floor(Product / (double)((int64_t)1 << Shift)) >> Raise;
+
+            CHECK_EQ(DsploopToneSampleAtGain(F, Depths[D][0], Depths[D][1], Minus6), Expected);
+        }
+    }
+    /* the tolerance: the tone's own at unity, one unit more under a gain */
+    CHECK_EQ(DsploopToleranceAtGain(16, DSPLOOP_GAIN_UNITY), 1);
+    CHECK_EQ(DsploopToleranceAtGain(24, DSPLOOP_GAIN_UNITY), 0);
+    CHECK_EQ(DsploopToleranceAtGain(16, Minus6), 2);
+    CHECK_EQ(DsploopToleranceAtGain(32, Minus6), 1);
+    CHECK_EQ(DsploopToleranceAtGain(16, 0), 2);
+    /* a capture at -6 dB in 16 bits: compared against the scaled tone it matches from the first frame, every sample exact; the unscaled tone finds no window in it */
+    Data = (uint8_t*)calloc(200, 4);
+    CHECK(Data != NULL);
+    if (Data)
+    {
+        for (N = 0; N < 100; N++)
+            for (D = 0; D < 2; D++)
+                StoreSample(Data + N * 4 + D * 2, 16, 16, DsploopToneSampleAtGain(N, 16, 16, Minus6));
+        DsploopCompareAtGain(Data, 200, 2, 16, 16, 100, 48000, 2, Minus6, &Match);
+        CHECK(Match.Matched && Match.Offset == 0 && Match.Compared == 100 && Match.FirstDifference == DSPLOOP_NO_DIFFERENCE);
+        CHECK_EQ(Match.MaxError, 0);
+        DsploopCompare(Data, 200, 2, 16, 16, 100, 10, 2, &Match);
+        CHECK(!Match.Matched);
+        /* one sample off by three units past the first window is found at its frame, its expected the scaled tone's, the offset kept */
+        WriteSample(Data, 2, 16, 16, 60, 1, DsploopToneSampleAtGain(60, 16, 16, Minus6) + 3);
+        DsploopCompareAtGain(Data, 200, 2, 16, 16, 100, 48000, 2, Minus6, &Match);
+        CHECK(Match.Matched && Match.Offset == 0 && Match.FirstDifference == 60 && Match.Channel == 1);
+        CHECK_EQ(Match.Expected, DsploopToneSampleAtGain(60, 16, 16, Minus6));
+        free(Data);
+    }
+    /* the same at 24 valid in 32 */
+    Data = (uint8_t*)calloc(200, 8);
+    CHECK(Data != NULL);
+    if (Data)
+    {
+        for (N = 0; N < 100; N++)
+            for (D = 0; D < 2; D++)
+                StoreSample(Data + N * 8 + D * 4, 32, 24, DsploopToneSampleAtGain(N, 32, 24, Minus6));
+        DsploopCompareAtGain(Data, 200, 2, 32, 24, 100, 48000, 1, Minus6, &Match);
+        CHECK(Match.Matched && Match.Offset == 0 && Match.Compared == 100 && Match.FirstDifference == DSPLOOP_NO_DIFFERENCE);
+        CHECK_EQ(Match.MaxError, 0);
+        DsploopCompare(Data, 200, 2, 32, 24, 100, 10, 0, &Match);
+        CHECK(!Match.Matched);
+        free(Data);
+    }
+}
+
 int
 main(
     void)
@@ -534,6 +645,7 @@ main(
     CheckDamaged();
     CheckNoMatch();
     CheckMidCycle();
+    CheckGain();
     printf("dsploop: %d checks, %d failures\n", Checks, Failures);
     return Failures != 0;
 }
