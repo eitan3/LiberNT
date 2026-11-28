@@ -78,6 +78,7 @@
 *.psd binary
 *.ttc binary
 *.ttf binary
+*.ucode binary
 *.wav binary
 *.xcf binary
 
