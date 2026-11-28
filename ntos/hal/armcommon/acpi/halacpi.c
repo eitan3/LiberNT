@@ -2353,8 +2353,9 @@ HalpAcpiMcfgFromDeviceTree(
             !FdtReadCells(Property, Length, Base + 3, ParentCells, &CpuAddress) ||
             !FdtReadCells(Property, Length, Base + 3 + ParentCells, 2, &WindowSize))
             break;
-        if (((Flags >> 24) & 3) < 2 || !WindowSize)
+        if (((Flags >> 24) & 3) == 0 || !WindowSize)
             continue;
+        HalpArm64PciWindows[HalpArm64PciWindowCount].Io = (((Flags >> 24) & 3) == 1);
         HalpArm64PciWindows[HalpArm64PciWindowCount].FirstBus = FirstBus;
         HalpArm64PciWindows[HalpArm64PciWindowCount].LastBus = LastBus;
         HalpArm64PciWindows[HalpArm64PciWindowCount].BusBase = BusAddress;

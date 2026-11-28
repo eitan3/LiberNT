@@ -1408,6 +1408,45 @@ HalpRecordPciMaxGsi(
     }
 }
 
+static
+VOID
+HalpArm64AddPciIoWindow(
+    _In_ ULONG FirstBus,
+    _In_ ULONG LastBus,
+    _In_ ULONG64 BusBase,
+    _In_ ULONG64 CpuBase,
+    _In_ ULONG64 Size)
+{
+    ULONG Count = HalpArm64PciWindowCount;
+    ULONG Index;
+    PHALP_ARM64_PCI_WINDOW Window;
+
+    ASSERT(Size != 0);
+    ASSERT(FirstBus <= LastBus);
+
+    for (Index = 0; Index < Count; ++Index)
+    {
+        Window = &HalpArm64PciWindows[Index];
+        if (Window->Io && Window->FirstBus == FirstBus && Window->LastBus == LastBus && Window->BusBase == BusBase)
+            return;
+    }
+    if (Count >= HALP_ARM64_MAX_PCI_WINDOWS)
+    {
+        DPRINT1("[arm64][PCI] No room for the I/O window of buses %lu-%lu\n", FirstBus, LastBus);
+        return;
+    }
+
+    Window = &HalpArm64PciWindows[Count];
+    Window->FirstBus = FirstBus;
+    Window->LastBus = LastBus;
+    Window->BusBase = BusBase;
+    Window->CpuBase = CpuBase;
+    Window->Size = Size;
+    Window->Io = TRUE;
+    WriteRelease((volatile LONG *)&HalpArm64PciWindowCount, (LONG)(Count + 1));
+    DPRINT1("[arm64][PCI]   I/O ports 0x%I64x+0x%I64x decode at CPU 0x%I64x\n", BusBase, Size, CpuBase);
+}
+
 VOID
 NTAPI
 HalpConfigurePciRootBridge(
@@ -1475,6 +1514,15 @@ HalpConfigurePciRootBridge(
         Root->BusEnd = (UCHAR)Info->BusEnd;
         Root->ConfigSpaceBasePresent = Info->ConfigSpaceBasePresent;
         Root->ConfigSpaceBase = Info->ConfigSpaceBase;
+    }
+
+    if (Info->IoWindow.Present && Info->IoWindow.HasTranslation && Info->IoWindow.Limit >= Info->IoWindow.Base)
+    {
+        HalpArm64AddPciIoWindow(Info->BusStart,
+                                Info->BusEnd,
+                                Info->IoWindow.Base,
+                                Info->IoWindow.Base + Info->IoWindow.Translation,
+                                Info->IoWindow.Limit - Info->IoWindow.Base + 1);
     }
 
     /*
@@ -6470,27 +6518,36 @@ HalpTranslateBusAddress(
     _Out_ PPHYSICAL_ADDRESS TranslatedAddress)
 {
     ULONG Index;
+    ULONG WindowCount;
+    BOOLEAN Io;
 
     if (TranslatedAddress)
     {
         TranslatedAddress->QuadPart = BusAddress.QuadPart;
     }
-    if (InterfaceType != PCIBus || (AddressSpace && *AddressSpace != 0) || !TranslatedAddress)
+    if (InterfaceType != PCIBus || !TranslatedAddress)
+        return TRUE;
+    Io = (AddressSpace && *AddressSpace == 1);
+    if (AddressSpace && *AddressSpace != 0 && !Io)
         return TRUE;
 
-    for (Index = 0; Index < HalpArm64PciWindowCount; ++Index)
+    WindowCount = ReadAcquire((volatile LONG *)&HalpArm64PciWindowCount);
+    for (Index = 0; Index < WindowCount; ++Index)
     {
         PHALP_ARM64_PCI_WINDOW Window = &HalpArm64PciWindows[Index];
 
-        if (BusNumber >= Window->FirstBus && BusNumber <= Window->LastBus &&
+        if (Window->Io == Io &&
+            BusNumber >= Window->FirstBus && BusNumber <= Window->LastBus &&
             (ULONG64)BusAddress.QuadPart >= Window->BusBase &&
             (ULONG64)BusAddress.QuadPart - Window->BusBase < Window->Size)
         {
             TranslatedAddress->QuadPart = (LONGLONG)(Window->CpuBase + ((ULONG64)BusAddress.QuadPart - Window->BusBase));
-            break;
+            if (Io)
+                *AddressSpace = 0;
+            return TRUE;
         }
     }
-    return TRUE;
+    return !Io;
 }
 
 BOOLEAN
