@@ -782,6 +782,16 @@ static void TestShadow()
         GetWindowRect(shadow->Window(), &rc);
         ok(rc.left == -1400 - 48, "the shadow follows a move: %ld\n", rc.left);
 
+        surface.SetElevation(-1, 0.0f);
+        ok(!IsWindowVisible(shadow->Window()), "dropping the elevation hides the shadow at once\n");
+        surface.SetPosition(-1300, -1500, 100, 60);
+        surface.Render(0);
+        ok(!IsWindowVisible(shadow->Window()), "and it stays hidden after a move\n");
+        surface.SetElevation(LIBER_ELEVATION_E32, 8.0f);
+        surface.Render(0);
+        GetWindowRect(shadow->Window(), &rc);
+        ok(IsWindowVisible(shadow->Window()) && rc.left == -1300 - 48, "restoring it shows the shadow in place\n");
+
         ShowWindow(surface.Window(), SW_HIDE);
         ok(!IsWindowVisible(shadow->Window()), "the shadow hides with the surface\n");
     }

@@ -207,6 +207,8 @@ void Surface::SetElevation(int elevation, float radiusDip)
         m_ShadowWidget->Radius = radiusDip;
         m_ShadowWidget->Invalidate();
     }
+    if (elevation < 0 && m_Shadow && m_Shadow->Window())
+        ShowWindow(m_Shadow->Window(), SW_HIDE);
     SetRectEmpty(&m_Placed);
 }
 
