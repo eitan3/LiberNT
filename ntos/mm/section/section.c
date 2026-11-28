@@ -2410,7 +2410,7 @@ MiMapViewInternal(
     BOOLEAN TargetsInvalid = (BOOLEAN)((Protection & MI_PROT_CFG_NO_UPDATE) != 0);
 
     Protection &= ~MI_PROT_CFG_NO_UPDATE;
-    if ((SectionOffset & (Space->Granularity - 1)) ||
+    if ((SectionOffset & ((Replace ? PAGE_SIZE : Space->Granularity) - 1)) ||
         (Start & (((Replace || PageGranular) ? PAGE_SIZE : Space->Granularity) - 1)) ||
         (Replace && (Start == 0 || (AllocationType & MI_MEM_LARGE_PAGES))))
         return STATUS_INVALID_PARAMETER;

@@ -2379,7 +2379,7 @@ MiMapSectionView(
     }
     else
     {
-        ULONG64 Delta = Offset & (Space->Granularity - 1);
+        ULONG64 Delta = Offset & (((AllocationType & MEM_REPLACE_PLACEHOLDER) ? PAGE_SIZE : Space->Granularity) - 1);
         ULONG64 SectionSize = (ULONG64)Section->SizeOfSection.QuadPart;
 
         if (Offset >= SectionSize || Size > ~0ULL - Offset ||
@@ -3176,8 +3176,9 @@ NtMapViewOfSection(
         Status = STATUS_INVALID_PARAMETER;
     }
     else if (!Section->Control->Physical && !(AllocationType & MEM_DOS_LIM) &&
-             ((((AllocationType & MEM_REPLACE_PLACEHOLDER) ? 0 : (ULONG_PTR)SafeBase) |
-               (ULONG64)SafeOffset.QuadPart) & (MiSpaceOfProcess(Process)->Granularity - 1)))
+             (((AllocationType & MEM_REPLACE_PLACEHOLDER) ?
+               ((ULONG64)SafeOffset.QuadPart & (PAGE_SIZE - 1)) :
+               (((ULONG_PTR)SafeBase | (ULONG64)SafeOffset.QuadPart) & (MiSpaceOfProcess(Process)->Granularity - 1)))))
     {
         Status = STATUS_MAPPED_ALIGNMENT;
     }

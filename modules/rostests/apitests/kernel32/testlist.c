@@ -2,6 +2,7 @@
 #define STANDALONE
 #include <apitest.h>
 
+extern void func_MapViewOfFile3(void);
 extern void func_TokenExports(void);
 extern void func_HeapGrowInPlace(void);
 extern void func_ExportForwarders(void);
@@ -489,6 +490,7 @@ const struct test winetest_testlist[] =
     { "WriteFileBadBuffer",          func_WriteFileBadBuffer },
     { "WriteFileSeekBack",           func_WriteFileSeekBack },
     { "XState",                      func_XState },
+    { "MapViewOfFile3", func_MapViewOfFile3 },
     { "TokenExports", func_TokenExports },
     { 0, 0 }
 };

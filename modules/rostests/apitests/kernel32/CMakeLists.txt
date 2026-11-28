@@ -253,6 +253,7 @@ list(APPEND SOURCE
 list(APPEND PCH_SKIP_SOURCE
     ../advapi32/svchlp.c
     FileSecurityCache.c
+    MapViewOfFile3.c
     TokenExports.c
     testlist.c)
 
