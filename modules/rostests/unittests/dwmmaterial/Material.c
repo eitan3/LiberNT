@@ -8,6 +8,7 @@
 #include <apitest.h>
 
 #include <windows.h>
+#include <math.h>
 
 #include "libermaterial.h"
 
@@ -124,10 +125,44 @@ static void TestBlur(void)
        DwmLiberMaxBlurRadius(96));
 }
 
+static void TestDim(void)
+{
+    static ULONG bits[8 * 8];
+    UINT i;
+    double dim;
+
+    ok(DwmLiberDimAmount(0.2) == 0.0 && DwmLiberDimAmount(0.32) == 0.0, "dark wallpapers are not dimmed\n");
+    ok(fabs(DwmLiberDimAmount(0.5) - 0.162) < 1e-9, "dimming grows past the threshold: %f\n", DwmLiberDimAmount(0.5));
+    ok(DwmLiberDimAmount(1.0) == 0.5 && DwmLiberDimAmount(0.9) == 0.5, "dimming stops at half\n");
+
+    for (i = 0; i < ARRAYSIZE(bits); i++)
+        bits[i] = 0xFF202020;
+    dim = DwmLiberDimBackdrop(bits, 8, 8, 8 * sizeof(ULONG), RGB(0, 0, 0));
+    ok(dim == 0.0 && bits[0] == 0xFF202020, "a dark backdrop is left alone: %f %08lX\n", dim, bits[0]);
+
+    for (i = 0; i < ARRAYSIZE(bits); i++)
+        bits[i] = 0xFFFFFFFF;
+    dim = DwmLiberDimBackdrop(bits, 8, 8, 8 * sizeof(ULONG), RGB(0, 0, 0));
+    ok(dim == 0.5 && bits[0] == 0xFF7F7F7F && bits[63] == 0xFF7F7F7F, "a white backdrop is dimmed by half: %08lX\n",
+       bits[0]);
+
+    for (i = 0; i < ARRAYSIZE(bits); i++)
+        bits[i] = 0xFFFFFFFF;
+    dim = DwmLiberDimBackdrop(bits, 8, 8, 8 * sizeof(ULONG), RGB(0x10, 0x20, 0xC8));
+    ok(dim == 0.5 && bits[0] == 0xFF878FE3, "a tinted dim adds the shade: %08lX\n", bits[0]);
+
+    for (i = 0; i < ARRAYSIZE(bits); i++)
+        bits[i] = 0x00FFFFFF;
+    DwmLiberDimBackdrop(bits, 8, 8, 8 * sizeof(ULONG), RGB(0, 0, 0));
+    ok((bits[0] & 0xFF000000) == 0, "alpha is kept\n");
+    ok(DwmLiberDimBackdrop(bits, 0, 8, 8 * sizeof(ULONG), 0) == 0.0, "an empty backdrop is not dimmed\n");
+}
+
 START_TEST(Material)
 {
     TestPacking();
     TestResolve();
     TestRejected();
     TestBlur();
+    TestDim();
 }

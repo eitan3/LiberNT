@@ -53,3 +53,25 @@ DwmLiberApplyMaterial(
 ULONG
 DwmLiberMaxBlurRadius(
     _In_ ULONG Dpi);
+
+typedef struct _DWM_LIBER_DIM
+{
+    BOOLEAN Enabled;
+    COLORREF Shade;
+} DWM_LIBER_DIM, *PDWM_LIBER_DIM;
+
+double
+DwmLiberDimAmount(
+    _In_ double AverageLuma);
+
+double
+DwmLiberDimBackdrop(
+    _Inout_ ULONG *Bits,
+    _In_ ULONG Width,
+    _In_ ULONG Height,
+    _In_ ULONG Stride,
+    _In_ COLORREF Shade);
+
+VOID
+DwmLiberReadDim(
+    _Out_ PDWM_LIBER_DIM Dim);

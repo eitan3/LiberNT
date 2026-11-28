@@ -157,6 +157,7 @@ VOID LiberShell_BuildLumaGrid(const DWORD *pPixels, UINT width, UINT height, flo
 BOOL LiberShell_GridLuma(const float *pGrid, SIZE image, const RECT *prcImage, double *pLuma);
 BOOL LiberShell_WallpaperPalette(LiberUI::PaletteResult *pPalette);
 LiberUI::Accent LiberShell_ResolveAccent(DWORD dwChoice, const LiberUI::PaletteResult *pPalette);
+COLORREF LiberShell_DimShade(LiberUI::Argb surfaceBase);
 BOOL LiberShell_BackdropLumaAt(const float *pGrid, SIZE image, UINT style, SIZE screen, const RECT *prcSurface,
                                const RECT *pOccluders, UINT cOccluders, double occluderLuma, double dim,
                                double *pLuma);

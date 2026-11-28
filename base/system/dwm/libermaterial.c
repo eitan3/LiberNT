@@ -103,6 +103,87 @@ DwmLiberMaxBlurRadius(
     return (ULONG)MulDiv((int)Radius, Dpi ? (int)Dpi : 96, 96);
 }
 
+double
+DwmLiberDimAmount(
+    _In_ double AverageLuma)
+{
+    double Dim = (AverageLuma - LIBER_DIM_THRESHOLD) * LIBER_DIM_SCALE;
+
+    return Dim < 0.0 ? 0.0 : Dim > LIBER_DIM_MAX ? LIBER_DIM_MAX : Dim;
+}
+
+double
+DwmLiberDimBackdrop(
+    _Inout_ ULONG *Bits,
+    _In_ ULONG Width,
+    _In_ ULONG Height,
+    _In_ ULONG Stride,
+    _In_ COLORREF Shade)
+{
+    double Sum = 0.0, Dim;
+    ULONG Samples = 0, X, Y, Keep, Add[3];
+
+    assert(Bits != NULL && Stride >= Width * sizeof(ULONG));
+    if (Bits == NULL || Width == 0 || Height == 0)
+        return 0.0;
+    for (Y = 0; Y < Height; Y += 4)
+    {
+        const ULONG *Row = (const ULONG *)((const BYTE *)Bits + (SIZE_T)Y * Stride);
+        for (X = 0; X < Width; X += 4)
+        {
+            ULONG Pixel = Row[X];
+            Sum += (0.2126 * ((Pixel >> 16) & 0xFF) + 0.7152 * ((Pixel >> 8) & 0xFF) + 0.0722 * (Pixel & 0xFF)) / 255.0;
+            Samples++;
+        }
+    }
+    Dim = DwmLiberDimAmount(Sum / Samples);
+    if (Dim <= 0.0)
+        return 0.0;
+    Keep = (ULONG)((1.0 - Dim) * 256.0 + 0.5);
+    Add[0] = (ULONG)(GetRValue(Shade) * Dim + 0.5);
+    Add[1] = (ULONG)(GetGValue(Shade) * Dim + 0.5);
+    Add[2] = (ULONG)(GetBValue(Shade) * Dim + 0.5);
+    for (Y = 0; Y < Height; ++Y)
+    {
+        ULONG *Row = (ULONG *)((BYTE *)Bits + (SIZE_T)Y * Stride);
+        for (X = 0; X < Width; ++X)
+        {
+            ULONG Pixel = Row[X];
+            ULONG R = ((((Pixel >> 16) & 0xFF) * Keep) >> 8) + Add[0];
+            ULONG G = ((((Pixel >> 8) & 0xFF) * Keep) >> 8) + Add[1];
+            ULONG B = (((Pixel & 0xFF) * Keep) >> 8) + Add[2];
+            Row[X] = (Pixel & 0xFF000000u) | (min(R, 255u) << 16) | (min(G, 255u) << 8) | min(B, 255u);
+        }
+    }
+    return Dim;
+}
+
+static DWORD
+DwmLiberReadDword(
+    _In_ PCWSTR Key,
+    _In_ PCWSTR Value,
+    _In_ DWORD Default)
+{
+    DWORD Data = Default, Size = sizeof(Data);
+
+    if (RegGetValueW(HKEY_CURRENT_USER, Key, Value, RRF_RT_REG_DWORD, NULL, &Data, &Size) != ERROR_SUCCESS)
+        return Default;
+    return Data;
+}
+
+VOID
+DwmLiberReadDim(
+    _Out_ PDWM_LIBER_DIM Dim)
+{
+    static const WCHAR Design[] = L"Software\\LiberNT\\Shell\\Design";
+
+    Dim->Enabled = DwmLiberReadDword(Design, L"Experience", 0) == 1 &&
+                   DwmLiberReadDword(L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                                     L"SystemUsesLightTheme", 1) == 0;
+    Dim->Shade = DwmLiberReadDword(Design, L"WallpaperDim", 0) == 1 ? DwmLiberReadDword(Design, L"DimShade", 0) & 0xFFFFFF
+                                                                   : RGB(0, 0, 0);
+}
+
 ULONG
 DwmLiberSolidColor(
     _In_ const DWM_LIBER_MATERIAL_INFO *Info)

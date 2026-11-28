@@ -637,6 +637,7 @@ START_TEST(Dock)
     TestLumaGrid();
     TestAccentChoice();
     TestBackdropLuma();
+    ok(LiberShell_DimShade(0xFF10171E) == RGB(0x10, 0x17, 0x1E), "the dim shade is the surface base color\n");
     TestPillWidth();
     TestStartDefaults();
     TestMenuDismiss();

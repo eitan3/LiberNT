@@ -812,4 +812,8 @@ BEGIN
     IDS_LIBER_ACCENT_GREEN "グリーン"
     IDS_LIBER_ACCENT_TEAL "ティール"
     IDS_LIBER_ACCENT_GRAPHITE "グラファイト"
+    IDS_LIBER_DIM "壁紙を暗くする"
+    IDS_LIBER_DIM_DESC "ダーク モードで明るい壁紙を暗くする方法"
+    IDS_LIBER_DIM_NEUTRAL "ニュートラル"
+    IDS_LIBER_DIM_TINTED "色付き"
 END

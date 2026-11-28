@@ -812,4 +812,8 @@ BEGIN
     IDS_LIBER_ACCENT_GREEN "Vert"
     IDS_LIBER_ACCENT_TEAL "Sarcelle"
     IDS_LIBER_ACCENT_GRAPHITE "Graphite"
+    IDS_LIBER_DIM "Assombrissement du fond d'écran"
+    IDS_LIBER_DIM_DESC "Comment un fond d'écran clair est assombri en mode sombre"
+    IDS_LIBER_DIM_NEUTRAL "Neutre"
+    IDS_LIBER_DIM_TINTED "Teinté"
 END

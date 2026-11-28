@@ -4942,6 +4942,14 @@ DwmComposeLoop(HANDLE hStopEvent)
                         forceFull = TRUE;
                         continue;
                     }
+                    else
+                    {
+                        DWM_LIBER_DIM dim;
+                        DwmLiberReadDim(&dim);
+                        GdiFlush();
+                        if (dim.Enabled)
+                            DwmLiberDimBackdrop((ULONG *)g_backdropBits, g_W, g_H, g_W * sizeof(ULONG), dim.Shade);
+                    }
                 }
 
                 QueryPerformanceCounter(&statFrameStart);

@@ -64,6 +64,13 @@ VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens)
                                     CurrentAccent(),
                                     (LiberUI::SurfaceTint)LiberExperience_SurfaceTint() };
     pTokens->Build(params);
+    if (pTokens->IsDark())
+        LiberExperience_SetDimShade(LiberShell_DimShade(pTokens->Color(LIBER_COLOR_SURFACE_BASE)));
+}
+
+COLORREF LiberShell_DimShade(LiberUI::Argb surfaceBase)
+{
+    return RGB(LiberUI::ArgbR(surfaceBase), LiberUI::ArgbG(surfaceBase), LiberUI::ArgbB(surfaceBase));
 }
 
 VOID LiberShell_MapToWallpaper(const RECT *prcScreen, SIZE screen, SIZE image, UINT style, RECT *prcImage)

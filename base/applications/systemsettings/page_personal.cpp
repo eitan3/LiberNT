@@ -107,6 +107,17 @@ BuildLiberExperience(PageBuilder &page)
                     BroadcastSetting(L"ImmersiveColorSet");
                 });
 
+    std::vector<std::wstring> dims;
+    dims.push_back(Str(IDS_LIBER_DIM_NEUTRAL));
+    dims.push_back(Str(IDS_LIBER_DIM_TINTED));
+    page.Choice(Str(IDS_LIBER_DIM), Str(IDS_LIBER_DIM_DESC), L"weather_moon_20_regular", dims,
+                ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"WallpaperDim", 0) == 1 ? 1 : 0,
+                [](int index)
+                {
+                    WriteDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"WallpaperDim", index == 1 ? 1 : 0);
+                    BroadcastSetting(L"ImmersiveColorSet");
+                });
+
     page.Toggle(Str(IDS_LIBER_WIDGETS), Str(IDS_LIBER_WIDGETS_DESC), L"data_pie_20_regular",
                 ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Widgets", 1) != 0,
                 [](int on)

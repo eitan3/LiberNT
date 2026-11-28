@@ -808,3 +808,7 @@
 #define IDS_LIBER_ACCENT_GREEN         885
 #define IDS_LIBER_ACCENT_TEAL          886
 #define IDS_LIBER_ACCENT_GRAPHITE      887
+#define IDS_LIBER_DIM                  888
+#define IDS_LIBER_DIM_DESC             889
+#define IDS_LIBER_DIM_NEUTRAL          890
+#define IDS_LIBER_DIM_TINTED           891
