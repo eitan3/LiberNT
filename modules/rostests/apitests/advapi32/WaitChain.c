@@ -170,7 +170,7 @@ AsyncCallback(
     _In_ PWAITCHAIN_NODE_INFO Nodes,
     _In_ LPBOOL Cycle)
 {
-    ok(Context == 0x1234, "context %Ix\n", Context);
+    ok(Context == 0x1234, "context %p\n", (PVOID)Context);
     AsyncError = Status;
     AsyncCount = *NodeCount;
     if (Status == ERROR_SUCCESS)
