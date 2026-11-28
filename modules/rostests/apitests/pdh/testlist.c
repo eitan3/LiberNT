@@ -8,10 +8,12 @@
 #define STANDALONE
 #include <apitest.h>
 
+extern void func_FormatFromRawValue(void);
 extern void func_ProcessorFrequency(void);
 
 const struct test winetest_testlist[] =
 {
+    { "FormatFromRawValue", func_FormatFromRawValue },
     { "ProcessorFrequency", func_ProcessorFrequency },
     { 0, 0 }
 };

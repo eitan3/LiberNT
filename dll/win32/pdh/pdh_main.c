@@ -605,6 +605,146 @@ PDH_STATUS WINAPI PdhCalculateCounterFromRawValue( PDH_HCOUNTER handle, DWORD fo
     return ret;
 }
 
+static PDH_STATUS raw_counter_frequency( DWORD type, const LONGLONG *timebase, double *frequency )
+{
+    switch (type & 0x00300000)
+    {
+    case PERF_TIMER_100NS:
+        *frequency = 10000000.0;
+        return ERROR_SUCCESS;
+    case PERF_TIMER_TICK:
+    case PERF_OBJECT_TIMER:
+        if (!timebase) return PDH_INVALID_ARGUMENT;
+        if (*timebase <= 0) return PDH_CALC_NEGATIVE_TIMEBASE;
+        *frequency = (double)*timebase;
+        return ERROR_SUCCESS;
+    default:
+        return PDH_INVALID_ARGUMENT;
+    }
+}
+
+static PDH_STATUS calculate_raw_counter( DWORD type, const LONGLONG *timebase, const PDH_RAW_COUNTER *raw1,
+                                         const PDH_RAW_COUNTER *raw2, double *result, BOOL *percent )
+{
+    BOOL delta = (type & PERF_DELTA_COUNTER) != 0;
+    double numerator, denominator, frequency;
+    PDH_STATUS ret;
+
+    *percent = (type & 0xF0000000) == PERF_DISPLAY_PERCENT;
+
+    if ((type & 0x00000C00) == PERF_TYPE_NUMBER)
+    {
+        *result = (double)raw1->FirstValue;
+        return ERROR_SUCCESS;
+    }
+    /* TODO: text and zero-length counter types: the status Windows returns for them */
+    if ((type & 0x00000C00) != PERF_TYPE_COUNTER) return PDH_INVALID_ARGUMENT;
+    if ((type & 0x00070000) == PERF_COUNTER_BASE) return PDH_NO_DATA;
+
+    switch (type & 0x00070000)
+    {
+    case PERF_COUNTER_VALUE:
+        if (delta && !raw2) return PDH_CSTATUS_INVALID_DATA;
+        *result = (double)(delta ? raw1->FirstValue - raw2->FirstValue : raw1->FirstValue);
+        return ERROR_SUCCESS;
+
+    case PERF_COUNTER_RATE:
+    case PERF_COUNTER_QUEUELEN:
+    case PERF_COUNTER_PRECISION:
+        if (!raw2) return PDH_CSTATUS_INVALID_DATA;
+        numerator = (double)(raw1->FirstValue - raw2->FirstValue);
+        denominator = (double)(raw1->SecondValue - raw2->SecondValue);
+        if (numerator < 0) return PDH_CALC_NEGATIVE_VALUE;
+        if (denominator < 0) return PDH_CALC_NEGATIVE_DENOMINATOR;
+        if (denominator == 0)
+        {
+            *result = 0.0;
+            return ERROR_SUCCESS;
+        }
+        if ((type & 0xF0000000) == PERF_DISPLAY_PER_SEC ||
+            ((type & 0x00070000) == PERF_COUNTER_RATE && (type & 0xF0000000) == PERF_DISPLAY_NO_SUFFIX))
+        {
+            if ((ret = raw_counter_frequency( type, timebase, &frequency ))) return ret;
+            *result = numerator / (denominator / frequency);
+            return ERROR_SUCCESS;
+        }
+        *result = numerator / denominator;
+        if (type & PERF_INVERSE_COUNTER)
+            *result = ((type & PERF_MULTI_COUNTER) ? (double)raw1->MultiCount : 1.0) - *result;
+        if (*percent) *result *= 100.0;
+        if (*result < 0) *result = 0.0;
+        return ERROR_SUCCESS;
+
+    case PERF_COUNTER_FRACTION:
+        if (delta || (type & PERF_DELTA_BASE) || type == PERF_AVERAGE_BULK || type == PERF_AVERAGE_TIMER)
+        {
+            if (!raw2) return PDH_CSTATUS_INVALID_DATA;
+            numerator = (double)(raw1->FirstValue - raw2->FirstValue);
+            denominator = (double)(raw1->SecondValue - raw2->SecondValue);
+        }
+        else
+        {
+            numerator = (double)raw1->FirstValue;
+            denominator = (double)raw1->SecondValue;
+        }
+        if (denominator < 0) return PDH_CALC_NEGATIVE_DENOMINATOR;
+        if (denominator == 0)
+        {
+            *result = 0.0;
+            return ERROR_SUCCESS;
+        }
+        if ((type & 0xF0000000) == PERF_DISPLAY_SECONDS)
+        {
+            if ((ret = raw_counter_frequency( type, timebase, &frequency ))) return ret;
+            numerator /= frequency;
+        }
+        *result = numerator / denominator;
+        if (*percent) *result *= 100.0;
+        return ERROR_SUCCESS;
+
+    case PERF_COUNTER_ELAPSED:
+        if ((ret = raw_counter_frequency( type, timebase, &frequency ))) return ret;
+        numerator = (double)(raw1->SecondValue - raw1->FirstValue);
+        if (numerator < 0) return PDH_CALC_NEGATIVE_VALUE;
+        *result = numerator / frequency;
+        return ERROR_SUCCESS;
+
+    default:
+        return PDH_INVALID_ARGUMENT;
+    }
+}
+
+/***********************************************************************
+ *              PdhFormatFromRawValue   (PDH.@)
+ */
+PDH_STATUS WINAPI PdhFormatFromRawValue( DWORD type, DWORD format, LONGLONG *timebase, PPDH_RAW_COUNTER raw1,
+                                         PPDH_RAW_COUNTER raw2, PPDH_FMT_COUNTERVALUE value )
+{
+    PDH_STATUS ret;
+    double result;
+    BOOL percent;
+
+    TRACE("%#lx %#lx %p %p %p %p\n", type, format, timebase, raw1, raw2, value);
+
+    if (!raw1 || !value) return PDH_INVALID_ARGUMENT;
+    if (!(format & (PDH_FMT_LONG | PDH_FMT_LARGE | PDH_FMT_DOUBLE))) return PDH_INVALID_ARGUMENT;
+
+    if ((ret = calculate_raw_counter( type, timebase, raw1, raw2, &result, &percent )))
+    {
+        value->CStatus = ret;
+        return ret;
+    }
+    if (percent && !(type & PERF_MULTI_COUNTER) && !(format & PDH_FMT_NOCAP100) && result > 100.0)
+        result = 100.0;
+    if (format & PDH_FMT_1000) result *= 1000.0;
+
+    value->CStatus = PDH_CSTATUS_VALID_DATA;
+    if (format & PDH_FMT_LONG) value->longValue = (LONG)result;
+    else if (format & PDH_FMT_LARGE) value->largeValue = (LONGLONG)result;
+    else value->doubleValue = result;
+    return ERROR_SUCCESS;
+}
+
 
 /***********************************************************************
  *              PdhCloseQuery   (PDH.@)
