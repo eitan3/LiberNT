@@ -154,6 +154,14 @@ typedef struct _USETUP_DATA
 
     ULONG RequiredPartitionDiskSpace;
     WCHAR InstallationDirectory[MAX_PATH];
+
+    /* Account settings of the unattend.inf that enabled the unattended setup, for the front end that
+     * creates the account: empty strings and -1 when that file leaves them out */
+    WCHAR UnattendComputerName[MAX_PATH];
+    WCHAR UnattendUserName[MAX_PATH];
+    WCHAR UnattendUserPassword[MAX_PATH];
+    LONG UnattendTimeZoneIndex;
+    LONG UnattendDisableAutoDaylightTimeSet;
 } USETUP_DATA, *PUSETUP_DATA;
 
 
@@ -161,8 +169,6 @@ typedef struct _USETUP_DATA
 
 
 /* FUNCTIONS ****************************************************************/
-
-#include "substset.h"
 
 BOOLEAN
 NTAPI
@@ -250,8 +256,7 @@ UpdateRegistry(
     /**/IN PPARTLIST PartitionList,      /* HACK HACK! */
     /**/IN WCHAR DestinationDriveLetter, /* HACK HACK! */
     /**/IN PCWSTR SelectedLanguageId,    /* HACK HACK! */
-    IN PREGISTRY_STATUS_ROUTINE StatusRoutine OPTIONAL,
-    IN PFONTSUBSTSETTINGS SubstSettings OPTIONAL);
+    IN PREGISTRY_STATUS_ROUTINE StatusRoutine OPTIONAL);
 
 PVOID
 RegSaveKeptSettings(

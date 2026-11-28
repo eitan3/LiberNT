@@ -217,6 +217,13 @@ static BOOL ArrowMove(UINT vk, FocusMove *move)
     return FALSE;
 }
 
+BOOL InputRouter::Char(WCHAR ch)
+{
+    if (m_Focus && !m_Focus->IsVisibleInTree())
+        SetFocus(NULL);
+    return m_Focus && m_Focus->IsEnabled() && m_Focus->OnChar(ch);
+}
+
 BOOL InputRouter::KeyDown(UINT vk, BOOL shift)
 {
     FocusMove move;

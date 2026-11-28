@@ -8,12 +8,14 @@ list(APPEND SOURCE
     imagelist.c
     ListViewActivate.c
     ListViewGroups.c
+    ListViewRedrawHeader.c
     ListViewSnapToGrid.c
     ListViewWorkAreas.c
     LoadIconWithScaleDown.c
     OwnerDrawButtonCues.c
     propsheet.c
     PropSheetRecalc.c
+    PropSheetTitle.c
     TabControlKeys.c
     StatusBarResize.c
     SysLinkIdealSize.c

@@ -6,6 +6,7 @@ include_directories(
     ${REACTOS_SOURCE_DIR}/base/setup/lib)
 
 list(APPEND SOURCE
+    BcdPartitionPresent.c
     ForeignBootManager.c
     IsValidInstallDirectory.c
     PartitionListRegions.c

@@ -62,6 +62,7 @@ typedef enum _DWM_GPU_RESULT
 
 BOOL DwmGpuComposeInitialize(LONG Width, LONG Height);
 BOOL DwmGpuComposeResize(LONG Width, LONG Height);
+BOOL DwmGpuComposeOutputMoved(void);
 BOOL DwmGpuComposeIsActive(void);
 
 /* Starts with cached wallpaper. NULL damage requests a full redraw; several
@@ -94,10 +95,20 @@ BOOL DwmGpuComposeBlurWindow(const struct _DWM_WIN *Window,
                              const RECTL *Rectangles,
                              LONG OriginX, LONG OriginY, ULONG Radius, FLOAT Saturation);
 
+typedef struct _DWM_GPU_SHADOW
+{
+    FLOAT WideSigma, TightSigma;
+    LONG WideOffset, TightOffset;
+    ULONG WideOpacity, TightOpacity;
+} DWM_GPU_SHADOW;
+
 BOOL DwmGpuComposeShadow(const RECT *Bounds, LONGLONG X, LONGLONG Y,
-                          LONG Width, LONG Height, LONG Offset, LONG WideExtent,
-                          LONG Radius, BOOL Active, ULONG WideOpacity,
-                          ULONG TightOpacity, ULONG WindowAlpha);
+                          LONG Width, LONG Height, const DWM_GPU_SHADOW *Shadow,
+                          LONG Radius, ULONG WindowAlpha);
+
+/* Outline and top bevel colors are 0xAARRGGBB; a zero alpha skips that layer. */
+BOOL DwmGpuComposeFrameEdge(LONGLONG X, LONGLONG Y, LONG Width, LONG Height, LONG Radius,
+                            ULONG Outline, ULONG Bevel, ULONG WindowAlpha);
 
 /* TRUE when the frame's copies of new client publications have completed on
  * the GPU, so they may be acknowledged before the frame is presented. */
@@ -120,6 +131,7 @@ DWM_GPU_RESULT DwmGpuComposeEnd(void);
 /* Discards an unpresented frame. A stale GDI FRONT import may be retried
  * because a window can disappear between GETFRAME and OpenResource. */
 DWM_GPU_RESULT DwmGpuComposeAbort(void);
+DWM_GPU_RESULT DwmGpuComposeRetry(void);
 
 /* Tests a deferred output without rendering, presenting or rotating buffers. */
 DWM_GPU_RESULT DwmGpuComposeCheckOutput(void);

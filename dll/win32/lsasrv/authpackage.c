@@ -926,7 +926,7 @@ LsapAddDefaultGroups(
         if (TokenInfo1->Groups != NULL)
         {
             Length = sizeof(TOKEN_GROUPS) +
-                     (TokenInfo1->Groups->GroupCount + 2 - ANYSIZE_ARRAY) * sizeof(SID_AND_ATTRIBUTES);
+                     (TokenInfo1->Groups->GroupCount + 3 - ANYSIZE_ARRAY) * sizeof(SID_AND_ATTRIBUTES);
 
             Groups = RtlAllocateHeap(RtlGetProcessHeap(), HEAP_ZERO_MEMORY, Length);
             if (Groups == NULL)
@@ -951,7 +951,7 @@ LsapAddDefaultGroups(
         else
         {
             Length = sizeof(TOKEN_GROUPS) +
-                     (2 - ANYSIZE_ARRAY) * sizeof(SID_AND_ATTRIBUTES);
+                     (3 - ANYSIZE_ARRAY) * sizeof(SID_AND_ATTRIBUTES);
 
             Groups = RtlAllocateHeap(RtlGetProcessHeap(), HEAP_ZERO_MEMORY, Length);
             if (Groups == NULL)
@@ -984,6 +984,7 @@ LsapAddDefaultGroups(
         switch (LogonType)
         {
             case Interactive:
+            case RemoteInteractive:
             case Unlock:
                 SrcSid = LsapInteractiveSid;
                 break;
@@ -1021,6 +1022,18 @@ LsapAddDefaultGroups(
             SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_MANDATORY;
 
         Groups->GroupCount++;
+
+        if (LogonType == RemoteInteractive)
+        {
+            Length = RtlLengthSid(LsapRemoteInteractiveSid);
+            Groups->Groups[Groups->GroupCount].Sid = RtlAllocateHeap(RtlGetProcessHeap(), HEAP_ZERO_MEMORY, Length);
+            if (Groups->Groups[Groups->GroupCount].Sid == NULL)
+                return STATUS_INSUFFICIENT_RESOURCES;
+            RtlCopyMemory(Groups->Groups[Groups->GroupCount].Sid, LsapRemoteInteractiveSid, Length);
+            Groups->Groups[Groups->GroupCount].Attributes =
+                SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_MANDATORY;
+            Groups->GroupCount++;
+        }
     }
     else
     {
@@ -1576,6 +1589,92 @@ LsapSetPrivileges(
 }
 
 
+static
+NTSTATUS
+LsapCheckLogonRights(
+    IN PVOID TokenInformation,
+    IN LSA_TOKEN_INFORMATION_TYPE TokenInformationType,
+    IN SECURITY_LOGON_TYPE LogonType)
+{
+    PLSA_TOKEN_INFORMATION_V1 TokenInfo1;
+    LSAPR_HANDLE PolicyHandle = NULL;
+    LSAPR_HANDLE AccountHandle = NULL;
+    ACCESS_MASK Allow, Deny, Rights = 0, SystemAccess;
+    ULONG i;
+    NTSTATUS Status;
+
+    switch (LogonType)
+    {
+        case Interactive:
+        case Unlock:
+        case CachedInteractive:
+        case CachedUnlock:
+            Allow = SECURITY_ACCESS_INTERACTIVE_LOGON;
+            Deny = SECURITY_ACCESS_DENY_INTERACTIVE_LOGON;
+            break;
+
+        case Network:
+        case NetworkCleartext:
+            Allow = SECURITY_ACCESS_NETWORK_LOGON;
+            Deny = SECURITY_ACCESS_DENY_NETWORK_LOGON;
+            break;
+
+        case Batch:
+            Allow = SECURITY_ACCESS_BATCH_LOGON;
+            Deny = SECURITY_ACCESS_DENY_BATCH_LOGON;
+            break;
+
+        /* TODO: check SeServiceLogonRight once service tokens carry NT SERVICE\ALL SERVICES (S-1-5-80-0) */
+        case RemoteInteractive:
+        case CachedRemoteInteractive:
+            Allow = SECURITY_ACCESS_REMOTE_INTERACTIVE_LOGON;
+            Deny = SECURITY_ACCESS_DENY_REMOTE_INTERACTIVE_LOGON;
+            break;
+
+        default:
+            return STATUS_SUCCESS;
+    }
+
+    if (TokenInformationType != LsaTokenInformationV1)
+        return STATUS_SUCCESS;
+
+    TokenInfo1 = (PLSA_TOKEN_INFORMATION_V1)TokenInformation;
+
+    Status = LsarOpenPolicy(NULL, NULL, 0, &PolicyHandle);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    for (i = 0; i <= TokenInfo1->Groups->GroupCount; i++)
+    {
+        Status = LsarOpenAccount(PolicyHandle,
+                                 (i < TokenInfo1->Groups->GroupCount) ?
+                                     TokenInfo1->Groups->Groups[i].Sid :
+                                     TokenInfo1->User.User.Sid,
+                                 ACCOUNT_VIEW,
+                                 &AccountHandle);
+        if (!NT_SUCCESS(Status))
+            continue;
+
+        SystemAccess = 0;
+        Status = LsarGetSystemAccessAccount(AccountHandle, &SystemAccess);
+        if (NT_SUCCESS(Status))
+            Rights |= SystemAccess;
+
+        LsarClose(&AccountHandle);
+    }
+
+    LsarClose(&PolicyHandle);
+
+    if ((Rights & Deny) || !(Rights & Allow))
+    {
+        WARN("Logon type %d is not granted (rights 0x%lx)\n", LogonType, Rights);
+        return STATUS_LOGON_TYPE_NOT_GRANTED;
+    }
+
+    return STATUS_SUCCESS;
+}
+
+
 NTSTATUS
 LsapLogonUser(PLSA_API_MSG RequestMsg,
               PLSAP_LOGON_CONTEXT LogonContext)
@@ -1756,6 +1855,12 @@ LsapLogonUser(PLSA_API_MSG RequestMsg,
         goto done;
     }
 
+    Status = LsapCheckLogonRights(TokenInformation,
+                                  TokenInformationType,
+                                  LogonType);
+    if (!NT_SUCCESS(Status))
+        goto done;
+
     Status = LsapSetTokenOwner(TokenInformation,
                                TokenInformationType);
     if (!NT_SUCCESS(Status))
@@ -1851,7 +1956,7 @@ LsapLogonUser(PLSA_API_MSG RequestMsg,
         Status = NtCreateToken(&TokenHandle,
                                TOKEN_ALL_ACCESS,
                                &ObjectAttributes,
-                               (LogonType == Network) ? TokenImpersonation : TokenPrimary,
+                               (LogonType == Network || LogonType == NetworkCleartext) ? TokenImpersonation : TokenPrimary,
                                &RequestMsg->LogonUser.Reply.LogonId,
                                &TokenInfo1->ExpirationTime,
                                &TokenInfo1->User,
@@ -1879,6 +1984,7 @@ LsapLogonUser(PLSA_API_MSG RequestMsg,
     }
 
     if (LogonType == Interactive ||
+        LogonType == RemoteInteractive ||
         LogonType == Batch ||
         LogonType == Service ||
         LogonType == Unlock)

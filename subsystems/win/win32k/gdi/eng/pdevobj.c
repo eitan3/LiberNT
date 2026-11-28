@@ -13,6 +13,7 @@
 DBG_DEFAULT_CHANNEL(EngPDev);
 
 static PPDEVOBJ gppdevList = NULL;
+PPDEVOBJ gppdevDetached = NULL;
 static HSEMAPHORE ghsemPDEV;
 
 BOOL
@@ -33,6 +34,19 @@ InitPDEVImpl(VOID)
     ghsemPDEV = EngCreateSemaphore();
     if (!ghsemPDEV) return STATUS_INSUFFICIENT_RESOURCES;
     return STATUS_SUCCESS;
+}
+
+VOID
+NTAPI
+FreePDEVImpl(VOID)
+{
+    ASSERT(gppdevList == NULL);
+    ASSERT(gppdevDetached == NULL);
+    if (ghsemPDEV)
+    {
+        EngDeleteSemaphore(ghsemPDEV);
+        ghsemPDEV = NULL;
+    }
 }
 
 #if DBG
@@ -501,6 +515,21 @@ PDEVOBJ_vRefreshModeList(
     EngReleaseSemaphore(ppdev->hsemDevLock);
 }
 
+BOOL
+PDEVOBJ_bGraphicsDeviceInUse(
+    _In_ PGRAPHICS_DEVICE pGraphicsDevice)
+{
+    PPDEVOBJ ppdev;
+    BOOL bInUse = FALSE;
+
+    EngAcquireSemaphoreShared(ghsemPDEV);
+    for (ppdev = gppdevList; ppdev && !bInUse; ppdev = ppdev->ppdevNext)
+        bInUse = ppdev->pGraphicsDevice == pGraphicsDevice;
+    EngReleaseSemaphore(ghsemPDEV);
+
+    return bInUse;
+}
+
 PPDEVOBJ
 PDEVOBJ_Create(
     _In_opt_ PGRAPHICS_DEVICE pGraphicsDevice,
@@ -647,6 +676,7 @@ PDEVOBJ_Create(
         EngUnloadImage(pldev);
         return NULL;
     }
+    SURFACE_ShareUnlockSurface(pSurface);
 
     /* Enable DirectDraw */
     if (!PDEVOBJ_bEnableDirectDraw(ppdev))
@@ -770,7 +800,6 @@ PDEVOBJ_bSwitchMode(
     PDEVMODEW pdm)
 {
     PPDEVOBJ ppdevTmp;
-    PSURFACE pSurface;
     BOOL retval = FALSE;
 
     /* Lock the PDEV */
@@ -798,15 +827,6 @@ PDEVOBJ_bSwitchMode(
     if (!ppdevTmp)
     {
         DPRINT1("Failed to create a new PDEV\n");
-        goto leave2;
-    }
-
-    /* 3. Create a new surface */
-    pSurface = PDEVOBJ_pSurface(ppdevTmp);
-    if (!pSurface)
-    {
-        DPRINT1("PDEVOBJ_pSurface failed\n");
-        PDEVOBJ_vRelease(ppdevTmp);
         goto leave2;
     }
 
@@ -1119,6 +1139,130 @@ PDEVOBJ_bSwitchMultiDisplayMode(
     return bSuccess;
 }
 
+static
+BOOL
+PDEVOBJ_bExchangeDisplay(
+    _Inout_ PPDEVOBJ ppdev,
+    _Inout_ PPDEVOBJ ppdev2)
+{
+    PGRAPHICS_DEVICE pGraphicsDevice;
+    DWORD StateFlags, StateFlags2;
+
+    ASSERT(ppdev->pGraphicsDevice != NULL && ppdev2->pGraphicsDevice != NULL);
+    ASSERT(ppdev->pGraphicsDevice != ppdev2->pGraphicsDevice);
+    StateFlags = ppdev->pGraphicsDevice->StateFlags;
+    StateFlags2 = ppdev2->pGraphicsDevice->StateFlags;
+    PDEVOBJ_vSuspendDirectDraw(ppdev);
+    PDEVOBJ_vSuspendDirectDraw(ppdev2);
+    if (!PDEVOBJ_bDynamicModeChange(ppdev, ppdev2))
+    {
+        PDEVOBJ_vResumeDirectDraw(ppdev);
+        PDEVOBJ_vResumeDirectDraw(ppdev2);
+        return FALSE;
+    }
+    PDEVOBJ_vResumeDirectDraw(ppdev);
+    PDEVOBJ_vResumeDirectDraw(ppdev2);
+
+    /* Each graphics device keeps its own state flags and moves with the driver instance it backs */
+    ppdev->pGraphicsDevice->StateFlags = StateFlags;
+    ppdev2->pGraphicsDevice->StateFlags = StateFlags2;
+    SwitchPointer(&ppdev->pGraphicsDevice, &ppdev2->pGraphicsDevice);
+    SwitchPointer(&ppdev->hSpooler, &ppdev2->hSpooler);
+
+    if (ppdev->pEDDgpl)
+    {
+        ppdev->pEDDgpl->hDev = (HDEV)ppdev;
+        ppdev->pEDDgpl->dhpdev = ppdev->dhpdev;
+    }
+    if (ppdev2->pEDDgpl)
+    {
+        ppdev2->pEDDgpl->hDev = (HDEV)ppdev2;
+        ppdev2->pEDDgpl->dhpdev = ppdev2->dhpdev;
+    }
+
+    pGraphicsDevice = ppdev2->pGraphicsDevice;
+    pGraphicsDevice->StateFlags &= ~(DISPLAY_DEVICE_ATTACHED_TO_DESKTOP | DISPLAY_DEVICE_PRIMARY_DEVICE);
+    pGraphicsDevice = ppdev->pGraphicsDevice;
+    pGraphicsDevice->StateFlags |= DISPLAY_DEVICE_ATTACHED_TO_DESKTOP | DISPLAY_DEVICE_PRIMARY_DEVICE;
+    PDEVOBJ_vGetDeviceCaps(ppdev, &GdiHandleTable->DevCaps);
+    return TRUE;
+}
+
+BOOL
+NTAPI
+PDEVOBJ_bMoveToDisplay(
+    _Inout_ PPDEVOBJ ppdev,
+    _In_ PGRAPHICS_DEVICE pGraphicsDevice,
+    _In_ PDEVMODEW pdm)
+{
+    PPDEVOBJ ppdevNew;
+    DWORD StateFlags;
+    BOOL bRet = FALSE;
+
+    EngAcquireSemaphore(ppdev->hsemDevLock);
+    EngAcquireSemaphore(ghsemPDEV);
+
+    if (!gppdevDetached)
+    {
+        StateFlags = pGraphicsDevice->StateFlags;
+        ppdevNew = PDEVOBJ_Create(pGraphicsDevice, pdm, 0, LDEV_DEVICE_DISPLAY);
+        pGraphicsDevice->StateFlags = StateFlags;
+        if (ppdevNew && PDEVOBJ_bExchangeDisplay(ppdev, ppdevNew))
+        {
+            gppdevDetached = ppdevNew;
+            bRet = TRUE;
+        }
+        else if (ppdevNew)
+        {
+            PDEVOBJ_vRelease(ppdevNew);
+        }
+    }
+
+    EngReleaseSemaphore(ghsemPDEV);
+    EngReleaseSemaphore(ppdev->hsemDevLock);
+    return bRet;
+}
+
+BOOL
+NTAPI
+PDEVOBJ_bReturnToDetachedDisplay(
+    _Inout_ PPDEVOBJ ppdev)
+{
+    PPDEVOBJ ppdevOld = NULL;
+    BOOL bRet = FALSE;
+
+    EngAcquireSemaphore(ppdev->hsemDevLock);
+    EngAcquireSemaphore(ghsemPDEV);
+
+    if (gppdevDetached && PDEVOBJ_bExchangeDisplay(ppdev, gppdevDetached))
+    {
+        ppdevOld = gppdevDetached;
+        gppdevDetached = NULL;
+        bRet = TRUE;
+    }
+
+    EngReleaseSemaphore(ghsemPDEV);
+    EngReleaseSemaphore(ppdev->hsemDevLock);
+
+    if (ppdevOld)
+        PDEVOBJ_vRelease(ppdevOld);
+    return bRet;
+}
+
+PPDEVOBJ
+NTAPI
+EngpGetDetachedPDEV(VOID)
+{
+    PPDEVOBJ ppdev;
+
+    EngAcquireSemaphoreShared(ghsemPDEV);
+    ppdev = gppdevDetached;
+    if (ppdev)
+        PDEVOBJ_vReference(ppdev);
+    EngReleaseSemaphore(ghsemPDEV);
+    return ppdev;
+}
+
 NTSTATUS
 NTAPI
 EngpGetPrimaryDisplayNtName(
@@ -1172,6 +1316,13 @@ EngpGetPDEV(
                 ppdev = gpmdev->dev[i].ppdev;
                 break;
             }
+        }
+
+        if (!ppdev && gppdevDetached && UserIsLogonProcess(PsGetCurrentProcessId()))
+        {
+            RtlInitUnicodeString(&ustrCurrent, gppdevDetached->pGraphicsDevice->szWinDeviceName);
+            if (RtlEqualUnicodeString(pustrDeviceName, &ustrCurrent, TRUE))
+                ppdev = gppdevDetached;
         }
     }
     else if (gpmdev)

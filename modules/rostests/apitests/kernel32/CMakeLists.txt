@@ -8,7 +8,11 @@ add_subdirectory(werhandler)
 add_message_headers(ANSI FormatMessage.mc)
 
 list(APPEND SOURCE
+    HeapGrowInPlace.c
     ApiSetHosts.c
+    ExportForwarders.c
+    PackageInfo.c
+    BackupSemanticsAccess.c
     FileSecurityCache.c
     ActCtxDependencyVersions.c
     AlternateComputerNames.c
@@ -159,6 +163,7 @@ list(APPEND SOURCE
     PerfProvider.c
     Pipes.c
     PackageIdentity.c
+    PackageInfoReference.c
     PackageNames.c
     ParentHandleList.c
     PixeloramaCompat.c
@@ -177,6 +182,7 @@ list(APPEND SOURCE
     RemoteThreadInit.c
     RenameAsyncHandle.c
     RenameDirectoryOldPath.c
+    RenameReplaceRestore.c
     ResizePseudoConsole.c
     SetCalendarInfo.c
     SetComputerNameExW.c

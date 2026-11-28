@@ -53,3 +53,85 @@ DwmLiberApplyMaterial(
 ULONG
 DwmLiberMaxBlurRadius(
     _In_ ULONG Dpi);
+
+typedef struct _DWM_LIBER_DIM
+{
+    BOOLEAN Enabled;
+    COLORREF Shade;
+} DWM_LIBER_DIM, *PDWM_LIBER_DIM;
+
+double
+DwmLiberDimAmount(
+    _In_ double AverageLuma);
+
+double
+DwmLiberDimBackdrop(
+    _Inout_ ULONG *Bits,
+    _In_ ULONG Width,
+    _In_ ULONG Height,
+    _In_ ULONG Stride,
+    _In_ COLORREF Shade);
+
+VOID
+DwmLiberReadDim(
+    _Out_ PDWM_LIBER_DIM Dim);
+
+ULONG
+DwmLiberFadeAlpha(
+    _In_ ULONG Alpha,
+    _In_ LONG Row,
+    _In_ LONG Height);
+
+typedef struct _DWM_LIBER_SHADOW_LAYER
+{
+    LONG Offset;
+    double Sigma;
+    LONG Support;
+    ULONG Opacity;
+} DWM_LIBER_SHADOW_LAYER, *PDWM_LIBER_SHADOW_LAYER;
+
+typedef struct _DWM_LIBER_SHADOW
+{
+    DWM_LIBER_SHADOW_LAYER Ambient;
+    DWM_LIBER_SHADOW_LAYER Contact;
+} DWM_LIBER_SHADOW, *PDWM_LIBER_SHADOW;
+
+VOID
+DwmLiberShadowLayer(
+    _In_ const LIBER_SHADOW_LAYER *Token,
+    _In_ ULONG Dpi,
+    _Out_ PDWM_LIBER_SHADOW_LAYER Layer);
+
+VOID
+DwmLiberWindowShadow(
+    _In_ BOOLEAN Dark,
+    _In_ BOOLEAN Active,
+    _In_ ULONG Dpi,
+    _Out_ PDWM_LIBER_SHADOW Shadow);
+
+VOID
+DwmLiberShadowMargins(
+    _In_ ULONG Dpi,
+    _Out_ RECT *Margins);
+
+typedef struct _DWM_LIBER_EDGE_COLORS
+{
+    ULONG Outline;
+    ULONG Bevel;
+} DWM_LIBER_EDGE_COLORS, *PDWM_LIBER_EDGE_COLORS;
+
+VOID
+DwmLiberFrameEdgeColors(
+    _In_ BOOLEAN Dark,
+    _In_ ULONG Edge,
+    _Out_ PDWM_LIBER_EDGE_COLORS Colors);
+
+VOID
+DwmLiberFrameEdgeCoverage(
+    _In_ LONG X,
+    _In_ LONG Y,
+    _In_ LONG Width,
+    _In_ LONG Height,
+    _In_ ULONG Radius,
+    _Out_ ULONG *Outline,
+    _Out_ ULONG *Bevel);

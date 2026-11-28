@@ -11,10 +11,10 @@
 
 using namespace LiberUI;
 
-class Button : public Widget
+class ProbeButton : public Widget
 {
 public:
-    Button(int width, int height) : Enters(0), Leaves(0), Downs(0), Ups(0), Clicks(0), Keys(0), EatKey(0)
+    ProbeButton(int width, int height) : Enters(0), Leaves(0), Downs(0), Ups(0), Clicks(0), Keys(0), EatKey(0)
     {
         SetSize(width, height);
         SetHitTestable(TRUE);
@@ -59,8 +59,8 @@ static void Layout(Widget &root, int width, int height)
 static void TestPointer()
 {
     StackPanel root(Orientation::Horizontal, 10);
-    Button *a = new Button(50, 50);
-    Button *b = new Button(50, 50);
+    ProbeButton *a = new ProbeButton(50, 50);
+    ProbeButton *b = new ProbeButton(50, 50);
     Widget *label = new Widget();
     InputRouter input;
 
@@ -119,8 +119,8 @@ static void TestKeyboard()
     FocusHost host;
     StackPanel root(Orientation::Vertical, 0);
     GridPanel *grid = new GridPanel(3, 0, 0);
-    Button *top = new Button(10, 10);
-    Button *cells[6];
+    ProbeButton *top = new ProbeButton(10, 10);
+    ProbeButton *cells[6];
     InputRouter input;
 
     root.SetHost(&host);
@@ -128,7 +128,7 @@ static void TestKeyboard()
     root.AddChild(grid);
     for (int i = 0; i < 6; i++)
     {
-        cells[i] = new Button(10, 10);
+        cells[i] = new ProbeButton(10, 10);
         grid->AddChild(cells[i]);
     }
     cells[4]->SetFocusable(FALSE);

@@ -6276,7 +6276,7 @@ static void generate_font_link_info(struct gdip_format_string_info *info, DWORD 
     HFONT map_hfont, hfont, old_font;
     LONG processed, progress = 0;
     struct gdip_font_link_section *section;
-    DWORD string_codepages;
+    DWORD string_codepages, priority_cp = 0;
     WORD *glyph_indices;
     HRESULT hr;
     GpStatus stat;
@@ -6297,6 +6297,17 @@ static void generate_font_link_info(struct gdip_format_string_info *info, DWORD 
             glyph_indices[progress] = 0;
 
     GetGlobalFontLinkObject(&iMLFL);
+
+#ifdef __REACTOS__
+    {
+        UINT acp = 0;
+        if (!GetLocaleInfoW(LOCALE_SYSTEM_DEFAULT,
+                            LOCALE_IDEFAULTANSICODEPAGE | LOCALE_RETURN_NUMBER,
+                            (WCHAR *)&acp, sizeof(acp) / sizeof(WCHAR)) || !acp)
+            acp = GetACP();
+        IMLangFontLink_CodePageToCodePages(iMLFL, acp, &priority_cp);
+    }
+#endif
 
     get_font_hfont(info->graphics, base_font, NULL, &hfont, NULL, NULL);
 
@@ -6320,9 +6331,25 @@ static void generate_font_link_info(struct gdip_format_string_info *info, DWORD 
         }
         else
         {
+#ifdef __REACTOS__
+            static const DWORD cjk_codepages = FS_JISJAPAN | FS_CHINESESIMP | FS_WANSUNG |
+                                               FS_CHINESETRAD | FS_JOHAB;
+#endif
             IMLangFontLink_GetStrCodePages(iMLFL, &info->string[progress], length - progress,
-                                            0, &string_codepages, &processed);
+                                            priority_cp, &string_codepages, &processed);
+#ifdef __REACTOS__
+            hr = E_FAIL;
+            if (priority_cp & string_codepages)
+                hr = IMLangFontLink_MapFont(iMLFL, info->hdc, string_codepages & priority_cp,
+                                            hfont, &map_hfont);
+            if (FAILED(hr) && !(priority_cp & cjk_codepages) &&
+                !(string_codepages & ~cjk_codepages) && (string_codepages & FS_CHINESESIMP))
+                hr = IMLangFontLink_MapFont(iMLFL, info->hdc, FS_CHINESESIMP, hfont, &map_hfont);
+            if (FAILED(hr))
+                hr = IMLangFontLink_MapFont(iMLFL, info->hdc, string_codepages, hfont, &map_hfont);
+#else
             hr = IMLangFontLink_MapFont(iMLFL, info->hdc, string_codepages, hfont, &map_hfont);
+#endif
             if (SUCCEEDED(hr))
             {
                 old_font = SelectObject(info->hdc, map_hfont);

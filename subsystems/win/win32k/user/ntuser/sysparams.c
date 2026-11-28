@@ -20,6 +20,7 @@ SPIVALUES gspv;
 BOOL gbSpiInitialized = FALSE;
 BOOL g_PaintDesktopVersion = FALSE;
 BOOL g_bWindowSnapEnabled = TRUE;
+BOOL g_bLiberExperience = FALSE;
 
 static const WCHAR* KEY_MOUSE = L"Control Panel\\Mouse";
 static const WCHAR* VAL_MOUSE1 = L"MouseThreshold1";
@@ -636,6 +637,7 @@ SpiUpdatePerUserSystemParameters(VOID)
     gspv.animationinfo.iMinAnimate = !!SpiLoadInt(KEY_METRIC, VAL_MINANIMATE, TRUE);
 
     g_bWindowSnapEnabled = SpiLoadInt(KEY_DESKTOP, VAL_SNAP_ENABLED, TRUE);
+    g_bLiberExperience = SpiLoadDWord(L"Software\\LiberNT\\Shell\\Design", L"Experience", 0) == 1;
     gspv.bDockMoving = SpiLoadInt(KEY_DESKTOP, VAL_SNAP_DOCKMOVING, TRUE);
 
     /* Make sure we don't use broken values */

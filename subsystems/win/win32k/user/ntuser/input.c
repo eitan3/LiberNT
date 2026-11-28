@@ -999,9 +999,13 @@ RawInputThreadMain(VOID)
     StartTheTimers();
     UserLeave();
 
-    HidInputStart();
-    TouchInputStart();
-    InputDevicesStart();
+    ASSERT(ReadPointerAcquire((PVOID volatile *)&gpDisplaySession) != NULL);
+    if (gbConsoleSession)
+    {
+        HidInputStart();
+        TouchInputStart();
+        InputDevicesStart();
+    }
 
     PoRequestShutdownEvent(&ShutdownEvent);
     for (;;)
@@ -1057,6 +1061,11 @@ RawInputThreadMain(VOID)
                     ASSERT(FALSE);
                 }
             }
+            else if ((Status == STATUS_ALERTED || Status == STATUS_USER_APC) &&
+                     PsIsThreadTerminating(PsGetCurrentThread()))
+            {
+                break;
+            }
         }
 
         InputDevicesProcess();
@@ -1101,6 +1110,18 @@ InitInputImpl(
     KeInitializeTimer(MasterTimer);
 
     return STATUS_SUCCESS;
+}
+
+VOID
+NTAPI
+FreeInputImpl(VOID)
+{
+    if (MasterTimer)
+    {
+        KeCancelTimer(MasterTimer);
+        ExFreePoolWithTag(MasterTimer, USERTAG_SYSTEM);
+        MasterTimer = NULL;
+    }
 }
 
 BOOL FASTCALL

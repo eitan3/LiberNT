@@ -711,6 +711,7 @@ BOOL CLiberStart::Open(const RECT *prcAnchor)
     LiberShell_PlaceFlyout(prcAnchor, ScaleToDpi(LIBER_START_WIDTH, dpi), ScaleToDpi(size.cy, dpi), TRUE, &pt);
 
     m_Surface.SetPosition(pt.x, pt.y, LIBER_START_WIDTH, size.cy);
+    LiberShell_SampleBackdrop(&m_Surface, &m_Tokens, FALSE);
     m_Surface.RequestLayout();
     m_Surface.Render(AnimationClock::Now());
     ShowWindow(m_Surface.Window(), SW_SHOW);

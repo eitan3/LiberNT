@@ -198,6 +198,11 @@ DwmGpuSceneWindowBounds(const DWM_WIN *Window, const DWM_GPU_SCENE_SPACE *Space,
         Left -= Space->ShadowMargins.left; Top -= Space->ShadowMargins.top;
         Right += Space->ShadowMargins.right; Bottom += Space->ShadowMargins.bottom;
     }
+    else if (DwmLiberFrameEdge(Window->LayerFlags) != DWM_LIBER_EDGE_NONE)
+    {
+        Left -= DWM_LIBER_FRAME_OUTSET; Top -= DWM_LIBER_FRAME_OUTSET;
+        Right += DWM_LIBER_FRAME_OUTSET; Bottom += DWM_LIBER_FRAME_OUTSET;
+    }
     /* Client DX surfaces can extend beyond the base window bounds. A whole
      * glass material also captures their lower scene independently. */
     if (Window->DxGlobalShare != 0 && Window->DxUpdateId != 0 &&

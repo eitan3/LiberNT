@@ -560,6 +560,7 @@
 @ stdcall -thunk GetLocaleInfoW(long long ptr long) kernelbase.GetLocaleInfoW
 @ stdcall -arch=win64 GetNextUmsListItem(ptr)
 @ stdcall -version=0x602+ GetOsSafeBootMode(ptr)
+@ stdcall -version=0x603+ GetPackageApplicationIds(ptr ptr ptr ptr)
 @ stdcall -version=0x602+ GetPackageFullName(long ptr ptr) kernelbase.GetPackageFullName
 @ stdcall -version=0x602+ GetStateSettingsFolder(ptr ptr ptr)
 @ stdcall -arch=win64 GetUmsCompletionListEvent(ptr ptr)
@@ -988,6 +989,7 @@
 @ stdcall OutputDebugStringA(str)
 @ stdcall OutputDebugStringW(wstr)
 @ stdcall -version=0x602+ PackageFamilyNameFromFullName(wstr ptr ptr) kernelbase.PackageFamilyNameFromFullName
+@ stdcall -version=0x602+ PackageFamilyNameFromId(ptr ptr ptr) kernelbase.PackageFamilyNameFromId
 @ stdcall -version=0x602+ PackageIdFromFullName(wstr long ptr ptr) kernelbase.PackageIdFromFullName
 @ stdcall -version=0x602+ ParseApplicationUserModelId(wstr ptr ptr ptr ptr) kernelbase.ParseApplicationUserModelId
 @ stdcall -thunk PeekConsoleInputA(ptr ptr long ptr) kernelbase.PeekConsoleInputA
@@ -1509,3 +1511,19 @@
 @ stdcall QueryInterruptTimePrecise(ptr)
 @ stdcall GetThreadDescription(ptr ptr)
 @ stdcall SetThreadDescription(ptr wstr)
+@ stdcall AddResourceAttributeAce(ptr long long long ptr ptr ptr) kernelbase.AddResourceAttributeAce
+@ stdcall AddScopedPolicyIDAce(ptr long long long ptr) kernelbase.AddScopedPolicyIDAce
+@ stdcall AppPolicyGetMediaFoundationCodecLoading(ptr ptr) kernelbase.AppPolicyGetMediaFoundationCodecLoading
+@ stdcall AppPolicyGetProcessTerminationMethod(ptr ptr) kernelbase.AppPolicyGetProcessTerminationMethod
+@ stdcall AppPolicyGetShowDeveloperDiagnostic(ptr ptr) kernelbase.AppPolicyGetShowDeveloperDiagnostic
+@ stdcall AppPolicyGetThreadInitializationType(ptr ptr) kernelbase.AppPolicyGetThreadInitializationType
+@ stdcall AppPolicyGetWindowingModel(ptr ptr) kernelbase.AppPolicyGetWindowingModel
+@ stdcall CheckTokenMembershipEx(ptr ptr long ptr) kernelbase.CheckTokenMembershipEx
+@ stdcall CreateFileMappingFromApp(long ptr long int64 wstr) kernelbase.CreateFileMappingFromApp
+@ stdcall DnsHostnameToComputerNameExW(wstr ptr ptr) kernelbase.DnsHostnameToComputerNameExW
+@ stdcall GetAppContainerAce(ptr long ptr ptr) kernelbase.GetAppContainerAce
+@ stdcall MapViewOfFileFromApp(long long int64 long) kernelbase.MapViewOfFileFromApp
+@ stdcall SetCachedSigningLevel(ptr long long long) kernelbase.SetCachedSigningLevel
+@ stdcall -version=0x602+ ClosePackageInfo(ptr) kernelbase.ClosePackageInfo
+@ stdcall -version=0x602+ GetPackageInfo(ptr long ptr ptr ptr) kernelbase.GetPackageInfo
+@ stdcall -version=0x602+ OpenPackageInfoByFullName(wstr long ptr) kernelbase.OpenPackageInfoByFullName

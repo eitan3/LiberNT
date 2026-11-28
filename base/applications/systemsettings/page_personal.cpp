@@ -95,6 +95,51 @@ BuildLiberExperience(PageBuilder &page)
                     BroadcastSetting(L"ImmersiveColorSet");
                 });
 
+    std::vector<std::wstring> accents;
+    DWORD accent = ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Accent", 0xFFFFFFFF);
+    for (UINT id = IDS_LIBER_ACCENT_FOLLOW; id <= IDS_LIBER_ACCENT_GRAPHITE; id++)
+        accents.push_back(Str(id));
+    page.Choice(Str(IDS_LIBER_ACCENT), Str(IDS_LIBER_ACCENT_DESC), L"paint_brush_20_regular", accents,
+                accent < accents.size() - 1 ? (int)accent + 1 : 0,
+                [](int index)
+                {
+                    WriteDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Accent", index > 0 ? (DWORD)(index - 1) : 0xFFFFFFFF);
+                    BroadcastSetting(L"ImmersiveColorSet");
+                });
+
+    std::vector<std::wstring> shapes, aligns;
+    shapes.push_back(Str(IDS_LIBER_TASKBAR_CAPSULE));
+    shapes.push_back(Str(IDS_LIBER_TASKBAR_ROUNDED));
+    shapes.push_back(Str(IDS_LIBER_TASKBAR_CLASSIC));
+    DWORD shape = ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"TaskbarStyle", 0);
+    page.Choice(Str(IDS_LIBER_TASKBAR), Str(IDS_LIBER_TASKBAR_DESC), L"panel_bottom_20_regular", shapes,
+                shape <= 2 ? (int)shape : 0,
+                [](int index)
+                {
+                    WriteDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"TaskbarStyle", (DWORD)index);
+                    BroadcastSetting(L"LiberTaskbar");
+                });
+    aligns.push_back(Str(IDS_LIBER_ALIGN_CENTER));
+    aligns.push_back(Str(IDS_LIBER_ALIGN_LEFT));
+    page.Choice(Str(IDS_LIBER_ALIGN), Str(IDS_LIBER_ALIGN_DESC), L"panel_bottom_20_regular", aligns,
+                ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"TaskbarAlignment", 0) == 1 ? 1 : 0,
+                [](int index)
+                {
+                    WriteDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"TaskbarAlignment", index == 1 ? 1 : 0);
+                    BroadcastSetting(L"LiberTaskbar");
+                });
+
+    std::vector<std::wstring> dims;
+    dims.push_back(Str(IDS_LIBER_DIM_NEUTRAL));
+    dims.push_back(Str(IDS_LIBER_DIM_TINTED));
+    page.Choice(Str(IDS_LIBER_DIM), Str(IDS_LIBER_DIM_DESC), L"weather_moon_20_regular", dims,
+                ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"WallpaperDim", 0) == 1 ? 1 : 0,
+                [](int index)
+                {
+                    WriteDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"WallpaperDim", index == 1 ? 1 : 0);
+                    BroadcastSetting(L"ImmersiveColorSet");
+                });
+
     page.Toggle(Str(IDS_LIBER_WIDGETS), Str(IDS_LIBER_WIDGETS_DESC), L"data_pie_20_regular",
                 ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Widgets", 1) != 0,
                 [](int on)

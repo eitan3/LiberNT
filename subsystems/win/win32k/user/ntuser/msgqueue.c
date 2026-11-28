@@ -63,6 +63,24 @@ MsqInitializeImpl(VOID)
    return(STATUS_SUCCESS);
 }
 
+VOID
+NTAPI
+MsqFreeImpl(VOID)
+{
+    if (pgMessageLookasideList != NULL)
+    {
+        ExDeletePagedLookasideList(pgMessageLookasideList);
+        ExFreePoolWithTag(pgMessageLookasideList, TAG_USRMSG);
+        pgMessageLookasideList = NULL;
+    }
+    if (pgSendMsgLookasideList != NULL)
+    {
+        ExDeletePagedLookasideList(pgSendMsgLookasideList);
+        ExFreePoolWithTag(pgSendMsgLookasideList, TAG_USRMSG);
+        pgSendMsgLookasideList = NULL;
+    }
+}
+
 PWND FASTCALL
 IntTopLevelWindowFromPoint(INT x, INT y)
 {
@@ -814,6 +832,10 @@ co_MsqInsertMouseMessage(MSG* Msg, DWORD flags, ULONG_PTR dwExtraInfo, BOOL Hook
              // ptiLastInput = pti; // Once this is set during Reboot or Shutdown, this prevents the exit window having foreground.
              // Find all the Move Mouse calls and fix mouse set active focus issues......
            }
+           if (Msg->message == WM_LBUTTONDOWN || Msg->message == WM_RBUTTONDOWN || Msg->message == WM_MBUTTONDOWN ||
+               Msg->message == WM_XBUTTONDOWN || Msg->message == WM_NCLBUTTONDOWN || Msg->message == WM_NCRBUTTONDOWN ||
+               Msg->message == WM_NCMBUTTONDOWN || Msg->message == WM_NCXBUTTONDOWN)
+               gppiLastInput = pti->ppi;
 
            // Post mouse move before posting mouse buttons, keep it in sync.
            if (pti->MessageQueue->QF_flags & QF_MOUSEMOVED)
@@ -923,6 +945,12 @@ VOID FASTCALL
 FreeUserMessage(PUSER_SENT_MESSAGE Message)
 {
    Message->pkCompletionEvent = NULL;
+
+   ASSERT(!Message->OwnedLParamSize || !Message->HasPackedLParam);
+   if (Message->OwnedLParamSize && Message->Msg.lParam)
+      ExFreePoolWithTag((PVOID)Message->Msg.lParam, TAG_MSG);
+   Message->Msg.lParam = 0;
+   Message->OwnedLParamSize = 0;
 
    /* Remove it from the list */
    RemoveEntryList(&Message->ListEntry);
@@ -1302,6 +1330,27 @@ co_MsqSendMessage(PTHREADINFO ptirec,
    Message->Msg.message = Msg;
    Message->Msg.wParam = wParam;
    Message->Msg.lParam = lParam;
+
+   /* The receiver may still run after a timeout returns: it must not touch the sender's buffer */
+   if (HookMessage == MSQ_NORMAL && lParam && (ULONG_PTR)lParam >= MmUserProbeAddress)
+   {
+      PVOID Copy;
+      SIZE_T Size;
+      NTSTATUS CaptureStatus = IntCaptureSentLParam(Msg, wParam, lParam, &Copy, &Size);
+      if (!NT_SUCCESS(CaptureStatus))
+      {
+         ERR("MsqSendMessage(): Not enough memory to copy the parameters\n");
+         InitializeListHead(&Message->ListEntry);
+         FreeUserMessage(Message);
+         if (uResult) *uResult = -1;
+         return CaptureStatus;
+      }
+      if (Copy)
+      {
+         Message->Msg.lParam = (LPARAM)Copy;
+         Message->OwnedLParamSize = Size;
+      }
+   }
    Message->ptiReceiver = ptirec;
    Message->ptiSender = pti;
    Message->HookMessage = HookMessage;
@@ -1483,6 +1532,13 @@ co_MsqSendMessage(PTHREADINFO ptirec,
    KeSetEvent(pti->pEventQueueServer, IO_NO_INCREMENT, FALSE);
 
    Result = Message->lResult;
+
+   /* After ReplyMessage the receiver is still running and may still write the copy */
+   if (Message->OwnedLParamSize && WaitStatus == STATUS_WAIT_0 && !(Message->flags & SMF_RECEIVERBUSY))
+   {
+      ASSERT(Message->Msg.lParam && Message->Msg.lParam != lParam);
+      IntReturnSentLParam(Msg, wParam, lParam, (PVOID)Message->Msg.lParam, Message->OwnedLParamSize);
+   }
 
    // Determine whether this message is being processed or not.
    if ((Message->flags & (SMF_RECEIVERBUSY|SMF_RECEIVEDMESSAGE)) != SMF_RECEIVEDMESSAGE)

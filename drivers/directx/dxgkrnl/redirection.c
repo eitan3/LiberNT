@@ -9,6 +9,7 @@
 #include "present.h"
 #include "vidmm.h"
 #include <libernt/dwmframe.h>
+#include <ndk/psfuncs.h>
 
 NTKERNELAPI VOID FASTCALL
 ExfAcquirePushLockExclusive(_Inout_ PEX_PUSH_LOCK PushLock);
@@ -33,8 +34,15 @@ typedef struct _DXGKP_REDIRECTION_SYNC_SNAPSHOT
 } DXGKP_REDIRECTION_SYNC_SNAPSHOT,
  *PDXGKP_REDIRECTION_SYNC_SNAPSHOT;
 
+typedef struct _DXGKP_WIN32K_CDD_SESSION
+{
+    LIST_ENTRY Entry;
+    ULONG SessionId;
+    DXGKRNL_WIN32K_CDD_INTERFACE Interface;
+} DXGKP_WIN32K_CDD_SESSION, *PDXGKP_WIN32K_CDD_SESSION;
+
 static EX_PUSH_LOCK DxgkpWin32kCddInterfaceLock;
-static DXGKRNL_WIN32K_CDD_INTERFACE DxgkpWin32kCddInterface;
+static LIST_ENTRY DxgkpWin32kCddSessions;
 static KEVENT DxgkpWindowBltRetiredEvent;
 
 static BOOLEAN
@@ -50,16 +58,46 @@ DxgkRedirectionInitialize(VOID)
 {
     RtlZeroMemory(&DxgkpWin32kCddInterfaceLock,
                   sizeof(DxgkpWin32kCddInterfaceLock));
-    RtlZeroMemory(&DxgkpWin32kCddInterface,
-                  sizeof(DxgkpWin32kCddInterface));
+    InitializeListHead(&DxgkpWin32kCddSessions);
     KeInitializeEvent(&DxgkpWindowBltRetiredEvent, NotificationEvent, FALSE);
 }
+
+static
+PDXGKP_WIN32K_CDD_SESSION
+DxgkpFindWin32kCddSessionLocked(
+    _In_ ULONG SessionId)
+{
+    PLIST_ENTRY Entry;
+
+    for (Entry = DxgkpWin32kCddSessions.Flink; Entry != &DxgkpWin32kCddSessions; Entry = Entry->Flink)
+    {
+        PDXGKP_WIN32K_CDD_SESSION Session = CONTAINING_RECORD(Entry, DXGKP_WIN32K_CDD_SESSION, Entry);
+
+        if (Session->SessionId == SessionId)
+            return Session;
+    }
+    return NULL;
+}
+
+static
+const DXGKRNL_WIN32K_CDD_INTERFACE *
+DxgkpCurrentWin32kCddInterfaceLocked(VOID)
+{
+    PDXGKP_WIN32K_CDD_SESSION Session = DxgkpFindWin32kCddSessionLocked(PsGetCurrentProcessSessionId());
+
+    return Session != NULL ? &Session->Interface : NULL;
+}
+
+#define DXGKP_WIN32K_CDD_CALLBACK(Field) \
+    (DxgkpCurrentWin32kCddInterfaceLocked() != NULL ? DxgkpCurrentWin32kCddInterfaceLocked()->Field : NULL)
 
 NTSTATUS
 DxgkRegisterWin32kCddInterface(
     _In_ const DXGKRNL_WIN32K_CDD_INTERFACE *Interface)
 {
+    PDXGKP_WIN32K_CDD_SESSION NewSession = NULL, Old;
     ULONG RequiredSize;
+    ULONG SessionId;
 
     if (Interface == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -117,13 +155,29 @@ DxgkRegisterWin32kCddInterface(
     if (Interface->Size != RequiredSize)
         return STATUS_INFO_LENGTH_MISMATCH;
 
+    SessionId = PsGetCurrentProcessSessionId();
+    if (Interface->AddRedirectionDirtyRegion != NULL)
+    {
+        NewSession = ExAllocatePoolZero(NonPagedPool, sizeof(*NewSession), TAG_DXGK_DISPLAY);
+        if (NewSession == NULL)
+            return STATUS_INSUFFICIENT_RESOURCES;
+        NewSession->SessionId = SessionId;
+        RtlCopyMemory(&NewSession->Interface, Interface, RequiredSize);
+    }
+
     KeEnterCriticalRegion();
     ExfAcquirePushLockExclusive(&DxgkpWin32kCddInterfaceLock);
-    RtlZeroMemory(&DxgkpWin32kCddInterface,
-                  sizeof(DxgkpWin32kCddInterface));
-    RtlCopyMemory(&DxgkpWin32kCddInterface, Interface, RequiredSize);
+    Old = DxgkpFindWin32kCddSessionLocked(SessionId);
+    ASSERT(NewSession == NULL || Old == NULL);
+    if (Old != NULL)
+        RemoveEntryList(&Old->Entry);
+    if (NewSession != NULL)
+        InsertTailList(&DxgkpWin32kCddSessions, &NewSession->Entry);
     ExfReleasePushLockExclusive(&DxgkpWin32kCddInterfaceLock);
     KeLeaveCriticalRegion();
+
+    if (Old != NULL)
+        ExFreePoolWithTag(Old, TAG_DXGK_DISPLAY);
     return STATUS_SUCCESS;
 }
 
@@ -140,7 +194,7 @@ DxgkDispatchWin32kNtGdi(
 
     KeEnterCriticalRegion();
     ExfAcquirePushLockShared(&DxgkpWin32kCddInterfaceLock);
-    Callback = DxgkpWin32kCddInterface.DispatchNtGdi;
+    Callback = DXGKP_WIN32K_CDD_CALLBACK(DispatchNtGdi);
     ExfReleasePushLockShared(&DxgkpWin32kCddInterfaceLock);
     KeLeaveCriticalRegion();
 
@@ -244,7 +298,7 @@ DxgkQueryWindowPresentState(_In_ ULONG_PTR WindowHandle)
 
     KeEnterCriticalRegion();
     ExfAcquirePushLockShared(&DxgkpWin32kCddInterfaceLock);
-    Callback = DxgkpWin32kCddInterface.QueryWindowPresentState;
+    Callback = DXGKP_WIN32K_CDD_CALLBACK(QueryWindowPresentState);
     ExfReleasePushLockShared(&DxgkpWin32kCddInterfaceLock);
     KeLeaveCriticalRegion();
 
@@ -261,7 +315,7 @@ DxgkQueryRedirectedBltClient(
 
     KeEnterCriticalRegion();
     ExfAcquirePushLockShared(&DxgkpWin32kCddInterfaceLock);
-    Callback = DxgkpWin32kCddInterface.QueryRedirectedBltClient;
+    Callback = DXGKP_WIN32K_CDD_CALLBACK(QueryRedirectedBltClient);
     Status = Callback != NULL ? Callback(Present, ClientRect) : STATUS_NOT_SUPPORTED;
     ExfReleasePushLockShared(&DxgkpWin32kCddInterfaceLock);
     KeLeaveCriticalRegion();
@@ -280,7 +334,7 @@ DxgkIssueWindowBltTarget(
 
     KeEnterCriticalRegion();
     ExfAcquirePushLockShared(&DxgkpWin32kCddInterfaceLock);
-    Callback = DxgkpWin32kCddInterface.IssueWindowBltTarget;
+    Callback = DXGKP_WIN32K_CDD_CALLBACK(IssueWindowBltTarget);
     ExfReleasePushLockShared(&DxgkpWin32kCddInterfaceLock);
     KeLeaveCriticalRegion();
 
@@ -314,7 +368,7 @@ DxgkCancelWindowBltTarget(
 
     KeEnterCriticalRegion();
     ExfAcquirePushLockShared(&DxgkpWin32kCddInterfaceLock);
-    Callback = DxgkpWin32kCddInterface.CancelWindowBltTarget;
+    Callback = DXGKP_WIN32K_CDD_CALLBACK(CancelWindowBltTarget);
     ExfReleasePushLockShared(&DxgkpWin32kCddInterfaceLock);
     KeLeaveCriticalRegion();
 
@@ -329,15 +383,47 @@ static VOID
 DxgkpRefreshCompositionNow(VOID)
 {
     PDXGKENG_REFRESH_COMPOSITION Callback;
+    DXGK_WIN32K_ATTACHMENT Attachment;
+    PLIST_ENTRY Entry;
+    ULONG SessionId, Next;
+    BOOLEAN Found;
 
-    KeEnterCriticalRegion();
-    ExfAcquirePushLockShared(&DxgkpWin32kCddInterfaceLock);
-    Callback = DxgkpWin32kCddInterface.RefreshComposition;
-    ExfReleasePushLockShared(&DxgkpWin32kCddInterfaceLock);
-    KeLeaveCriticalRegion();
+    PAGED_CODE();
 
-    if (Callback != NULL)
-        Callback();
+    for (Next = 0;;)
+    {
+        Found = FALSE;
+        KeEnterCriticalRegion();
+        ExfAcquirePushLockShared(&DxgkpWin32kCddInterfaceLock);
+        for (Entry = DxgkpWin32kCddSessions.Flink; Entry != &DxgkpWin32kCddSessions; Entry = Entry->Flink)
+        {
+            PDXGKP_WIN32K_CDD_SESSION Session = CONTAINING_RECORD(Entry, DXGKP_WIN32K_CDD_SESSION, Entry);
+
+            if (Session->SessionId >= Next && (!Found || Session->SessionId < SessionId))
+            {
+                SessionId = Session->SessionId;
+                Found = TRUE;
+            }
+        }
+        ExfReleasePushLockShared(&DxgkpWin32kCddInterfaceLock);
+        KeLeaveCriticalRegion();
+        if (!Found)
+            break;
+        Next = SessionId + 1;
+
+        if (!DxgkDisplayAttachWin32kSession(SessionId, &Attachment))
+            continue;
+        KeEnterCriticalRegion();
+        ExfAcquirePushLockShared(&DxgkpWin32kCddInterfaceLock);
+        Callback = DXGKP_WIN32K_CDD_CALLBACK(RefreshComposition);
+        ExfReleasePushLockShared(&DxgkpWin32kCddInterfaceLock);
+        KeLeaveCriticalRegion();
+        if (Callback != NULL)
+            Callback();
+        DxgkDisplayDetachWin32kSession(&Attachment);
+        if (Next == 0)
+            break;
+    }
 }
 
 static VOID
@@ -391,7 +477,7 @@ DxgkAdmitRedirectedBltPresent(
 
     KeEnterCriticalRegion();
     ExfAcquirePushLockShared(&DxgkpWin32kCddInterfaceLock);
-    Callback = DxgkpWin32kCddInterface.AdmitRedirectedBltPresent;
+    Callback = DXGKP_WIN32K_CDD_CALLBACK(AdmitRedirectedBltPresent);
     Status = Callback != NULL ? Callback(Present) : STATUS_NOT_SUPPORTED;
     ExfReleasePushLockShared(&DxgkpWin32kCddInterfaceLock);
     KeLeaveCriticalRegion();
@@ -409,7 +495,7 @@ DxgkCancelRedirectedBltPresent(
 
     KeEnterCriticalRegion();
     ExfAcquirePushLockShared(&DxgkpWin32kCddInterfaceLock);
-    Callback = DxgkpWin32kCddInterface.CancelRedirectedBltPresent;
+    Callback = DXGKP_WIN32K_CDD_CALLBACK(CancelRedirectedBltPresent);
     if (Callback != NULL)
         (VOID)Callback(Present);
     ExfReleasePushLockShared(&DxgkpWin32kCddInterfaceLock);
@@ -449,13 +535,12 @@ DxgkpRedirectedBltWorker(
 {
     PDXGKP_REDIRECTED_BLT_WORK Work = Parameter;
     NTSTATUS Status = Work->Complete ? STATUS_SUCCESS : STATUS_CANCELLED;
-    KAPC_STATE ApcState;
-    PEPROCESS SessionProcess;
+    DXGK_WIN32K_ATTACHMENT Attachment;
 
     PAGED_CODE();
 
     /* The win32k callouts below are session-space code; a system worker runs outside every session */
-    if (DxgkDisplayAttachWin32kSession(&ApcState, &SessionProcess))
+    if (DxgkDisplayAttachWin32kSession(PsGetProcessSessionId(Work->Present.OwnerProcess), &Attachment))
     {
         /* The CDD copy reads the GDI blt texture on its own context: the producer's present must retire first */
         if (NT_SUCCESS(Status) && Work->GdiBltTexture != NULL)
@@ -474,7 +559,7 @@ DxgkpRedirectedBltWorker(
                                                                  Work->Context);
         if (!NT_SUCCESS(Status))
             DxgkCancelRedirectedBltPresent(&Work->Present);
-        DxgkDisplayDetachWin32kSession(&ApcState, SessionProcess);
+        DxgkDisplayDetachWin32kSession(&Attachment);
     }
     KeSetEvent(&DxgkpWindowBltRetiredEvent, IO_NO_INCREMENT, FALSE);
     if (Work->GdiBltTexture != NULL)
@@ -559,7 +644,7 @@ DxgkpCompleteRedirectedBltPresentWithHandle(
 
     KeEnterCriticalRegion();
     ExfAcquirePushLockShared(&DxgkpWin32kCddInterfaceLock);
-    Callback = DxgkpWin32kCddInterface.CompleteRedirectedBltPresent;
+    Callback = DXGKP_WIN32K_CDD_CALLBACK(CompleteRedirectedBltPresent);
     Status = Callback != NULL
                  ? Callback(Present,
                             DirtyRects,

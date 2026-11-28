@@ -620,11 +620,114 @@ static void TestMaterial()
     ok((ULONG_PTR)GetPropW(surface.Window(), DWM_PROP_CORNER_RADIUS) == 56, "the radius follows the DPI\n");
     surface.SetMaterial(LIBER_MATERIAL_THICK, 0xFF10171E, 0xB8, 40.0f);
     ok(GetPropW(surface.Window(), DWM_PROP_CORNER_RADIUS) == NULL, "radii the compositor cannot round are left out\n");
+    surface.SetMaterial(LIBER_MATERIAL_ULTRATHIN, 0, 0, 0.0f);
+    surface.SetMaterialFade(TRUE);
+    packed = (ULONG)(ULONG_PTR)GetPropW(surface.Window(), DWM_PROP_LIBER_MATERIAL);
+    ok((packed & DWM_LIBER_MATERIAL_FADE) && DWM_LIBER_MATERIAL_EDGE(packed) == DWM_LIBER_EDGE_NONE &&
+           DWM_LIBER_MATERIAL_ALPHA(packed) == 0 && (packed & ~DWM_LIBER_MATERIAL_MASK) == 0,
+       "a fading material has no edge or tint: %08lX\n", packed);
+    surface.SetMaterialFade(FALSE);
+    packed = (ULONG)(ULONG_PTR)GetPropW(surface.Window(), DWM_PROP_LIBER_MATERIAL);
+    ok(!(packed & DWM_LIBER_MATERIAL_FADE) && DWM_LIBER_MATERIAL_EDGE(packed) == DWM_LIBER_EDGE_GLASS,
+       "turning the fade off restores the glass edge\n");
     surface.SetMaterial(-1, 0, 0, 0.0f);
     ok(GetPropW(surface.Window(), DWM_PROP_LIBER_MATERIAL) == NULL &&
            GetPropW(surface.Window(), DWM_PROP_LIBER_MATERIAL_TINT) == NULL && surface.Material() == -1,
        "clearing the material removes the properties\n");
     surface.Destroy();
+}
+
+static BYTE PackedAlpha(HWND hwnd)
+{
+    return (BYTE)DWM_LIBER_MATERIAL_ALPHA((ULONG)(ULONG_PTR)GetPropW(hwnd, DWM_PROP_LIBER_MATERIAL));
+}
+
+static BYTE TokenAlpha(const ThemeTokens &tokens, double luma)
+{
+    return (BYTE)(tokens.Material(LIBER_MATERIAL_THICK, luma).Alpha * 255.0 + 0.5);
+}
+
+static void TestBackdrop()
+{
+    Surface surface;
+    ThemeTokens tokens;
+    ThemeParams params = { ThemeMode::Light, AccentPreset(LIBER_ACCENT_AZURE), SurfaceTint::Soft };
+
+    tokens.Build(params);
+    ok(surface.Create(NULL, L"LiberUI backdrop test", WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE), "surface created\n");
+    surface.SetDpi(96);
+    surface.SetTokens(&tokens);
+    surface.SetPosition(40, 40, 80, 80);
+    ok(surface.BackdropLuma(AnimationClock::Now()) == 0.5, "the backdrop starts at the middle\n");
+    surface.SetMaterial(LIBER_MATERIAL_THICK, 0xFFF3F8FE, TokenAlpha(tokens, 0.5), 8.0f);
+    surface.SetBackdropLuma(0.08);
+    ok(surface.BackdropLuma(AnimationClock::Now()) == 0.08 && surface.BackdropTarget() == 0.08,
+       "a hidden surface takes the backdrop at once\n");
+    ok(PackedAlpha(surface.Window()) == TokenAlpha(tokens, 0.08), "the material follows a dark backdrop: %u %u\n",
+       PackedAlpha(surface.Window()), TokenAlpha(tokens, 0.08));
+    ok(TokenAlpha(tokens, 0.08) > TokenAlpha(tokens, 0.92), "light glass is more solid over a dark backdrop\n");
+
+    ShowWindow(surface.Window(), SW_SHOWNOACTIVATE);
+    surface.SetBackdropLuma(0.92);
+    ok(surface.BackdropTarget() == 0.92, "the new backdrop is the target\n");
+    double start = surface.BackdropLuma(AnimationClock::Now());
+    ok(start < 0.2, "a visible surface does not jump to the new backdrop: %f\n", start);
+    Pump(150);
+    double middle = surface.BackdropLuma(AnimationClock::Now());
+    ok(middle > start && middle < 0.92, "the backdrop moves over time: %f\n", middle);
+    Pump(LIBER_DUR_ADAPTIVE_TINT + 200);
+    ok(surface.BackdropLuma(AnimationClock::Now()) == 0.92, "the backdrop arrives after the transition\n");
+    ok(PackedAlpha(surface.Window()) == TokenAlpha(tokens, 0.92), "the material follows the new backdrop: %u %u\n",
+       PackedAlpha(surface.Window()), TokenAlpha(tokens, 0.92));
+    surface.SetBackdropLuma(0.92 + 0.5 / 512.0);
+    ok(surface.BackdropTarget() == 0.92, "changes below one alpha step are ignored\n");
+    surface.Destroy();
+    ok(surface.BackdropLuma(AnimationClock::Now()) == 0.92, "a destroyed surface keeps its last target\n");
+}
+
+static void TestTooltip()
+{
+    Surface surface;
+    StackPanel *root = new StackPanel(Orientation::Vertical, 0);
+    Button *button = new Button(NULL, L"grid_20_regular", ButtonKind::Subtle, LIBER_CONTROL_MD, FALSE);
+
+    button->SetTooltip(L"Grid view");
+    button->SetAlign(Align::Start, Align::Start);
+    root->AddChild(button);
+    POINT saved;
+    GetCursorPos(&saved);
+    ok(surface.Create(NULL, L"LiberUI tooltip test", WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE), "surface created\n");
+    surface.SetDpi(96);
+    surface.SetRoot(root);
+    surface.SetPosition(200, 200, 100, 100);
+    surface.Render(AnimationClock::Now());
+    ShowWindow(surface.Window(), SW_SHOWNOACTIVATE);
+    SetCursorPos(210, 210);
+    SendMessageW(surface.Window(), WM_MOUSEMOVE, 0, MAKELPARAM(10, 10));
+    ok(surface.TooltipSurface() == NULL, "no tooltip right away\n");
+    Pump(LIBER_TOOLTIP_DELAY / 2);
+    ok(surface.TooltipSurface() == NULL, "still no tooltip before the delay\n");
+    Pump(LIBER_TOOLTIP_DELAY);
+    ok(surface.TooltipSurface() && IsWindowVisible(surface.TooltipSurface()->Window()),
+       "the tooltip appears after the delay\n");
+    if (surface.TooltipSurface())
+    {
+        RECT tip, host;
+        GetWindowRect(surface.TooltipSurface()->Window(), &tip);
+        GetWindowRect(surface.Window(), &host);
+        ok(tip.bottom <= host.top + 10, "the tooltip sits above the control: %ld %ld\n", tip.bottom, host.top);
+    }
+    SendMessageW(surface.Window(), WM_MOUSELEAVE, 0, 0);
+    ok(!surface.TooltipSurface() || !IsWindowVisible(surface.TooltipSurface()->Window()), "leaving hides the tooltip\n");
+    SetCursorPos(290, 290);
+    SendMessageW(surface.Window(), WM_MOUSEMOVE, 0, MAKELPARAM(90, 90));
+    Pump(LIBER_TOOLTIP_DELAY + 200);
+    ok(!surface.TooltipSurface() || !IsWindowVisible(surface.TooltipSurface()->Window()),
+       "a control without a tooltip shows none\n");
+    SetCursorPos(saved.x, saved.y);
+    surface.SetRoot(NULL);
+    surface.Destroy();
+    delete root;
 }
 
 static void TestShadow()
@@ -761,6 +864,8 @@ START_TEST(Painter)
     TestGpuPainter();
     TestShadow();
     TestMaterial();
+    TestBackdrop();
+    TestTooltip();
     TestTransitions();
     TestSurfaceInput();
     ok(AssertionFailures() == failures, "%ld assertions failed\n", AssertionFailures() - failures);

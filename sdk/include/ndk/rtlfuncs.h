@@ -3012,6 +3012,18 @@ RtlCreateProcessParametersEx (
 NTSYSAPI
 NTSTATUS
 NTAPI
+RtlCreateProcessReflection(
+    _In_ HANDLE ProcessHandle,
+    _In_ ULONG Flags,
+    _In_opt_ PVOID StartRoutine,
+    _In_opt_ PVOID StartContext,
+    _In_opt_ HANDLE EventHandle,
+    _Out_opt_ PRTLP_PROCESS_REFLECTION_REFLECTION_INFORMATION ReflectionInformation
+);
+
+NTSYSAPI
+NTSTATUS
+NTAPI
 RtlCreateUserProcess(
     _In_ PUNICODE_STRING ImageFileName,
     _In_ ULONG Attributes,
@@ -3421,6 +3433,28 @@ RtlGetCurrentDirectory_U(
 );
 
 NTSYSAPI
+NTSTATUS
+NTAPI
+RtlGetSearchPath(
+    _Outptr_ PWSTR *Path
+);
+
+NTSYSAPI
+NTSTATUS
+NTAPI
+RtlGetExePath(
+    _In_z_ PCWSTR Name,
+    _Outptr_ PWSTR *Path
+);
+
+NTSYSAPI
+VOID
+NTAPI
+RtlReleasePath(
+    _In_ PWSTR Path
+);
+
+NTSYSAPI
 ULONG
 NTAPI
 RtlGetFullPathName_U(
@@ -3434,11 +3468,11 @@ NTSYSAPI
 NTSTATUS
 NTAPI
 RtlGetFullPathName_UEx(
-    _In_ PWSTR FileName,
+    _In_ PCWSTR FileName,
     _In_ ULONG BufferLength,
-    _Out_ PWSTR Buffer,
+    _Out_writes_bytes_(BufferLength) PWSTR Buffer,
     _Out_opt_ PWSTR *FilePart,
-    _Out_opt_ RTL_PATH_TYPE *InputPathType
+    _Out_opt_ PULONG BytesRequired
     );
 
 NTSTATUS

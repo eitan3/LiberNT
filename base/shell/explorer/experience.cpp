@@ -35,6 +35,30 @@ DWORD LiberExperience_SurfaceTint(VOID)
     return tint <= 2 ? tint : 1;
 }
 
+VOID LiberExperience_SetDimShade(COLORREF shade)
+{
+    DWORD value = (DWORD)shade & 0xFFFFFF;
+
+    if (ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"DimShade", 0xFFFFFFFF) != value)
+        RegSetKeyValueW(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"DimShade", REG_DWORD, &value, sizeof(value));
+}
+
+DWORD LiberExperience_TaskbarStyle(VOID)
+{
+    DWORD style = ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"TaskbarStyle", 0);
+    return style <= 2 ? style : 0;
+}
+
+BOOL LiberExperience_TaskbarLeft(VOID)
+{
+    return ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"TaskbarAlignment", 0) == 1;
+}
+
+DWORD LiberExperience_Accent(VOID)
+{
+    return ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Accent", LIBER_ACCENT_FOLLOW);
+}
+
 BOOL LiberExperience_WidgetsEnabled(VOID)
 {
     return ReadDword(HKEY_CURRENT_USER, LIBER_DESIGN_KEY, L"Widgets", 1) != 0;

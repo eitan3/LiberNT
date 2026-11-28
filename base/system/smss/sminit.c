@@ -21,6 +21,7 @@ LIST_ENTRY SmpPagingFileList, SmpDosDevicesList, SmpFileRenameList;
 LIST_ENTRY SmpKnownDllsList, SmpExcludeKnownDllsList;
 LIST_ENTRY SmpSubSystemList, SmpSubSystemsToLoad, SmpSubSystemsToDefer;
 LIST_ENTRY SmpExecuteList, NativeProcessList;
+ULONG SmpBootMuSessionId = -1;
 
 PVOID SmpHeap;
 ULONG SmBaseTag;
@@ -2340,7 +2341,7 @@ SmpProcessFileRenames(VOID)
                             &ObjectAttributes,
                             &IoStatusBlock,
                             FILE_SHARE_READ | FILE_SHARE_WRITE,
-                            FILE_SYNCHRONOUS_IO_NONALERT);
+                            FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT);
         if (!NT_SUCCESS(Status)) goto Quickie;
 
         /* Check if it's a rename or just a delete */
@@ -2420,7 +2421,7 @@ SmpProcessFileRenames(VOID)
                                     &ObjectAttributes,
                                     &IoStatusBlock,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                    FILE_SYNCHRONOUS_IO_NONALERT);
+                                    FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT);
                 if (!NT_SUCCESS(Status))
                 {
                     /* That didn't work, so bail out */
@@ -2708,8 +2709,16 @@ SmpLoadDataFromRegistry(OUT PUNICODE_STRING InitialCommand)
     /* And finally load all the subsystems for our first session! */
     Status = SmpLoadSubSystemsForMuSession(&MuSessionId,
                                            &SmpWindowsSubSysProcessId,
-                                           InitialCommand);
-    if (!NT_SUCCESS(Status)) SMSS_CHECKPOINT(SmpLoadSubSystemsForMuSession, Status);
+                                           InitialCommand,
+                                           TRUE);
+    if (!NT_SUCCESS(Status))
+    {
+        SMSS_CHECKPOINT(SmpLoadSubSystemsForMuSession, Status);
+    }
+    else
+    {
+        SmpBootMuSessionId = MuSessionId;
+    }
     return Status;
 }
 
@@ -2741,6 +2750,7 @@ SmpInit(IN PUNICODE_STRING InitialCommand,
 
     /* Initialize the subsystem list and the session list, plus their locks */
     RtlInitializeCriticalSection(&SmpKnownSubSysLock);
+    RtlInitializeCriticalSection(&SmpMuSessionLock);
     InitializeListHead(&SmpKnownSubSysHead);
     RtlInitializeCriticalSection(&SmpSessionListLock);
     InitializeListHead(&SmpSessionListHead);

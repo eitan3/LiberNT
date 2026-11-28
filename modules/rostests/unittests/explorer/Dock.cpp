@@ -21,13 +21,73 @@ static void CheckRect(const RECT &rc, LONG l, LONG t, LONG r, LONG b, const char
        "%s is (%ld,%ld,%ld,%ld), expected (%ld,%ld,%ld,%ld)\n", what, rc.left, rc.top, rc.right, rc.bottom, l, t, r, b);
 }
 
+static LIBER_DOCK_METRICS g_Capsule;
+
+static void TestStyles()
+{
+    LIBER_DOCK_METRICS rounded, classic, touched, left;
+    RECT monitor = { 0, 0, 1920, 1080 }, work;
+    LIBER_DOCK_LAYOUT layout;
+
+    ok(g_Capsule.Style == LIBER_TASKBAR_STYLE_CAPSULE && g_Capsule.Height == 60 && g_Capsule.Cell == 48 &&
+           g_Capsule.Icon == 36 && g_Capsule.Radius == 30 && g_Capsule.Reserve == 76 && g_Capsule.Gap == 8,
+       "the floating capsule dock\n");
+    LiberDock_Metrics(LIBER_TASKBAR_STYLE_ROUNDED, FALSE, FALSE, &rounded);
+    ok(rounded.Radius == LIBER_RADIUS_TASKBAR && rounded.Height == 60 && rounded.Reserve == 76,
+       "the rounded rectangle has the 16 px taskbar radius\n");
+    LiberDock_Metrics(LIBER_TASKBAR_STYLE_CAPSULE, FALSE, TRUE, &touched);
+    ok(touched.Touched && touched.Reserve == LIBER_TASKBAR_DOCK_TOUCHED && touched.Gap == 0,
+       "a window touching the dock shrinks the reserve to 60 and drops the gap\n");
+    LiberDock_Metrics(LIBER_TASKBAR_STYLE_CLASSIC, FALSE, TRUE, &classic);
+    ok(classic.Height == 48 && classic.Cell == 40 && classic.Icon == 26 && classic.Radius == 0 &&
+           classic.Reserve == 48 && !classic.Touched,
+       "the classic taskbar: 48 high, 40 cells, 26 icons, never touched\n");
+    LiberDock_Metrics(7, FALSE, FALSE, &left);
+    ok(left.Style == LIBER_TASKBAR_STYLE_CAPSULE, "an unknown style falls back to the capsule\n");
+
+    LiberDock_WorkArea(&monitor, 96, &touched, &work);
+    ok(work.bottom == 1080 - 60, "touched work area: %ld\n", work.bottom);
+    LiberDock_WorkArea(&monitor, 96, &classic, &work);
+    ok(work.bottom == 1080 - 48, "classic work area: %ld\n", work.bottom);
+
+    LiberDock_Layout(&monitor, 96, 5, 112, &touched, &layout);
+    ok(layout.Dock.bottom == 1080 && layout.Dock.top == 1020, "a touched dock sits on the screen edge\n");
+    LiberDock_Layout(&monitor, 96, 5, 112, &classic, &layout);
+    CheckRect(layout.Dock, 0, 1032, 1920, 1080, "the classic bar spans the monitor");
+    ok(layout.DockWidthDip == 1920, "the classic bar is the monitor width\n");
+    ok(layout.CellsLeft == (1920 - LiberDock_Width(&classic, 5)) / 2 + classic.PadX,
+       "centered classic icons: %d\n", layout.CellsLeft);
+    ok((layout.Tray.top + layout.Tray.bottom) == (layout.Dock.top + layout.Dock.bottom),
+       "the tray stays on the bar's center line\n");
+
+    LiberDock_Metrics(LIBER_TASKBAR_STYLE_CLASSIC, TRUE, FALSE, &left);
+    LiberDock_Layout(&monitor, 96, 5, 112, &left, &layout);
+    ok(layout.CellsLeft == left.PadX, "left-aligned classic icons start at the padding\n");
+    LiberDock_Metrics(LIBER_TASKBAR_STYLE_CAPSULE, TRUE, FALSE, &left);
+    LiberDock_Layout(&monitor, 96, 5, 112, &left, &layout);
+    ok(layout.Dock.left == LIBER_TRAY_INSET && layout.DockWidthDip == LiberDock_Width(&left, 5),
+       "a left-aligned dock starts at the inset\n");
+    RECT cell;
+    LiberDock_CellRect(&layout.Dock, 96, &left, layout.CellsLeft, 0, &cell);
+    ok(cell.left == LIBER_TRAY_INSET + LIBER_DOCK_PAD_X, "its first cell follows the padding\n");
+
+    LiberDock_Metrics(LIBER_TASKBAR_STYLE_CLASSIC, FALSE, FALSE, &classic);
+    LiberDock_Layout(&monitor, 96, 3, 112, &classic, &layout);
+    LiberDock_CellRect(&layout.Dock, 96, &classic, layout.CellsLeft, 1, &cell);
+    ok(cell.right - cell.left == 40 && cell.top == 1032 + LIBER_CLASSIC_PAD && cell.bottom == 1080 - LIBER_CLASSIC_PAD,
+       "classic cells are 40 px and centered in the bar\n");
+    RECT band;
+    LiberDock_BlurBand(&monitor, 96, &touched, 0, &band);
+    ok(band.top == 1080 - 60, "bands follow the reserve\n");
+}
+
 static void TestLayout()
 {
     RECT monitor = { 0, 0, 1920, 1080 };
     LIBER_DOCK_LAYOUT layout;
 
-    ok(LiberDock_Width(10) == 514, "ten cells make the spec's 514 px dock: %d\n", LiberDock_Width(10));
-    ok(LiberDock_Width(1) == 64, "one cell: %d\n", LiberDock_Width(1));
+    ok(LiberDock_Width(&g_Capsule, 10) == 514, "ten cells make the spec's 514 px dock: %d\n", LiberDock_Width(&g_Capsule, 10));
+    ok(LiberDock_Width(&g_Capsule, 1) == 64, "one cell: %d\n", LiberDock_Width(&g_Capsule, 1));
     WCHAR label[8];
     ok(LiberDock_LanguageLabel(MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US), label, _countof(label)) &&
        !wcscmp(label, L"ENG"), "English shows ENG: %S\n", label);
@@ -42,14 +102,14 @@ static void TestLayout()
        "system group is %d px with a battery and %d px without\n", LiberDock_SystemPillWidth(TRUE),
        LiberDock_SystemPillWidth(FALSE));
 
-    LiberDock_Layout(&monitor, 96, 5, 112, &layout);
+    LiberDock_Layout(&monitor, 96, 5, 112, &g_Capsule, &layout);
     CheckRect(layout.Dock, (1920 - 264) / 2, 1080 - 8 - 60, (1920 - 264) / 2 + 264, 1080 - 8, "dock at 96 DPI");
     CheckRect(layout.Tray, 1920 - 12 - 112, 1012 + 6, 1920 - 12, 1012 + 6 + 48, "tray at 96 DPI");
     ok((layout.Tray.top + layout.Tray.bottom) == (layout.Dock.top + layout.Dock.bottom), "tray sits on the dock's center line\n");
     ok(LIBER_TASKBAR_DOCK - (1080 - layout.Dock.top) == 8, "dock fits the reserved 76 px\n");
 
     RECT second = { 1920, 0, 3840, 1080 };
-    LiberDock_Layout(&second, 144, 1, 112, &layout);
+    LiberDock_Layout(&second, 144, 1, 112, &g_Capsule, &layout);
     CheckRect(layout.Dock, 1920 + (1920 - 96) / 2, 1080 - 12 - 90, 1920 + (1920 - 96) / 2 + 96, 1080 - 12,
               "one cell at 144 DPI on a second monitor");
     CheckRect(layout.Tray, 3840 - 18 - 168, 978 + 9, 3840 - 18, 978 + 9 + 72, "tray at 144 DPI");
@@ -59,18 +119,18 @@ static void TestWorkArea()
 {
     RECT monitor = { 0, 0, 1920, 1080 }, work;
 
-    LiberDock_WorkArea(&monitor, 96, &work);
+    LiberDock_WorkArea(&monitor, 96, &g_Capsule, &work);
     CheckRect(work, 0, 0, 1920, 1080 - LIBER_TASKBAR_DOCK, "work area at 96 DPI");
     LIBER_DOCK_LAYOUT layout;
-    LiberDock_Layout(&monitor, 96, 5, 112, &layout);
+    LiberDock_Layout(&monitor, 96, 5, 112, &g_Capsule, &layout);
     ok(work.bottom <= layout.Dock.top && work.bottom <= layout.Tray.top, "the work area ends above the dock\n");
 
     RECT second = { 1920, -200, 3840, 880 };
-    LiberDock_WorkArea(&second, 144, &work);
+    LiberDock_WorkArea(&second, 144, &g_Capsule, &work);
     CheckRect(work, 1920, -200, 3840, 880 - 114, "work area at 144 DPI on a second monitor");
 
     RECT tiny = { 0, 0, 640, 60 };
-    LiberDock_WorkArea(&tiny, 96, &work);
+    LiberDock_WorkArea(&tiny, 96, &g_Capsule, &work);
     CheckRect(work, 0, 0, 640, 0, "a monitor shorter than the dock");
 }
 
@@ -431,21 +491,42 @@ static void TestWallpaperCache()
 
 static void TestCellRect()
 {
-    RECT dock = { 400, 1012, 400 + LiberDock_Width(5), 1012 + LIBER_DOCK_HEIGHT }, cell;
+    RECT dock = { 400, 1012, 400 + LiberDock_Width(&g_Capsule, 5), 1012 + LIBER_DOCK_HEIGHT }, cell;
 
-    LiberDock_CellRect(&dock, 96, 0, &cell);
+    LiberDock_CellRect(&dock, 96, &g_Capsule, LIBER_DOCK_PAD_X, 0, &cell);
     CheckRect(cell, 408, 1018, 456, 1066, "the Start cell");
-    LiberDock_CellRect(&dock, 96, 2, &cell);
+    LiberDock_CellRect(&dock, 96, &g_Capsule, LIBER_DOCK_PAD_X, 2, &cell);
     CheckRect(cell, 508, 1018, 556, 1066, "the first app cell follows Start and Search");
-    LiberDock_CellRect(&dock, 96, 4, &cell);
+    LiberDock_CellRect(&dock, 96, &g_Capsule, LIBER_DOCK_PAD_X, 4, &cell);
     ok(cell.right == dock.right - LIBER_DOCK_PAD_X, "the last cell ends at the dock padding: %ld\n", cell.right);
     ok(cell.bottom == dock.bottom - LIBER_DOCK_PAD_Y, "cells are centred vertically: %ld\n", cell.bottom);
 
-    RECT scaled = { 100, 200, 100 + LiberUI::ScaleToDpi(LiberDock_Width(3), 144), 200 + LiberUI::ScaleToDpi(LIBER_DOCK_HEIGHT, 144) };
-    LiberDock_CellRect(&scaled, 144, 2, &cell);
+    RECT scaled = { 100, 200, 100 + LiberUI::ScaleToDpi(LiberDock_Width(&g_Capsule, 3), 144), 200 + LiberUI::ScaleToDpi(LIBER_DOCK_HEIGHT, 144) };
+    LiberDock_CellRect(&scaled, 144, &g_Capsule, LIBER_DOCK_PAD_X, 2, &cell);
     CheckRect(cell, 100 + LiberUI::ScaleToDpi(108, 144), 200 + LiberUI::ScaleToDpi(6, 144), 100 + LiberUI::ScaleToDpi(156, 144),
               200 + LiberUI::ScaleToDpi(54, 144), "an app cell at 150%");
     ok(cell.right <= scaled.right && cell.bottom <= scaled.bottom, "the cell stays inside the dock at 150%%\n");
+}
+
+static void TestBlurBands()
+{
+    RECT monitor = { 0, 0, 1920, 1080 }, band;
+
+    LiberDock_BlurBand(&monitor, 96, &g_Capsule, 0, &band);
+    CheckRect(band, 0, 1080 - LIBER_TASKBAR_DOCK, 1920, 1080, "the lightest blur covers the whole band");
+    LiberDock_BlurBand(&monitor, 96, &g_Capsule, LIBER_BLUR_BAND_LAYERS - 1, &band);
+    CheckRect(band, 0, 1080 - LIBER_TASKBAR_DOCK / LIBER_BLUR_BAND_LAYERS, 1920, 1080,
+              "the strongest blur covers only the bottom");
+    LONG previous = 0;
+    for (UINT i = 0; i < LIBER_BLUR_BAND_LAYERS; i++)
+    {
+        LiberDock_BlurBand(&monitor, 144, &g_Capsule, i, &band);
+        ok(band.bottom == 1080 && band.left == 0 && band.right == 1920, "every band ends at the screen bottom\n");
+        ok(band.top > previous, "each stronger blur starts lower: %ld\n", band.top);
+        previous = band.top;
+    }
+    LiberDock_BlurBand(&monitor, 144, &g_Capsule, 0, &band);
+    ok(band.top == 1080 - LiberUI::ScaleToDpi(LIBER_TASKBAR_DOCK, 144), "the band scales with the DPI\n");
 }
 
 static void TestMenuDismiss()
@@ -527,11 +608,150 @@ static void TestPillWidth()
     LiberUI::Shutdown();
 }
 
+static void TestLumaGrid(void)
+{
+    static DWORD pixels[128 * 72];
+    static float grid[LIBER_LUMA_GRID_W * LIBER_LUMA_GRID_H];
+    SIZE image = { 128, 72 };
+    RECT left = { 0, 0, 64, 72 }, right = { 64, 0, 128, 72 }, all = { 0, 0, 128, 72 }, empty = { 10, 10, 10, 20 };
+    double luma = -1.0;
+
+    for (UINT y = 0; y < 72; y++)
+        for (UINT x = 0; x < 128; x++)
+            pixels[y * 128 + x] = x < 64 ? 0xFF000000 : 0xFFFFFFFF;
+    LiberShell_BuildLumaGrid(pixels, 128, 72, grid);
+    ok(grid[0] == 0.0f && grid[LIBER_LUMA_GRID_W - 1] > 0.99f, "the grid follows the image: %f %f\n", grid[0],
+       grid[LIBER_LUMA_GRID_W - 1]);
+    ok(LiberShell_GridLuma(grid, image, &left, &luma) && luma < 0.01, "the black half reads dark: %f\n", luma);
+    ok(LiberShell_GridLuma(grid, image, &right, &luma) && luma > 0.99, "the white half reads bright: %f\n", luma);
+    ok(LiberShell_GridLuma(grid, image, &all, &luma) && fabs(luma - 0.5) < 0.01, "the whole image is grey: %f\n",
+       luma);
+    ok(!LiberShell_GridLuma(grid, image, &empty, &luma), "an empty area has no luminance\n");
+    SIZE none = { 0, 0 };
+    ok(!LiberShell_GridLuma(grid, none, &all, &luma), "an image without size has no luminance\n");
+
+    LiberShell_BuildLumaGrid(pixels, 3, 2, grid);
+    ok(grid[LIBER_LUMA_GRID_W * LIBER_LUMA_GRID_H - 1] >= 0.0f, "a tiny image still fills every cell\n");
+}
+
+static void TestBackdropLuma(void)
+{
+    static float grid[LIBER_LUMA_GRID_W * LIBER_LUMA_GRID_H];
+    SIZE image = { 1280, 720 }, screen = { 1280, 720 };
+    RECT surface = { 100, 100, 300, 200 }, empty = { 5, 5, 5, 5 };
+    RECT cover = { 0, 0, 1280, 720 }, half = { 0, 0, 200, 720 };
+    double luma = -1.0;
+
+    for (UINT i = 0; i < _countof(grid); i++)
+        grid[i] = 0.8f;
+    ok(LiberShell_BackdropLumaAt(grid, image, LIBER_WALLPAPER_FILL, screen, &surface, NULL, 0, 0.1, 0.0, &luma) &&
+           fabs(luma - 0.8) < 1e-6,
+       "the wallpaper alone gives its luminance: %f\n", luma);
+    ok(LiberShell_BackdropLumaAt(grid, image, LIBER_WALLPAPER_FILL, screen, &surface, &cover, 1, 0.1, 0.0, &luma) &&
+           fabs(luma - 0.1) < 1e-6,
+       "a window covering the surface gives the window's luminance: %f\n", luma);
+    ok(LiberShell_BackdropLumaAt(grid, image, LIBER_WALLPAPER_FILL, screen, &surface, &half, 1, 0.0, 0.0, &luma) &&
+           fabs(luma - 0.4) < 1e-6,
+       "a window over half the surface averages both: %f\n", luma);
+    ok(LiberShell_BackdropLumaAt(grid, image, LIBER_WALLPAPER_FILL, screen, &surface, NULL, 0, 0.1, 0.5, &luma) &&
+           fabs(luma - 0.4) < 1e-6,
+       "the dark-mode dim darkens only the wallpaper: %f\n", luma);
+    ok(LiberShell_BackdropLumaAt(grid, image, LIBER_WALLPAPER_FILL, screen, &surface, &cover, 1, 0.3, 0.5, &luma) &&
+           fabs(luma - 0.3) < 1e-6,
+       "windows are not dimmed: %f\n", luma);
+    ok(!LiberShell_BackdropLumaAt(grid, image, LIBER_WALLPAPER_FILL, screen, &empty, NULL, 0, 0.1, 0.0, &luma),
+       "an empty surface has no backdrop\n");
+    ok(!LiberShell_BackdropLumaAt(NULL, image, LIBER_WALLPAPER_FILL, screen, &surface, NULL, 0, 0.1, 0.0, &luma),
+       "no wallpaper and no window gives no backdrop\n");
+    ok(LiberShell_BackdropLumaAt(NULL, image, LIBER_WALLPAPER_FILL, screen, &surface, &cover, 1, 0.2, 0.0, &luma) &&
+           fabs(luma - 0.2) < 1e-6,
+       "windows alone still give a backdrop: %f\n", luma);
+}
+
+static void TestAccentChoice(void)
+{
+    LiberUI::PaletteResult palette;
+    LiberUI::Accent accent, azure = LiberUI::AccentPreset(LIBER_ACCENT_AZURE);
+
+    accent = LiberShell_ResolveAccent(LIBER_ACCENT_AMBER, NULL);
+    ok(accent.H == LiberUI::AccentPreset(LIBER_ACCENT_AMBER).H, "a preset is used as chosen: %f\n", accent.H);
+    ZeroMemory(&palette, sizeof(palette));
+    palette.Count = 1;
+    palette.Candidates[0].AccentColor = LiberUI::AccentFromWallpaper(150.0, 0.12);
+    accent = LiberShell_ResolveAccent(LIBER_ACCENT_FOLLOW, &palette);
+    ok(accent.H == 150.0 && accent.C == palette.Candidates[0].AccentColor.C,
+       "following the wallpaper uses its first candidate: %f %f\n", accent.H, accent.C);
+    accent = LiberShell_ResolveAccent(LIBER_ACCENT_TEAL, &palette);
+    ok(accent.H == LiberUI::AccentPreset(LIBER_ACCENT_TEAL).H, "a preset wins over the wallpaper\n");
+    palette.Count = 0;
+    accent = LiberShell_ResolveAccent(LIBER_ACCENT_FOLLOW, &palette);
+    ok(accent.H == azure.H && accent.C == azure.C, "a wallpaper without colors falls back to azure\n");
+    accent = LiberShell_ResolveAccent(LIBER_ACCENT_FOLLOW, NULL);
+    ok(accent.H == azure.H, "no wallpaper falls back to azure\n");
+    accent = LiberShell_ResolveAccent(LIBER_ACCENT_PRESET_COUNT, NULL);
+    ok(accent.H == azure.H, "an unknown choice is treated as following a missing wallpaper\n");
+
+    HKEY key;
+    DWORD saved = 0, size = sizeof(saved);
+    BOOL had = RegGetValueW(HKEY_CURRENT_USER, L"Software\\LiberNT\\Shell\\Design", L"Accent", RRF_RT_REG_DWORD, NULL,
+                            &saved, &size) == ERROR_SUCCESS;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\LiberNT\\Shell\\Design", 0, NULL, 0, KEY_SET_VALUE, NULL, &key,
+                        NULL) != ERROR_SUCCESS)
+    {
+        skip("cannot write the Design key\n");
+        return;
+    }
+    RegDeleteValueW(key, L"Accent");
+    ok(LiberExperience_Accent() == LIBER_ACCENT_FOLLOW, "the accent follows the wallpaper by default\n");
+    DWORD value = LIBER_ACCENT_GREEN;
+    RegSetValueExW(key, L"Accent", 0, REG_DWORD, (const BYTE *)&value, sizeof(value));
+    ok(LiberExperience_Accent() == LIBER_ACCENT_GREEN, "a stored preset is read back\n");
+    if (had)
+        RegSetValueExW(key, L"Accent", 0, REG_DWORD, (const BYTE *)&saved, sizeof(saved));
+    else
+        RegDeleteValueW(key, L"Accent");
+    RegCloseKey(key);
+}
+
+static void TestPreviewHelpers()
+{
+    WCHAR name[64];
+    SIZE limit = { LIBER_PREVIEW_THUMB_W, LIBER_PREVIEW_THUMB_H }, size;
+    SIZE wide = { 1920, 1080 }, tall = { 600, 1200 }, none = { 0, 0 };
+
+    LiberDock_AppName(L"C:\\Users\\tester\\Desktop\\Notepad.lnk", name, _countof(name));
+    ok(!wcscmp(name, L"Notepad"), "a shortcut is named after its file: %S\n", name);
+    LiberDock_AppName(L"C:/Apps/my.tool.exe", name, _countof(name));
+    ok(!wcscmp(name, L"my.tool"), "only the last extension is dropped: %S\n", name);
+    LiberDock_AppName(L"", name, _countof(name));
+    ok(name[0] == 0, "no path, no name\n");
+    LiberDock_AppName(NULL, name, _countof(name));
+    ok(name[0] == 0, "a NULL path gives no name\n");
+
+    size = LiberDock_FitThumbnail(wide, limit);
+    ok(size.cx == 200 && size.cy == 112, "a wide window fills the width: %ld x %ld\n", size.cx, size.cy);
+    size = LiberDock_FitThumbnail(tall, limit);
+    ok(size.cx == 60 && size.cy == 120, "a tall window fills the height: %ld x %ld\n", size.cx, size.cy);
+    size = LiberDock_FitThumbnail(none, limit);
+    ok(size.cx == 0 && size.cy == 0, "an empty window has no thumbnail\n");
+    SIZE thin = { 4000, 1 };
+    size = LiberDock_FitThumbnail(thin, limit);
+    ok(size.cx == 200 && size.cy == 1, "a sliver keeps at least one pixel\n");
+}
+
 START_TEST(Dock)
 {
+    LiberDock_Metrics(LIBER_TASKBAR_STYLE_CAPSULE, FALSE, FALSE, &g_Capsule);
+    TestStyles();
+    TestLumaGrid();
+    TestPreviewHelpers();
+    TestAccentChoice();
+    TestBackdropLuma();
+    ok(LiberShell_DimShade(0xFF10171E) == RGB(0x10, 0x17, 0x1E), "the dim shade is the surface base color\n");
     TestPillWidth();
     TestStartDefaults();
     TestMenuDismiss();
+    TestBlurBands();
     TestCellRect();
     TestWallpaperCache();
     TestStartSearch();

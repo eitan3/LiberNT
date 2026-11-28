@@ -23,6 +23,7 @@
 extern BOOLEAN IsUnattendedSetup; // HACK
 
 #include "bootsup.h"
+#include "bcddev.h"
 
 #define NDEBUG
 #include <debug.h>
@@ -412,15 +413,6 @@ InstallEfiLoaderFiles(
     return Status;
 }
 
-#define BCD_DEVICE_ELEMENT_SIZE     0x58
-#define BCD_DEVICE_TYPE_OFFSET      0x10
-#define BCD_DEVICE_SIZE_OFFSET      0x18
-#define BCD_DEVICE_PARTITION_OFFSET 0x20
-#define BCD_DEVICE_STYLE_OFFSET     0x34
-#define BCD_DEVICE_DISK_OFFSET      0x38
-#define BCD_DEVICE_PARTITION        6
-#define BCD_DEVICE_BODY_SIZE        0x48
-#define BCD_PARTITION_STYLE_MBR     1
 #define BCD_BOOTMGR_OBJECT          L"{9dea862c-5cdd-4e70-acc1-f32b344d4795}"
 #define BCD_OSLOADER_OBJECT         L"{354fa6e5-5e45-49af-91bf-1fd2754e470a}"
 #define BCD_APPLICATION_DEVICE      L"11000001"
@@ -908,6 +900,25 @@ IsBcdEntryForOsDevice(
     return FALSE;
 }
 
+static
+BOOLEAN
+IsBcdEntryOnMissingPartition(
+    _In_ PBCD_KEPT_ENTRY Entry)
+{
+    PBCD_KEPT_ELEMENT Element;
+
+    for (Element = Entry->Elements; Element; Element = Element->Next)
+    {
+        if (_wcsicmp(Element->Name, BCD_OS_DEVICE) == 0)
+        {
+            return Element->Size == BCD_DEVICE_ELEMENT_SIZE &&
+                   !IsBcdPartitionElementPresent(Element->Data);
+        }
+    }
+
+    return FALSE;
+}
+
 /* Saves the entries of a mounted store that start another installation than the one at OsElement */
 static
 VOID
@@ -948,7 +959,8 @@ KeepOtherBcdEntries(
             Id[Length] = UNICODE_NULL;
             if (KeepBcdEntry(Id, &Kept->Entry[Kept->Count]))
             {
-                if (IsBcdEntryForOsDevice(&Kept->Entry[Kept->Count], OsElement))
+                if (IsBcdEntryForOsDevice(&Kept->Entry[Kept->Count], OsElement) ||
+                    IsBcdEntryOnMissingPartition(&Kept->Entry[Kept->Count]))
                     FreeBcdKeptEntry(&Kept->Entry[Kept->Count]);
                 else
                     Kept->Count++;

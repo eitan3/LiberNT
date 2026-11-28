@@ -14,7 +14,6 @@
 
 using namespace LiberUI;
 
-#define LIBER_DOCK_GAP       ((LIBER_TASKBAR_DOCK - LIBER_DOCK_HEIGHT) / 2)
 
 BOOL LiberDock_IsTaskWindow(HWND hwnd)
 {
@@ -37,27 +36,110 @@ BOOL LiberDock_SameApp(LPCWSTR pszTarget, LPCWSTR pszImage)
     return pszTarget && pszImage && *pszTarget && *pszImage && !lstrcmpiW(pszTarget, pszImage);
 }
 
-VOID LiberDock_WorkArea(const RECT *prcMonitor, UINT dpi, RECT *prcWork)
+SIZE LiberDock_FitThumbnail(SIZE window, SIZE limit)
 {
-    ATLASSERT(prcMonitor && prcWork && dpi != 0);
+    SIZE size = { 0, 0 };
+
+    if (window.cx <= 0 || window.cy <= 0 || limit.cx <= 0 || limit.cy <= 0)
+        return size;
+    if ((LONGLONG)window.cx * limit.cy >= (LONGLONG)window.cy * limit.cx)
+    {
+        size.cx = limit.cx;
+        size.cy = max(1L, (LONG)((LONGLONG)window.cy * limit.cx / window.cx));
+    }
+    else
+    {
+        size.cy = limit.cy;
+        size.cx = max(1L, (LONG)((LONGLONG)window.cx * limit.cy / window.cy));
+    }
+    return size;
+}
+
+VOID LiberDock_AppName(LPCWSTR pszPath, LPWSTR pszName, UINT cchName)
+{
+    ATLASSERT(pszName && cchName);
+    pszName[0] = 0;
+    if (!pszPath || !*pszPath)
+        return;
+    LPCWSTR name = pszPath;
+    for (LPCWSTR p = pszPath; *p; p++)
+    {
+        if (*p == L'\\' || *p == L'/')
+            name = p + 1;
+    }
+    lstrcpynW(pszName, name, (int)cchName);
+    for (WCHAR *dot = pszName + lstrlenW(pszName); dot > pszName; dot--)
+    {
+        if (*dot == L'.')
+        {
+            *dot = 0;
+            break;
+        }
+    }
+}
+
+VOID LiberDock_Metrics(UINT style, BOOL left, BOOL touched, LIBER_DOCK_METRICS *pMetrics)
+{
+    ATLASSERT(pMetrics);
+    ZeroMemory(pMetrics, sizeof(*pMetrics));
+    if (style > LIBER_TASKBAR_STYLE_CLASSIC)
+        style = LIBER_TASKBAR_STYLE_CAPSULE;
+    pMetrics->Style = style;
+    pMetrics->Left = left;
+    if (style == LIBER_TASKBAR_STYLE_CLASSIC)
+    {
+        pMetrics->Height = LIBER_TASKBAR_CLASSIC;
+        pMetrics->Cell = LIBER_CLASSIC_CELL;
+        pMetrics->Icon = LIBER_CLASSIC_ICON;
+        pMetrics->PadX = LIBER_CLASSIC_PAD;
+        pMetrics->PadY = LIBER_CLASSIC_PAD;
+        pMetrics->Radius = 0;
+        pMetrics->Reserve = LIBER_TASKBAR_CLASSIC;
+        pMetrics->Gap = 0;
+        return;
+    }
+    pMetrics->Touched = touched;
+    pMetrics->Height = LIBER_DOCK_HEIGHT;
+    pMetrics->Cell = LIBER_DOCK_CELL;
+    pMetrics->Icon = LIBER_DOCK_ICON;
+    pMetrics->PadX = LIBER_DOCK_PAD_X;
+    pMetrics->PadY = LIBER_DOCK_PAD_Y;
+    pMetrics->Radius = style == LIBER_TASKBAR_STYLE_ROUNDED ? LIBER_RADIUS_TASKBAR : LIBER_DOCK_HEIGHT / 2;
+    pMetrics->Reserve = touched ? LIBER_TASKBAR_DOCK_TOUCHED : LIBER_TASKBAR_DOCK;
+    pMetrics->Gap = (pMetrics->Reserve - LIBER_DOCK_HEIGHT) / 2;
+}
+
+VOID LiberDock_WorkArea(const RECT *prcMonitor, UINT dpi, const LIBER_DOCK_METRICS *pMetrics, RECT *prcWork)
+{
+    ATLASSERT(prcMonitor && prcWork && pMetrics && dpi != 0);
     *prcWork = *prcMonitor;
-    prcWork->bottom = max(prcMonitor->top, prcMonitor->bottom - ScaleToDpi(LIBER_TASKBAR_DOCK, dpi));
+    prcWork->bottom = max(prcMonitor->top, prcMonitor->bottom - ScaleToDpi(pMetrics->Reserve, dpi));
 }
 
-VOID LiberDock_CellRect(const RECT *prcDock, UINT dpi, UINT cell, RECT *prcCell)
+VOID LiberDock_CellRect(const RECT *prcDock, UINT dpi, const LIBER_DOCK_METRICS *pMetrics, int cellsLeftDip, UINT cell,
+                        RECT *prcCell)
 {
-    ATLASSERT(prcDock && prcCell && dpi != 0);
-    prcCell->left = prcDock->left + ScaleToDpi(LIBER_DOCK_PAD_X + (int)cell * (LIBER_DOCK_CELL + LIBER_DOCK_CELL_GAP), dpi);
-    prcCell->top = prcDock->top + ScaleToDpi(LIBER_DOCK_PAD_Y, dpi);
-    prcCell->right = prcDock->left +
-                     ScaleToDpi(LIBER_DOCK_PAD_X + (int)cell * (LIBER_DOCK_CELL + LIBER_DOCK_CELL_GAP) + LIBER_DOCK_CELL, dpi);
-    prcCell->bottom = prcDock->top + ScaleToDpi(LIBER_DOCK_PAD_Y + LIBER_DOCK_CELL, dpi);
+    ATLASSERT(prcDock && prcCell && pMetrics && dpi != 0);
+    int left = cellsLeftDip + (int)cell * (pMetrics->Cell + LIBER_DOCK_CELL_GAP);
+    prcCell->left = prcDock->left + ScaleToDpi(left, dpi);
+    prcCell->top = prcDock->top + ScaleToDpi(pMetrics->PadY, dpi);
+    prcCell->right = prcDock->left + ScaleToDpi(left + pMetrics->Cell, dpi);
+    prcCell->bottom = prcDock->top + ScaleToDpi(pMetrics->PadY + pMetrics->Cell, dpi);
 }
 
-int LiberDock_Width(UINT cells)
+VOID LiberDock_BlurBand(const RECT *prcMonitor, UINT dpi, const LIBER_DOCK_METRICS *pMetrics, UINT layer,
+                        RECT *prcBand)
 {
-    ATLASSERT(cells > 0);
-    return (int)cells * LIBER_DOCK_CELL + ((int)cells - 1) * LIBER_DOCK_CELL_GAP + 2 * LIBER_DOCK_PAD_X;
+    ATLASSERT(prcMonitor && prcBand && pMetrics && dpi != 0 && layer < LIBER_BLUR_BAND_LAYERS);
+    int height = ScaleToDpi(pMetrics->Reserve, dpi);
+    *prcBand = *prcMonitor;
+    prcBand->top = prcMonitor->bottom - height * (int)(LIBER_BLUR_BAND_LAYERS - layer) / LIBER_BLUR_BAND_LAYERS;
+}
+
+int LiberDock_Width(const LIBER_DOCK_METRICS *pMetrics, UINT cells)
+{
+    ATLASSERT(pMetrics && cells > 0);
+    return (int)cells * pMetrics->Cell + ((int)cells - 1) * LIBER_DOCK_CELL_GAP + 2 * pMetrics->PadX;
 }
 
 BOOL LiberDock_LanguageLabel(LANGID langId, LPWSTR pszLabel, UINT cchLabel)
@@ -87,22 +169,37 @@ int LiberDock_SystemPillWidth(BOOL bBattery)
     return 2 * LIBER_TRAY_BUTTON_PAD + icons * 20 + (icons - 1) * LIBER_TRAY_ICON_GAP;
 }
 
-VOID LiberDock_Layout(const RECT *prcMonitor, UINT dpi, UINT cells, int trayWidthDip, LIBER_DOCK_LAYOUT *pLayout)
+VOID LiberDock_Layout(const RECT *prcMonitor, UINT dpi, UINT cells, int trayWidthDip, const LIBER_DOCK_METRICS *pMetrics,
+                      LIBER_DOCK_LAYOUT *pLayout)
 {
-    int dockWidth = ScaleToDpi(LiberDock_Width(cells), dpi);
-    int dockHeight = ScaleToDpi(LIBER_DOCK_HEIGHT, dpi);
+    ATLASSERT(prcMonitor && pMetrics && pLayout && dpi != 0);
+    int cellsWidth = LiberDock_Width(pMetrics, cells);
+    int dockHeight = ScaleToDpi(pMetrics->Height, dpi);
     int trayWidth = ScaleToDpi(trayWidthDip, dpi);
     int trayHeight = ScaleToDpi(LIBER_TRAY_HEIGHT, dpi);
-    int gap = ScaleToDpi(LIBER_DOCK_GAP, dpi);
+    int inset = ScaleToDpi(LIBER_TRAY_INSET, dpi);
     LONG monitorWidth = prcMonitor->right - prcMonitor->left;
+    int monitorWidthDip = MulDiv((int)monitorWidth, 96, (int)dpi);
 
-    ATLASSERT(prcMonitor && pLayout && dpi != 0);
-    pLayout->Dock.left = prcMonitor->left + (monitorWidth - dockWidth) / 2;
-    pLayout->Dock.bottom = prcMonitor->bottom - gap;
+    pLayout->Dock.bottom = prcMonitor->bottom - ScaleToDpi(pMetrics->Gap, dpi);
     pLayout->Dock.top = pLayout->Dock.bottom - dockHeight;
-    pLayout->Dock.right = pLayout->Dock.left + dockWidth;
+    if (pMetrics->Style == LIBER_TASKBAR_STYLE_CLASSIC)
+    {
+        pLayout->Dock.left = prcMonitor->left;
+        pLayout->Dock.right = prcMonitor->right;
+        pLayout->DockWidthDip = monitorWidthDip;
+        pLayout->CellsLeft = pMetrics->Left ? pMetrics->PadX : max(pMetrics->PadX, (monitorWidthDip - cellsWidth) / 2 + pMetrics->PadX);
+    }
+    else
+    {
+        int dockWidth = ScaleToDpi(cellsWidth, dpi);
+        pLayout->Dock.left = pMetrics->Left ? prcMonitor->left + inset : prcMonitor->left + (monitorWidth - dockWidth) / 2;
+        pLayout->Dock.right = pLayout->Dock.left + dockWidth;
+        pLayout->DockWidthDip = cellsWidth;
+        pLayout->CellsLeft = pMetrics->PadX;
+    }
 
-    pLayout->Tray.right = prcMonitor->right - ScaleToDpi(LIBER_TRAY_INSET, dpi);
+    pLayout->Tray.right = prcMonitor->right - inset;
     pLayout->Tray.left = pLayout->Tray.right - trayWidth;
     pLayout->Tray.top = pLayout->Dock.top + (dockHeight - trayHeight) / 2;
     pLayout->Tray.bottom = pLayout->Tray.top + trayHeight;

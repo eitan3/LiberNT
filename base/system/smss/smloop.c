@@ -21,6 +21,8 @@ typedef struct _SMP_CLIENT_CONTEXT
     HANDLE ProcessHandle;
     HANDLE PortHandle;
     PVOID Reserved;
+    LONG Users;
+    LONG Closed;
 } SMP_CLIENT_CONTEXT, *PSMP_CLIENT_CONTEXT;
 
 typedef
@@ -163,7 +165,10 @@ SmpLoadDeferedSubsystem(
     DeferedSubsystem.Buffer = SmLoadDefered->Buffer;
 
     /* Find a subsystem responsible for this session */
-    SmpGetProcessMuSessionId(ClientContext->ProcessHandle, &MuSessionId);
+    Status = SmpGetProcessMuSessionId(ClientContext->ProcessHandle, &MuSessionId);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    Status = STATUS_OBJECT_NAME_NOT_FOUND;
     if (!SmpCheckDuplicateMuSessionId(MuSessionId))
     {
         DPRINT1("SMSS: Deferred subsystem load (%wZ) for MuSessionId %u, status=0x%x\n",
@@ -207,41 +212,52 @@ SmpStartCsr(IN PSM_API_MSG SmApiMsg,
 {
     PSM_START_CSR_MSG SmStartCsr = &SmApiMsg->u.StartCsr;
     UNICODE_STRING InitialCommand;
-    HANDLE InitialCommandProcess, InitialCommandProcessId, WindowsSubSysProcessId;
+    HANDLE InitialCommandProcess, InitialCommandProcessId, WindowsSubSysProcessId = NULL;
+    ULONG MuSessionId = -1;
     NTSTATUS Status;
 
-    Status = SmpLoadSubSystemsForMuSession(&SmStartCsr->MuSessionId,
+    if (SmStartCsr->Length > sizeof(SmStartCsr->Buffer) || (SmStartCsr->Length & 1))
+        return STATUS_INVALID_PARAMETER;
+
+    RtlEnterCriticalSection(&SmpMuSessionLock);
+    ASSERT(AttachedSessionId == -1);
+    Status = SmpLoadSubSystemsForMuSession(&MuSessionId,
                                            &WindowsSubSysProcessId,
-                                           &InitialCommand);
+                                           &InitialCommand,
+                                           FALSE);
     if (!NT_SUCCESS(Status))
     {
         DPRINT1("SMSS: SmpLoadSubSystemsForMuSession failed with status 0x%08x\n", Status);
-        return Status;
     }
-
-    if (SmStartCsr->Length)
+    else
     {
-        InitialCommand.Length = InitialCommand.MaximumLength = SmStartCsr->Length;
-        InitialCommand.Buffer = SmStartCsr->Buffer;
+        if (SmStartCsr->Length)
+        {
+            InitialCommand.Length = InitialCommand.MaximumLength = (USHORT)SmStartCsr->Length;
+            InitialCommand.Buffer = SmStartCsr->Buffer;
+        }
+
+        Status = SmpExecuteInitialCommand(MuSessionId,
+                                          &InitialCommand,
+                                          &InitialCommandProcess,
+                                          &InitialCommandProcessId);
+        if (!NT_SUCCESS(Status))
+            DPRINT1("SMSS: SmpExecuteInitialCommand failed with status 0x%08x\n", Status);
+        else
+            NtClose(InitialCommandProcess);
     }
 
-    Status = SmpExecuteInitialCommand(SmStartCsr->MuSessionId,
-                                      &InitialCommand,
-                                      &InitialCommandProcess,
-                                      &InitialCommandProcessId);
+    ASSERT(AttachedSessionId == -1 || AttachedSessionId == MuSessionId);
+    SmpLeaveMuSession();
+    if (!NT_SUCCESS(Status) && MuSessionId != -1)
+        SmpStopMuSession(MuSessionId);
+    RtlLeaveCriticalSection(&SmpMuSessionLock);
     if (!NT_SUCCESS(Status))
-    {
-        DPRINT1("SMSS: SmpExecuteInitialCommand failed with status 0x%08x\n", Status);
-        /* FIXME: undo effects of SmpLoadSubSystemsForMuSession */
-        ASSERT(FALSE);
         return Status;
-    }
 
-    NtClose(InitialCommandProcess);
-
+    SmStartCsr->MuSessionId = MuSessionId;
     SmStartCsr->WindowsSubSysProcessId = WindowsSubSysProcessId;
     SmStartCsr->SmpInitialCommandProcessId = InitialCommandProcessId;
-
     return STATUS_SUCCESS;
 }
 
@@ -251,8 +267,20 @@ SmpStopCsr(IN PSM_API_MSG SmApiMsg,
            IN PSMP_CLIENT_CONTEXT ClientContext,
            IN HANDLE SmApiPort)
 {
-    DPRINT1("%s is not yet implemented\n", __FUNCTION__);
-    return STATUS_NOT_IMPLEMENTED;
+    ULONG MuSessionId = SmApiMsg->u.StopCsr.MuSessionId;
+    NTSTATUS Status;
+
+    /* TODO: the boot session cannot be stopped while _main waits on its processes */
+    if (MuSessionId == 0 || MuSessionId == SmpBootMuSessionId)
+        return STATUS_INVALID_PARAMETER;
+
+    RtlEnterCriticalSection(&SmpMuSessionLock);
+    if (!SmpCheckDuplicateMuSessionId(MuSessionId))
+        Status = STATUS_INVALID_PARAMETER;
+    else
+        Status = SmpStopMuSession(MuSessionId);
+    RtlLeaveCriticalSection(&SmpMuSessionLock);
+    return Status;
 }
 
 PSM_API_HANDLER SmpApiDispatch[SmpMaxApiNumber - SmpCreateForeignSessionApi] =
@@ -347,6 +375,8 @@ SmpHandleConnectionRequest(IN HANDLE SmApiPort,
             ClientContext->Subsystem = CidSubsystem;
             ClientContext->Reserved = NULL;
             ClientContext->PortHandle = NULL;
+            ClientContext->Users = 0;
+            ClientContext->Closed = FALSE;
         }
         else
         {
@@ -415,6 +445,27 @@ SmpHandleConnectionRequest(IN HANDLE SmApiPort,
     /* Dereference the subsystem and return the result */
     if (CidSubsystem) SmpDereferenceSubsystem(CidSubsystem);
     return Status;
+}
+
+static
+VOID
+SmpCloseClientHandles(IN PSMP_CLIENT_CONTEXT ClientContext)
+{
+    HANDLE Handle;
+
+    Handle = InterlockedExchangePointer(&ClientContext->ProcessHandle, NULL);
+    if (Handle) NtClose(Handle);
+    Handle = InterlockedExchangePointer(&ClientContext->PortHandle, NULL);
+    if (Handle) NtClose(Handle);
+}
+
+static
+VOID
+SmpReleaseClientContext(IN PSMP_CLIENT_CONTEXT ClientContext)
+{
+    ASSERT(ClientContext->Users > 0);
+    if (!InterlockedDecrement(&ClientContext->Users) && InterlockedCompareExchange(&ClientContext->Closed, 0, 0))
+        SmpCloseClientHandles(ClientContext);
 }
 
 ULONG
@@ -496,7 +547,13 @@ SmpApiLoop(IN PVOID Parameter)
             case LPC_PORT_CLOSED:
                 /* Destroy any state we had for this client */
                 DPRINT1("Port closed\n");
-                //if (ClientContext) SmpPushDeferredClientContext(ClientContext);
+                if (ClientContext)
+                {
+                    /* FIXME: the context itself is kept, as LPC hands it to API threads without a reference */
+                    InterlockedExchange(&ClientContext->Closed, TRUE);
+                    if (!InterlockedCompareExchange(&ClientContext->Users, 0, 0))
+                        SmpCloseClientHandles(ClientContext);
+                }
                 ReplyMsg = NULL;
                 break;
 
@@ -510,9 +567,14 @@ SmpApiLoop(IN PVOID Parameter)
                 }
 
                 RequestMsg.ReturnValue = STATUS_PENDING;
+                InterlockedIncrement(&ClientContext->Users);
 
                 /* Check if the API is valid */
-                if (RequestMsg.ApiNumber >= SmpMaxApiNumber)
+                if (InterlockedCompareExchange(&ClientContext->Closed, 0, 0))
+                {
+                    Status = STATUS_PORT_DISCONNECTED;
+                }
+                else if (RequestMsg.ApiNumber >= SmpMaxApiNumber)
                 {
                     /* It isn't, fail */
                     DPRINT1("Invalid API: %lx\n", RequestMsg.ApiNumber);
@@ -536,11 +598,13 @@ SmpApiLoop(IN PVOID Parameter)
                     }
                     _SEH2_EXCEPT(SmpUnhandledExceptionFilter(_SEH2_GetExceptionInformation()))
                     {
+                        SmpReleaseClientContext(ClientContext);
                         ReplyMsg = NULL;
                         _SEH2_YIELD(break);
                     }
                     _SEH2_END;
                 }
+                SmpReleaseClientContext(ClientContext);
 
                 /* Write the result value and return the message back */
                 RequestMsg.ReturnValue = Status;

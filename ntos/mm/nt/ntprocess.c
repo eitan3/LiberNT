@@ -198,7 +198,16 @@ MmCreateProcessAddressSpace(
 
     DirectoryTableBase[0] = (ULONG_PTR)Native->Space.RootFrame << PAGE_SHIFT;
     DirectoryTableBase[1] = (ULONG_PTR)MiSystem.SystemSpace.RootFrame << PAGE_SHIFT;
-    MiSessionAddProcess(Process);
+    if (!MiSessionAddProcess(Process))
+    {
+        Process->Vm.Instance.VmWorkingSetList = NULL;
+        Process->AddressSpaceInitialized = 0;
+        MiProcessDelete(&MiProcessManager, Native);
+        ExFreePoolWithTag(Native, 'rPmM');
+        DirectoryTableBase[0] = 0;
+        DirectoryTableBase[1] = 0;
+        return FALSE;
+    }
     return TRUE;
 }
 
@@ -539,6 +548,7 @@ MmCleanProcessAddressSpace(
     if (Native == NULL || Process == PsInitialSystemProcess || Native == MI_PROCESS_OF(PsInitialSystemProcess))
         return;
 
+    MiSessionProcessCleaned(Process);
     MiProcessQueryCounters(Native, &(MI_PROCESS_COUNTERS){0});
     MiSecureRangePurgeProcess(Process);
     MiCleanAddressSpace(&Native->Space);

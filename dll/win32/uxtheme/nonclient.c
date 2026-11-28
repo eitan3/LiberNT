@@ -7,6 +7,7 @@
  */
 
 #include "uxthemep.h"
+#include <winreg.h>
 #include <libernt/dwmframe.h>
 #include <math.h>
 
@@ -638,6 +639,21 @@ ThemeCaptionButtonIsLeft(INT OffsetType, const RECT *ButtonRect, const RECT *Win
     }
 }
 
+static BOOL
+ThemeIsLiber(void)
+{
+    static LONG Liber = -1;
+
+    if (Liber < 0)
+    {
+        DWORD value = 0, size = sizeof(value);
+        LONG read = RegGetValueW(HKEY_CURRENT_USER, L"Software\\LiberNT\\Shell\\Design", L"Experience",
+                                 RRF_RT_REG_DWORD, NULL, &value, &size) == ERROR_SUCCESS && value == 1;
+        InterlockedCompareExchange(&Liber, read, -1);
+    }
+    return Liber == 1;
+}
+
 static void ThemeCalculateCaptionButtonsPosEx(WINDOWINFO* wi, HWND hWnd, HTHEME htheme, INT buttonHeight)
 {
     PWND_DATA pwndData;
@@ -692,6 +708,24 @@ static void ThemeCalculateCaptionButtonsPosEx(WINDOWINFO* wi, HWND hWnd, HTHEME 
     topOverhang = ThemeGetMaximizedTopOverhang(wi);
     hasMinMax = (style & (WS_MINIMIZEBOX | WS_MAXIMIZEBOX)) && !(wi->dwExStyle & WS_EX_TOOLWINDOW);
     hasHelp = (wi->dwExStyle & WS_EX_CONTEXTHELP) && !hasMinMax && !(wi->dwExStyle & WS_EX_TOOLWINDOW);
+    if (composited && ThemeIsLiber() && !(wi->dwExStyle & WS_EX_TOOLWINDOW))
+    {
+        ULONG index = 0;
+        for (i = CLOSEBUTTON; i <= HELPBUTTON; i++)
+        {
+            if (((i == MAXBUTTON || i == MINBUTTON) && !hasMinMax) || (i == HELPBUTTON && !hasHelp))
+            {
+                SetRectEmpty(&pwndData->rcCaptionButtons[i]);
+                pwndData->CaptionButtonLeft[i] = FALSE;
+                continue;
+            }
+            DwmLiberCaptionButtonRect(rcWindow.right, captionBtnHeight, dpi, index++, &pwndData->rcCaptionButtons[i]);
+            if (pwndData->rcCaptionButtons[i].top < topOverhang)
+                OffsetRect(&pwndData->rcCaptionButtons[i], 0, topOverhang - pwndData->rcCaptionButtons[i].top);
+            pwndData->CaptionButtonLeft[i] = FALSE;
+        }
+        return;
+    }
 
     for (i = CLOSEBUTTON; i <= HELPBUTTON; i++)
     {
@@ -872,7 +906,21 @@ ThemeDrawCaptionGlyphButton(PDRAW_CONTEXT pcontext,
         fill = TRUE;
     }
 
-    if (fill)
+    if (fill && ThemeIsLiber() && !fillNormal)
+    {
+        HBRUSH brush = CreateSolidBrush(background);
+        INT corner = MulDiv(2 * DWM_LIBER_CAPTION_BUTTON_R, dpi ? dpi : 96, 96);
+        if (brush)
+        {
+            HGDIOBJ oldFill = SelectObject(pcontext->hDC, brush);
+            HGDIOBJ oldEdge = SelectObject(pcontext->hDC, GetStockObject(NULL_PEN));
+            RoundRect(pcontext->hDC, rect->left, rect->top, rect->right + 1, rect->bottom + 1, corner, corner);
+            SelectObject(pcontext->hDC, oldEdge);
+            SelectObject(pcontext->hDC, oldFill);
+            DeleteObject(brush);
+        }
+    }
+    else if (fill)
         ThemeFillSolidRect(pcontext->hDC, rect, background);
 
     if (iStateId == BUTTON_DISABLED || iStateId == BUTTON_INACTIVE_DISABLED)
@@ -1103,7 +1151,11 @@ ThemeDrawCaptionButton(PDRAW_CONTEXT pcontext,
     if (pcontext->DarkMode)
         ThemeDrawCaptionGlyphButton(pcontext, buttonId, iStateId,
                                     &pwndData->rcCaptionButtons[buttonId],
-                                    ThemeDarkCaptionColor(pcontext), TRUE, ThemeCaptionDpi(pcontext));
+                                    ThemeDarkCaptionColor(pcontext), !ThemeIsLiber(), ThemeCaptionDpi(pcontext));
+    else if (ThemeIsLiber() && !(pcontext->wi.dwExStyle & WS_EX_TOOLWINDOW))
+        ThemeDrawCaptionGlyphButton(pcontext, buttonId, iStateId,
+                                    &pwndData->rcCaptionButtons[buttonId],
+                                    RGB(243, 243, 243), FALSE, ThemeCaptionDpi(pcontext));
     else if (ThemeUseCaptionGlyphs(pcontext->theme, iPartId, iStateId, &background))
         ThemeDrawCaptionGlyphButton(pcontext, buttonId, iStateId,
                                     &pwndData->rcCaptionButtons[buttonId], background, FALSE,

@@ -264,6 +264,7 @@ IntSetTimer( PWND Window,
         else
            pTmr->pti = PsGetCurrentThreadWin32Thread();
      }
+     ASSERT(pTmr->pti == NULL || !(pTmr->pti->TIF_flags & TIF_INCLEANUP) || pTmr->pti == PsGetCurrentThreadWin32Thread());
 
      pTmr->pWnd    = Window;
      pTmr->cmsCountdown = Elapse;
@@ -682,6 +683,23 @@ InitTimerImpl(VOID)
    InitializeListHead(&TimersListHead);
 
    return STATUS_SUCCESS;
+}
+
+VOID
+NTAPI
+FreeTimerImpl(VOID)
+{
+   if (Mutex == NULL)
+      return;
+   ASSERT(IsListEmpty(&TimersListHead));
+   ExDeleteResourceLite(&TimerLock);
+   if (WindowLessTimersBitMapBuffer)
+   {
+      ExFreePoolWithTag(WindowLessTimersBitMapBuffer, TAG_TIMERBMP);
+      WindowLessTimersBitMapBuffer = NULL;
+   }
+   ExFreePoolWithTag(Mutex, TAG_INTERNAL_SYNC);
+   Mutex = NULL;
 }
 
 UINT_PTR

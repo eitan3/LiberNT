@@ -105,7 +105,7 @@ BOOL LiberShell_ReadGlassEnabled(VOID);
 static inline void LiberShell_PaintGlass(LiberUI::PaintContext &context, const LiberUI::RectF &rc, float radius,
                                          LIBER_MATERIAL_KIND material)
 {
-    LiberUI::GlassTint tint = context.Tokens.Material(material, 0.5);
+    LiberUI::GlassTint tint = context.Tokens.Material(material, context.Backdrop);
     LiberUI::RectF edge = { rc.X + 0.5f, rc.Y + 0.5f, rc.Width - 1.0f, rc.Height - 1.0f };
     LiberUI::RectF top = { rc.X, rc.Y, rc.Width, radius };
     LiberUI::RectF highlight = { rc.X + 0.5f, rc.Y + 1.5f, rc.Width - 1.0f, rc.Height - 2.0f };
@@ -125,7 +125,7 @@ class CLiberPanel : public LiberUI::StackPanel
 {
 public:
     CLiberPanel(LiberUI::Orientation orientation, int gap, float radius, LIBER_MATERIAL_KIND material)
-        : LiberUI::StackPanel(orientation, gap), m_Radius(radius), m_Material(material)
+        : LiberUI::StackPanel(orientation, gap), m_Radius(radius), m_Material(material), m_Plain(FALSE)
     {
     }
 
@@ -133,15 +133,26 @@ protected:
     void PaintOverride(LiberUI::PaintContext &context)
     {
         LiberUI::RectF rc = LiberUI::ToRectF(Bounds());
-        LiberShell_PaintGlass(context, rc, min(m_Radius, rc.Height / 2), m_Material);
+        if (!m_Plain)
+            LiberShell_PaintGlass(context, rc, min(m_Radius, rc.Height / 2), m_Material);
+    }
+
+public:
+    void SetShape(float radius, BOOL plain)
+    {
+        m_Radius = radius;
+        m_Plain = plain;
+        Invalidate();
     }
 
 private:
     float m_Radius;
     LIBER_MATERIAL_KIND m_Material;
+    BOOL m_Plain;
 };
 
 VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens);
+VOID LiberShell_SetTaskbarReserve(int reserveDip);
 #define LIBER_WALLPAPER_CENTER  0
 #define LIBER_WALLPAPER_STRETCH 2
 #define LIBER_WALLPAPER_FIT     6
@@ -151,6 +162,17 @@ VOID LiberShell_BuildTokens(LiberUI::ThemeTokens *pTokens);
 VOID LiberShell_MapToWallpaper(const RECT *prcScreen, SIZE screen, SIZE image, UINT style, RECT *prcImage);
 double LiberShell_Luminance(DWORD argb);
 BOOL LiberShell_WallpaperLuma(const RECT *prcScreen, double *pLuma);
+#define LIBER_LUMA_GRID_W 64
+#define LIBER_LUMA_GRID_H 36
+VOID LiberShell_BuildLumaGrid(const DWORD *pPixels, UINT width, UINT height, float *pGrid);
+BOOL LiberShell_GridLuma(const float *pGrid, SIZE image, const RECT *prcImage, double *pLuma);
+BOOL LiberShell_WallpaperPalette(LiberUI::PaletteResult *pPalette);
+LiberUI::Accent LiberShell_ResolveAccent(DWORD dwChoice, const LiberUI::PaletteResult *pPalette);
+COLORREF LiberShell_DimShade(LiberUI::Argb surfaceBase);
+BOOL LiberShell_BackdropLumaAt(const float *pGrid, SIZE image, UINT style, SIZE screen, const RECT *prcSurface,
+                               const RECT *pOccluders, UINT cOccluders, double occluderLuma, double dim,
+                               double *pLuma);
+BOOL LiberShell_SampleBackdrop(LiberUI::Surface *pSurface, const LiberUI::ThemeTokens *pTokens, BOOL bDesktopLayer);
 VOID LiberShell_BuildWallpaperInkTokens(LiberUI::ThemeTokens *pTokens, const RECT *prcScreen);
 VOID LiberShell_ApplyFont(LiberUI::Surface *pSurface);
 BOOL LiberShell_SetDarkMode(BOOL bDark);

@@ -183,6 +183,7 @@ VOID IntCompositionDamageWindow(_In_opt_ PWND Wnd);
 VOID IntCompositionPointerChanged(VOID);
 VOID IntCompositionPrepareScreenRead(_In_opt_ HDC hDC);
 VOID IntCompositionAnimateMove(_In_opt_ PWND Wnd, _In_opt_ const RECTL *From);
+VOID IntCompositionLiberOpen(_In_ PWND Wnd);
 VOID IntCompositionDamageWindowMetadata(_In_opt_ PWND Wnd);
 BOOLEAN IntCompositionIsFrameAtom(_In_ ATOM Atom);
 

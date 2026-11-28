@@ -63,6 +63,7 @@ typedef struct _REDIRECT_ENTRY
     BOOL         MinRectValid;
     RECTL        MinRect;
     ULONG        AnimFlags;
+    ULONG        AnimProgress;
     BOOL         AnimPending;
     LONGLONG     AnimStart;
     LONGLONG     AnimDuration;
@@ -256,10 +257,11 @@ IntCompositionCornerRadius(_In_ PWND Wnd)
     DWORD Flags = 0;
     BOOL ClassicFrame;
 
+    if ((Wnd->style & (WS_MINIMIZE | WS_MAXIMIZE)) || IntIsWindowSnapped(Wnd))
+        return 0;
     if (Radius != 0 && Radius <= 64)
         return (ULONG)Radius;
-    if ((Wnd->style & (WS_MINIMIZE | WS_MAXIMIZE)) || Wnd->hrgnClip != NULL ||
-        IntGetWindowSnapEdge(Wnd) != HTNOWHERE)
+    if (Wnd->hrgnClip != NULL)
         return 0;
     if (IntCompositionGetLayered(Wnd, &Alpha, &Key, &Flags) &&
         (Flags & DWM_WINDOW_PREMULTIPLIED_ALPHA))
@@ -279,9 +281,28 @@ IntCompositionCornerRadius(_In_ PWND Wnd)
         default:
             if (Wnd->fnid == FNID_MENU)
                 return 0;
-            return (Wnd->style & WS_CAPTION) == WS_CAPTION && !ClassicFrame ?
-                   DWM_CORNER_RADIUS_96 * Dpi / 96 : 0;
+            if ((Wnd->style & WS_CAPTION) != WS_CAPTION || ClassicFrame)
+                return 0;
+            return g_bLiberExperience ? DwmLiberWindowCornerRadius(Dpi) : DWM_CORNER_RADIUS_96 * Dpi / 96;
     }
+}
+
+static ULONG
+IntCompositionLiberChrome(_In_ PWND Wnd, _In_ ULONG CornerRadius)
+{
+    ULONG Edge;
+
+    ASSERT(Wnd != NULL);
+    if (!g_bLiberExperience || (Wnd->style & WS_CHILD) || (Wnd->style & WS_CAPTION) != WS_CAPTION ||
+        Wnd->fnid == FNID_MENU)
+    {
+        return 0;
+    }
+    Edge = DwmLiberFrameEdgeFor((Wnd->style & (WS_MINIMIZE | WS_MAXIMIZE)) != 0, IntIsWindowSnapped(Wnd),
+                                CornerRadius);
+    ASSERT(Edge != DWM_LIBER_EDGE_GLASS);
+    ASSERT(Edge != DWM_LIBER_EDGE_WINDOW || CornerRadius != 0);
+    return DWM_WINDOW_LIBER_FRAME | DWM_WINDOW_LIBER_EDGE_PACK(Edge);
 }
 
 /* dwm.exe is the ONLY compositor (Windows model — win32k tracks redirection
@@ -1904,12 +1925,13 @@ IntCompositionStartAnimation(_Inout_ REDIRECT_ENTRY *Entry,
     Entry->AnimAnchor.y = Target->top;
     Entry->AnimFlags = Flags;
     Entry->AnimStart = (LONGLONG)KeQueryInterruptTime();
+    Entry->AnimProgress = 0;
     if (Flags == DWM_ANIM_MINIMIZE)
-        Entry->AnimDuration = COMPOSITION_ANIM_MINIMIZE_100NS;
+        Entry->AnimDuration = g_bLiberExperience ? DWM_LIBER_ANIM_MINIMIZE_MS * 10000LL : COMPOSITION_ANIM_MINIMIZE_100NS;
     else if (Flags == DWM_ANIM_MOVE || Flags == DWM_ANIM_MAXIMIZE)
-        Entry->AnimDuration = COMPOSITION_ANIM_MOVE_100NS;
+        Entry->AnimDuration = g_bLiberExperience ? DWM_LIBER_ANIM_MOVE_MS * 10000LL : COMPOSITION_ANIM_MOVE_100NS;
     else
-        Entry->AnimDuration = COMPOSITION_ANIM_RESTORE_100NS;
+        Entry->AnimDuration = g_bLiberExperience ? DWM_LIBER_ANIM_RESTORE_MS * 10000LL : COMPOSITION_ANIM_RESTORE_100NS;
     Entry->AnimDamage = (Flags == DWM_ANIM_MINIMIZE) ? *Window : *Target;
     if (Flags == DWM_ANIM_MOVE || Flags == DWM_ANIM_MAXIMIZE)
         RECTL_bUnionRect(&Entry->AnimDamage, (PRECTL)Window, (PRECTL)Target);
@@ -1979,6 +2001,8 @@ IntCompositionEvaluateAnimation(_Inout_ REDIRECT_ENTRY *Entry,
         Elapsed = 0;
 
     u = (ULONG)((Elapsed * COMPOSITION_ANIM_SCALE) / Entry->AnimDuration);
+    ASSERT(u <= COMPOSITION_ANIM_SCALE);
+    Entry->AnimProgress = u;
     if (Entry->AnimFlags == DWM_ANIM_MINIMIZE)
         s = COMPOSITION_ANIM_SCALE - IntCompositionEase(u, TRUE);
     else
@@ -2303,6 +2327,29 @@ IntCompositionOnWindowResize(_In_ PWND Wnd)
         if (IntCompositionDamageHeld(&e->Redirect, (PRECTL)&Wnd->rcWindow))
             IntCompositionMarkDamage(FALSE);
     }
+}
+
+VOID
+IntCompositionLiberOpen(_In_ PWND Wnd)
+{
+    static UCHAR Seq;
+    RECT From;
+
+    ASSERT(Wnd != NULL);
+    ASSERT(UserIsEnteredExclusive());
+    if (!g_bLiberExperience || !IntCompositionIsEnabled() || !gspv.animationinfo.iMinAnimate ||
+        AtomDwmTransition == 0 || AtomDwmTransitionFromLT == 0 || AtomDwmTransitionFromRB == 0)
+        return;
+    if ((Wnd->style & (WS_CHILD | WS_MINIMIZE | WS_CAPTION)) != WS_CAPTION || Wnd->fnid == FNID_MENU)
+        return;
+    if (++Seq == 0)
+        Seq = 1;
+    DwmLiberOpenFromRect((const RECT *)&Wnd->rcWindow, &From);
+    ASSERT(From.right >= From.left && From.bottom >= From.top);
+    UserSetProp(Wnd, AtomDwmTransitionFromLT, (HANDLE)(ULONG_PTR)DWM_TRANSITION_POINT(From.left, From.top), FALSE);
+    UserSetProp(Wnd, AtomDwmTransitionFromRB, (HANDLE)(ULONG_PTR)DWM_TRANSITION_POINT(From.right, From.bottom), FALSE);
+    UserSetProp(Wnd, AtomDwmTransition, (HANDLE)(ULONG_PTR)DWM_TRANSITION_PACK(Seq, 0, 255, DWM_LIBER_ANIM_OPEN_MS),
+                FALSE);
 }
 
 VOID
@@ -3726,6 +3773,17 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
             AnimRunning = TRUE;
             if (IntCompositionEvaluateAnimation(e, now, &rcAnim, &rcAnimDamage))
             {
+                if (g_bLiberExperience && (AnimFlags == DWM_ANIM_MINIMIZE || AnimFlags == DWM_ANIM_RESTORE))
+                {
+                    ULONG Travel = AnimFlags == DWM_ANIM_MINIMIZE ? e->AnimProgress
+                                                                  : COMPOSITION_ANIM_SCALE - e->AnimProgress;
+                    ULONG Fade = DwmLiberMinimizeAlpha(Travel, COMPOSITION_ANIM_SCALE);
+                    if (Fade < 255)
+                    {
+                        g_DwmFrameWindows[count].Alpha = (g_DwmFrameWindows[count].Alpha * Fade) / 255;
+                        g_DwmFrameWindows[count].LayerFlags |= DWM_LWA_ALPHA;
+                    }
+                }
                 g_DwmFrameWindows[count].AnimFlags = AnimFlags;
                 g_DwmFrameWindows[count].AnimX = rcAnim.left;
                 g_DwmFrameWindows[count].AnimY = rcAnim.top;
@@ -3789,6 +3847,8 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
             {
                 lf |= DWM_WINDOW_DARK;
             }
+            lf &= ~(DWM_WINDOW_LIBER_FRAME | DWM_WINDOW_LIBER_EDGE_MASK);
+            lf |=IntCompositionLiberChrome(w, g_DwmFrameWindows[count].CornerRadius);
             g_DwmFrameWindows[count].Alpha = alpha;
             g_DwmFrameWindows[count].ColorKey = (ULONG)key;
             if (e->Redirect.DxFlags & DWM_DX_PUBLISH_PREMULTIPLIED)

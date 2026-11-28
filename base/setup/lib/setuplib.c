@@ -160,6 +160,37 @@ Quit:
     return FALSE;
 }
 
+static VOID
+GetUnattendString(
+    _In_ HINF UnattendInf,
+    _In_ PCWSTR Key,
+    _Out_writes_z_(cch) PWSTR Buffer,
+    _In_ SIZE_T cch)
+{
+    INFCONTEXT Context;
+    PCWSTR Value;
+
+    *Buffer = UNICODE_NULL;
+    if (SpInfFindFirstLine(UnattendInf, L"Unattend", Key, &Context) && INF_GetData(&Context, NULL, &Value))
+    {
+        RtlStringCchCopyW(Buffer, cch, Value);
+        INF_FreeData(Value);
+    }
+}
+
+static LONG
+GetUnattendInt(
+    _In_ HINF UnattendInf,
+    _In_ PCWSTR Key)
+{
+    INFCONTEXT Context;
+    INT IntValue;
+
+    if (SpInfFindFirstLine(UnattendInf, L"Unattend", Key, &Context) && SpInfGetIntField(&Context, 1, &IntValue))
+        return (LONG)IntValue;
+    return -1;
+}
+
 BOOLEAN
 NTAPI
 CheckUnattendedSetup(
@@ -171,6 +202,12 @@ CheckUnattendedSetup(
     INT IntValue;
     PCWSTR Value;
     WCHAR UnattendInfPath[MAX_PATH];
+
+    pSetupData->UnattendComputerName[0] = UNICODE_NULL;
+    pSetupData->UnattendUserName[0] = UNICODE_NULL;
+    pSetupData->UnattendUserPassword[0] = UNICODE_NULL;
+    pSetupData->UnattendTimeZoneIndex = -1;
+    pSetupData->UnattendDisableAutoDaylightTimeSet = -1;
 
     if (!GetUnattendInfPath(pSetupData, UnattendInfPath, ARRAYSIZE(UnattendInfPath)))
     {
@@ -340,6 +377,16 @@ CheckUnattendedSetup(
         if (SpInfGetIntField(&Context, 1, &IntValue))
             pSetupData->FsType = IntValue;
     }
+
+    /* The account settings (optional) come from this same file, which may be a detached one */
+    GetUnattendString(UnattendInf, L"ComputerName", pSetupData->UnattendComputerName,
+                      ARRAYSIZE(pSetupData->UnattendComputerName));
+    GetUnattendString(UnattendInf, L"UserName", pSetupData->UnattendUserName,
+                      ARRAYSIZE(pSetupData->UnattendUserName));
+    GetUnattendString(UnattendInf, L"UserPassword", pSetupData->UnattendUserPassword,
+                      ARRAYSIZE(pSetupData->UnattendUserPassword));
+    pSetupData->UnattendTimeZoneIndex = GetUnattendInt(UnattendInf, L"TimeZoneIndex");
+    pSetupData->UnattendDisableAutoDaylightTimeSet = GetUnattendInt(UnattendInf, L"DisableAutoDaylightTimeSet");
 
 Quit:
     SpInfCloseInfFile(UnattendInf);
@@ -887,8 +934,9 @@ InitDestinationPaths(
         }
         else if (DiskEntry->PartList->SystemPartition == PartEntry)
         {
-            PathBuffer[0] = UNICODE_NULL;
-            Status = STATUS_SUCCESS;
+            /* A leading separator marks the path as relative to the system partition; the boot configuration
+             * code reads anything else as an ARC name */
+            Status = RtlStringCchCopyW(PathBuffer, ARRAYSIZE(PathBuffer), L"\\");
             DPRINT1("Fixed disk not found by BIOS, using a path relative to the system partition\n");
         }
         else if (DiskEntry->PartList->SystemPartition &&
@@ -1137,8 +1185,7 @@ UpdateRegistry(
     /**/IN PPARTLIST PartitionList,      /* HACK HACK! */
     /**/IN WCHAR DestinationDriveLetter, /* HACK HACK! */
     /**/IN PCWSTR SelectedLanguageId,    /* HACK HACK! */
-    IN PREGISTRY_STATUS_ROUTINE StatusRoutine OPTIONAL,
-    IN PFONTSUBSTSETTINGS SubstSettings OPTIONAL)
+    IN PREGISTRY_STATUS_ROUTINE StatusRoutine OPTIONAL)
 {
     ERROR_NUMBER ErrorNumber;
     NTSTATUS Status;
@@ -1360,14 +1407,6 @@ DoUpdate:
         // FIXME: This should technically be done by mountmgr (if AutoMount is enabled)!
         SetMountedDeviceValues(PartitionList, &pSetupData->DestinationRootPath);
     }
-
-#ifdef __REACTOS__
-    if (SubstSettings)
-    {
-        /* HACK */
-        DoRegistryFontFixup(SubstSettings, wcstoul(SelectedLanguageId, NULL, 16));
-    }
-#endif
 
 Cleanup:
     RegRestoreKeptSettings(KeptSettings);

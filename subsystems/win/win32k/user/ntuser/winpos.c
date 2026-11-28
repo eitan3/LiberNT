@@ -2527,6 +2527,7 @@ co_WinPosBatchApply(PWINPOS_ENTRY Entry)
       {
          if (!UserIsDesktopWindow(Window))
          {
+            IntCompositionLiberOpen(Window);
             co_IntShellHookNotify(HSHELL_WINDOWCREATED, (WPARAM)UserHMGetHandle(Window), 0);
             if (Window->head.pti->MessageQueue->spwndActive == Window)
                UpdateShellHook(Window);
@@ -3547,6 +3548,37 @@ void IntForceMinimizeWindow(PWND pWnd)
     // Activate the other window if necessary
     if (pWnd->spwndParent == pWnd->head.rpdesk->pDeskInfo->spwnd)
         co_WinPosActivateOtherWindow(pWnd);
+}
+
+BOOL FASTCALL
+co_WinPosUpdateMaximized(PWND Wnd)
+{
+   POINT Size, Pos;
+
+   ASSERT_REFS_CO(Wnd);
+   if ((Wnd->style & (WS_MAXIMIZE | WS_MINIMIZE | WS_CHILD)) != WS_MAXIMIZE)
+      return FALSE;
+   co_WinPosGetMinMaxInfo(Wnd, &Size, &Pos, NULL, NULL);
+   return co_WinPosSetWindowPos(Wnd, NULL, Pos.x, Pos.y, Size.x, Size.y, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+VOID FASTCALL
+IntUpdateMaximizedWindows(PWND DesktopWindow)
+{
+   HWND *List;
+   PWND Child;
+   ULONG i;
+
+   List = IntWinListChildren(DesktopWindow);
+   if (!List)
+      return;
+   for (i = 0; List[i]; i++)
+   {
+      Child = UserGetWindowObject(List[i]);
+      if (Child && (Child->style & (WS_MAXIMIZE | WS_MINIMIZE | WS_CHILD)) == WS_MAXIMIZE)
+         co_IntSendMessageNoWait(List[i], WM_ASYNC_UPDATEMAXIMIZED, 0, 0);
+   }
+   ExFreePoolWithTag(List, USERTAG_WINDOWLIST);
 }
 
 /*

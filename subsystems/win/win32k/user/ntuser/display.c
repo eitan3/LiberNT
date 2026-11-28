@@ -311,6 +311,26 @@ UserMonitorDeviceKey(
     RtlStringCchCatW(Buffer, Capacity, DriverKey);
 }
 
+static
+PGRAPHICS_DEVICE
+UserFindDisplaySettingsDevice(
+    _In_opt_ PUNICODE_STRING pustrDevice)
+{
+    PGRAPHICS_DEVICE pGraphicsDevice = NULL;
+    PPDEVOBJ ppdev;
+
+    if (pustrDevice)
+        return EngpFindGraphicsDevice(pustrDevice, 0);
+
+    ppdev = EngpGetPDEV(NULL);
+    if (ppdev)
+    {
+        pGraphicsDevice = ppdev->pGraphicsDevice;
+        PDEVOBJ_vRelease(ppdev);
+    }
+    return pGraphicsDevice ? pGraphicsDevice : EngpFindGraphicsDevice(NULL, 0);
+}
+
 NTSTATUS
 NTAPI
 UserEnumDisplayDevices(
@@ -638,7 +658,7 @@ UserEnumDisplaySettings(
           pustrDevice, iModeNum);
 
     /* Ask GDI for the GRAPHICS_DEVICE */
-    pGraphicsDevice = EngpFindGraphicsDevice(pustrDevice, 0);
+    pGraphicsDevice = UserFindDisplaySettingsDevice(pustrDevice);
     if (!pGraphicsDevice)
     {
         /* No device found */
@@ -685,7 +705,7 @@ UserOpenDisplaySettingsKey(
     if (!pustrDevice)
         EngpUpdateGraphicsDeviceList();
 
-    pGraphicsDevice = EngpFindGraphicsDevice(pustrDevice, 0);
+    pGraphicsDevice = UserFindDisplaySettingsDevice(pustrDevice);
     if (!pGraphicsDevice)
         return STATUS_UNSUCCESSFUL;
 
@@ -929,6 +949,11 @@ UserDisplayTopologyChanged(VOID)
 static VOID
 UserDisplayChangeDone(VOID);
 
+static VOID
+UserNotifyDisplayChange(
+    _In_ WORD OrigBC,
+    _In_ DWORD flags);
+
 static BOOL
 UserDetachDisplay(
     _In_ PPDEVOBJ ppdevDisplay)
@@ -963,7 +988,6 @@ UserDetachDisplay(
 static VOID
 UserDisplayChangeDone(VOID)
 {
-    ULONG_PTR ulResult;
     PDESKTOP pdesk;
     ULONG i;
 
@@ -974,15 +998,7 @@ UserDisplayChangeDone(VOID)
     pdesk = IntGetActiveDesktop();
     if (pdesk != NULL)
         co_IntShowDesktop(pdesk, gpsi->aiSysMet[SM_CXVIRTUALSCREEN], gpsi->aiSysMet[SM_CYVIRTUALSCREEN], FALSE);
-    UserClipCursor(NULL);
-    co_IntSendMessageTimeout(HWND_BROADCAST,
-                             WM_DISPLAYCHANGE,
-                             gpsi->BitCount,
-                             MAKELONG(gpsi->aiSysMet[SM_CXSCREEN], gpsi->aiSysMet[SM_CYSCREEN]),
-                             SMTO_NORMAL,
-                             100,
-                             &ulResult);
-    UserRedrawDesktop();
+    UserNotifyDisplayChange(gpsi->BitCount, 0);
 }
 
 static BOOL
@@ -1176,6 +1192,118 @@ UserApplyStoredDisplaySettings(
     return lResult;
 }
 
+static
+VOID
+UserUpdateDisplayInfo(
+    _In_ PPDEVOBJ ppdev)
+{
+    TEXTMETRICW tmw;
+
+    /* Update the system metrics */
+    InitMetrics();
+
+    /* Set new size of the monitor */
+    UserUpdateMonitorSize((HDEV)ppdev);
+
+    /* Update the SERVERINFO */
+    gpsi->dmLogPixels = ppdev->gdiinfo.ulLogPixelsY;
+    gpsi->Planes      = ppdev->gdiinfo.cPlanes;
+    gpsi->BitsPixel   = ppdev->gdiinfo.cBitsPixel;
+    gpsi->BitCount    = gpsi->Planes * gpsi->BitsPixel;
+    gpsi->aiSysMet[SM_CXSCREEN] = ppdev->gdiinfo.ulHorzRes;
+    gpsi->aiSysMet[SM_CYSCREEN] = ppdev->gdiinfo.ulVertRes;
+    if (ppdev->gdiinfo.flRaster & RC_PALETTE)
+    {
+        gpsi->PUSIFlags |= PUSIF_PALETTEDISPLAY;
+    }
+    else
+    {
+        gpsi->PUSIFlags &= ~PUSIF_PALETTEDISPLAY;
+    }
+    // Font is realized and this dc was previously set to internal DC_ATTR.
+    gpsi->cxSysFontChar = IntGetCharDimensions(hSystemBM, &tmw, (DWORD*)&gpsi->cySysFontChar);
+    gpsi->tmSysFont     = tmw;
+}
+
+static
+VOID
+FASTCALL
+co_UserResizeDesktopForDisplayChange(
+    _In_ PDESKTOP pdesk)
+{
+    USER_REFERENCE_ENTRY Ref;
+    PWND DesktopWindow;
+
+    if ((pdesk->dwDTFlags & (DF_DESTROYED | DF_DYING | DF_DESKWNDDESTROYED)) || !pdesk->pDeskInfo)
+        return;
+    DesktopWindow = pdesk->pDeskInfo->spwnd;
+    if (!DesktopWindow)
+        return;
+    UserRefObjectCo(DesktopWindow, &Ref);
+    co_WinPosSetWindowPos(DesktopWindow, NULL,
+                          gpsi->aiSysMet[SM_XVIRTUALSCREEN], gpsi->aiSysMet[SM_YVIRTUALSCREEN],
+                          gpsi->aiSysMet[SM_CXVIRTUALSCREEN], gpsi->aiSysMet[SM_CYVIRTUALSCREEN],
+                          SWP_NOZORDER | SWP_NOACTIVATE);
+    UserDerefObjectCo(DesktopWindow);
+    if (pdesk != gpdeskInputDesktop)
+        pdesk->dwDTFlags |= DF_DISPLAYCHANGED;
+}
+
+VOID
+FASTCALL
+UserNotifyDesktopDisplayChange(
+    _In_ PDESKTOP pdesk)
+{
+    if (!(pdesk->dwDTFlags & DF_DISPLAYCHANGED))
+        return;
+    pdesk->dwDTFlags &= ~DF_DISPLAYCHANGED;
+    if (!pdesk->pDeskInfo || !pdesk->pDeskInfo->spwnd)
+        return;
+    UserSendNotifyMessageToDesktop(pdesk->pDeskInfo->spwnd,
+                                   WM_DISPLAYCHANGE,
+                                   gpsi->BitCount,
+                                   MAKELONG(gpsi->aiSysMet[SM_CXSCREEN], gpsi->aiSysMet[SM_CYSCREEN]));
+    IntUpdateMaximizedWindows(pdesk->pDeskInfo->spwnd);
+}
+
+static
+VOID
+UserNotifyDisplayChange(
+    _In_ WORD OrigBC,
+    _In_ DWORD flags)
+{
+    /* Remove all cursor clipping */
+    UserClipCursor(NULL);
+
+    //pdesk = IntGetActiveDesktop();
+    //IntHideDesktop(pdesk);
+
+    if (gpDisplaySession)
+        UserForEachSessionDesktop(gpDisplaySession, co_UserResizeDesktopForDisplayChange);
+
+    /* Send WM_DISPLAYCHANGE to all toplevel windows */
+    UserSendNotifyMessage(HWND_BROADCAST,
+                          WM_DISPLAYCHANGE,
+                          gpsi->BitCount,
+                          MAKELONG(gpsi->aiSysMet[SM_CXSCREEN], gpsi->aiSysMet[SM_CYSCREEN]));
+    IntUpdateMaximizedWindows(UserGetDesktopWindow());
+
+    ERR("BitCount New %d Orig %d\n", gpsi->BitCount, OrigBC);
+
+    /* Not full screen and different bit count, send messages */
+    if (!(flags & CDS_FULLSCREEN) &&
+        gpsi->BitCount != OrigBC)
+    {
+        ERR("Detect settings changed.\n");
+        UserSendNotifyMessage(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 0);
+        UserSendNotifyMessage(HWND_BROADCAST, WM_SYSCOLORCHANGE, 0, 0);
+    }
+
+    //co_IntShowDesktop(pdesk, ppdev->gdiinfo.ulHorzRes, ppdev->gdiinfo.ulVertRes);
+
+    UserRedrawDesktop();
+}
+
 LONG
 APIENTRY
 UserChangeDisplaySettings(
@@ -1308,7 +1436,6 @@ UserChangeDisplaySettings(
     {
         ULONG_PTR ulResult;
         PVOID pvOldCursor;
-        TEXTMETRICW tmw;
 
         /* Remove mouse pointer */
         pvOldCursor = UserSetCursor(NULL, TRUE);
@@ -1345,66 +1472,14 @@ UserChangeDisplaySettings(
 
             UserUpdateFullscreen(flags);
 
-            /* Update the system metrics */
-            InitMetrics();
-
-            /* Set new size of the monitor */
-            UserUpdateMonitorSize((HDEV)ppdev);
-
-            /* Update the SERVERINFO */
-            gpsi->dmLogPixels = ppdev->gdiinfo.ulLogPixelsY;
-            gpsi->Planes      = ppdev->gdiinfo.cPlanes;
-            gpsi->BitsPixel   = ppdev->gdiinfo.cBitsPixel;
-            gpsi->BitCount    = gpsi->Planes * gpsi->BitsPixel;
-            gpsi->aiSysMet[SM_CXSCREEN] = ppdev->gdiinfo.ulHorzRes;
-            gpsi->aiSysMet[SM_CYSCREEN] = ppdev->gdiinfo.ulVertRes;
-            if (ppdev->gdiinfo.flRaster & RC_PALETTE)
-            {
-                gpsi->PUSIFlags |= PUSIF_PALETTEDISPLAY;
-            }
-            else
-            {
-                gpsi->PUSIFlags &= ~PUSIF_PALETTEDISPLAY;
-            }
-            // Font is realized and this dc was previously set to internal DC_ATTR.
-            gpsi->cxSysFontChar = IntGetCharDimensions(hSystemBM, &tmw, (DWORD*)&gpsi->cySysFontChar);
-            gpsi->tmSysFont     = tmw;
+            UserUpdateDisplayInfo(ppdev);
         }
 
         /*
          * Refresh the display on success and even on failure,
          * since the display may have been messed up.
          */
-
-        /* Remove all cursor clipping */
-        UserClipCursor(NULL);
-
-        //pdesk = IntGetActiveDesktop();
-        //IntHideDesktop(pdesk);
-
-        /* Send WM_DISPLAYCHANGE to all toplevel windows */
-        co_IntSendMessageTimeout( HWND_BROADCAST,
-                                  WM_DISPLAYCHANGE,
-                                  gpsi->BitCount,
-                                  MAKELONG(gpsi->aiSysMet[SM_CXSCREEN], gpsi->aiSysMet[SM_CYSCREEN]),
-                                  SMTO_NORMAL,
-                                  100,
-                                  &ulResult );
-
-        ERR("BitCount New %d Orig %d ChkNew %d\n",gpsi->BitCount,OrigBC,ppdev->gdiinfo.cBitsPixel);
-
-        /* Not full screen and different bit count, send messages */
-        if (!(flags & CDS_FULLSCREEN) &&
-            gpsi->BitCount != OrigBC)
-        {
-            ERR("Detect settings changed.\n");
-            UserSendNotifyMessage(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 0);
-            UserSendNotifyMessage(HWND_BROADCAST, WM_SYSCOLORCHANGE, 0, 0);
-        }
-
-        //co_IntShowDesktop(pdesk, ppdev->gdiinfo.ulHorzRes, ppdev->gdiinfo.ulVertRes);
-
-        UserRedrawDesktop();
+        UserNotifyDisplayChange(OrigBC, flags);
     }
 
 leave:
@@ -1417,25 +1492,216 @@ leave:
     return lResult;
 }
 
+static
+BOOL
+UserIsExternalDisplay(
+    _In_ PGRAPHICS_DEVICE pGraphicsDevice,
+    _In_ PPDEVOBJ ppdev)
+{
+    return pGraphicsDevice != ppdev->pGraphicsDevice &&
+           pGraphicsDevice != ppdev->pGraphicsDevice->pVgaDevice &&
+           !(pGraphicsDevice->StateFlags & (DISPLAY_DEVICE_MIRRORING_DRIVER | DISPLAY_DEVICE_ATTACHED_TO_DESKTOP));
+}
+
+static
+PDEVMODEW
+UserSelectExternalDisplayMode(
+    _In_ PGRAPHICS_DEVICE pGraphicsDevice,
+    _In_ PPDEVOBJ ppdev)
+{
+    UNICODE_STRING ustrDevice;
+    PDEVMODEW pdm = NULL;
+    DEVMODEW dm;
+    ULONG i;
+
+    if (!EngpBuildDetachedModeList(pGraphicsDevice, TRUE) || pGraphicsDevice->cDevModes == 0)
+        return NULL;
+
+    RtlInitUnicodeString(&ustrDevice, pGraphicsDevice->szWinDeviceName);
+    if (NT_SUCCESS(UserEnumRegistryDisplaySettings(&ustrDevice, &dm)) &&
+        dm.dmPelsWidth != 0 && dm.dmPelsHeight != 0)
+    {
+        dm.dmSize = sizeof(dm);
+        if (LDEVOBJ_bProbeAndCaptureDevmode(pGraphicsDevice, &dm, &pdm, FALSE))
+            return pdm;
+    }
+
+    for (i = 0; i < pGraphicsDevice->cDevModes; i++)
+    {
+        if (pGraphicsDevice->pDevModeList[i].pdm->dmBitsPerPel == ppdev->pdmwDev->dmBitsPerPel)
+            break;
+    }
+    if (i == pGraphicsDevice->cDevModes)
+        i = 0;
+
+    RtlZeroMemory(&dm, sizeof(dm));
+    dm.dmSize = sizeof(dm);
+    dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFREQUENCY;
+    dm.dmPelsWidth = pGraphicsDevice->pDevModeList[i].pdm->dmPelsWidth;
+    dm.dmPelsHeight = pGraphicsDevice->pDevModeList[i].pdm->dmPelsHeight;
+    dm.dmBitsPerPel = pGraphicsDevice->pDevModeList[i].pdm->dmBitsPerPel;
+    dm.dmDisplayFrequency = pGraphicsDevice->pDevModeList[i].pdm->dmDisplayFrequency;
+    if (!LDEVOBJ_bProbeAndCaptureDevmode(pGraphicsDevice, &dm, &pdm, FALSE))
+        return NULL;
+    return pdm;
+}
+
+static
+BOOL
+UserMoveDesktopDisplay(
+    _In_ PPDEVOBJ ppdev,
+    _In_opt_ PGRAPHICS_DEVICE pGraphicsDevice,
+    _In_opt_ PDEVMODEW pdm)
+{
+    WORD OrigBC = gpsi->BitCount;
+    PVOID pvOldCursor;
+    BOOL bRet;
+
+    pvOldCursor = UserSetCursor(NULL, TRUE);
+    IntCompositionOnDisplayChangeBegin();
+    if (pGraphicsDevice)
+        bRet = PDEVOBJ_bMoveToDisplay(ppdev, pGraphicsDevice, pdm);
+    else
+        bRet = PDEVOBJ_bReturnToDetachedDisplay(ppdev);
+    IntCompositionOnDisplayChangeEnd();
+    pvOldCursor = UserSetCursor(pvOldCursor, TRUE);
+    ASSERT(pvOldCursor == NULL);
+
+    if (!bRet)
+        return FALSE;
+
+    UserUpdateDisplayInfo(ppdev);
+    UserNotifyDisplayChange(OrigBC, 0);
+    return TRUE;
+}
+
+static
+LONG
+UserSetDisplayTopology(
+    _In_ UINT32 Topology,
+    _In_ BOOL bApply)
+{
+    PGRAPHICS_DEVICE pGraphicsDevice = NULL;
+    PDEVMODEW pdm;
+    PPDEVOBJ ppdev;
+    LONG lRet = ERROR_SUCCESS;
+    ULONG i;
+
+    ppdev = EngpGetPDEV(NULL);
+    if (!ppdev || !ppdev->pGraphicsDevice || gpmdev->cDev != 1)
+    {
+        /* TODO: topologies of a desktop that spans several displays */
+        lRet = ppdev ? ERROR_NOT_SUPPORTED : ERROR_GEN_FAILURE;
+        goto leave;
+    }
+
+    if (Topology == SDC_TOPOLOGY_INTERNAL)
+    {
+        if (bApply && gppdevDetached && !UserMoveDesktopDisplay(ppdev, NULL, NULL))
+            lRet = ERROR_GEN_FAILURE;
+        goto leave;
+    }
+
+    if (Topology != SDC_TOPOLOGY_EXTERNAL)
+    {
+        /* TODO: clone and extend the desktop to other displays */
+        EngpUpdateGraphicsDeviceList();
+        for (i = 0; (pGraphicsDevice = EngpFindGraphicsDevice(NULL, i)) != NULL; i++)
+        {
+            if (UserIsExternalDisplay(pGraphicsDevice, ppdev))
+                break;
+        }
+        lRet = (pGraphicsDevice || gppdevDetached) ? ERROR_NOT_SUPPORTED : ERROR_GEN_FAILURE;
+        goto leave;
+    }
+
+    if (gppdevDetached)
+        goto leave;
+
+    EngpUpdateGraphicsDeviceList();
+    for (i = 0; (pGraphicsDevice = EngpFindGraphicsDevice(NULL, i)) != NULL; i++)
+    {
+        if (UserIsExternalDisplay(pGraphicsDevice, ppdev))
+            break;
+    }
+    if (!pGraphicsDevice)
+    {
+        lRet = ERROR_GEN_FAILURE;
+        goto leave;
+    }
+    if (!bApply)
+        goto leave;
+
+    pdm = UserSelectExternalDisplayMode(pGraphicsDevice, ppdev);
+    if (!pdm || !UserMoveDesktopDisplay(ppdev, pGraphicsDevice, pdm))
+        lRet = ERROR_GEN_FAILURE;
+    if (pdm)
+        ExFreePoolWithTag(pdm, GDITAG_DEVMODE);
+
+leave:
+    if (ppdev)
+        PDEVOBJ_vRelease(ppdev);
+    return lRet;
+}
+
+LONG
+APIENTRY
+NtUserSetDisplayConfig(
+    _In_ UINT32 numPathArrayElements,
+    _In_reads_opt_(numPathArrayElements) DISPLAYCONFIG_PATH_INFO *pathArray,
+    _In_ UINT32 numModeInfoArrayElements,
+    _In_reads_opt_(numModeInfoArrayElements) DISPLAYCONFIG_MODE_INFO *modeInfoArray,
+    _In_ UINT32 flags)
+{
+    const UINT32 TopologyFlags = SDC_TOPOLOGY_INTERNAL | SDC_TOPOLOGY_CLONE | SDC_TOPOLOGY_EXTEND | SDC_TOPOLOGY_EXTERNAL;
+    UINT32 Topology = flags & TopologyFlags;
+    LONG lRet;
+
+    if (!(flags & (SDC_APPLY | SDC_VALIDATE)) || ((flags & SDC_APPLY) && (flags & SDC_VALIDATE)))
+        return ERROR_INVALID_PARAMETER;
+    if (numPathArrayElements || pathArray || numModeInfoArrayElements || modeInfoArray)
+        return ERROR_NOT_SUPPORTED;
+    if (!Topology || (Topology & (Topology - 1)))
+        return ERROR_INVALID_PARAMETER;
+
+    if (IntIsJobUiLimited(JOB_OBJECT_UILIMIT_DISPLAYSETTINGS))
+        return ERROR_ACCESS_DENIED;
+
+    UserEnterExclusive();
+    lRet = UserSetDisplayTopology(Topology, (flags & SDC_APPLY) != 0);
+    UserLeave();
+    return lRet;
+}
+
 static volatile LONG gUserDisplayConfigurationPending;
+static volatile LONG gUserDisplayDetachPending;
+
+static
+VOID
+UserQueueDisplayConfigurationWorker(VOID)
+{
+    PUSER_SESSION Session;
+
+    /* The display driver reports from any thread, and the user lock may be held by one that waits for that driver */
+    Session = ReadPointerAcquire((PVOID volatile *)&gpDisplaySession);
+    if (Session != NULL)
+        UserWakeDesktopThread(Session);
+}
 
 VOID
 NTAPI
 UserQueueDisplayConfigurationUpdate(VOID)
 {
-    PUSER_SESSION Session;
-    PTHREADINFO DesktopThread;
-
     InterlockedExchange(&gUserDisplayConfigurationPending, 1);
+    UserQueueDisplayConfigurationWorker();
+}
 
-    /* The display driver reports from any thread, and the user lock may be held by one that waits for that driver */
-    Session = ReadPointerAcquire((PVOID volatile *)&gpDisplaySession);
-    if (Session == NULL)
-        return;
-
-    DesktopThread = ReadPointerAcquire((PVOID volatile *)&Session->DesktopThread);
-    if (DesktopThread != NULL)
-        KeSetEvent(DesktopThread->pEventQueueServer, IO_NO_INCREMENT, FALSE);
+VOID
+NTAPI
+UserQueueDisplayDetach(VOID)
+{
+    InterlockedExchange(&gUserDisplayDetachPending, 1);
+    UserQueueDisplayConfigurationWorker();
 }
 
 VOID
@@ -1449,6 +1715,15 @@ co_UserProcessDisplayConfigurationUpdate(VOID)
     PPDEVOBJ ppdev;
     ULONG iDevNum, cbReturned;
     LONG lResult;
+    BOOL bEventDevice;
+
+    if (InterlockedExchange(&gUserDisplayDetachPending, 0) != 0)
+    {
+        lResult = UserSetDisplayTopology(SDC_TOPOLOGY_INTERNAL, TRUE);
+        if (lResult != ERROR_SUCCESS)
+            ERR("Could not move the desktop off a removed display: %ld\n", lResult);
+        EngpReleaseRemovedGraphicsDevices();
+    }
 
     if (InterlockedExchange(&gUserDisplayConfigurationPending, 0) == 0)
         return;
@@ -1457,6 +1732,7 @@ co_UserProcessDisplayConfigurationUpdate(VOID)
     EngpUpdateGraphicsDeviceList();
     for (iDevNum = 0; (pGraphicsDevice = EngpFindGraphicsDevice(NULL, iDevNum)) != NULL; ++iDevNum)
     {
+        bEventDevice = InterlockedExchange(&pGraphicsDevice->lMonitorEvent, 0) != 0;
         RtlInitUnicodeString(&ustrDevice, pGraphicsDevice->szWinDeviceName);
         ppdev = EngpGetPDEV(&ustrDevice);
         if (ppdev == NULL)
@@ -1474,6 +1750,15 @@ co_UserProcessDisplayConfigurationUpdate(VOID)
                                &cbReturned) != ERROR_SUCCESS ||
             cbReturned < sizeof(ModeInfo) ||
             ModeInfo.VisScreenWidth == 0 || ModeInfo.VisScreenHeight == 0)
+        {
+            PDEVOBJ_vRelease(ppdev);
+            continue;
+        }
+
+        if (!bEventDevice &&
+            ModeInfo.VisScreenWidth == ppdev->pdmwDev->dmPelsWidth &&
+            ModeInfo.VisScreenHeight == ppdev->pdmwDev->dmPelsHeight &&
+            (ModeInfo.Frequency == 0 || ModeInfo.Frequency == ppdev->pdmwDev->dmDisplayFrequency))
         {
             PDEVOBJ_vRelease(ppdev);
             continue;
@@ -1619,8 +1904,10 @@ NtUserChangeDisplaySettings(
     /* Acquire global USER lock */
     UserEnterExclusive();
 
-    /* Call internal function */
-    lRet = UserChangeDisplaySettings(pustrDevice, lpDevMode, dwflags, NULL);
+    if (!(dwflags & CDS_NORESET) && GetW32ThreadInfo()->rpdesk != gpdeskInputDesktop)
+        lRet = DISP_CHANGE_FAILED;
+    else
+        lRet = UserChangeDisplaySettings(pustrDevice, lpDevMode, dwflags, NULL);
 
     /* Release lock */
     UserLeave();

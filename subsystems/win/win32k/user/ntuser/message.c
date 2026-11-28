@@ -352,6 +352,98 @@ UINT lParamMemorySize(UINT Msg, WPARAM wParam, LPARAM lParam)
     return MsgMemorySize(MsgMemoryEntry, wParam, lParam);
 }
 
+NTSTATUS IntCaptureSentLParam(UINT Msg, WPARAM wParam, LPARAM lParam, PVOID *ppCopy, SIZE_T *pSize)
+{
+    PMSGMEMORY MsgMemoryEntry = FindMsgMemory(Msg);
+    SIZE_T Size;
+    PBYTE Copy;
+
+    *ppCopy = NULL;
+    *pSize = 0;
+    ASSERT((ULONG_PTR)lParam >= MmUserProbeAddress);
+    if (!MsgMemoryEntry || Msg == WM_CREATE || Msg == WM_NCCREATE)
+        return STATUS_SUCCESS;
+    Size = MsgMemorySize(MsgMemoryEntry, wParam, lParam);
+    if (!Size)
+        return STATUS_SUCCESS;
+    Copy = ExAllocatePoolWithTag(PagedPool, Size, TAG_MSG);
+    if (!Copy)
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    if (Msg == WM_COPYDATA)
+    {
+        COPYDATASTRUCT *Source = (COPYDATASTRUCT *)lParam, *Target = (COPYDATASTRUCT *)Copy;
+
+        ASSERT(Size == sizeof(*Source) + (Source->lpData ? Source->cbData : 0));
+        *Target = *Source;
+        if (Source->lpData)
+        {
+            RtlCopyMemory(Target + 1, Source->lpData, Source->cbData);
+            Target->lpData = Target + 1;
+        }
+    }
+    else if (Msg == WM_NCCALCSIZE && wParam)
+    {
+        NCCALCSIZE_PARAMS *Source = (NCCALCSIZE_PARAMS *)lParam, *Target = (NCCALCSIZE_PARAMS *)Copy;
+
+        ASSERT(Size == sizeof(*Source) + sizeof(WINDOWPOS));
+        *Target = *Source;
+        Target->lppos = (PWINDOWPOS)(Target + 1);
+        if (Source->lppos)
+            *Target->lppos = *Source->lppos;
+        else
+            RtlZeroMemory(Target->lppos, sizeof(WINDOWPOS));
+    }
+    else if (Msg == WM_MDICREATE)
+    {
+        MDICREATESTRUCTW *Source = (MDICREATESTRUCTW *)lParam, *Target = (MDICREATESTRUCTW *)Copy;
+        PWCHAR Strings = (PWCHAR)(Target + 1);
+        SIZE_T Bytes;
+
+        *Target = *Source;
+        if (Source->szClass && !IS_ATOM(Source->szClass))
+        {
+            Bytes = (wcslen(Source->szClass) + 1) * sizeof(WCHAR);
+            RtlCopyMemory(Strings, Source->szClass, Bytes);
+            Target->szClass = Strings;
+            Strings += Bytes / sizeof(WCHAR);
+        }
+        if (Source->szTitle)
+        {
+            Bytes = (wcslen(Source->szTitle) + 1) * sizeof(WCHAR);
+            RtlCopyMemory(Strings, Source->szTitle, Bytes);
+            Target->szTitle = Strings;
+            Strings += Bytes / sizeof(WCHAR);
+        }
+        ASSERT((PBYTE)Strings <= Copy + Size);
+    }
+    else
+    {
+        RtlCopyMemory(Copy, (PVOID)lParam, Size);
+    }
+    *ppCopy = Copy;
+    *pSize = Size;
+    return STATUS_SUCCESS;
+}
+
+VOID IntReturnSentLParam(UINT Msg, WPARAM wParam, LPARAM lParam, PVOID pCopy, SIZE_T Size)
+{
+    ASSERT(pCopy && Size && (ULONG_PTR)lParam >= MmUserProbeAddress);
+    if (!(lParamMemoryFlags(Msg) & MMS_FLAG_WRITE))
+        return;
+    if (Msg == WM_NCCALCSIZE && wParam)
+    {
+        NCCALCSIZE_PARAMS *Original = (NCCALCSIZE_PARAMS *)lParam, *Result = (NCCALCSIZE_PARAMS *)pCopy;
+
+        RtlCopyMemory(Original->rgrc, Result->rgrc, sizeof(Original->rgrc));
+        if (Original->lppos)
+            *Original->lppos = *Result->lppos;
+        return;
+    }
+    ASSERT(Msg != WM_COPYDATA && Msg != WM_MDICREATE);
+    RtlCopyMemory((PVOID)lParam, pCopy, Size);
+}
+
 INT lParamMemoryFlags(UINT Msg)
 {
     PMSGMEMORY MsgMemoryEntry = FindMsgMemory(Msg);
@@ -1150,6 +1242,8 @@ static LRESULT handle_internal_message( PWND pWnd, UINT msg, WPARAM wparam, LPAR
           ExFreePoolWithTag(winpos, USERTAG_SWP);
           return lRes;
        }
+       case WM_ASYNC_UPDATEMAXIMIZED:
+          return co_WinPosUpdateMaximized(pWnd);
        case WM_ASYNC_DESTROYWINDOW:
        {
           TRACE("WM_ASYNC_DESTROYWINDOW\n");
@@ -2547,6 +2641,37 @@ co_IntDoSendMessage( HWND hWnd,
 }
 
 BOOL FASTCALL
+UserSendNotifyMessageToDesktop( PWND DesktopWindow,
+                                UINT Msg,
+                                WPARAM wParam,
+                                LPARAM lParam )
+{
+    BOOL Ret = TRUE;
+    HWND *List;
+    ULONG i;
+
+    List = IntWinListChildren(DesktopWindow);
+
+    if (List != NULL)
+    {
+        UserSendNotifyMessage(UserHMGetHandle(DesktopWindow), Msg, wParam, lParam);
+        for (i = 0; List[i]; i++)
+        {
+           PWND pwnd = UserGetWindowObject(List[i]);
+           if (!pwnd) continue;
+
+           if ( pwnd->fnid == FNID_MENU ||
+                pwnd->pcls->atomClassName == gpsi->atomSysClass[ICLS_SWITCH] )
+              continue;
+
+           Ret = UserSendNotifyMessage(List[i], Msg, wParam, lParam);
+        }
+        ExFreePoolWithTag(List, USERTAG_WINDOWLIST);
+    }
+    return Ret;
+}
+
+BOOL FASTCALL
 UserSendNotifyMessage( HWND hWnd,
                        UINT Msg,
                        WPARAM wParam,
@@ -2563,29 +2688,7 @@ UserSendNotifyMessage( HWND hWnd,
     // Basicly the same as IntPostOrSendMessage
     if (hWnd == HWND_BROADCAST) // Handle Broadcast
     {
-        HWND *List;
-        PWND DesktopWindow;
-        ULONG i;
-
-        DesktopWindow = UserGetDesktopWindow();
-        List = IntWinListChildren(DesktopWindow);
-
-        if (List != NULL)
-        {
-            UserSendNotifyMessage(UserHMGetHandle(DesktopWindow), Msg, wParam, lParam);
-            for (i = 0; List[i]; i++)
-            {
-               PWND pwnd = UserGetWindowObject(List[i]);
-               if (!pwnd) continue;
-
-               if ( pwnd->fnid == FNID_MENU ||
-                    pwnd->pcls->atomClassName == gpsi->atomSysClass[ICLS_SWITCH] )
-                  continue;
-
-               Ret = UserSendNotifyMessage(List[i], Msg, wParam, lParam);
-            }
-            ExFreePoolWithTag(List, USERTAG_WINDOWLIST);
-        }
+        Ret = UserSendNotifyMessageToDesktop(UserGetDesktopWindow(), Msg, wParam, lParam);
     }
     else
     {

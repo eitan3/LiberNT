@@ -552,5 +552,50 @@ START_TEST(batch)
     if(argc > 2)
         run_from_file(argv[2]);
     else
+#ifdef __REACTOS__
+        /* test_builtins.cmd runs about 50 s even on Windows 11 and carries state across its sections, so it cannot be split */
+        skip("test_builtins.cmd is too long for one run\n");
+#else
         EnumResourceNamesA(NULL, "TESTCMD", test_enum_proc, 0);
+#endif
 }
+
+#ifdef __REACTOS__
+static void batch_setup(void)
+{
+    workdir_len = GetCurrentDirectoryA(sizeof(workdir), workdir);
+    drive[0] = workdir[0];
+    drive[1] = workdir[1]; /* Should be ':' */
+    memcpy(path, workdir + drive_len, (workdir_len - drive_len) * sizeof(drive[0]));
+
+    /* Only add trailing backslash to 'path' for non-root directory */
+    if (workdir_len - drive_len > 1) {
+        path[workdir_len - drive_len] = '\\';
+        path_len = workdir_len - drive_len + 1;
+    } else {
+        path_len = 1; /* \ */
+    }
+    shortpath_len = GetShortPathNameA(path, shortpath, ARRAY_SIZE(shortpath));
+
+}
+
+START_TEST(batch_bat)
+{
+    if (!cmd_available()) {
+        win_skip("cmd not installed, skipping cmd tests\n");
+        return;
+    }
+    batch_setup();
+    test_enum_proc(NULL, "TESTCMD", (LPSTR)"test_builtins.bat", 0);
+}
+
+START_TEST(batch_cmdline)
+{
+    if (!cmd_available()) {
+        win_skip("cmd not installed, skipping cmd tests\n");
+        return;
+    }
+    batch_setup();
+    test_enum_proc(NULL, "TESTCMD", (LPSTR)"test_cmdline.cmd", 0);
+}
+#endif

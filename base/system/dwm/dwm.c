@@ -9,6 +9,7 @@
 #include <ntstatus.h>
 #define WIN32_NO_STATUS
 #include <windows.h>
+#include <assert.h>
 #include <math.h>
 #include <stdio.h>
 #include <libernt/dwmcore.h>
@@ -223,9 +224,12 @@ static LONG g_shadowMarginRight;
 static LONG g_shadowMarginBottom;
 static LONG g_shadowActiveOffset;
 static LONG g_shadowInactiveOffset;
+static LONG g_shadowWideExtent;
+static BOOL g_shadowLiber;
 static DWM_SHADOW_KERNEL g_shadowWide;
 static DWM_SHADOW_KERNEL g_shadowActiveTight;
 static DWM_SHADOW_KERNEL g_shadowInactiveTight;
+static DWM_SHADOW_KERNEL g_shadowLiberKernels[2][2];
 static ULONG *g_shadowCoverWide;
 static ULONG *g_shadowCoverTight;
 static LONG g_shadowCoverWidth;
@@ -311,19 +315,72 @@ DwmShadowBuildKernel(DWM_SHADOW_KERNEL *Kernel, LONG Support, double Sigma)
     return TRUE;
 }
 
+static void
+DwmShadowSetMargins(void)
+{
+    LONG dpi = g_shadowDpi > 0 ? g_shadowDpi : 96;
+    RECT Liber;
+
+    g_shadowMarginLeft = g_shadowWideExtent;
+    g_shadowMarginTop = MulDiv(DWM_SHADOW_TOP_MARGIN_96, dpi, 96);
+    g_shadowMarginRight = g_shadowWideExtent;
+    g_shadowMarginBottom = max(g_shadowWideExtent, MulDiv(DWM_SHADOW_BOTTOM_MARGIN_96, dpi, 96));
+    if (!g_shadowLiber)
+        return;
+    DwmLiberShadowMargins((ULONG)dpi, &Liber);
+    g_shadowMarginLeft = max(g_shadowMarginLeft, Liber.left);
+    g_shadowMarginTop = max(g_shadowMarginTop, Liber.top);
+    g_shadowMarginRight = max(g_shadowMarginRight, Liber.right);
+    g_shadowMarginBottom = max(g_shadowMarginBottom, Liber.bottom);
+}
+
+static void
+DwmShadowFreeLiberKernels(DWM_SHADOW_KERNEL Kernels[2][2])
+{
+    ULONG Active;
+
+    for (Active = 0; Active < 2; ++Active)
+    {
+        DwmShadowFreeKernel(&Kernels[Active][0]);
+        DwmShadowFreeKernel(&Kernels[Active][1]);
+    }
+}
+
+static BOOL
+DwmShadowBuildLiberKernels(LONG dpi, DWM_SHADOW_KERNEL Kernels[2][2])
+{
+    ULONG Active;
+
+    RtlZeroMemory(Kernels, sizeof(DWM_SHADOW_KERNEL) * 4);
+    for (Active = 0; Active < 2; ++Active)
+    {
+        DWM_LIBER_SHADOW Shadow;
+
+        DwmLiberWindowShadow(FALSE, Active != 0, (ULONG)dpi, &Shadow);
+        if (!DwmShadowBuildKernel(&Kernels[Active][0], Shadow.Ambient.Support, Shadow.Ambient.Sigma) ||
+            !DwmShadowBuildKernel(&Kernels[Active][1], Shadow.Contact.Support, Shadow.Contact.Sigma))
+        {
+            DwmShadowFreeLiberKernels(Kernels);
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
 static BOOL
 DwmShadowInit(HDC hdcScreen)
 {
     LONG dpi = GetDeviceCaps(hdcScreen, LOGPIXELSX);
     LONG wideExtent, support;
     double wideSigma, activeTightSigma, inactiveTightSigma;
-    DWM_SHADOW_KERNEL Wide, ActiveTight, InactiveTight;
+    DWM_SHADOW_KERNEL Wide, ActiveTight, InactiveTight, Liber[2][2];
 
     if (dpi <= 0)
         dpi = 96;
     if (g_shadowWide.Prefix != NULL &&
         g_shadowActiveTight.Prefix != NULL &&
         g_shadowInactiveTight.Prefix != NULL &&
+        g_shadowLiberKernels[1][1].Prefix != NULL &&
         g_shadowDpi == dpi)
         return TRUE;
 
@@ -350,18 +407,26 @@ DwmShadowInit(HDC hdcScreen)
         DwmShadowFreeKernel(&ActiveTight);
         return FALSE;
     }
+    if (!DwmShadowBuildLiberKernels(dpi, Liber))
+    {
+        DwmShadowFreeKernel(&Wide);
+        DwmShadowFreeKernel(&ActiveTight);
+        DwmShadowFreeKernel(&InactiveTight);
+        return FALSE;
+    }
 
     DwmShadowFreeKernel(&g_shadowWide);
     DwmShadowFreeKernel(&g_shadowActiveTight);
     DwmShadowFreeKernel(&g_shadowInactiveTight);
+    DwmShadowFreeLiberKernels(g_shadowLiberKernels);
     g_shadowWide = Wide;
     g_shadowActiveTight = ActiveTight;
     g_shadowInactiveTight = InactiveTight;
+    memcpy(g_shadowLiberKernels, Liber, sizeof(g_shadowLiberKernels));
     g_shadowDpi = dpi;
-    g_shadowMarginLeft = wideExtent;
-    g_shadowMarginTop = MulDiv(DWM_SHADOW_TOP_MARGIN_96, dpi, 96);
-    g_shadowMarginRight = wideExtent;
-    g_shadowMarginBottom = support;
+    g_shadowWideExtent = wideExtent;
+    DwmShadowSetMargins();
+    assert(g_shadowLiber || g_shadowMarginBottom == support);
     g_shadowActiveOffset = MulDiv(
         DWM_SHADOW_ACTIVE_OFFSET_NUMERATOR_96, dpi,
         96 * DWM_SHADOW_OFFSET_DENOMINATOR_96);
@@ -963,6 +1028,20 @@ DwmPointerLoadImage(HDC hdcScreen, HCURSOR Cursor, ULONG Step)
     return Ok;
 }
 
+static BOOL
+DwmPrimaryOutputChanged(WCHAR *LastDevice)
+{
+    MONITORINFOEXW Info;
+
+    ZeroMemory(&Info, sizeof(Info));
+    Info.cbSize = sizeof(Info);
+    if (!GetMonitorInfoW(MonitorFromPoint((POINT){ 0, 0 }, MONITOR_DEFAULTTOPRIMARY), (MONITORINFO *)&Info) ||
+        !lstrcmpiW(Info.szDevice, LastDevice))
+        return FALSE;
+    lstrcpynW(LastDevice, Info.szDevice, CCHDEVICENAME);
+    return TRUE;
+}
+
 /* TRUE when the pointer differs from what the last frame drew. */
 static BOOL
 DwmPointerUpdate(HDC hdcScreen, const DWM_FRAME_HEADER *Frame)
@@ -1422,6 +1501,18 @@ Upsample:
                              ClipLeft, ClipTop, ClipRight, ClipBottom,
                              Width, Height, &Clipped))
             continue;
+        if (Window->LiberMaterial & DWM_LIBER_MATERIAL_FADE)
+        {
+            LONG Row;
+            for (Row = Clipped.top; Row < Clipped.bottom; ++Row)
+            {
+                ULONG RowAlpha = DwmLiberFadeAlpha(Alpha, Row - WindowY, Window->cy);
+                if (RowAlpha != 0)
+                    DwmBlurUpsample(Result, HalfWidth, HalfHeight, Composition, Width,
+                                    Clipped.left, Row, Clipped.right, Row + 1, RowAlpha);
+            }
+            continue;
+        }
         DwmBlurUpsample(Result, HalfWidth, HalfHeight, Composition, Width,
                         Clipped.left, Clipped.top, Clipped.right,
                         Clipped.bottom, Alpha);
@@ -1484,6 +1575,208 @@ DwmWindowIsOpaque(const DWM_WIN *Window)
     return TRUE;
 }
 
+#define DWM_MOVE_PARTS    32
+#define DWM_MOVE_MIN_AREA 4096
+
+typedef struct _DWM_PLACE
+{
+    ULONG SurfaceId;
+    ULONG Generation;
+    LONG x, y, cx, cy;
+    ULONG BaseGeneration;
+    ULONG DxGeneration;
+    ULONGLONG BaseUpdateId;
+    ULONGLONG DxUpdateId;
+    RECT Reach;
+    RECT Inner;
+    BOOL Movable;
+} DWM_PLACE;
+
+static DWM_PLACE g_places[DWM_MAX_WINDOWS];
+static ULONG g_placeCount;
+static LONG g_placeW, g_placeH;
+static BOOL g_placesValid;
+
+static VOID
+DwmWindowReach(const DWM_WIN *Window, RECT *Reach)
+{
+    if (Window->AnimFlags != 0)
+    {
+        SetRect(Reach, Window->AnimX - g_originX, Window->AnimY - g_originY,
+                Window->AnimX - g_originX + Window->AnimCx, Window->AnimY - g_originY + Window->AnimCy);
+        return;
+    }
+    SetRect(Reach, Window->x - g_originX, Window->y - g_originY,
+            Window->x - g_originX + Window->cx, Window->y - g_originY + Window->cy);
+    if (Window->LayerFlags & DWM_WINDOW_NC_SHADOW)
+    {
+        Reach->left -= g_shadowMarginLeft;
+        Reach->top -= g_shadowMarginTop;
+        Reach->right += g_shadowMarginRight;
+        Reach->bottom += g_shadowMarginBottom;
+    }
+    else if (DwmLiberFrameEdge(Window->LayerFlags) != DWM_LIBER_EDGE_NONE)
+    {
+        InflateRect(Reach, DWM_LIBER_FRAME_OUTSET, DWM_LIBER_FRAME_OUTSET);
+    }
+}
+
+static BOOL
+DwmWindowInner(const DWM_WIN *Window, RECT *Inner)
+{
+    RECT Rounded;
+    LONG Radius = (LONG)Window->CornerRadius;
+
+    if (Window->cx <= 0 || Window->cy <= 0 || Window->ClientWidth <= 0 || Window->ClientHeight <= 0 ||
+        Window->AnimFlags != 0 || Window->ContentBackdrop != 0 || Window->BlurRectCount != 0 ||
+        (Window->BlurFlags & DWM_BLUR_ENABLE) || Window->BackdropRegion == DWM_BACKDROP_REGION_WINDOW ||
+        (Window->LayerFlags & (DWM_LWA_COLORKEY | DWM_WINDOW_PREMULTIPLIED_ALPHA |
+                               DWM_WINDOW_DX_PREMULTIPLIED_ALPHA)) ||
+        ((Window->LayerFlags & DWM_LWA_ALPHA) && Window->Alpha < 255))
+        return FALSE;
+    SetRect(Inner, Window->ClientX + (LONG)Window->BackdropNcExtendLeft,
+            Window->ClientY + (LONG)Window->BackdropNcExtend,
+            Window->ClientX + Window->ClientWidth - (LONG)Window->BackdropNcExtendRight,
+            Window->ClientY + Window->ClientHeight - (LONG)Window->BackdropNcExtendBottom);
+    SetRect(&Rounded, Radius, Radius, Window->cx - Radius, Window->cy - Radius);
+    return IntersectRect(Inner, Inner, &Rounded);
+}
+
+static VOID
+DwmSubtractPart(RECT *Parts, ULONG *Count, const RECT *Cut)
+{
+    RECT Kept[DWM_MOVE_PARTS];
+    ULONG Index, KeptCount = 0;
+
+    for (Index = 0; Index < *Count; ++Index)
+    {
+        RECT Part = Parts[Index], Overlap, Piece[4];
+        ULONG Pieces = 0, Next;
+
+        if (!IntersectRect(&Overlap, &Part, Cut))
+        {
+            if (KeptCount < DWM_MOVE_PARTS)
+                Kept[KeptCount++] = Part;
+            continue;
+        }
+        if (Part.top < Overlap.top)
+            SetRect(&Piece[Pieces++], Part.left, Part.top, Part.right, Overlap.top);
+        if (Overlap.bottom < Part.bottom)
+            SetRect(&Piece[Pieces++], Part.left, Overlap.bottom, Part.right, Part.bottom);
+        if (Part.left < Overlap.left)
+            SetRect(&Piece[Pieces++], Part.left, Overlap.top, Overlap.left, Overlap.bottom);
+        if (Overlap.right < Part.right)
+            SetRect(&Piece[Pieces++], Overlap.right, Overlap.top, Part.right, Overlap.bottom);
+        for (Next = 0; Next < Pieces && KeptCount < DWM_MOVE_PARTS; ++Next)
+            Kept[KeptCount++] = Piece[Next];
+    }
+    memcpy(Parts, Kept, KeptCount * sizeof(Kept[0]));
+    *Count = KeptCount;
+}
+
+static VOID
+DwmRecordPlaces(const DWM_WIN *Windows, ULONG Count)
+{
+    ULONG Index;
+
+    for (Index = 0; Index < Count; ++Index)
+    {
+        DWM_PLACE *Place = &g_places[Index];
+        const DWM_WIN *Window = &Windows[Index];
+
+        Place->SurfaceId = Window->SurfaceId;
+        Place->Generation = Window->Generation;
+        Place->x = Window->x;
+        Place->y = Window->y;
+        Place->cx = Window->cx;
+        Place->cy = Window->cy;
+        Place->BaseGeneration = Window->BaseGeneration;
+        Place->DxGeneration = Window->DxGeneration;
+        Place->BaseUpdateId = Window->BaseUpdateId;
+        Place->DxUpdateId = Window->DxUpdateId;
+        DwmWindowReach(Window, &Place->Reach);
+        Place->Movable = DwmWindowInner(Window, &Place->Inner);
+    }
+    g_placeCount = Count;
+    g_placeW = g_W;
+    g_placeH = g_H;
+    g_placesValid = TRUE;
+}
+
+static ULONG
+DwmFindMoves(const DWM_WIN *Windows, ULONG Count, DWM_MOVE_RECT *Moves)
+{
+    RECT Screen = {0, 0, g_W, g_H};
+    ULONG Found = 0, Index;
+
+    if (!g_placesValid || g_placeW != g_W || g_placeH != g_H)
+        return 0;
+    for (Index = Count; Index-- > 0 && Found < DWM_PRESENT_MAX_MOVES;)
+    {
+        const DWM_WIN *Window = &Windows[Index];
+        const DWM_PLACE *Old = NULL;
+        RECT Inner, Source, Cut, Parts[DWM_MOVE_PARTS];
+        ULONG OldIndex, Above, PartCount = 1, Part;
+        LONG Dx, Dy;
+
+        for (OldIndex = 0; OldIndex < g_placeCount; ++OldIndex)
+            if (g_places[OldIndex].SurfaceId == Window->SurfaceId && g_places[OldIndex].Generation == Window->Generation)
+            {
+                Old = &g_places[OldIndex];
+                break;
+            }
+        if (Old == NULL || !Old->Movable || !DwmWindowInner(Window, &Inner))
+            continue;
+        Dx = Window->x - Old->x;
+        Dy = Window->y - Old->y;
+        if ((Dx == 0 && Dy == 0) || Window->cx != Old->cx || Window->cy != Old->cy ||
+            !EqualRect(&Inner, &Old->Inner) || Window->BaseGeneration != Old->BaseGeneration ||
+            Window->BaseUpdateId != Old->BaseUpdateId || Window->DxGeneration != Old->DxGeneration ||
+            Window->DxUpdateId != Old->DxUpdateId)
+            continue;
+        OffsetRect(&Inner, Window->x - g_originX, Window->y - g_originY);
+        Source = Screen;
+        OffsetRect(&Source, Dx, Dy);
+        if (!IntersectRect(&Parts[0], &Inner, &Screen) || !IntersectRect(&Parts[0], &Parts[0], &Source))
+            continue;
+        for (Above = Index + 1; Above < Count && PartCount != 0; ++Above)
+        {
+            DwmWindowReach(&Windows[Above], &Cut);
+            DwmSubtractPart(Parts, &PartCount, &Cut);
+        }
+        for (Above = OldIndex + 1; Above < g_placeCount && PartCount != 0; ++Above)
+        {
+            Cut = g_places[Above].Reach;
+            OffsetRect(&Cut, Dx, Dy);
+            DwmSubtractPart(Parts, &PartCount, &Cut);
+        }
+        if (g_pointer.Composed)
+        {
+            Cut = g_pointer.Rect;
+            OffsetRect(&Cut, -g_originX, -g_originY);
+            DwmSubtractPart(Parts, &PartCount, &Cut);
+            Cut = g_pointer.Drawn;
+            OffsetRect(&Cut, Dx - g_originX, Dy - g_originY);
+            DwmSubtractPart(Parts, &PartCount, &Cut);
+        }
+        for (Part = 0; Part < PartCount && Found < DWM_PRESENT_MAX_MOVES; ++Part)
+        {
+            const RECT *Rect = &Parts[Part];
+
+            if ((LONGLONG)(Rect->right - Rect->left) * (Rect->bottom - Rect->top) < DWM_MOVE_MIN_AREA)
+                continue;
+            Moves[Found].SourcePoint.x = Rect->left - Dx;
+            Moves[Found].SourcePoint.y = Rect->top - Dy;
+            Moves[Found].DestRect.left = Rect->left;
+            Moves[Found].DestRect.top = Rect->top;
+            Moves[Found].DestRect.right = Rect->right;
+            Moves[Found].DestRect.bottom = Rect->bottom;
+            ++Found;
+        }
+    }
+    return Found;
+}
+
 static BOOL
 DwmWindowIsHidden(const DWM_WIN *Windows, ULONG Count, ULONG Index,
                   LONG ClipLeft, LONG ClipTop, LONG ClipRight, LONG ClipBottom)
@@ -1508,6 +1801,13 @@ DwmWindowIsHidden(const DWM_WIN *Windows, ULONG Count, ULONG Index,
         Top -= g_shadowMarginTop;
         Right += g_shadowMarginRight;
         Bottom += g_shadowMarginBottom;
+    }
+    else if (DwmLiberFrameEdge(Window->LayerFlags) != DWM_LIBER_EDGE_NONE)
+    {
+        Left -= DWM_LIBER_FRAME_OUTSET;
+        Top -= DWM_LIBER_FRAME_OUTSET;
+        Right += DWM_LIBER_FRAME_OUTSET;
+        Bottom += DWM_LIBER_FRAME_OUTSET;
     }
     if (Left < ClipLeft) Left = ClipLeft;
     if (Top < ClipTop) Top = ClipTop;
@@ -2413,8 +2713,9 @@ DwmBlendShadow(ULONG *comp, LONG scrW, LONG scrH,
     LONGLONG shadowBottom = ownerBottom + g_shadowMarginBottom;
     LONG y0, y1, x0, x1, x, y;
     ULONG wideOpacity, tightOpacity, windowAlpha = 255;
-    const DWM_SHADOW_KERNEL *tightKernel;
-    LONG verticalOffset;
+    const DWM_SHADOW_KERNEL *wideKernel, *tightKernel;
+    LONG wideOffset, tightOffset;
+    FLOAT wideSigma, tightSigma;
     BOOL active, dark;
 
     if (g_shadowWide.Prefix == NULL ||
@@ -2483,9 +2784,30 @@ DwmBlendShadow(ULONG *comp, LONG scrW, LONG scrH,
 
     active = (w->LayerFlags & DWM_WINDOW_ACTIVE) != 0;
     dark = (w->LayerFlags & DWM_WINDOW_DARK) != 0;
+    wideKernel = &g_shadowWide;
     tightKernel = active ? &g_shadowActiveTight : &g_shadowInactiveTight;
-    verticalOffset = active ? g_shadowActiveOffset : g_shadowInactiveOffset;
-    if (dark)
+    wideOffset = tightOffset = active ? g_shadowActiveOffset : g_shadowInactiveOffset;
+    wideSigma = (FLOAT)g_shadowWideExtent / 3.0f;
+    tightSigma = (FLOAT)g_shadowWideExtent * (active ? 2.0f : 1.0f) / 9.0f;
+    if (w->LayerFlags & DWM_WINDOW_LIBER_FRAME)
+    {
+        DWM_LIBER_SHADOW Liber;
+
+        DwmLiberWindowShadow(dark, active, (ULONG)g_shadowDpi, &Liber);
+        wideKernel = &g_shadowLiberKernels[active ? 1 : 0][0];
+        tightKernel = &g_shadowLiberKernels[active ? 1 : 0][1];
+        if (!g_shadowLiber || wideKernel->Prefix == NULL || tightKernel->Prefix == NULL)
+            return TRUE;
+        assert(wideKernel->Support == Liber.Ambient.Support && tightKernel->Support == Liber.Contact.Support);
+        assert(g_shadowMarginBottom >= Liber.Ambient.Support + Liber.Ambient.Offset);
+        wideOffset = Liber.Ambient.Offset;
+        tightOffset = Liber.Contact.Offset;
+        wideSigma = (FLOAT)Liber.Ambient.Sigma;
+        tightSigma = (FLOAT)Liber.Contact.Sigma;
+        wideOpacity = Liber.Ambient.Opacity;
+        tightOpacity = Liber.Contact.Opacity;
+    }
+    else if (dark)
     {
         if (active)
         {
@@ -2514,10 +2836,11 @@ DwmBlendShadow(ULONG *comp, LONG scrW, LONG scrH,
     if (DwmGpuComposeIsActive())
     {
         RECT Bounds = {x0, y0, x1, y1};
-        return DwmGpuComposeShadow(&Bounds, ownerX, ownerY, w->cx, w->cy,
-                                  verticalOffset, g_shadowMarginLeft,
+        DWM_GPU_SHADOW Shadow = {wideSigma, tightSigma, wideOffset, tightOffset, wideOpacity, tightOpacity};
+
+        return DwmGpuComposeShadow(&Bounds, ownerX, ownerY, w->cx, w->cy, &Shadow,
                                   (LONG)min(w->CornerRadius, (ULONG)min(w->cx / 2, w->cy / 2)),
-                                  active, wideOpacity, tightOpacity, windowAlpha);
+                                  windowAlpha);
     }
 
     if (!DwmEnsureShadowCoverage(scrW))
@@ -2528,7 +2851,7 @@ DwmBlendShadow(ULONG *comp, LONG scrW, LONG scrH,
         for (x = x0; x < x1; ++x)
         {
             LONGLONG Position = (LONGLONG)x - ownerX;
-            ULONG Wide = DwmShadowCoverage(&g_shadowWide, Position, w->cx);
+            ULONG Wide = DwmShadowCoverage(wideKernel, Position, w->cx);
             ULONG Tight = DwmShadowCoverage(tightKernel, Position, w->cx);
 
             g_shadowCoverWide[x] = (Wide * 256u + 32767u) / 65535u;
@@ -2548,9 +2871,9 @@ DwmBlendShadow(ULONG *comp, LONG scrW, LONG scrH,
     for (y = y0; y < y1; y++)
     {
         ULONG *row = comp + (SIZE_T)y * scrW;
-        LONGLONG PositionY = (LONGLONG)y - ownerY - verticalOffset;
-        ULONG WideY = DwmShadowCoverage(&g_shadowWide, PositionY, w->cy);
-        ULONG TightY = DwmShadowCoverage(tightKernel, PositionY, w->cy);
+        LONGLONG PositionY = (LONGLONG)y - ownerY;
+        ULONG WideY = DwmShadowCoverage(wideKernel, PositionY - wideOffset, w->cy);
+        ULONG TightY = DwmShadowCoverage(tightKernel, PositionY - tightOffset, w->cy);
 
         WideY = (ULONG)(((ULONGLONG)WideY * wideOpacity * windowAlpha) /
                         (65535ull * 1000ull));
@@ -2580,6 +2903,114 @@ DwmBlendShadow(ULONG *comp, LONG scrW, LONG scrH,
     return TRUE;
 }
 
+static void
+DwmBlendFrameEdgePixel(ULONG *Pixel, ULONG Color, ULONG Coverage, ULONG WindowAlpha)
+{
+    ULONG Alpha = (Coverage * (Color >> 24) * WindowAlpha + 32640u) / 65280u;
+    ULONG Inverse, Value = *Pixel;
+
+    assert(Coverage <= 256 && WindowAlpha <= 255 && Alpha <= 255);
+    if (Alpha == 0)
+        return;
+    Inverse = 255u - Alpha;
+    *Pixel = (Value & 0xFF000000u) |
+             (((((Color >> 16) & 0xFFu) * Alpha + ((Value >> 16) & 0xFFu) * Inverse + 127u) / 255u) << 16) |
+             (((((Color >> 8) & 0xFFu) * Alpha + ((Value >> 8) & 0xFFu) * Inverse + 127u) / 255u) << 8) |
+             (((Color & 0xFFu) * Alpha + (Value & 0xFFu) * Inverse + 127u) / 255u);
+}
+
+static void
+DwmBlendFrameEdgeSpan(ULONG *Row, LONGLONG OwnerX, LONG X0, LONG X1, LONG Y, LONG ClipL, LONG ClipR,
+                      const DWM_WIN *w, LONG Radius, const DWM_LIBER_EDGE_COLORS *Colors, ULONG WindowAlpha)
+{
+    LONGLONG Start = max(OwnerX + X0, (LONGLONG)ClipL), End = min(OwnerX + X1, (LONGLONG)ClipR), x;
+
+    for (x = Start; x < End; ++x)
+    {
+        ULONG Outline, Bevel;
+
+        DwmLiberFrameEdgeCoverage((LONG)(x - OwnerX), Y, w->cx, w->cy, (ULONG)Radius, &Outline, &Bevel);
+        if (Outline != 0)
+            DwmBlendFrameEdgePixel(&Row[x], Colors->Outline, Outline, WindowAlpha);
+        if (Bevel != 0)
+            DwmBlendFrameEdgePixel(&Row[x], Colors->Bevel, Bevel, WindowAlpha);
+    }
+}
+
+static BOOL
+DwmBlendFrameEdge(ULONG *comp, LONG scrW, LONG scrH,
+                  LONG clipL, LONG clipT, LONG clipR, LONG clipB,
+                  const DWM_WIN *w)
+{
+    ULONG Edge = DwmLiberFrameEdge(w->LayerFlags), windowAlpha = 255;
+    DWM_LIBER_EDGE_COLORS Colors;
+    DWM_WIN AnimatedWindow;
+    LONGLONG ownerX, ownerY;
+    LONG Outset = DWM_LIBER_FRAME_OUTSET, Radius, y, y0, y1;
+
+    assert(Edge != DWM_LIBER_EDGE_GLASS);
+    if (Edge == DWM_LIBER_EDGE_NONE)
+        return TRUE;
+    if (w->AnimFlags != 0)
+    {
+        AnimatedWindow = *w;
+        AnimatedWindow.x = w->AnimX;
+        AnimatedWindow.y = w->AnimY;
+        AnimatedWindow.cx = w->AnimCx;
+        AnimatedWindow.cy = w->AnimCy;
+        w = &AnimatedWindow;
+    }
+    if (w->cx <= 0 || w->cy <= 0)
+        return TRUE;
+    if (w->LayerFlags & DWM_LWA_ALPHA)
+        windowAlpha = w->Alpha;
+    if (windowAlpha == 0)
+        return TRUE;
+    DwmLiberFrameEdgeColors((w->LayerFlags & DWM_WINDOW_DARK) != 0, Edge, &Colors);
+    Radius = (LONG)min(w->CornerRadius, (ULONG)min(w->cx / 2, w->cy / 2));
+    assert(Edge != DWM_LIBER_EDGE_SEAM || Colors.Bevel == 0);
+    ownerX = (LONGLONG)w->x - g_originX;
+    ownerY = (LONGLONG)w->y - g_originY;
+    if (DwmGpuComposeIsActive())
+        return DwmGpuComposeFrameEdge(ownerX, ownerY, w->cx, w->cy, Radius, Colors.Outline, Colors.Bevel, windowAlpha);
+
+    clipL = max(clipL, 0);
+    clipT = max(clipT, 0);
+    clipR = min(clipR, scrW);
+    clipB = min(clipB, scrH);
+    y0 = (LONG)max((LONGLONG)clipT, ownerY - Outset);
+    y1 = (LONG)min((LONGLONG)clipB, ownerY + w->cy + Outset);
+    for (y = y0; y < y1; ++y)
+    {
+        ULONG *Row = comp + (SIZE_T)y * scrW;
+        LONG Y = (LONG)((LONGLONG)y - ownerY);
+
+        if (Y < Radius + Outset || Y >= w->cy - Radius - Outset)
+        {
+            if (Y < 1 || Y >= w->cy)
+            {
+                DwmBlendFrameEdgeSpan(Row, ownerX, -Outset, w->cx + Outset, Y, clipL, clipR, w, Radius, &Colors,
+                                      windowAlpha);
+            }
+            else
+            {
+                LONG Split = max(w->cx - Radius - Outset, Radius + Outset);
+
+                DwmBlendFrameEdgeSpan(Row, ownerX, -Outset, min(Radius + Outset, Split), Y, clipL, clipR, w, Radius,
+                                      &Colors, windowAlpha);
+                DwmBlendFrameEdgeSpan(Row, ownerX, Split, w->cx + Outset, Y, clipL, clipR, w, Radius, &Colors,
+                                      windowAlpha);
+            }
+        }
+        else
+        {
+            DwmBlendFrameEdgeSpan(Row, ownerX, -Outset, 0, Y, clipL, clipR, w, Radius, &Colors, windowAlpha);
+            DwmBlendFrameEdgeSpan(Row, ownerX, w->cx, w->cx + Outset, Y, clipL, clipR, w, Radius, &Colors,
+                                  windowAlpha);
+        }
+    }
+    return TRUE;
+}
 
 static ULONGLONG g_statGlassPixels, g_statBlitPixels;
 static ULONGLONG g_statConstantGlassPixels, g_statFullWeightGlassPixels;
@@ -4297,6 +4728,7 @@ DwmComposeLoop(HANDLE hStopEvent)
     DWORD gpuLastOutputCheck = 0;
     DWORD gpuRetryLast = GetTickCount();
     ULONG gpuRetryFailures = 0;
+    WCHAR primaryOutput[CCHDEVICENAME] = L"";
     LONG vw, vh, primW, primH;
     ULONG ViewIndex;
 
@@ -4549,6 +4981,18 @@ DwmComposeLoop(HANDLE hStopEvent)
         DwmDxSweepSurfaces(wins, hdr->Count);
         for (i = 0; i < hdr->Count; ++i)
             DwmApplyResizeBorders(&wins[i], (PRECTL)(g_buf + hdr->BlurRectArrayBase), hdr->BlurRectCount);
+        {
+            BOOL Liber = FALSE;
+
+            for (i = 0; i < hdr->Count && !Liber; ++i)
+                Liber = (wins[i].LayerFlags & DWM_WINDOW_LIBER_FRAME) != 0;
+            if (Liber != g_shadowLiber)
+            {
+                g_shadowLiber = Liber;
+                DwmShadowSetMargins();
+                forceFull = TRUE;
+            }
+        }
 
         if ((LONG)hdr->ScreenW != primW || (LONG)hdr->ScreenH != primH)
         {
@@ -4572,6 +5016,25 @@ DwmComposeLoop(HANDLE hStopEvent)
             DwmShadowInit(hdcScreen);
             if (!DwmGpuComposeIsActive() && DwmGpuComposeInitialize(g_W, g_H))
                 DwmLog("DWM: native Direct3D compositor available\n");
+            g_lastFrameQpc = 0;
+            forceFull = TRUE;
+            g_pointer.GpuActive = FALSE;
+            screenCaptureProbes = 0;
+            screenMirrorNeeded = 0;
+            continue;
+        }
+
+        if (DwmPrimaryOutputChanged(primaryOutput))
+        {
+            if (DwmGpuComposeOutputMoved())
+            {
+                DwmGpuComposeShutdown();
+                DwmLog("DWM: the desktop moved to an output the Direct3D compositor does not scan out\n");
+            }
+            gpuRetryFailures = 0;
+            gpuRetryLast = GetTickCount();
+            if (!DwmGpuComposeIsActive() && DwmGpuComposeInitialize(g_W, g_H))
+                DwmLog("DWM: native Direct3D compositor available on the new output\n");
             g_lastFrameQpc = 0;
             forceFull = TRUE;
             g_pointer.GpuActive = FALSE;
@@ -4710,6 +5173,14 @@ DwmComposeLoop(HANDLE hStopEvent)
                         forceFull = TRUE;
                         continue;
                     }
+                    else
+                    {
+                        DWM_LIBER_DIM dim;
+                        DwmLiberReadDim(&dim);
+                        GdiFlush();
+                        if (dim.Enabled)
+                            DwmLiberDimBackdrop((ULONG *)g_backdropBits, g_W, g_H, g_W * sizeof(ULONG), dim.Shade);
+                    }
                 }
 
                 QueryPerformanceCounter(&statFrameStart);
@@ -4724,12 +5195,13 @@ DwmComposeLoop(HANDLE hStopEvent)
                     DPT_SCOPE FrameTrace = DptBegin(&g_DwmPresentTrace, DPT_FRAME);
                     DPT_SCOPE AckTrace;
                     ULONGLONG TraceDrawStart = 0, TraceDrawEnd = 0, TracePresentEnd = 0;
-                    BOOL gpuFrame;
+                    BOOL gpuFrame, gpuStale = FALSE;
                     DWM_GPU_RESULT gpuResult;
                     RECT gpuDamage[ARRAYSIZE(damageParts)] = {{pl, pt, pr, pb}};
                     ULONG gpuDamageCount = 1;
                     RECT gpuShadowMargins = {g_shadowMarginLeft, g_shadowMarginTop,
                                               g_shadowMarginRight, g_shadowMarginBottom};
+                    g_placesValid = FALSE;
                     /* A dirty frame includes metadata/preparation before Begin.
                      * The fetch counter also exposes an unfinished metadata call. */
                     if (FrameTrace.Epoch && FrameTrace.Epoch == FetchTrace.Epoch)
@@ -4759,8 +5231,17 @@ DwmComposeLoop(HANDLE hStopEvent)
 
                         /* Submit the scene in order. Begin's scissor limits
                          * raster work to the repaired buffer region. */
-                        gpix = DwmGpuComposeNeedsSurfacePixels(&wins[i]) ?
-                                   DwmGetSurfaceView(&wins[i]) : NULL;
+                        gpix = NULL;
+                        if (DwmGpuComposeNeedsSurfacePixels(&wins[i]))
+                        {
+                            gpix = DwmGetSurfaceView(&wins[i]);
+                            if (gpix == NULL)
+                            {
+                                gpuStale = TRUE;
+                                gpuFrame = FALSE;
+                                break;
+                            }
+                        }
                         DwmGpuComposePrepareWindow(&wins[i], i);
                         if (wins[i].BlurRectBase > hdr->BlurRectCount ||
                             wins[i].BlurRectCount > hdr->BlurRectCount - wins[i].BlurRectBase)
@@ -4776,7 +5257,8 @@ DwmComposeLoop(HANDLE hStopEvent)
                                 g_originX, g_originY, (ULONG)blurRadius, blurSaturation) ||
                             !DwmBlendShadow(NULL, g_W, g_H, 0, 0, g_W, g_H, &wins[i]) ||
                             !DwmGpuComposeWindow(&wins[i], gpix,
-                                                 g_originX, g_originY))
+                                                 g_originX, g_originY) ||
+                            !DwmBlendFrameEdge(NULL, g_W, g_H, 0, 0, g_W, g_H, &wins[i]))
                         {
                             gpuFrame = FALSE;
                         }
@@ -4812,7 +5294,8 @@ DwmComposeLoop(HANDLE hStopEvent)
                         DptEnd(&g_DwmPresentTrace, AckTrace, TRUE, 0);
                     }
 
-                    gpuResult = gpuFrame ? DwmGpuComposeEnd() : DwmGpuComposeAbort();
+                    gpuResult = gpuFrame ? DwmGpuComposeEnd() :
+                                gpuStale ? DwmGpuComposeRetry() : DwmGpuComposeAbort();
                     if (FrameTrace.Epoch) TracePresentEnd = DptNow();
                     if (gpuResult == DWM_GPU_COMPLETE ||
                         gpuResult == DWM_GPU_DEFERRED)
@@ -4985,6 +5468,7 @@ DwmComposeLoop(HANDLE hStopEvent)
                                               DwmDxGetSurfacePixels(&wins[i], &dxPitch),
                                               dxPitch, &wins[i], animatedBackdrop);
                         DwmBlitReplaced((ULONG *)g_compBits, g_W, cl, ct, cr, cb, &wins[i]);
+                        DwmBlendFrameEdge((ULONG *)g_compBits, g_W, g_H, cl, ct, cr, cb, &wins[i]);
                         DwmStatCounter(&stgB);
                         if (g_frameStats)
                             g_statAnimTicks += (ULONGLONG)(stgB.QuadPart - stgA.QuadPart);
@@ -5079,6 +5563,7 @@ DwmComposeLoop(HANDLE hStopEvent)
                                                  HaveCover ? &Cover : NULL);
                         }
                     }
+                    DwmBlendFrameEdge((ULONG *)g_compBits, g_W, g_H, cl, ct, cr, cb, &wins[i]);
                 }
 
                 /* Never replace the last complete scan-out with a partially
@@ -5098,6 +5583,7 @@ DwmComposeLoop(HANDLE hStopEvent)
                     DWM_PRESENT_BITMAP publication;
                     publication.Bitmap = (ULONG_PTR)g_hbmComp;
                     publication.Rect = (RECTL){pl, pt, pr, pb};
+                    publication.MoveCount = DwmFindMoves(wins, hdr->Count, publication.Moves);
                     bltResult = g_originX == 0 && g_originY == 0 &&
                         ExtEscape(hdcScreen, DWM_ESCAPE_PRESENT_BITMAP,
                                   sizeof(publication), (LPCSTR)&publication,
@@ -5126,9 +5612,13 @@ DwmComposeLoop(HANDLE hStopEvent)
                         (ULONGLONG)(statPresentEnd.QuadPart - statComposeEnd.QuadPart),
                         (ULONGLONG)((pr - pl) * (pb - pt)));
                     if (!bltResult || !flushResult)
+                    {
+                        g_placesValid = FALSE;
                         forceFull = TRUE;
+                    }
                     else
                     {
+                        DwmRecordPlaces(wins, hdr->Count);
                         g_lastFrameQpc = (ULONGLONG)statFrameStart.QuadPart;
                         DptCount(&g_DwmPresentTrace, DPT_FRAME, (ULONGLONG)(pr - pl) * (pb - pt) * 4);
                         for (i = 0; i < hdr->Count; ++i)

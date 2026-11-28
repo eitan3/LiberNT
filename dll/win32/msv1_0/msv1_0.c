@@ -1526,12 +1526,13 @@ LsaApLogonUserEx2(IN PLSA_CLIENT_REQUEST ClientRequest,
     }
     RtlInitUnicodeString(&ComputerName, ComputerNameData);
 
-    PlainNetwork = LogonType == Network &&
+    PlainNetwork = (LogonType == Network || LogonType == NetworkCleartext) &&
                    SubmitBufferSize >= sizeof(MSV1_0_INTERACTIVE_LOGON) &&
                    ((PMSV1_0_INTERACTIVE_LOGON)ProtocolSubmitBuffer)->MessageType == MsV1_0InteractiveLogon;
 
     /* Parameters validation */
     if (LogonType == Interactive ||
+        LogonType == RemoteInteractive ||
         LogonType == Batch ||
         LogonType == Service ||
         LogonType == Unlock ||
@@ -1771,7 +1772,8 @@ LsaApLogonUserEx2(IN PLSA_CLIENT_REQUEST ClientRequest,
         RtlReleaseResource(&LogonListResource);
     }
 
-    if (LogonType == Interactive || LogonType == Batch || LogonType == Service || LogonType == Unlock)
+    if (LogonType == Interactive || LogonType == RemoteInteractive || LogonType == Batch || LogonType == Service ||
+        LogonType == Unlock)
     {
         /* Build and fill the interactive profile buffer */
         Status = BuildInteractiveProfileBuffer(ClientRequest,
@@ -1782,6 +1784,19 @@ LsaApLogonUserEx2(IN PLSA_CLIENT_REQUEST ClientRequest,
         if (!NT_SUCCESS(Status))
         {
             TRACE("BuildInteractiveProfileBuffer failed (Status %08lx)\n", Status);
+            goto done;
+        }
+    }
+    else if (PlainNetwork)
+    {
+        Status = BuildLm20LogonProfileBuffer(ClientRequest,
+                                             UserInfo,
+                                             &LogonPwdData,
+                                             (PMSV1_0_LM20_LOGON_PROFILE*)ProfileBuffer,
+                                             ProfileBufferSize);
+        if (!NT_SUCCESS(Status))
+        {
+            TRACE("BuildLm20LogonProfileBuffer failed (Status %08lx)\n", Status);
             goto done;
         }
     }
@@ -1902,7 +1917,7 @@ done:
     if (Status == STATUS_NO_SUCH_USER ||
         Status == STATUS_WRONG_PASSWORD)
     {
-        *SubStatus = (LogonType == Network || LogonPwdData.TrustedClient) ? Status : STATUS_SUCCESS;
+        *SubStatus = (LogonType == Network || LogonType == NetworkCleartext || LogonPwdData.TrustedClient) ? Status : STATUS_SUCCESS;
         Status = STATUS_LOGON_FAILURE;
     }
 

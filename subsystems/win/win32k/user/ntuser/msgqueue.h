@@ -35,6 +35,7 @@ typedef struct _USER_SENT_MESSAGE
   ULONG_PTR CompletionCallbackContext;
   INT HookMessage;
   BOOL HasPackedLParam;
+  SIZE_T OwnedLParamSize;
   KEVENT CompletionEvent;
 } USER_SENT_MESSAGE, *PUSER_SENT_MESSAGE;
 
@@ -121,7 +122,8 @@ enum internal_event_message
     WM_ASYNC_SHOWWINDOW = 0x80000000,
     WM_ASYNC_SETWINDOWPOS,
     WM_ASYNC_SETACTIVEWINDOW,
-    WM_ASYNC_DESTROYWINDOW
+    WM_ASYNC_DESTROYWINDOW,
+    WM_ASYNC_UPDATEMAXIMIZED
 };
 
 #define POSTEVENT_DAW 4
@@ -168,6 +170,7 @@ VOID FASTCALL MsqCleanupThreadCallbacks(PTHREADINFO);
 VOID FASTCALL MsqCleanupThreadMsgs(PTHREADINFO);
 VOID FASTCALL MsqDestroyMessageQueue(_In_ PTHREADINFO pti);
 CODE_SEG("INIT") NTSTATUS NTAPI MsqInitializeImpl(VOID);
+VOID NTAPI MsqFreeImpl(VOID);
 BOOLEAN FASTCALL co_MsqDispatchOneSentMessage(_In_ PTHREADINFO pti);
 NTSTATUS FASTCALL
 co_MsqWaitForNewMessages(PTHREADINFO pti, PWND WndFilter,
@@ -188,6 +191,7 @@ co_IntSendMessageTimeout(HWND hWnd,
                       ULONG_PTR *uResult);
 
 BOOL FASTCALL UserSendNotifyMessage( HWND hWnd,UINT Msg,WPARAM wParam,LPARAM lParam );
+BOOL FASTCALL UserSendNotifyMessageToDesktop( PWND DesktopWindow,UINT Msg,WPARAM wParam,LPARAM lParam );
 LRESULT FASTCALL co_IntSendMessageNoWait(HWND hWnd,
                         UINT Msg,
                         WPARAM wParam,
@@ -283,6 +287,8 @@ DWORD APIENTRY IntGetQueueStatus(DWORD);
 
 UINT lParamMemorySize(UINT Msg, WPARAM wParam, LPARAM lParam);
 INT lParamMemoryFlags(UINT Msg);
+NTSTATUS IntCaptureSentLParam(UINT Msg, WPARAM wParam, LPARAM lParam, PVOID *ppCopy, SIZE_T *pSize);
+VOID IntReturnSentLParam(UINT Msg, WPARAM wParam, LPARAM lParam, PVOID pCopy, SIZE_T Size);
 #define LPARAM_MEMORY_READ  0x01
 #define LPARAM_MEMORY_WRITE 0x02
 

@@ -73,10 +73,20 @@ typedef struct _DWM_MIRROR_FRAME
     ULONG Reserved;
 } DWM_MIRROR_FRAME;
 
+/* Pixels at DestRect were at SourcePoint in the previous frame; Rect still covers DestRect. */
+#define DWM_PRESENT_MAX_MOVES 8u
+typedef struct _DWM_MOVE_RECT
+{
+    POINTL SourcePoint;
+    RECTL DestRect;
+} DWM_MOVE_RECT;
+
 typedef struct _DWM_PRESENT_BITMAP
 {
     ULONG_PTR Bitmap;
     RECTL Rect;
+    ULONG MoveCount;
+    DWM_MOVE_RECT Moves[DWM_PRESENT_MAX_MOVES];
 } DWM_PRESENT_BITMAP;
 
 typedef struct _CDD_PRESENT_SOURCE
@@ -86,6 +96,8 @@ typedef struct _CDD_PRESENT_SOURCE
     ULONG Height;
     ULONG Pitch;
     RECTL Rect;
+    ULONG MoveCount;
+    DWM_MOVE_RECT Moves[DWM_PRESENT_MAX_MOVES];
 } CDD_PRESENT_SOURCE;
 
 
@@ -154,6 +166,8 @@ typedef struct _DXGK_PRESENT_DIRTY_RECTS_INPUT
     ULONG SourcePitch;
     ULONG SourceSize;
     ULONG_PTR Source;
+    ULONG MoveCount;
+    DWM_MOVE_RECT Moves[DWM_PRESENT_MAX_MOVES];
     RECTL Rects[ANYSIZE_ARRAY];
 } DXGK_PRESENT_DIRTY_RECTS_INPUT, *PDXGK_PRESENT_DIRTY_RECTS_INPUT;
 
@@ -253,6 +267,13 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
 #define DWM_LWA_ALPHA    0x00000002u
 
 /* Compositor-owned attributes carried in the unused high LayerFlags bits. */
+/* Liber window chrome: elevation shadow, and the DWM_LIBER_EDGE_* outline drawn DWM_LIBER_FRAME_OUTSET px outside */
+#define DWM_WINDOW_LIBER_EDGE_SHIFT 20
+#define DWM_WINDOW_LIBER_EDGE_MASK  0x00300000u
+#define DWM_WINDOW_LIBER_FRAME      0x00800000u
+#define DWM_WINDOW_LIBER_EDGE(Flags) (((ULONG)(Flags) & DWM_WINDOW_LIBER_EDGE_MASK) >> DWM_WINDOW_LIBER_EDGE_SHIFT)
+#define DWM_WINDOW_LIBER_EDGE_PACK(Edge) (((ULONG)(Edge) << DWM_WINDOW_LIBER_EDGE_SHIFT) & DWM_WINDOW_LIBER_EDGE_MASK)
+#define DWM_LIBER_FRAME_OUTSET      1
 #define DWM_WINDOW_FRAME_ALPHA 0x01000000u
 #define DWM_WINDOW_DX_SCANOUT  0x02000000u /* see DWM_DX_PUBLISH_SCANOUT */
 #define DWM_WINDOW_DX_RETAINED 0x04000000u /* see DWM_DX_PUBLISH_RETAINED */
@@ -314,6 +335,7 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
 #define DWM_LIBER_EDGE_WINDOW         2u
 #define DWM_LIBER_EDGE_SEAM           3u
 #define DWM_LIBER_MATERIAL_ADAPTIVE   0x00000010u
+#define DWM_LIBER_MATERIAL_FADE       0x00004000u
 #define DWM_LIBER_MATERIAL_VALID      0x80000000u
 #define DWM_LIBER_MATERIAL_PACK(Kind, Adaptive, Layer, Elevation, Edge, Alpha) \
     (DWM_LIBER_MATERIAL_VALID | ((ULONG)(Kind) & 0xFu) | ((Adaptive) ? DWM_LIBER_MATERIAL_ADAPTIVE : 0u) | \
@@ -324,7 +346,86 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
 #define DWM_LIBER_MATERIAL_ELEVATION(Packed) (((ULONG)(Packed) >> 8) & 0xFu)
 #define DWM_LIBER_MATERIAL_EDGE(Packed)      (((ULONG)(Packed) >> 12) & 0x3u)
 #define DWM_LIBER_MATERIAL_ALPHA(Packed)     (((ULONG)(Packed) >> 16) & 0xFFu)
-#define DWM_LIBER_MATERIAL_MASK              0x80FF3F7Fu
+#define DWM_LIBER_MATERIAL_MASK              0x80FF7F7Fu
+
+/* Liber window geometry and motion, shared by win32k, the compositor and their tests */
+#define DWM_CORNER_RADIUS_LIBER_96    12u
+#define DWM_LIBER_ANIM_MINIMIZE_MS    300u
+#define DWM_LIBER_ANIM_RESTORE_MS     340u
+#define DWM_LIBER_ANIM_MOVE_MS        300u
+#define DWM_LIBER_ANIM_FADE_FROM      40u
+#define DWM_LIBER_ANIM_OPEN_MS        280u
+#define DWM_LIBER_ANIM_OPEN_SCALE     94u
+
+static __inline void
+DwmLiberOpenFromRect(const RECT *Window, RECT *From)
+{
+    LONG Cx = Window->right - Window->left, Cy = Window->bottom - Window->top;
+    LONG Dx = (LONG)(((LONGLONG)Cx * (100 - DWM_LIBER_ANIM_OPEN_SCALE)) / 200);
+    LONG Dy = (LONG)(((LONGLONG)Cy * (100 - DWM_LIBER_ANIM_OPEN_SCALE)) / 200);
+
+    From->left = Window->left + Dx;
+    From->top = Window->top + Dy;
+    From->right = Window->right - Dx;
+    From->bottom = Window->bottom - Dy;
+}
+
+static __inline ULONG
+DwmLiberWindowCornerRadius(ULONG Dpi)
+{
+    return DWM_CORNER_RADIUS_LIBER_96 * (Dpi ? Dpi : 96u) / 96u;
+}
+
+static __inline ULONG
+DwmLiberFrameEdgeFor(BOOLEAN Zoomed, BOOLEAN Snapped, ULONG CornerRadius)
+{
+    if (Zoomed)
+        return DWM_LIBER_EDGE_NONE;
+    if (Snapped)
+        return DWM_LIBER_EDGE_SEAM;
+    return CornerRadius != 0 ? DWM_LIBER_EDGE_WINDOW : DWM_LIBER_EDGE_NONE;
+}
+
+static __inline ULONG
+DwmLiberFrameEdge(ULONG LayerFlags)
+{
+    return (LayerFlags & DWM_WINDOW_LIBER_FRAME) ? DWM_WINDOW_LIBER_EDGE(LayerFlags) : DWM_LIBER_EDGE_NONE;
+}
+
+#define DWM_LIBER_MATERIAL_ULTRATHIN  1u
+
+#define DWM_LIBER_CAPTION_BUTTON_CX   40
+#define DWM_LIBER_CAPTION_BUTTON_CY   28
+#define DWM_LIBER_CAPTION_BUTTON_R    4
+
+/* Index 0 is the close button at the right edge; the others follow to its left */
+static __inline void
+DwmLiberCaptionButtonRect(LONG WindowWidth, LONG CaptionHeight, ULONG Dpi, ULONG Index, RECT *Button)
+{
+    LONG Cx = (LONG)(DWM_LIBER_CAPTION_BUTTON_CX * (Dpi ? Dpi : 96u) / 96u);
+    LONG Cy = (LONG)(DWM_LIBER_CAPTION_BUTTON_CY * (Dpi ? Dpi : 96u) / 96u);
+    LONG Inset;
+
+    if (Cy > CaptionHeight)
+        Cy = CaptionHeight > 0 ? CaptionHeight : 0;
+    Inset = (CaptionHeight - Cy) / 2;
+    Button->right = WindowWidth - Inset - (LONG)Index * Cx;
+    Button->left = Button->right - Cx;
+    Button->top = Inset;
+    Button->bottom = Inset + Cy;
+}
+
+static __inline ULONG
+DwmLiberMinimizeAlpha(ULONG Progress, ULONG Scale)
+{
+    ULONG From = (ULONG)(((ULONGLONG)Scale * DWM_LIBER_ANIM_FADE_FROM) / 100u);
+
+    if (Scale == 0 || Progress <= From)
+        return 255u;
+    if (Progress >= Scale)
+        return 0u;
+    return (ULONG)(255u - ((ULONGLONG)(Progress - From) * 255u) / (Scale - From));
+}
 
 /* Values intentionally match DWM_SYSTEMBACKDROP_TYPE in dwmapi.h. */
 #define DWM_BACKDROP_NONE       1u

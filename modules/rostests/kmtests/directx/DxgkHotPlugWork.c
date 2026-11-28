@@ -161,6 +161,29 @@ static VOID DxgkHotPlugWorkTestSourcePrimary(VOID)
     ok_bool_false(DxgkHotPlugWorkCoreSourceHasOwnPrimary(16, 0, 32, 16), "a source beyond the primary table gets none");
 }
 
+static VOID DxgkHotPlugWorkTestDisplayChangeNotice(VOID)
+{
+    ok_bool_false(DxgkHotPlugWorkCoreNotifiesDisplayChange(TRUE, FALSE, TRUE, FALSE, FALSE), "the same monitor on the same paths and size changes nothing for the session");
+    ok_bool_true(DxgkHotPlugWorkCoreNotifiesDisplayChange(TRUE, TRUE, TRUE, FALSE, FALSE), "a monitor connection is announced once");
+    ok_bool_true(DxgkHotPlugWorkCoreNotifiesDisplayChange(TRUE, TRUE, FALSE, FALSE, FALSE), "a monitor connection is announced even before the desktop has a size");
+    ok_bool_true(DxgkHotPlugWorkCoreNotifiesDisplayChange(TRUE, FALSE, TRUE, TRUE, FALSE), "a path joining or leaving the desktop is a display change");
+    ok_bool_true(DxgkHotPlugWorkCoreNotifiesDisplayChange(TRUE, FALSE, TRUE, FALSE, TRUE), "a new desktop size is a display change");
+    ok_bool_false(DxgkHotPlugWorkCoreNotifiesDisplayChange(TRUE, FALSE, FALSE, TRUE, TRUE), "an adapter with no output left keeps its desktop mode without a notice");
+    ok_bool_false(DxgkHotPlugWorkCoreNotifiesDisplayChange(FALSE, TRUE, TRUE, TRUE, TRUE), "nothing is announced without a committed VidPN");
+}
+
+static VOID DxgkHotPlugWorkTestConnectorChangeBeforeStart(VOID)
+{
+    volatile LONG Pending = 1;
+
+    ok_bool_false(DxgkHotPlugWorkCoreTakeConnectorChange(&Pending, FALSE), "a starting adapter does not take the change");
+    ok_eq_long(Pending, 1L);
+    ok_bool_true(DxgkHotPlugWorkCoreTakeConnectorChange(&Pending, TRUE), "a started adapter takes the change");
+    ok_eq_long(Pending, 0L);
+    ok_bool_false(DxgkHotPlugWorkCoreTakeConnectorChange(&Pending, TRUE), "nothing pending, nothing taken");
+    ok_eq_long(Pending, 0L);
+}
+
 START_TEST(DxgkHotPlugWork)
 {
     DxgkHotPlugWorkTestCoalescing();
@@ -175,4 +198,6 @@ START_TEST(DxgkHotPlugWork)
     DxgkHotPlugWorkTestPathImportance();
     DxgkHotPlugWorkTestExtendSource();
     DxgkHotPlugWorkTestSourcePrimary();
+    DxgkHotPlugWorkTestDisplayChangeNotice();
+    DxgkHotPlugWorkTestConnectorChangeBeforeStart();
 }

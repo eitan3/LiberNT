@@ -76,6 +76,7 @@ typedef struct _GRAPHICS_DEVICE
     PVIDEO_MONITOR_DEVICE pvMonDev;
     PFILE_OBJECT     FileObject;
     DWORD            ProtocolType;
+    volatile LONG    lMonitorEvent;
 } GRAPHICS_DEVICE, *PGRAPHICS_DEVICE;
 
 typedef struct _PDEVOBJ
@@ -204,6 +205,10 @@ NTSTATUS
 NTAPI
 InitPDEVImpl(VOID);
 
+VOID
+NTAPI
+FreePDEVImpl(VOID);
+
 PSIZEL
 FASTCALL
 PDEVOBJ_sizl(
@@ -251,6 +256,28 @@ PDEVOBJ_vEnableDisplay(
 BOOL
 PDEVOBJ_bDisableDisplay(
     _Inout_ PPDEVOBJ ppdev);
+
+BOOL
+NTAPI
+PDEVOBJ_bMoveToDisplay(
+    _Inout_ PPDEVOBJ ppdev,
+    _In_ PGRAPHICS_DEVICE pGraphicsDevice,
+    _In_ PDEVMODEW pdm);
+
+BOOL
+NTAPI
+PDEVOBJ_bReturnToDetachedDisplay(
+    _Inout_ PPDEVOBJ ppdev);
+
+extern PPDEVOBJ gppdevDetached;
+
+PPDEVOBJ
+NTAPI
+EngpGetDetachedPDEV(VOID);
+
+BOOL
+PDEVOBJ_bGraphicsDeviceInUse(
+    _In_ PGRAPHICS_DEVICE pGraphicsDevice);
 
 PPDEVOBJ
 PDEVOBJ_Create(

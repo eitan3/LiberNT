@@ -9,13 +9,16 @@ extern void func_GetInterfaceName(void);
 extern void func_GetIpNetEntry2(void);
 extern void func_GetNetworkParams(void);
 extern void func_GetOwnerModuleFromTcpEntry(void);
+extern void func_GetOwnerModuleFromUdp6Entry(void);
 extern void func_GetOwnerModuleFromUdpEntry(void);
+extern void func_IcmpEchoTimeChange(void);
 extern void func_icmp(void);
 extern void func_icmp_echo(void);
 extern void func_icmp6_echo(void);
 extern void func_InitializeIpInterfaceEntry(void);
 extern void func_NotifyIpInterfaceChange(void);
 extern void func_SendARP(void);
+extern void func_TcpTableAccepted(void);
 extern void func_UnicastIpAddressChange(void);
 extern void func_UnicastIpAddressTimeChange(void);
 
@@ -28,13 +31,16 @@ const struct test winetest_testlist[] =
     { "GetIpNetEntry2",             func_GetIpNetEntry2 },
     { "GetNetworkParams",           func_GetNetworkParams },
     { "GetOwnerModuleFromTcpEntry", func_GetOwnerModuleFromTcpEntry },
+    { "GetOwnerModuleFromUdp6Entry",  func_GetOwnerModuleFromUdp6Entry },
     { "GetOwnerModuleFromUdpEntry", func_GetOwnerModuleFromUdpEntry },
+    { "IcmpEchoTimeChange",         func_IcmpEchoTimeChange },
     { "icmp",                       func_icmp },
     { "icmp_echo",                  func_icmp_echo },
     { "icmp6_echo",                 func_icmp6_echo },
     { "InitializeIpInterfaceEntry", func_InitializeIpInterfaceEntry },
     { "NotifyIpInterfaceChange",    func_NotifyIpInterfaceChange },
     { "SendARP",                    func_SendARP },
+    { "TcpTableAccepted",           func_TcpTableAccepted },
     { "UnicastIpAddressChange",     func_UnicastIpAddressChange },
     { "UnicastIpAddressTimeChange", func_UnicastIpAddressTimeChange },
 

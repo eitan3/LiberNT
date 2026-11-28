@@ -3921,6 +3921,7 @@ HRESULT NativeDevice::CreateTexture(const D3D11_TEXTURE2D_DESC *input,
     args.MapFlags = input->CPUAccessFlags >> 16;
     args.MiscFlags = NativeDriverMiscFlags(input->MiscFlags);
     if (present && !primary) args.MiscFlags |= D3D10_DDI_RESOURCE_MISC_SHARED;
+    if (primary && wddm20 && !ddi11_1) args.MiscFlags |= D3DWDDM2_0DDI_RESOURCE_MISC_DISPLAYABLE_SURFACE;
     args.Format = input->Format;
     args.SampleDesc = input->SampleDesc;
     args.MipLevels = mip_count;
@@ -9177,7 +9178,7 @@ HRESULT NativeSwapChain::PresentMeasured(UINT interval, UINT flags, const DXGI_P
     args.hDevice = reinterpret_cast<DXGI_DDI_HDEVICE>(device->driver_device.pDrvPrivate);
     args.hSurfaceToPresent = reinterpret_cast<DXGI_DDI_HRESOURCE>(source->handle.pDrvPrivate);
     args.pDXGIContext = &context;
-    if (exclusive) args.Flags.Flip = 1;
+    if (exclusive || primary) args.Flags.Flip = 1;
     else args.Flags.Blt = 1;
     args.FlipInterval = static_cast<DXGI_DDI_FLIP_INTERVAL_TYPE>(interval);
     device->BeginCall();

@@ -20,20 +20,31 @@ typedef struct _USER_SESSION
     struct _WINSTATION_OBJECT *InputWindowStation;
     PKEVENT DesktopSwitchEvent;
     HANDLE DesktopSwitchEventHandle;
+    KSPIN_LOCK DesktopThreadLock;
     struct _THREADINFO *DesktopThread;
     KEVENT DesktopThreadStarted;
+    LIST_ENTRY DesktopsToDestroy;
+    BOOLEAN Ending;
 } USER_SESSION, *PUSER_SESSION;
 
 extern PUSER_SESSION gpDisplaySession;
+extern BOOLEAN gbConsoleSession;
 
 PUSER_SESSION FASTCALL UserFindSession(ULONG SessionId);
 PUSER_SESSION FASTCALL UserGetProcessSession(PEPROCESS Process);
 PUSER_SESSION FASTCALL UserGetCurrentSession(VOID);
 NTSTATUS FASTCALL UserCreateSession(ULONG SessionId, PUSER_SESSION *Session);
+VOID FASTCALL UserBeginSessionsEnd(VOID);
+VOID FASTCALL UserReleaseSessions(VOID);
+VOID FASTCALL FreeSessionImpl(VOID);
 PUNICODE_STRING FASTCALL UserGetWinStaDirName(PEPROCESS Process);
 struct _WINSTATION_OBJECT *FASTCALL UserGetInputWindowStation(PEPROCESS Process);
 struct _WINSTATION_OBJECT *FASTCALL UserGetDisplayInputWindowStation(VOID);
 BOOLEAN FASTCALL UserIsCsrProcess(PEPROCESS Process);
 BOOLEAN FASTCALL UserIsLogonProcess(HANDLE ProcessId);
 BOOLEAN FASTCALL UserIsDesktopThread(struct _THREADINFO *pti);
+PUSER_SESSION FASTCALL UserGetDesktopThreadSession(struct _THREADINFO *pti);
 struct _THREADINFO *FASTCALL UserGetDesktopThread(VOID);
+VOID FASTCALL UserSetDesktopThread(PUSER_SESSION Session, struct _THREADINFO *pti);
+VOID FASTCALL UserWakeDesktopThread(PUSER_SESSION Session);
+VOID FASTCALL UserForEachSessionDesktop(PUSER_SESSION Session, VOID (FASTCALL *Callback)(struct _DESKTOP *Desktop));

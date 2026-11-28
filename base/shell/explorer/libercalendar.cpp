@@ -491,6 +491,7 @@ BOOL CLiberCalendar::Open(const RECT *prcAnchor)
     Place();
     for (UINT i = 0; i < _countof(surfaces); i++)
     {
+        LiberShell_SampleBackdrop(surfaces[i], &m_Tokens, FALSE);
         surfaces[i]->Render(AnimationClock::Now());
         ShowWindow(surfaces[i]->Window(), SW_SHOW);
         surfaces[i]->TransitionIn(32.0f, 300);

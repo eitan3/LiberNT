@@ -776,7 +776,8 @@ SepCloneToken(
     Contents.DefaultDacl = Token->DefaultDacl;
     Contents.AuthenticationId = Token->AuthenticationId;
     Contents.OriginatingLogonSession = Token->OriginatingLogonSession;
-    Contents.ParentTokenId = Token->TokenId;
+    /* A copy, a lowbox token included, keeps the parent of the token it copies, so it stays assignable wherever that token is */
+    Contents.ParentTokenId = Token->ParentTokenId;
     Contents.ExpirationTime = Token->ExpirationTime;
     Contents.Source = Token->TokenSource;
     Contents.Type = Type;
@@ -2312,6 +2313,29 @@ SepLowerToPackage(
     return Status;
 }
 
+static
+NTSTATUS
+SepCheckPackageSid(
+    _In_ PSID Sid)
+{
+    static const SID_IDENTIFIER_AUTHORITY PackageAuthority = {SECURITY_APP_PACKAGE_AUTHORITY};
+    PISID Package = (PISID)Sid;
+
+    ASSERT(RtlValidSid(Sid));
+    if (!RtlEqualMemory(&Package->IdentifierAuthority, &PackageAuthority, sizeof(PackageAuthority)) ||
+        Package->SubAuthorityCount == 0 ||
+        Package->SubAuthority[0] != SECURITY_APP_PACKAGE_BASE_RID)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (Package->SubAuthorityCount != SECURITY_APP_PACKAGE_RID_COUNT &&
+        Package->SubAuthorityCount != SECURITY_CHILD_PACKAGE_RID_COUNT)
+    {
+        return STATUS_INVALID_PACKAGE_SID_LENGTH;
+    }
+    return STATUS_SUCCESS;
+}
+
 /* A token that stands for one package and nothing else */
 __kernel_entry
 NTSTATUS
@@ -2357,8 +2381,9 @@ NtCreateLowBoxToken(
 
     Status = SepCaptureSid(PackageSid, PreviousMode, PagedPool, TRUE, &Package);
     if (!NT_SUCCESS(Status)) return Status;
+    Status = SepCheckPackageSid(Package);
 
-    if (CapabilityCount != 0)
+    if (NT_SUCCESS(Status) && CapabilityCount != 0)
     {
         Status = SeCaptureSidAndAttributesArray(Capabilities,
                                                 CapabilityCount,
