@@ -40,7 +40,7 @@ static BOOL RegisterSurfaceClass(HINSTANCE instance, WNDPROC proc)
 Surface::Surface()
     : m_hwnd(NULL), m_Dpi(96), m_Tokens(NULL), m_Root(NULL), m_LayoutPending(TRUE), m_Tracking(FALSE), m_Gpu(NULL), m_Presents(0), m_Owner(NULL), m_ExStyle(0),
       m_InputRadius(0.0f), m_Opacity(1.0f), m_OffsetY(0.0f), m_Transition(FALSE), m_HideAtEnd(FALSE), m_Shadow(NULL), m_ShadowWidget(NULL), m_Elevation(-1), m_ShadowRadius(0.0f), m_Material(-1),
-      m_MaterialTint(0), m_MaterialAlpha(0), m_MaterialRadius(0.0f), m_BackdropTarget(0.5),
+      m_MaterialTint(0), m_MaterialAlpha(0), m_MaterialRadius(0.0f), m_MaterialFade(FALSE), m_BackdropTarget(0.5),
       m_BackdropKnown(FALSE), m_BackdropAnimating(FALSE),
       m_Recovering(FALSE)
 {
@@ -180,7 +180,9 @@ void Surface::ApplyMaterial()
         return;
     }
     ULONG packed = DWM_LIBER_MATERIAL_PACK(m_Material + 1, FALSE, DWM_LIBER_LAYER_SHELL,
-                                           m_Elevation >= 0 ? m_Elevation + 1 : 0, DWM_LIBER_EDGE_GLASS, m_MaterialAlpha);
+                                           m_Elevation >= 0 ? m_Elevation + 1 : 0,
+                                           m_MaterialFade ? DWM_LIBER_EDGE_NONE : DWM_LIBER_EDGE_GLASS, m_MaterialAlpha) |
+                   (m_MaterialFade ? DWM_LIBER_MATERIAL_FADE : 0u);
     COLORREF tint = RGB(ArgbR(m_MaterialTint), ArgbG(m_MaterialTint), ArgbB(m_MaterialTint));
     ULONG radius = (ULONG)ScaleToDpi((int)(m_MaterialRadius + 0.5f), m_Dpi);
     SetPropW(m_hwnd, MaterialProp(0), (HANDLE)(ULONG_PTR)packed);
@@ -309,6 +311,12 @@ void Surface::TransitionOut(float dropDip, UINT durationMs)
     m_HideAtEnd = TRUE;
     AnimationClock::Instance().Add(this);
     OnAnimationFrame(now);
+}
+
+void Surface::SetMaterialFade(BOOL fade)
+{
+    m_MaterialFade = fade;
+    ApplyMaterial();
 }
 
 void Surface::SetBackdropLuma(double luma)

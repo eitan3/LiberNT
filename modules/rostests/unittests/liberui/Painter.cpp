@@ -620,6 +620,16 @@ static void TestMaterial()
     ok((ULONG_PTR)GetPropW(surface.Window(), DWM_PROP_CORNER_RADIUS) == 56, "the radius follows the DPI\n");
     surface.SetMaterial(LIBER_MATERIAL_THICK, 0xFF10171E, 0xB8, 40.0f);
     ok(GetPropW(surface.Window(), DWM_PROP_CORNER_RADIUS) == NULL, "radii the compositor cannot round are left out\n");
+    surface.SetMaterial(LIBER_MATERIAL_ULTRATHIN, 0, 0, 0.0f);
+    surface.SetMaterialFade(TRUE);
+    packed = (ULONG)(ULONG_PTR)GetPropW(surface.Window(), DWM_PROP_LIBER_MATERIAL);
+    ok((packed & DWM_LIBER_MATERIAL_FADE) && DWM_LIBER_MATERIAL_EDGE(packed) == DWM_LIBER_EDGE_NONE &&
+           DWM_LIBER_MATERIAL_ALPHA(packed) == 0 && (packed & ~DWM_LIBER_MATERIAL_MASK) == 0,
+       "a fading material has no edge or tint: %08lX\n", packed);
+    surface.SetMaterialFade(FALSE);
+    packed = (ULONG)(ULONG_PTR)GetPropW(surface.Window(), DWM_PROP_LIBER_MATERIAL);
+    ok(!(packed & DWM_LIBER_MATERIAL_FADE) && DWM_LIBER_MATERIAL_EDGE(packed) == DWM_LIBER_EDGE_GLASS,
+       "turning the fade off restores the glass edge\n");
     surface.SetMaterial(-1, 0, 0, 0.0f);
     ok(GetPropW(surface.Window(), DWM_PROP_LIBER_MATERIAL) == NULL &&
            GetPropW(surface.Window(), DWM_PROP_LIBER_MATERIAL_TINT) == NULL && surface.Material() == -1,

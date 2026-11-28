@@ -54,6 +54,14 @@ VOID LiberDock_CellRect(const RECT *prcDock, UINT dpi, UINT cell, RECT *prcCell)
     prcCell->bottom = prcDock->top + ScaleToDpi(LIBER_DOCK_PAD_Y + LIBER_DOCK_CELL, dpi);
 }
 
+VOID LiberDock_BlurBand(const RECT *prcMonitor, UINT dpi, UINT layer, RECT *prcBand)
+{
+    ATLASSERT(prcMonitor && prcBand && dpi != 0 && layer < LIBER_BLUR_BAND_LAYERS);
+    int height = ScaleToDpi(LIBER_TASKBAR_DOCK, dpi);
+    *prcBand = *prcMonitor;
+    prcBand->top = prcMonitor->bottom - height * (int)(LIBER_BLUR_BAND_LAYERS - layer) / LIBER_BLUR_BAND_LAYERS;
+}
+
 int LiberDock_Width(UINT cells)
 {
     ATLASSERT(cells > 0);

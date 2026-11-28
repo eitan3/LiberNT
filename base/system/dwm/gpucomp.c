@@ -2457,6 +2457,7 @@ DwmGpuComposeBlurWindow(const DWM_WIN *Window, const RECTL *Rectangles,
         DptEnd(&g_DwmPresentTrace, Trace, Result, 0);
         return Result;
     }
+    /* TODO: fade a DWM_LIBER_MATERIAL_FADE blur in from its top edge here too; OpenGL blurs it uniformly */
     RECTL Entire = {0, 0, Window->cx, Window->cy};
     RECT Capture = {0, 0, 0, 0}, Region = {0, 0, 0, 0}, Output;
     DWM_GPU_WINDOW_GEOMETRY Geometry;

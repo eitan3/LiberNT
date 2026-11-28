@@ -39,6 +39,7 @@ static const char DwmD3dShaderSource[] =
     "    float2 g = fmod(floor(v.position.xy), 64.0);\n"
     "    c = saturate(c + (floor(frac(sin(dot(g, float2(12.9898,78.233))) * 43758.5453) * 3.0) - 1.0) / 255.0);\n"
     "  }\n"
+    "  if (extra.w > 0) a *= saturate((v.position.y - clientRect.y) / max(clientRect.w - clientRect.y, 1.0));\n"
     "  if (extra.z > 0) {\n"
     "    float2 h = (clientRect.zw - clientRect.xy) * 0.5; float r = min(extra.z, min(h.x, h.y));\n"
     "    float2 q = abs(v.position.xy - (clientRect.xy + clientRect.zw) * 0.5) - (h - r);\n"

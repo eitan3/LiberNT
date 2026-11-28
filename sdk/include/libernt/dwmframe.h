@@ -328,6 +328,7 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
 #define DWM_LIBER_EDGE_WINDOW         2u
 #define DWM_LIBER_EDGE_SEAM           3u
 #define DWM_LIBER_MATERIAL_ADAPTIVE   0x00000010u
+#define DWM_LIBER_MATERIAL_FADE       0x00004000u
 #define DWM_LIBER_MATERIAL_VALID      0x80000000u
 #define DWM_LIBER_MATERIAL_PACK(Kind, Adaptive, Layer, Elevation, Edge, Alpha) \
     (DWM_LIBER_MATERIAL_VALID | ((ULONG)(Kind) & 0xFu) | ((Adaptive) ? DWM_LIBER_MATERIAL_ADAPTIVE : 0u) | \
@@ -338,7 +339,7 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
 #define DWM_LIBER_MATERIAL_ELEVATION(Packed) (((ULONG)(Packed) >> 8) & 0xFu)
 #define DWM_LIBER_MATERIAL_EDGE(Packed)      (((ULONG)(Packed) >> 12) & 0x3u)
 #define DWM_LIBER_MATERIAL_ALPHA(Packed)     (((ULONG)(Packed) >> 16) & 0xFFu)
-#define DWM_LIBER_MATERIAL_MASK              0x80FF3F7Fu
+#define DWM_LIBER_MATERIAL_MASK              0x80FF7F7Fu
 
 /* Values intentionally match DWM_SYSTEMBACKDROP_TYPE in dwmapi.h. */
 #define DWM_BACKDROP_NONE       1u

@@ -158,6 +158,20 @@ DwmLiberDimBackdrop(
     return Dim;
 }
 
+ULONG
+DwmLiberFadeAlpha(
+    _In_ ULONG Alpha,
+    _In_ LONG Row,
+    _In_ LONG Height)
+{
+    assert(Alpha <= 255);
+    if (Height <= 0 || Row < 0)
+        return 0;
+    if (Row >= Height)
+        return Alpha;
+    return (ULONG)(((ULONGLONG)Alpha * (ULONG)(2 * Row + 1)) / (ULONG)(2 * Height));
+}
+
 static DWORD
 DwmLiberReadDword(
     _In_ PCWSTR Key,

@@ -2605,9 +2605,11 @@ DwmD3dBlurWindow(const DWM_WIN *Window, const RECTL *Rectangles, LONG OriginX, L
     SetSampleExtent(Data, Blur->Result, Blur->Width, Blur->Height);
     Data.Filter[3] = Saturation != 1.0f ? Saturation : 0.0f;
     DWM_GPU_WINDOW_GEOMETRY Geometry;
-    BOOL Rounded = Window->CornerRadius != 0 && DwmGpuWindowGeometry(Window, OriginX, OriginY, &Geometry);
+    BOOL Fade = (Window->LiberMaterial & DWM_LIBER_MATERIAL_FADE) != 0;
+    BOOL Rounded = (Window->CornerRadius != 0 || Fade) && DwmGpuWindowGeometry(Window, OriginX, OriginY, &Geometry);
     if (Rounded)
     {
+        Data.Extra[3] = Fade ? 1.0f : 0.0f;
         Data.ClientRect[0] = (FLOAT)Geometry.Left;
         Data.ClientRect[1] = (FLOAT)Geometry.Top;
         Data.ClientRect[2] = (FLOAT)(Geometry.Left + Geometry.Width);

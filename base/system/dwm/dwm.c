@@ -1436,6 +1436,18 @@ Upsample:
                              ClipLeft, ClipTop, ClipRight, ClipBottom,
                              Width, Height, &Clipped))
             continue;
+        if (Window->LiberMaterial & DWM_LIBER_MATERIAL_FADE)
+        {
+            LONG Row;
+            for (Row = Clipped.top; Row < Clipped.bottom; ++Row)
+            {
+                ULONG RowAlpha = DwmLiberFadeAlpha(Alpha, Row - WindowY, Window->cy);
+                if (RowAlpha != 0)
+                    DwmBlurUpsample(Result, HalfWidth, HalfHeight, Composition, Width,
+                                    Clipped.left, Row, Clipped.right, Row + 1, RowAlpha);
+            }
+            continue;
+        }
         DwmBlurUpsample(Result, HalfWidth, HalfHeight, Composition, Width,
                         Clipped.left, Clipped.top, Clipped.right,
                         Clipped.bottom, Alpha);

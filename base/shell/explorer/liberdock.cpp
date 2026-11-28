@@ -373,6 +373,7 @@ private:
     void ClearEntries();
     void Refresh();
     void Place();
+    void PlaceBands(const RECT *prcMonitor);
     RECT ScreenRect(Surface &surface, const RECT &dip);
 
     ITrayWindow *m_Tray;
@@ -384,6 +385,7 @@ private:
     ThemeTokens m_Tokens;
     Surface m_DockSurface;
     Surface m_TraySurface;
+    Surface m_Bands[LIBER_BLUR_BAND_LAYERS];
     LIBER_DOCK_ENTRY m_Entries[LIBER_DOCK_MAX_ITEMS];
     UINT m_Count;
     CLiberPanel *m_DockRoot;
@@ -568,6 +570,24 @@ RECT CLiberDock::ScreenRect(Surface &surface, const RECT &dip)
     return rc;
 }
 
+void CLiberDock::PlaceBands(const RECT *prcMonitor)
+{
+    BOOL glass = LiberShell_GlassEnabled();
+
+    for (UINT i = 0; i < LIBER_BLUR_BAND_LAYERS; i++)
+    {
+        RECT band;
+        if (!m_Bands[i].Window())
+            continue;
+        LiberDock_BlurBand(prcMonitor, m_Dpi, i, &band);
+        m_Bands[i].SetPosition(band.left, band.top, MulDiv(band.right - band.left, 96, (int)m_Dpi),
+                               MulDiv(band.bottom - band.top, 96, (int)m_Dpi));
+        m_Bands[i].SetMaterial(glass ? (int)i : -1, 0, 0, 0.0f);
+        m_Bands[i].Render(AnimationClock::Now());
+        ShowWindow(m_Bands[i].Window(), glass ? SW_SHOWNOACTIVATE : SW_HIDE);
+    }
+}
+
 void CLiberDock::Place()
 {
     HMONITOR monitor = MonitorFromPoint(POINT(), MONITOR_DEFAULTTOPRIMARY);
@@ -581,6 +601,7 @@ void CLiberDock::Place()
                               LIBER_DOCK_HEIGHT);
     m_TraySurface.SetPosition(m_Layout.Tray.left, m_Layout.Tray.top, m_TrayWidth, LIBER_TRAY_HEIGHT);
     LiberShell_SampleBackdrop(&m_DockSurface, &m_Tokens, FALSE);
+    PlaceBands(&mi.rcMonitor);
 
     RECT work;
     LiberDock_WorkArea(&mi.rcMonitor, m_Dpi, &work);
@@ -899,6 +920,14 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
         return HRESULT_FROM_WIN32(GetLastError());
 
     DWORD exStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    for (UINT i = 0; i < LIBER_BLUR_BAND_LAYERS; i++)
+    {
+        if (m_Bands[i].Create(NULL, L"Liber Scrim", exStyle | WS_EX_LAYERED | WS_EX_TRANSPARENT))
+        {
+            m_Bands[i].SetDpi(m_Dpi);
+            m_Bands[i].SetMaterialFade(TRUE);
+        }
+    }
     if (!m_DockSurface.Create(NULL, L"Liber Dock", exStyle) || !m_TraySurface.Create(NULL, L"Liber Tray", exStyle))
         return E_FAIL;
     m_DockSurface.SetInputShape((float)LIBER_DOCK_HEIGHT / 2.0f);
@@ -987,6 +1016,8 @@ void CLiberDock::Stop()
     m_TraySurface.SetRoot(NULL);
     m_DockSurface.Destroy();
     m_TraySurface.Destroy();
+    for (UINT i = 0; i < LIBER_BLUR_BAND_LAYERS; i++)
+        m_Bands[i].Destroy();
     delete m_DockRoot;
     delete m_TrayRoot;
     m_DockRoot = NULL;

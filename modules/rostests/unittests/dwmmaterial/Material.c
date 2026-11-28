@@ -158,6 +158,29 @@ static void TestDim(void)
     ok(DwmLiberDimBackdrop(bits, 0, 8, 8 * sizeof(ULONG), 0) == 0.0, "an empty backdrop is not dimmed\n");
 }
 
+static void TestFade(void)
+{
+    DWM_WIN Window;
+    DWM_LIBER_MATERIAL_INFO Info;
+
+    ok(DwmLiberFadeAlpha(255, 0, 100) == 1, "the top row is nearly clear: %lu\n", DwmLiberFadeAlpha(255, 0, 100));
+    ok(DwmLiberFadeAlpha(255, 50, 100) == 128, "the middle row is half: %lu\n", DwmLiberFadeAlpha(255, 50, 100));
+    ok(DwmLiberFadeAlpha(255, 99, 100) == 253, "the bottom row is nearly full: %lu\n", DwmLiberFadeAlpha(255, 99, 100));
+    ok(DwmLiberFadeAlpha(128, 99, 100) == 127, "the window alpha scales the fade\n");
+    ok(DwmLiberFadeAlpha(255, -1, 100) == 0 && DwmLiberFadeAlpha(255, 100, 100) == 255, "rows outside clamp\n");
+    ok(DwmLiberFadeAlpha(255, 0, 0) == 0, "an empty window is clear\n");
+
+    ZeroMemory(&Window, sizeof(Window));
+    Window.LiberMaterial = DWM_LIBER_MATERIAL_PACK(LIBER_MATERIAL_THIN + 1, FALSE, DWM_LIBER_LAYER_SHELL, 0,
+                                                   DWM_LIBER_EDGE_NONE, 0) | DWM_LIBER_MATERIAL_FADE;
+    ok((Window.LiberMaterial & ~DWM_LIBER_MATERIAL_MASK) == 0, "the fade bit is part of the material\n");
+    ok(DwmLiberResolveMaterial(&Window, 96, &Info) && Info.Kind == LIBER_MATERIAL_THIN && Info.TintAlpha == 0,
+       "a fading material still resolves\n");
+    DwmLiberApplyMaterial(&Window);
+    ok((Window.BlurFlags & DWM_BLUR_ENABLE) && (Window.BlurFlags & DWM_BLUR_REGION_ENTIRE_WINDOW),
+       "a fading material blurs behind the window\n");
+}
+
 START_TEST(Material)
 {
     TestPacking();
@@ -165,4 +188,5 @@ START_TEST(Material)
     TestRejected();
     TestBlur();
     TestDim();
+    TestFade();
 }

@@ -656,6 +656,7 @@ public:
     void SetElevation(int elevation, float radiusDip);
     void SetMaterial(int material, Argb tint, BYTE alpha, float radiusDip);
     int Material() const { return m_Material; }
+    void SetMaterialFade(BOOL fade);
     void SetBackdropLuma(double luma);
     double BackdropLuma(ULONGLONG now) const;
     double BackdropTarget() const { return m_BackdropTarget; }
@@ -736,6 +737,7 @@ private:
     Argb m_MaterialTint;
     BYTE m_MaterialAlpha;
     float m_MaterialRadius;
+    BOOL m_MaterialFade;
     Animation m_BackdropAnimation;
     double m_BackdropTarget;
     BOOL m_BackdropKnown;

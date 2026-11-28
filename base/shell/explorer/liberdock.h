@@ -32,6 +32,8 @@ BOOL LiberDock_LanguageLabel(LANGID langId, LPWSTR pszLabel, UINT cchLabel);
 int LiberDock_SystemPillWidth(BOOL bBattery);
 VOID LiberDock_WorkArea(const RECT *prcMonitor, UINT dpi, RECT *prcWork);
 VOID LiberDock_CellRect(const RECT *prcDock, UINT dpi, UINT cell, RECT *prcCell);
+#define LIBER_BLUR_BAND_LAYERS 4
+VOID LiberDock_BlurBand(const RECT *prcMonitor, UINT dpi, UINT layer, RECT *prcBand);
 
 struct ITrayWindow;
 HRESULT LiberDock_Start(ITrayWindow *Tray);

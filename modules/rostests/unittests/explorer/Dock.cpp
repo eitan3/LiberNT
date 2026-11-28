@@ -448,6 +448,27 @@ static void TestCellRect()
     ok(cell.right <= scaled.right && cell.bottom <= scaled.bottom, "the cell stays inside the dock at 150%%\n");
 }
 
+static void TestBlurBands()
+{
+    RECT monitor = { 0, 0, 1920, 1080 }, band;
+
+    LiberDock_BlurBand(&monitor, 96, 0, &band);
+    CheckRect(band, 0, 1080 - LIBER_TASKBAR_DOCK, 1920, 1080, "the lightest blur covers the whole band");
+    LiberDock_BlurBand(&monitor, 96, LIBER_BLUR_BAND_LAYERS - 1, &band);
+    CheckRect(band, 0, 1080 - LIBER_TASKBAR_DOCK / LIBER_BLUR_BAND_LAYERS, 1920, 1080,
+              "the strongest blur covers only the bottom");
+    LONG previous = 0;
+    for (UINT i = 0; i < LIBER_BLUR_BAND_LAYERS; i++)
+    {
+        LiberDock_BlurBand(&monitor, 144, i, &band);
+        ok(band.bottom == 1080 && band.left == 0 && band.right == 1920, "every band ends at the screen bottom\n");
+        ok(band.top > previous, "each stronger blur starts lower: %ld\n", band.top);
+        previous = band.top;
+    }
+    LiberDock_BlurBand(&monitor, 144, 0, &band);
+    ok(band.top == 1080 - LiberUI::ScaleToDpi(LIBER_TASKBAR_DOCK, 144), "the band scales with the DPI\n");
+}
+
 static void TestMenuDismiss()
 {
     RECT menu = { 100, 100, 300, 260 };
@@ -641,6 +662,7 @@ START_TEST(Dock)
     TestPillWidth();
     TestStartDefaults();
     TestMenuDismiss();
+    TestBlurBands();
     TestCellRect();
     TestWallpaperCache();
     TestStartSearch();

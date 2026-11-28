@@ -75,3 +75,9 @@ DwmLiberDimBackdrop(
 VOID
 DwmLiberReadDim(
     _Out_ PDWM_LIBER_DIM Dim);
+
+ULONG
+DwmLiberFadeAlpha(
+    _In_ ULONG Alpha,
+    _In_ LONG Row,
+    _In_ LONG Height);
