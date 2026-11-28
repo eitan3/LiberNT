@@ -19,6 +19,10 @@
 #define RT25_REG_TCR                0x0040
 #define RT25_REG_RCR                0x0044
 #define RT25_REG_9346CR             0x0050
+#define RT25_REG_CONFIG1            0x0052
+#define RT25_REG_CONFIG2            0x0053
+#define RT25_REG_CONFIG3            0x0054
+#define RT25_REG_CONFIG5            0x0056
 #define RT25_REG_PHYSTATUS          0x006C
 #define RT25_REG_PMCH               0x006F
 #define RT25_REG_INT_CFG1           0x007A
@@ -61,6 +65,14 @@
 
 #define RT25_9346CR_UNLOCK          0xC0
 #define RT25_9346CR_LOCK            0x00
+
+#define RT25_CONFIG1_PM_ENABLE      0x01
+#define RT25_CONFIG2_PME_SIGNAL     0x20
+#define RT25_CONFIG3_LINK_UP        0x10
+#define RT25_CONFIG3_MAGIC          0x20
+#define RT25_CONFIG5_PME_STATUS     0x01
+#define RT25_CONFIG5_LAN_WAKE       0x02
+#define RT25_CONFIG5_WAKE_FRAMES    0x70
 
 #define RT25_INT_RX_OK              0x00000001
 #define RT25_INT_RX_ERR             0x00000002
@@ -114,6 +126,8 @@
 #define RT25_OCP_BUSY               0xE00E
 #define RT25_OCP_BUSY_BIT           0x2000
 #define RT25_OCP_TALLY              0xEA84
+#define RT25_OCP_WOL_MAGIC          0xC0B6
+#define RT25_OCP_WOL_MAGIC_ENABLE   0x0001
 
 #define RT25_PHY_BMCR               0x00
 #define RT25_PHY_ADVERTISE          0x04
@@ -145,6 +159,19 @@
 #define RT25_DESC_LS                0x10000000
 #define RT25_DESC_LENGTH_MASK       0x00003FFF
 #define RT25_RX_DESC_RES            0x00200000
+#define RT25_RX_PROTO_TCP           0x00020000
+#define RT25_RX_PROTO_UDP           0x00040000
+#define RT25_RX_PROTO_MASK          0x00060000
+#define RT25_RX_IP_FAIL             0x00010000
+#define RT25_RX_UDP_FAIL            0x00008000
+#define RT25_RX_TCP_FAIL            0x00004000
+
+#define RT25_TX_IPV6_CS             0x10000000
+#define RT25_TX_IPV4_CS             0x20000000
+#define RT25_TX_TCP_CS              0x40000000
+#define RT25_TX_UDP_CS              0x80000000
+#define RT25_TX_L4_OFFSET_SHIFT     18
+#define RT25_TX_L4_OFFSET_MAX       0x3FF
 
 typedef struct _RT25_DESCRIPTOR
 {
@@ -368,3 +395,282 @@ Rt25OcpCommand(
         Command |= RT25_OCP_FLAG | Value;
     return Command;
 }
+
+FORCEINLINE
+ULONG
+Rt25EtherCrc(
+    _In_reads_(6) const UCHAR *Address)
+{
+    ULONG Crc = 0xFFFFFFFF, i, Bit;
+    UCHAR Byte;
+
+    for (i = 0; i < 6; i++)
+    {
+        Byte = Address[i];
+        for (Bit = 0; Bit < 8; Bit++, Byte >>= 1)
+            Crc = (Crc << 1) ^ ((((Crc >> 31) ^ Byte) & 1) ? 0x04C11DB7 : 0);
+    }
+
+    return Crc;
+}
+
+FORCEINLINE
+ULONG
+Rt25Swap32(
+    _In_ ULONG Value)
+{
+    return (Value >> 24) | ((Value >> 8) & 0xFF00) | ((Value << 8) & 0xFF0000) | (Value << 24);
+}
+
+/* The RTL8125 takes the 64-bit hash with its two words swapped and byte-reversed. */
+FORCEINLINE
+VOID
+Rt25MulticastFilter(
+    _In_reads_(Count * 6) const UCHAR *List,
+    _In_ ULONG Count,
+    _Out_ PULONG Mar0,
+    _Out_ PULONG Mar4)
+{
+    ULONG Filter[2] = { 0, 0 }, Bit, i;
+
+    for (i = 0; i < Count; i++)
+    {
+        Bit = Rt25EtherCrc(List + i * 6) >> 26;
+        Filter[Bit >> 5] |= 1u << (Bit & 31);
+    }
+
+    *Mar0 = Rt25Swap32(Filter[1]);
+    *Mar4 = Rt25Swap32(Filter[0]);
+}
+
+#define RT25_IP_NONE                0
+#define RT25_IP_V4                  4
+#define RT25_IP_V6                  6
+#define RT25_PROTO_TCP              6
+#define RT25_PROTO_UDP              17
+
+typedef struct _RT25_FRAME_INFO
+{
+    UCHAR Ip;
+    UCHAR Protocol;
+    USHORT IpOffset;
+    USHORT IpHeaderLength;
+    USHORT L4Offset;
+    USHORT L4Length;
+} RT25_FRAME_INFO, *PRT25_FRAME_INFO;
+
+FORCEINLINE
+USHORT
+Rt25Get16(
+    _In_reads_(2) const UCHAR *Data)
+{
+    return (USHORT)((Data[0] << 8) | Data[1]);
+}
+
+/* Finds the IPv4/IPv6 and TCP/UDP headers of a frame; Protocol stays 0 for fragments and other payloads. */
+FORCEINLINE
+VOID
+Rt25ParseFrame(
+    _In_reads_(Length) const UCHAR *Frame,
+    _In_ ULONG Length,
+    _Out_ PRT25_FRAME_INFO Info)
+{
+    ULONG Offset = 12, Type, Header, Total, Minimum;
+
+    Info->Ip = RT25_IP_NONE;
+    Info->Protocol = 0;
+    Info->IpOffset = Info->IpHeaderLength = Info->L4Offset = Info->L4Length = 0;
+
+    if (Length < 14)
+        return;
+
+    Type = Rt25Get16(Frame + Offset);
+    if (Type == 0x8100 || Type == 0x88A8)
+    {
+        Offset += 4;
+        if (Length < Offset + 2)
+            return;
+        Type = Rt25Get16(Frame + Offset);
+    }
+
+    Offset += 2;
+    if (Type == 0x0800 && Length >= Offset + 20 && (Frame[Offset] >> 4) == 4)
+    {
+        Header = (Frame[Offset] & 0x0F) * 4;
+        Total = Rt25Get16(Frame + Offset + 2);
+        if (Header < 20 || Total < Header || Length < Offset + Total)
+            return;
+
+        Info->Ip = RT25_IP_V4;
+        Info->IpOffset = (USHORT)Offset;
+        Info->IpHeaderLength = (USHORT)Header;
+        if (Rt25Get16(Frame + Offset + 6) & 0x3FFF)
+            return;
+
+        Info->Protocol = Frame[Offset + 9];
+        Info->L4Offset = (USHORT)(Offset + Header);
+        Info->L4Length = (USHORT)(Total - Header);
+    }
+    else if (Type == 0x86DD && Length >= Offset + 40 && (Frame[Offset] >> 4) == 6)
+    {
+        Total = Rt25Get16(Frame + Offset + 4);
+        if (Length < Offset + 40 + Total)
+            return;
+
+        Info->Ip = RT25_IP_V6;
+        Info->IpOffset = (USHORT)Offset;
+        Info->IpHeaderLength = 40;
+        Info->Protocol = Frame[Offset + 6];
+        Info->L4Offset = (USHORT)(Offset + 40);
+        Info->L4Length = (USHORT)Total;
+    }
+    else
+    {
+        return;
+    }
+
+    Minimum = Info->Protocol == RT25_PROTO_TCP ? 20 : Info->Protocol == RT25_PROTO_UDP ? 8 : 0;
+    if (!Minimum || Info->L4Length < Minimum)
+    {
+        Info->Protocol = 0;
+        Info->L4Offset = Info->L4Length = 0;
+    }
+}
+
+#define RT25_CSUM_IP                0x01
+#define RT25_CSUM_TCP               0x02
+#define RT25_CSUM_UDP               0x04
+
+/* Descriptor second-word bits for the checksums asked for, or 0 when the frame does not allow them. */
+FORCEINLINE
+ULONG
+Rt25TxChecksumFlags(
+    _In_ const RT25_FRAME_INFO *Info,
+    _In_ ULONG Requested)
+{
+    ULONG Flags = 0;
+
+    if (Info->Ip == RT25_IP_V4)
+        Flags |= RT25_TX_IPV4_CS;
+    else if (Info->Ip == RT25_IP_V6)
+        Flags |= RT25_TX_IPV6_CS;
+    else
+        return 0;
+
+    if ((Requested & RT25_CSUM_TCP) && Info->Protocol == RT25_PROTO_TCP)
+        Flags |= RT25_TX_TCP_CS;
+    else if ((Requested & RT25_CSUM_UDP) && Info->Protocol == RT25_PROTO_UDP)
+        Flags |= RT25_TX_UDP_CS;
+    else if (!(Requested & RT25_CSUM_IP) || Info->Ip != RT25_IP_V4)
+        return 0;
+
+    if (Flags & (RT25_TX_TCP_CS | RT25_TX_UDP_CS))
+    {
+        if (Info->L4Offset > RT25_TX_L4_OFFSET_MAX)
+            return 0;
+        Flags |= (ULONG)Info->L4Offset << RT25_TX_L4_OFFSET_SHIFT;
+    }
+
+    return Flags;
+}
+
+FORCEINLINE
+ULONG
+Rt25SumWords(
+    _In_reads_(Length) const UCHAR *Data,
+    _In_ ULONG Length,
+    _In_ ULONG Sum)
+{
+    ULONG i;
+
+    for (i = 0; i + 1 < Length; i += 2)
+        Sum += Rt25Get16(Data + i);
+    if (Length & 1)
+        Sum += (ULONG)Data[Length - 1] << 8;
+    return Sum;
+}
+
+FORCEINLINE
+USHORT
+Rt25FoldSum(
+    _In_ ULONG Sum)
+{
+    while (Sum >> 16)
+        Sum = (Sum & 0xFFFF) + (Sum >> 16);
+    return (USHORT)~Sum;
+}
+
+FORCEINLINE
+VOID
+Rt25Put16(
+    _Out_writes_(2) UCHAR *Data,
+    _In_ USHORT Value)
+{
+    Data[0] = (UCHAR)(Value >> 8);
+    Data[1] = (UCHAR)Value;
+}
+
+/* Software fallback for frames the controller would checksum over its own padding. */
+FORCEINLINE
+VOID
+Rt25SoftwareChecksum(
+    _Inout_ UCHAR *Frame,
+    _In_ const RT25_FRAME_INFO *Info,
+    _In_ ULONG Flags)
+{
+    UCHAR *Ip = Frame + Info->IpOffset, *L4 = Frame + Info->L4Offset, *Field;
+    ULONG Sum;
+    USHORT Result;
+
+    if ((Flags & RT25_TX_IPV4_CS) && Info->Ip == RT25_IP_V4)
+    {
+        Rt25Put16(Ip + 10, 0);
+        Rt25Put16(Ip + 10, Rt25FoldSum(Rt25SumWords(Ip, Info->IpHeaderLength, 0)));
+    }
+
+    if (!(Flags & (RT25_TX_TCP_CS | RT25_TX_UDP_CS)))
+        return;
+
+    Field = L4 + ((Flags & RT25_TX_TCP_CS) ? 16 : 6);
+    Rt25Put16(Field, 0);
+    if (Info->Ip == RT25_IP_V4)
+        Sum = Rt25SumWords(Ip + 12, 8, 0);
+    else
+        Sum = Rt25SumWords(Ip + 8, 32, 0);
+    Sum += Info->Protocol + Info->L4Length;
+    Result = Rt25FoldSum(Rt25SumWords(L4, Info->L4Length, Sum));
+    if (Result == 0 && Info->Protocol == RT25_PROTO_UDP)
+        Result = 0xFFFF;
+    Rt25Put16(Field, Result);
+}
+
+#define RT25_RX_OK_IP               0x01
+#define RT25_RX_OK_TCP              0x02
+#define RT25_RX_OK_UDP              0x04
+#define RT25_RX_BAD_IP              0x10
+#define RT25_RX_BAD_TCP             0x20
+#define RT25_RX_BAD_UDP             0x40
+
+/* Turns the controller's receive checksum verdict into OK/BAD bits for the checks it actually made. */
+FORCEINLINE
+ULONG
+Rt25RxChecksumResult(
+    _In_ ULONG DescriptorFlags,
+    _In_ const RT25_FRAME_INFO *Info)
+{
+    ULONG Proto = DescriptorFlags & RT25_RX_PROTO_MASK, Result = 0;
+
+    if (Proto == 0 || Info->Ip == RT25_IP_NONE)
+        return 0;
+
+    if (Info->Ip == RT25_IP_V4)
+        Result |= (DescriptorFlags & RT25_RX_IP_FAIL) ? RT25_RX_BAD_IP : RT25_RX_OK_IP;
+
+    if (Proto == RT25_RX_PROTO_TCP && Info->Protocol == RT25_PROTO_TCP)
+        Result |= (DescriptorFlags & RT25_RX_TCP_FAIL) ? RT25_RX_BAD_TCP : RT25_RX_OK_TCP;
+    else if (Proto == RT25_RX_PROTO_UDP && Info->Protocol == RT25_PROTO_UDP)
+        Result |= (DescriptorFlags & RT25_RX_UDP_FAIL) ? RT25_RX_BAD_UDP : RT25_RX_OK_UDP;
+
+    return Result;
+}
+

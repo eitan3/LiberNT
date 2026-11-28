@@ -44,7 +44,14 @@ const NDIS_OID Rt25SupportedOids[] =
     OID_802_3_MAXIMUM_LIST_SIZE,
     OID_802_3_RCV_ERROR_ALIGNMENT,
     OID_802_3_XMIT_ONE_COLLISION,
-    OID_802_3_XMIT_MORE_COLLISIONS
+    OID_802_3_XMIT_MORE_COLLISIONS,
+    OID_TCP_OFFLOAD_PARAMETERS,
+    OID_OFFLOAD_ENCAPSULATION,
+    OID_PNP_QUERY_POWER,
+    OID_PNP_SET_POWER,
+    OID_PM_PARAMETERS,
+    OID_PM_ADD_WOL_PATTERN,
+    OID_PM_REMOVE_WOL_PATTERN
 };
 
 const ULONG Rt25SupportedOidsSize = sizeof(Rt25SupportedOids);
@@ -78,6 +85,250 @@ Rt25CopyCounter(
         return Rt25CopyQuery(Request, &Value, sizeof(Value));
 
     return Rt25CopyQuery(Request, &Low, sizeof(Low));
+}
+
+VOID
+Rt25FillOffload(
+    _In_ ULONG Mask,
+    _Out_ PNDIS_OFFLOAD Offload)
+{
+    NdisZeroMemory(Offload, sizeof(*Offload));
+    Offload->Header.Type = NDIS_OBJECT_TYPE_OFFLOAD;
+    Offload->Header.Revision = NDIS_OFFLOAD_REVISION_1;
+    Offload->Header.Size = NDIS_SIZEOF_NDIS_OFFLOAD_REVISION_1;
+
+    if (Mask & (RT25_OFFLOAD_TX_IP4 | RT25_OFFLOAD_TX_TCP4 | RT25_OFFLOAD_TX_UDP4))
+    {
+        Offload->Checksum.IPv4Transmit.Encapsulation = NDIS_ENCAPSULATION_IEEE_802_3;
+        Offload->Checksum.IPv4Transmit.IpOptionsSupported = NDIS_OFFLOAD_SUPPORTED;
+        Offload->Checksum.IPv4Transmit.TcpOptionsSupported = NDIS_OFFLOAD_SUPPORTED;
+        Offload->Checksum.IPv4Transmit.IpChecksum = !!(Mask & RT25_OFFLOAD_TX_IP4);
+        Offload->Checksum.IPv4Transmit.TcpChecksum = !!(Mask & RT25_OFFLOAD_TX_TCP4);
+        Offload->Checksum.IPv4Transmit.UdpChecksum = !!(Mask & RT25_OFFLOAD_TX_UDP4);
+    }
+
+    if (Mask & (RT25_OFFLOAD_RX_IP4 | RT25_OFFLOAD_RX_TCP4 | RT25_OFFLOAD_RX_UDP4))
+    {
+        Offload->Checksum.IPv4Receive.Encapsulation = NDIS_ENCAPSULATION_IEEE_802_3;
+        Offload->Checksum.IPv4Receive.IpOptionsSupported = NDIS_OFFLOAD_SUPPORTED;
+        Offload->Checksum.IPv4Receive.TcpOptionsSupported = NDIS_OFFLOAD_SUPPORTED;
+        Offload->Checksum.IPv4Receive.IpChecksum = !!(Mask & RT25_OFFLOAD_RX_IP4);
+        Offload->Checksum.IPv4Receive.TcpChecksum = !!(Mask & RT25_OFFLOAD_RX_TCP4);
+        Offload->Checksum.IPv4Receive.UdpChecksum = !!(Mask & RT25_OFFLOAD_RX_UDP4);
+    }
+
+    if (Mask & (RT25_OFFLOAD_TX_TCP6 | RT25_OFFLOAD_TX_UDP6))
+    {
+        Offload->Checksum.IPv6Transmit.Encapsulation = NDIS_ENCAPSULATION_IEEE_802_3;
+        Offload->Checksum.IPv6Transmit.TcpOptionsSupported = NDIS_OFFLOAD_SUPPORTED;
+        Offload->Checksum.IPv6Transmit.TcpChecksum = !!(Mask & RT25_OFFLOAD_TX_TCP6);
+        Offload->Checksum.IPv6Transmit.UdpChecksum = !!(Mask & RT25_OFFLOAD_TX_UDP6);
+    }
+
+    if (Mask & (RT25_OFFLOAD_RX_TCP6 | RT25_OFFLOAD_RX_UDP6))
+    {
+        Offload->Checksum.IPv6Receive.Encapsulation = NDIS_ENCAPSULATION_IEEE_802_3;
+        Offload->Checksum.IPv6Receive.TcpOptionsSupported = NDIS_OFFLOAD_SUPPORTED;
+        Offload->Checksum.IPv6Receive.TcpChecksum = !!(Mask & RT25_OFFLOAD_RX_TCP6);
+        Offload->Checksum.IPv6Receive.UdpChecksum = !!(Mask & RT25_OFFLOAD_RX_UDP6);
+    }
+}
+
+VOID
+Rt25IndicateOffloadConfig(
+    _In_ PRT25_ADAPTER Adapter)
+{
+    NDIS_STATUS_INDICATION Indication;
+    NDIS_OFFLOAD Offload;
+
+    Rt25FillOffload(Adapter->Offload, &Offload);
+
+    NdisZeroMemory(&Indication, sizeof(Indication));
+    Indication.Header.Type = NDIS_OBJECT_TYPE_STATUS_INDICATION;
+    Indication.Header.Revision = NDIS_STATUS_INDICATION_REVISION_1;
+    Indication.Header.Size = NDIS_SIZEOF_STATUS_INDICATION_REVISION_1;
+    Indication.SourceHandle = Adapter->MiniportHandle;
+    Indication.StatusCode = NDIS_STATUS_TASK_OFFLOAD_CURRENT_CONFIG;
+    Indication.StatusBuffer = &Offload;
+    Indication.StatusBufferSize = sizeof(Offload);
+    NdisMIndicateStatusEx(Adapter->MiniportHandle, &Indication);
+}
+
+static
+ULONG
+Rt25ApplyOffloadSetting(
+    _In_ ULONG Mask,
+    _In_ UCHAR Setting,
+    _In_ ULONG Transmit,
+    _In_ ULONG Receive)
+{
+    switch (Setting)
+    {
+        case NDIS_OFFLOAD_PARAMETERS_TX_RX_DISABLED:
+            return Mask & ~(Transmit | Receive);
+        case NDIS_OFFLOAD_PARAMETERS_TX_ENABLED_RX_DISABLED:
+            return (Mask & ~Receive) | Transmit;
+        case NDIS_OFFLOAD_PARAMETERS_RX_ENABLED_TX_DISABLED:
+            return (Mask & ~Transmit) | Receive;
+        case NDIS_OFFLOAD_PARAMETERS_TX_RX_ENABLED:
+            return Mask | Transmit | Receive;
+    }
+
+    return Mask;
+}
+
+static
+NDIS_STATUS
+Rt25SetOffloadParameters(
+    _In_ PRT25_ADAPTER Adapter,
+    _In_reads_bytes_(Length) PVOID Buffer,
+    _In_ ULONG Length)
+{
+    PNDIS_OFFLOAD_PARAMETERS Parameters = Buffer;
+    ULONG Mask = Adapter->Offload;
+
+    if (Length < NDIS_SIZEOF_OFFLOAD_PARAMETERS_REVISION_1 ||
+        Parameters->Header.Type != NDIS_OBJECT_TYPE_DEFAULT)
+    {
+        return NDIS_STATUS_INVALID_PARAMETER;
+    }
+
+    if (Parameters->LsoV1 == NDIS_OFFLOAD_PARAMETERS_LSOV1_ENABLED ||
+        Parameters->LsoV2IPv4 == NDIS_OFFLOAD_PARAMETERS_LSOV2_ENABLED ||
+        Parameters->LsoV2IPv6 == NDIS_OFFLOAD_PARAMETERS_LSOV2_ENABLED)
+    {
+        return NDIS_STATUS_NOT_SUPPORTED;
+    }
+
+    Mask = Rt25ApplyOffloadSetting(Mask, Parameters->IPv4Checksum, RT25_OFFLOAD_TX_IP4, RT25_OFFLOAD_RX_IP4);
+    Mask = Rt25ApplyOffloadSetting(Mask, Parameters->TCPIPv4Checksum, RT25_OFFLOAD_TX_TCP4, RT25_OFFLOAD_RX_TCP4);
+    Mask = Rt25ApplyOffloadSetting(Mask, Parameters->UDPIPv4Checksum, RT25_OFFLOAD_TX_UDP4, RT25_OFFLOAD_RX_UDP4);
+    Mask = Rt25ApplyOffloadSetting(Mask, Parameters->TCPIPv6Checksum, RT25_OFFLOAD_TX_TCP6, RT25_OFFLOAD_RX_TCP6);
+    Mask = Rt25ApplyOffloadSetting(Mask, Parameters->UDPIPv6Checksum, RT25_OFFLOAD_TX_UDP6, RT25_OFFLOAD_RX_UDP6);
+
+    if (Mask != Adapter->Offload)
+    {
+        Adapter->Offload = Mask;
+        Rt25ApplyChecksumConfig(Adapter);
+        Rt25IndicateOffloadConfig(Adapter);
+    }
+
+    return NDIS_STATUS_SUCCESS;
+}
+
+static
+NDIS_STATUS
+Rt25SetEncapsulation(
+    _In_ PRT25_ADAPTER Adapter,
+    _In_reads_bytes_(Length) PVOID Buffer,
+    _In_ ULONG Length)
+{
+    PNDIS_OFFLOAD_ENCAPSULATION Encapsulation = Buffer;
+
+    if (Length < NDIS_SIZEOF_OFFLOAD_ENCAPSULATION_REVISION_1 ||
+        Encapsulation->Header.Type != NDIS_OBJECT_TYPE_OFFLOAD_ENCAPSULATION)
+    {
+        return NDIS_STATUS_INVALID_PARAMETER;
+    }
+
+    if ((Encapsulation->IPv4.Enabled == NDIS_OFFLOAD_SET_ON &&
+         Encapsulation->IPv4.EncapsulationType != NDIS_ENCAPSULATION_IEEE_802_3) ||
+        (Encapsulation->IPv6.Enabled == NDIS_OFFLOAD_SET_ON &&
+         Encapsulation->IPv6.EncapsulationType != NDIS_ENCAPSULATION_IEEE_802_3))
+    {
+        return NDIS_STATUS_INVALID_PARAMETER;
+    }
+
+    if (Encapsulation->IPv4.Enabled != NDIS_OFFLOAD_SET_NO_CHANGE)
+        Adapter->EncapsulationIPv4 = Encapsulation->IPv4.Enabled == NDIS_OFFLOAD_SET_ON;
+    if (Encapsulation->IPv6.Enabled != NDIS_OFFLOAD_SET_NO_CHANGE)
+        Adapter->EncapsulationIPv6 = Encapsulation->IPv6.Enabled == NDIS_OFFLOAD_SET_ON;
+    return NDIS_STATUS_SUCCESS;
+}
+
+static
+VOID
+Rt25FillEncapsulation(
+    _In_ PRT25_ADAPTER Adapter,
+    _Out_ PNDIS_OFFLOAD_ENCAPSULATION Encapsulation)
+{
+    NdisZeroMemory(Encapsulation, sizeof(*Encapsulation));
+    Encapsulation->Header.Type = NDIS_OBJECT_TYPE_OFFLOAD_ENCAPSULATION;
+    Encapsulation->Header.Revision = NDIS_OFFLOAD_ENCAPSULATION_REVISION_1;
+    Encapsulation->Header.Size = NDIS_SIZEOF_OFFLOAD_ENCAPSULATION_REVISION_1;
+    Encapsulation->IPv4.Enabled = Adapter->EncapsulationIPv4 ? NDIS_OFFLOAD_SET_ON : NDIS_OFFLOAD_SET_OFF;
+    Encapsulation->IPv4.EncapsulationType = NDIS_ENCAPSULATION_IEEE_802_3;
+    Encapsulation->IPv4.HeaderSize = RT25_ETH_HEADER;
+    Encapsulation->IPv6.Enabled = Adapter->EncapsulationIPv6 ? NDIS_OFFLOAD_SET_ON : NDIS_OFFLOAD_SET_OFF;
+    Encapsulation->IPv6.EncapsulationType = NDIS_ENCAPSULATION_IEEE_802_3;
+    Encapsulation->IPv6.HeaderSize = RT25_ETH_HEADER;
+}
+
+static
+VOID
+Rt25FillPmParameters(
+    _In_ PRT25_ADAPTER Adapter,
+    _Out_ PNDIS_PM_PARAMETERS Parameters)
+{
+    NdisZeroMemory(Parameters, sizeof(*Parameters));
+    Parameters->Header.Type = NDIS_OBJECT_TYPE_DEFAULT;
+    Parameters->Header.Revision = NDIS_PM_PARAMETERS_REVISION_1;
+    Parameters->Header.Size = NDIS_SIZEOF_NDIS_PM_PARAMETERS_REVISION_1;
+    Parameters->EnabledWoLPacketPatterns = Adapter->EnabledWakePatterns;
+    Parameters->WakeUpFlags = Adapter->WakeUpFlags;
+}
+
+static
+NDIS_STATUS
+Rt25SetPmParameters(
+    _In_ PRT25_ADAPTER Adapter,
+    _In_reads_bytes_(Length) PVOID Buffer,
+    _In_ ULONG Length)
+{
+    PNDIS_PM_PARAMETERS Parameters = Buffer;
+
+    if (Length < NDIS_SIZEOF_NDIS_PM_PARAMETERS_REVISION_1 ||
+        Parameters->Header.Type != NDIS_OBJECT_TYPE_DEFAULT)
+    {
+        return NDIS_STATUS_INVALID_PARAMETER;
+    }
+
+    if ((Parameters->EnabledWoLPacketPatterns & ~NDIS_PM_WOL_MAGIC_PACKET_ENABLED) ||
+        Parameters->EnabledProtocolOffloads ||
+        (Parameters->WakeUpFlags & ~NDIS_PM_WAKE_ON_LINK_CHANGE_ENABLED))
+    {
+        return NDIS_STATUS_NOT_SUPPORTED;
+    }
+
+    Adapter->EnabledWakePatterns = Parameters->EnabledWoLPacketPatterns;
+    Adapter->WakeUpFlags = Parameters->WakeUpFlags;
+    return NDIS_STATUS_SUCCESS;
+}
+
+static
+NDIS_STATUS
+Rt25AddWakePattern(
+    _In_ PRT25_ADAPTER Adapter,
+    _In_reads_bytes_(Length) PVOID Buffer,
+    _In_ ULONG Length)
+{
+    PNDIS_PM_WOL_PATTERN Pattern = Buffer;
+
+    if (Length < NDIS_SIZEOF_NDIS_PM_WOL_PATTERN_REVISION_1 ||
+        Pattern->Header.Type != NDIS_OBJECT_TYPE_DEFAULT)
+    {
+        return NDIS_STATUS_INVALID_PARAMETER;
+    }
+
+    if (Pattern->WoLPacketType != NdisPMWoLPacketMagicPacket)
+        return NDIS_STATUS_NOT_SUPPORTED;
+
+    if (Adapter->MagicPatternAdded)
+        return NDIS_STATUS_PM_WOL_PATTERN_LIST_FULL;
+
+    Adapter->MagicPatternId = Pattern->PatternId;
+    Adapter->MagicPatternAdded = TRUE;
+    return NDIS_STATUS_SUCCESS;
 }
 
 static
@@ -122,6 +373,8 @@ Rt25QueryInformation(
         NDIS_MEDIA_STATE MediaState;
         NDIS_LINK_STATE LinkState;
         NDIS_STATISTICS_INFO Statistics;
+        NDIS_OFFLOAD_ENCAPSULATION Encapsulation;
+        NDIS_PM_PARAMETERS PmParameters;
     } Data;
     static const CHAR Description[] = "Realtek RTL8125/RTL8126 Ethernet";
 
@@ -244,6 +497,18 @@ Rt25QueryInformation(
         case OID_802_3_XMIT_MORE_COLLISIONS:
             Data.Ulong = 0;
             return Rt25CopyQuery(Request, &Data.Ulong, sizeof(Data.Ulong));
+
+        case OID_OFFLOAD_ENCAPSULATION:
+            Rt25FillEncapsulation(Adapter, &Data.Encapsulation);
+            return Rt25CopyQuery(Request, &Data.Encapsulation, sizeof(Data.Encapsulation));
+
+        case OID_PM_PARAMETERS:
+            Rt25FillPmParameters(Adapter, &Data.PmParameters);
+            return Rt25CopyQuery(Request, &Data.PmParameters, sizeof(Data.PmParameters));
+
+        case OID_PNP_QUERY_POWER:
+            Request->DATA.QUERY_INFORMATION.BytesWritten = 0;
+            return NDIS_STATUS_SUCCESS;
     }
 
     return NDIS_STATUS_NOT_SUPPORTED;
@@ -257,6 +522,8 @@ Rt25SetInformation(
 {
     PVOID Buffer = Request->DATA.SET_INFORMATION.InformationBuffer;
     ULONG Length = Request->DATA.SET_INFORMATION.InformationBufferLength;
+    NDIS_DEVICE_POWER_STATE PowerState;
+    NDIS_STATUS Status;
     ULONG Value;
 
     Request->DATA.SET_INFORMATION.BytesRead = 0;
@@ -310,9 +577,62 @@ Rt25SetInformation(
             Rt25ApplyReceiveFilter(Adapter);
             Request->DATA.SET_INFORMATION.BytesRead = Length;
             return NDIS_STATUS_SUCCESS;
+
+        case OID_TCP_OFFLOAD_PARAMETERS:
+            Status = Rt25SetOffloadParameters(Adapter, Buffer, Length);
+            break;
+
+        case OID_OFFLOAD_ENCAPSULATION:
+            Status = Rt25SetEncapsulation(Adapter, Buffer, Length);
+            break;
+
+        case OID_PM_PARAMETERS:
+            Status = Rt25SetPmParameters(Adapter, Buffer, Length);
+            break;
+
+        case OID_PM_ADD_WOL_PATTERN:
+            Status = Rt25AddWakePattern(Adapter, Buffer, Length);
+            break;
+
+        case OID_PM_REMOVE_WOL_PATTERN:
+            if (Length < sizeof(ULONG))
+            {
+                Request->DATA.SET_INFORMATION.BytesNeeded = sizeof(ULONG);
+                return NDIS_STATUS_INVALID_LENGTH;
+            }
+
+            NdisMoveMemory(&Value, Buffer, sizeof(Value));
+            if (!Adapter->MagicPatternAdded || Value != Adapter->MagicPatternId)
+                return NDIS_STATUS_INVALID_DATA;
+
+            Adapter->MagicPatternAdded = FALSE;
+            Status = NDIS_STATUS_SUCCESS;
+            break;
+
+        case OID_PNP_QUERY_POWER:
+            Status = NDIS_STATUS_SUCCESS;
+            break;
+
+        case OID_PNP_SET_POWER:
+            if (Length < sizeof(NDIS_DEVICE_POWER_STATE))
+            {
+                Request->DATA.SET_INFORMATION.BytesNeeded = sizeof(NDIS_DEVICE_POWER_STATE);
+                return NDIS_STATUS_INVALID_LENGTH;
+            }
+
+            NdisMoveMemory(&PowerState, Buffer, sizeof(PowerState));
+            Status = Rt25SetPower(Adapter, PowerState);
+            if (Status == NDIS_STATUS_SUCCESS)
+                Request->DATA.SET_INFORMATION.BytesRead = sizeof(NDIS_DEVICE_POWER_STATE);
+            return Status;
+
+        default:
+            return NDIS_STATUS_NOT_SUPPORTED;
     }
 
-    return NDIS_STATUS_NOT_SUPPORTED;
+    if (Status == NDIS_STATUS_SUCCESS)
+        Request->DATA.SET_INFORMATION.BytesRead = Length;
+    return Status;
 }
 
 NDIS_STATUS

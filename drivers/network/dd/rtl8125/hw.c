@@ -188,6 +188,27 @@ Rt25EnableInterrupts(
         Rt25Write32(Adapter, RT25_REG_IMR, RT25_INT_MASK);
 }
 
+VOID
+Rt25ResumeInterrupts(
+    _In_ PRT25_ADAPTER Adapter)
+{
+    NdisAcquireSpinLock(&Adapter->StateLock);
+    Rt25EnableInterrupts(Adapter);
+    NdisReleaseSpinLock(&Adapter->StateLock);
+}
+
+/* Once this returns, no DPC can unmask the controller again until Rt25StartHardware. */
+VOID
+Rt25QuiesceHardware(
+    _In_ PRT25_ADAPTER Adapter)
+{
+    NdisAcquireSpinLock(&Adapter->StateLock);
+    Adapter->HardwareRunning = FALSE;
+    if (Adapter->RegisterBase && !Adapter->SurpriseRemoved)
+        Rt25DisableInterrupts(Adapter);
+    NdisReleaseSpinLock(&Adapter->StateLock);
+}
+
 NDIS_STATUS
 Rt25IdentifyChip(
     _In_ PRT25_ADAPTER Adapter)
@@ -376,7 +397,7 @@ VOID
 Rt25ApplyReceiveFilter(
     _In_ PRT25_ADAPTER Adapter)
 {
-    ULONG Config, Multicast;
+    ULONG Config, Mar0 = 0, Mar4 = 0;
 
     if (!Adapter->HardwareRunning)
         return;
@@ -389,10 +410,17 @@ Rt25ApplyReceiveFilter(
                                NDIS_PACKET_TYPE_BROADCAST,
                                NDIS_PACKET_TYPE_PROMISCUOUS);
 
-    /* TODO: program the 64-bit multicast hash instead of accepting every group. */
-    Multicast = (Config & RT25_RCR_AM) ? 0xFFFFFFFF : 0;
-    Rt25Write32(Adapter, RT25_REG_MAR0, Multicast);
-    Rt25Write32(Adapter, RT25_REG_MAR0 + 4, Multicast);
+    if (Adapter->PacketFilter & (NDIS_PACKET_TYPE_ALL_MULTICAST | NDIS_PACKET_TYPE_PROMISCUOUS))
+    {
+        Mar0 = Mar4 = 0xFFFFFFFF;
+    }
+    else if (Adapter->PacketFilter & NDIS_PACKET_TYPE_MULTICAST)
+    {
+        Rt25MulticastFilter(&Adapter->MulticastList[0][0], Adapter->MulticastCount, &Mar0, &Mar4);
+    }
+
+    Rt25Write32(Adapter, RT25_REG_MAR0 + 4, Mar4);
+    Rt25Write32(Adapter, RT25_REG_MAR0, Mar0);
     Rt25Write32(Adapter, RT25_REG_RCR, Config);
 }
 
@@ -436,6 +464,8 @@ Rt25StartHardware(
     Rt25Write8(Adapter, RT25_REG_9346CR, RT25_9346CR_UNLOCK);
     Command = Rt25Read16(Adapter, RT25_REG_CPCR);
     Command &= ~(RT25_CPCR_RXCHKSUM | RT25_CPCR_RXVLAN);
+    if (Adapter->Offload & RT25_OFFLOAD_RX_ANY)
+        Command |= RT25_CPCR_RXCHKSUM;
     Rt25Write16(Adapter, RT25_REG_CPCR, Command);
     Rt25Write16(Adapter, RT25_REG_RMS, RT25_RECEIVE_SIZE);
     Rt25StartMac(Adapter);
@@ -449,7 +479,9 @@ Rt25StartHardware(
     Rt25Write32(Adapter, RT25_REG_TCR, RT25_TCR_DEFAULT | RT25_TCR_AUTO_FIFO);
     Rt25Write8(Adapter, RT25_REG_9346CR, RT25_9346CR_LOCK);
 
+    NdisAcquireSpinLock(&Adapter->StateLock);
     Adapter->HardwareRunning = TRUE;
+    NdisReleaseSpinLock(&Adapter->StateLock);
     Rt25ApplyReceiveFilter(Adapter);
 
     Rt25Write8(Adapter, RT25_REG_PMCH, Rt25Read8(Adapter, RT25_REG_PMCH) | RT25_PMCH_PHY_POWER);
@@ -464,11 +496,10 @@ Rt25StopHardware(
 {
     ULONG i;
 
-    Adapter->HardwareRunning = FALSE;
+    Rt25QuiesceHardware(Adapter);
     if (!Adapter->RegisterBase || Adapter->SurpriseRemoved)
         return;
 
-    Rt25DisableInterrupts(Adapter);
     Rt25Write32(Adapter, RT25_REG_RCR, Rt25Read32(Adapter, RT25_REG_RCR) & ~RT25_RCR_ACCEPT_MASK);
     Rt25Write32(Adapter, RT25_REG_MISC, Rt25Read32(Adapter, RT25_REG_MISC) | RT25_MISC_RECEIVE_GATE);
     for (i = 0; i < 100 && !(Rt25Read32(Adapter, RT25_REG_TCR) & RT25_TCR_EMPTY); i++)
@@ -480,6 +511,69 @@ Rt25StopHardware(
         Rt25Stall(100);
 
     Rt25Write32(Adapter, RT25_REG_ISR, 0xFFFFFFFF);
+}
+
+VOID
+Rt25ApplyChecksumConfig(
+    _In_ PRT25_ADAPTER Adapter)
+{
+    USHORT Command;
+
+    if (!Adapter->HardwareRunning)
+        return;
+
+    Rt25Write8(Adapter, RT25_REG_9346CR, RT25_9346CR_UNLOCK);
+    Command = Rt25Read16(Adapter, RT25_REG_CPCR) & ~RT25_CPCR_RXCHKSUM;
+    if (Adapter->Offload & RT25_OFFLOAD_RX_ANY)
+        Command |= RT25_CPCR_RXCHKSUM;
+    Rt25Write16(Adapter, RT25_REG_CPCR, Command);
+    Rt25Write8(Adapter, RT25_REG_9346CR, RT25_9346CR_LOCK);
+}
+
+/* FIXME: the wake register use follows observed r8169 behaviour and has not been tried on RTL8125/RTL8126 hardware */
+VOID
+Rt25ArmWake(
+    _In_ PRT25_ADAPTER Adapter,
+    _In_ BOOLEAN Magic,
+    _In_ BOOLEAN LinkChange)
+{
+    UCHAR Value;
+
+    Rt25ModifyMacOcp(Adapter, RT25_OCP_WOL_MAGIC, RT25_OCP_WOL_MAGIC_ENABLE,
+                     Magic ? RT25_OCP_WOL_MAGIC_ENABLE : 0);
+
+    Rt25Write8(Adapter, RT25_REG_9346CR, RT25_9346CR_UNLOCK);
+    Value = Rt25Read8(Adapter, RT25_REG_CONFIG3) & ~(RT25_CONFIG3_MAGIC | RT25_CONFIG3_LINK_UP);
+    if (LinkChange)
+        Value |= RT25_CONFIG3_LINK_UP;
+    Rt25Write8(Adapter, RT25_REG_CONFIG3, Value);
+
+    Value = Rt25Read8(Adapter, RT25_REG_CONFIG5) & ~(RT25_CONFIG5_WAKE_FRAMES | RT25_CONFIG5_LAN_WAKE);
+    if (Magic || LinkChange)
+        Value |= RT25_CONFIG5_LAN_WAKE;
+    Rt25Write8(Adapter, RT25_REG_CONFIG5, Value);
+
+    Value = Rt25Read8(Adapter, RT25_REG_CONFIG2) & ~RT25_CONFIG2_PME_SIGNAL;
+    if (Magic || LinkChange)
+        Value |= RT25_CONFIG2_PME_SIGNAL;
+    Rt25Write8(Adapter, RT25_REG_CONFIG2, Value);
+    Rt25Write8(Adapter, RT25_REG_9346CR, RT25_9346CR_LOCK);
+
+    /* The wake detector sits behind the receive filter, so it must still accept our frames. */
+    if (Magic)
+    {
+        Rt25Write32(Adapter, RT25_REG_RCR,
+                    Rt25Read32(Adapter, RT25_REG_RCR) | RT25_RCR_APM | RT25_RCR_AM | RT25_RCR_AB);
+        Rt25Write32(Adapter, RT25_REG_MISC, Rt25Read32(Adapter, RT25_REG_MISC) & ~RT25_MISC_RECEIVE_GATE);
+        Rt25Write8(Adapter, RT25_REG_CR, Rt25Read8(Adapter, RT25_REG_CR) | RT25_CR_RE);
+    }
+}
+
+VOID
+Rt25DisarmWake(
+    _In_ PRT25_ADAPTER Adapter)
+{
+    Rt25ArmWake(Adapter, FALSE, FALSE);
 }
 
 BOOLEAN

@@ -33,6 +33,54 @@ Rt25ArmReceive(
 }
 
 static
+PVOID
+Rt25RxChecksumInfo(
+    _In_ PRT25_ADAPTER Adapter,
+    _In_ ULONG DescriptorFlags,
+    _In_reads_bytes_(Length) const UCHAR *Frame,
+    _In_ ULONG Length)
+{
+    NDIS_TCP_IP_CHECKSUM_NET_BUFFER_LIST_INFO Info;
+    RT25_FRAME_INFO FrameInfo;
+    ULONG Result, Enabled = Adapter->Offload;
+
+    Info.Value = NULL;
+    if (!(Enabled & RT25_OFFLOAD_RX_ANY))
+        return NULL;
+
+    Rt25ParseFrame(Frame, Length, &FrameInfo);
+    Result = Rt25RxChecksumResult(DescriptorFlags, &FrameInfo);
+    if (FrameInfo.Ip == RT25_IP_V4 && Adapter->EncapsulationIPv4)
+    {
+        if (!(Enabled & RT25_OFFLOAD_RX_IP4))
+            Result &= ~(RT25_RX_OK_IP | RT25_RX_BAD_IP);
+        if (!(Enabled & RT25_OFFLOAD_RX_TCP4))
+            Result &= ~(RT25_RX_OK_TCP | RT25_RX_BAD_TCP);
+        if (!(Enabled & RT25_OFFLOAD_RX_UDP4))
+            Result &= ~(RT25_RX_OK_UDP | RT25_RX_BAD_UDP);
+    }
+    else if (FrameInfo.Ip == RT25_IP_V6 && Adapter->EncapsulationIPv6)
+    {
+        if (!(Enabled & RT25_OFFLOAD_RX_TCP6))
+            Result &= ~(RT25_RX_OK_TCP | RT25_RX_BAD_TCP);
+        if (!(Enabled & RT25_OFFLOAD_RX_UDP6))
+            Result &= ~(RT25_RX_OK_UDP | RT25_RX_BAD_UDP);
+    }
+    else
+    {
+        return NULL;
+    }
+
+    Info.Receive.IpChecksumSucceeded = !!(Result & RT25_RX_OK_IP);
+    Info.Receive.IpChecksumFailed = !!(Result & RT25_RX_BAD_IP);
+    Info.Receive.TcpChecksumSucceeded = !!(Result & RT25_RX_OK_TCP);
+    Info.Receive.TcpChecksumFailed = !!(Result & RT25_RX_BAD_TCP);
+    Info.Receive.UdpChecksumSucceeded = !!(Result & RT25_RX_OK_UDP);
+    Info.Receive.UdpChecksumFailed = !!(Result & RT25_RX_BAD_UDP);
+    return Info.Value;
+}
+
+static
 NDIS_STATUS
 Rt25AllocateChunks(
     _In_ PRT25_ADAPTER Adapter,
@@ -290,6 +338,8 @@ Rt25PollReceive(
         NET_BUFFER_DATA_OFFSET(NetBuffer) = 0;
         NET_BUFFER_DATA_LENGTH(NetBuffer) = Length;
         NET_BUFFER_LIST_STATUS(Nbl) = NDIS_STATUS_SUCCESS;
+        NET_BUFFER_LIST_INFO(Nbl, TcpIpChecksumNetBufferListInfo) =
+            Rt25RxChecksumInfo(Adapter, Flags, RxBuffer->VirtualAddress, Length);
         NET_BUFFER_LIST_MINIPORT_RESERVED(Nbl)[0] = (PVOID)(ULONG_PTR)Index;
         NET_BUFFER_LIST_NEXT_NBL(Nbl) = NULL;
         Nbl->SourceHandle = Adapter->MiniportHandle;
@@ -431,6 +481,53 @@ Rt25CopyNetBuffer(
 }
 
 static
+ULONG
+Rt25TxChecksumRequest(
+    _In_ PNET_BUFFER_LIST Nbl)
+{
+    NDIS_TCP_IP_CHECKSUM_NET_BUFFER_LIST_INFO Info;
+    ULONG Requested = 0;
+
+    Info.Value = NET_BUFFER_LIST_INFO(Nbl, TcpIpChecksumNetBufferListInfo);
+    if (!Info.Value)
+        return 0;
+
+    if (Info.Transmit.IsIPv4 && Info.Transmit.IpHeaderChecksum)
+        Requested |= RT25_CSUM_IP;
+    if ((Info.Transmit.IsIPv4 || Info.Transmit.IsIPv6) && Info.Transmit.TcpChecksum)
+        Requested |= RT25_CSUM_TCP;
+    if ((Info.Transmit.IsIPv4 || Info.Transmit.IsIPv6) && Info.Transmit.UdpChecksum)
+        Requested |= RT25_CSUM_UDP;
+    return Requested;
+}
+
+static
+ULONG
+Rt25TxChecksumOptions(
+    _Inout_updates_bytes_(Length) PUCHAR Frame,
+    _In_ ULONG Length,
+    _In_ ULONG Requested)
+{
+    RT25_FRAME_INFO Info;
+    ULONG Options;
+
+    if (!Requested)
+        return 0;
+
+    Rt25ParseFrame(Frame, Length, &Info);
+    Options = Rt25TxChecksumFlags(&Info, Requested);
+
+    /* The controller would include the padding of a short frame, so those are summed here. */
+    if (Options && Length < RT25_MIN_FRAME)
+    {
+        Rt25SoftwareChecksum(Frame, &Info, Options);
+        Options = 0;
+    }
+
+    return Options;
+}
+
+static
 VOID
 Rt25AppendNbl(
     _Inout_ PNET_BUFFER_LIST *Head,
@@ -457,7 +554,7 @@ Rt25SendNetBufferLists(
     PNET_BUFFER_LIST Nbl, Next, Head = NULL, Tail = NULL;
     PNET_BUFFER NetBuffer;
     NDIS_STATUS Status;
-    ULONG Count, Index, Length, Padded;
+    ULONG Count, Index, Length, Padded, Requested;
     BOOLEAN Kick = FALSE;
 
     UNREFERENCED_PARAMETER(PortNumber);
@@ -497,6 +594,7 @@ Rt25SendNetBufferLists(
             }
             else
             {
+                Requested = Rt25TxChecksumRequest(Nbl);
                 Index = Adapter->TxHead;
                 for (NetBuffer = NET_BUFFER_LIST_FIRST_NB(Nbl);
                      NetBuffer;
@@ -507,6 +605,8 @@ Rt25SendNetBufferLists(
                     if (Status != NDIS_STATUS_SUCCESS)
                         break;
 
+                    Adapter->TxBuffers[Index].Options =
+                        Rt25TxChecksumOptions(Adapter->TxBuffers[Index].VirtualAddress, Length, Requested);
                     Padded = Rt25TxPaddedLength(Length);
                     if (Padded > Length)
                         NdisZeroMemory(Adapter->TxBuffers[Index].VirtualAddress + Length, Padded - Length);
@@ -518,7 +618,7 @@ Rt25SendNetBufferLists(
                     Index = Adapter->TxHead;
                     for (; Count > 0; Count--, Index = Rt25NextIndex(Index))
                     {
-                        Adapter->TxRing[Index].Vlan = 0;
+                        Adapter->TxRing[Index].Vlan = Adapter->TxBuffers[Index].Options;
                         KeMemoryBarrier();
                         Adapter->TxRing[Index].Flags = Rt25TxFlags(Index, Adapter->TxBuffers[Index].Length);
                         Adapter->TxFree--;

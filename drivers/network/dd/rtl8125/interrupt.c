@@ -75,7 +75,7 @@ Rt25Dpc(
         return;
     }
 
-    Rt25EnableInterrupts(Adapter);
+    Rt25ResumeInterrupts(Adapter);
 }
 
 static

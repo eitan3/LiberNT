@@ -36,12 +36,13 @@ Rt25SetGeneralAttributes(
     _In_ PRT25_ADAPTER Adapter)
 {
     NDIS_MINIPORT_ADAPTER_GENERAL_ATTRIBUTES Attributes;
+    NDIS_PM_CAPABILITIES PmCapabilities;
     ULONG64 MaxSpeed = (ULONG64)Adapter->MaxSpeedMbps * 1000000;
 
     NdisZeroMemory(&Attributes, sizeof(Attributes));
     Attributes.Header.Type = NDIS_OBJECT_TYPE_MINIPORT_ADAPTER_GENERAL_ATTRIBUTES;
-    Attributes.Header.Revision = NDIS_MINIPORT_ADAPTER_GENERAL_ATTRIBUTES_REVISION_1;
-    Attributes.Header.Size = NDIS_SIZEOF_MINIPORT_ADAPTER_GENERAL_ATTRIBUTES_REVISION_1;
+    Attributes.Header.Revision = NDIS_MINIPORT_ADAPTER_GENERAL_ATTRIBUTES_REVISION_2;
+    Attributes.Header.Size = NDIS_SIZEOF_MINIPORT_ADAPTER_GENERAL_ATTRIBUTES_REVISION_2;
     Attributes.MediaType = NdisMedium802_3;
     Attributes.PhysicalMediumType = NdisPhysicalMedium802_3;
     Attributes.MtuSize = RT25_MTU;
@@ -76,8 +77,9 @@ Rt25SetGeneralAttributes(
                                      NDIS_STATISTICS_BYTES_XMIT_SUPPORTED;
     Attributes.SupportedOidList = (PNDIS_OID)Rt25SupportedOids;
     Attributes.SupportedOidListLength = Rt25SupportedOidsSize;
-    /* TODO: wake-on-LAN; without PM capabilities NDIS halts the adapter across sleep. */
+    Rt25FillPmCapabilities(&PmCapabilities);
     Attributes.PowerManagementCapabilities = NULL;
+    Attributes.PowerManagementCapabilitiesEx = &PmCapabilities;
 
     return NdisMSetMiniportAttributes(Adapter->MiniportHandle, (PNDIS_MINIPORT_ADAPTER_ATTRIBUTES)&Attributes);
 }
@@ -122,6 +124,27 @@ Rt25MemoryLength(
         Length = Descriptor->u.Memory.Length;
 
     return (ULONG)min(Length, 0x10000);
+}
+
+static
+NDIS_STATUS
+Rt25SetOffloadAttributes(
+    _In_ PRT25_ADAPTER Adapter)
+{
+    NDIS_MINIPORT_ADAPTER_OFFLOAD_ATTRIBUTES Attributes;
+    NDIS_OFFLOAD Current, Hardware;
+
+    Rt25FillOffload(Adapter->Offload, &Current);
+    Rt25FillOffload(RT25_OFFLOAD_ALL, &Hardware);
+
+    NdisZeroMemory(&Attributes, sizeof(Attributes));
+    Attributes.Header.Type = NDIS_OBJECT_TYPE_MINIPORT_ADAPTER_OFFLOAD_ATTRIBUTES;
+    Attributes.Header.Revision = NDIS_MINIPORT_ADAPTER_OFFLOAD_ATTRIBUTES_REVISION_1;
+    Attributes.Header.Size = NDIS_SIZEOF_MINIPORT_ADAPTER_OFFLOAD_ATTRIBUTES_REVISION_1;
+    Attributes.DefaultOffloadConfiguration = &Current;
+    Attributes.HardwareOffloadCapabilities = &Hardware;
+
+    return NdisMSetMiniportAttributes(Adapter->MiniportHandle, (PNDIS_MINIPORT_ADAPTER_ATTRIBUTES)&Attributes);
 }
 
 static
@@ -180,7 +203,6 @@ Rt25MapResources(
     return Status;
 }
 
-static
 NDIS_STATUS
 Rt25PrepareBus(
     _In_ PRT25_ADAPTER Adapter)
@@ -235,6 +257,38 @@ Rt25ReadConfiguration(
     if (NdisOpenConfigurationEx(&Object, &Configuration) != NDIS_STATUS_SUCCESS)
         return;
 
+    static const struct
+    {
+        NDIS_STRING Keyword;
+        ULONG Transmit;
+        ULONG Receive;
+    } Keywords[] =
+    {
+        { NDIS_STRING_CONST("*IPChecksumOffloadIPv4"), RT25_OFFLOAD_TX_IP4, RT25_OFFLOAD_RX_IP4 },
+        { NDIS_STRING_CONST("*TCPChecksumOffloadIPv4"), RT25_OFFLOAD_TX_TCP4, RT25_OFFLOAD_RX_TCP4 },
+        { NDIS_STRING_CONST("*UDPChecksumOffloadIPv4"), RT25_OFFLOAD_TX_UDP4, RT25_OFFLOAD_RX_UDP4 },
+        { NDIS_STRING_CONST("*TCPChecksumOffloadIPv6"), RT25_OFFLOAD_TX_TCP6, RT25_OFFLOAD_RX_TCP6 },
+        { NDIS_STRING_CONST("*UDPChecksumOffloadIPv6"), RT25_OFFLOAD_TX_UDP6, RT25_OFFLOAD_RX_UDP6 }
+    };
+    PNDIS_CONFIGURATION_PARAMETER Parameter;
+    NDIS_STRING Keyword;
+    ULONG i;
+
+    /* Standard *ChecksumOffload keywords: 0 off, 1 transmit, 2 receive, 3 both. */
+    for (i = 0; i < sizeof(Keywords) / sizeof(Keywords[0]); i++)
+    {
+        Keyword = Keywords[i].Keyword;
+        NdisReadConfiguration(&Status, &Parameter, Configuration, &Keyword, NdisParameterInteger);
+        if (Status != NDIS_STATUS_SUCCESS || Parameter->ParameterType != NdisParameterInteger)
+            continue;
+
+        Adapter->Offload &= ~(Keywords[i].Transmit | Keywords[i].Receive);
+        if (Parameter->ParameterData.IntegerData & 1)
+            Adapter->Offload |= Keywords[i].Transmit;
+        if (Parameter->ParameterData.IntegerData & 2)
+            Adapter->Offload |= Keywords[i].Receive;
+    }
+
     NdisReadNetworkAddress(&Status, (PVOID *)&Address, &Length, Configuration);
     if (Status == NDIS_STATUS_SUCCESS && Length == ETH_LENGTH_OF_ADDRESS && Address &&
         !(Address[0] & 1) && (Address[0] | Address[1] | Address[2] | Address[3] | Address[4] | Address[5]))
@@ -250,9 +304,7 @@ VOID
 Rt25ReleaseAdapter(
     _In_ PRT25_ADAPTER Adapter)
 {
-    Adapter->HardwareRunning = FALSE;
-    if (Adapter->RegisterBase && !Adapter->SurpriseRemoved)
-        Rt25DisableInterrupts(Adapter);
+    Rt25QuiesceHardware(Adapter);
     Rt25DeregisterInterrupt(Adapter);
     Rt25StopHardware(Adapter);
     Rt25FreeDatapath(Adapter);
@@ -272,6 +324,7 @@ Rt25ReleaseAdapter(
     NdisFreeSpinLock(&Adapter->TxLock);
     NdisFreeSpinLock(&Adapter->RxLock);
     NdisFreeSpinLock(&Adapter->PhyLock);
+    NdisFreeSpinLock(&Adapter->StateLock);
     NdisFreeMemory(Adapter, sizeof(*Adapter), 0);
 }
 
@@ -300,6 +353,9 @@ Rt25InitializeEx(
     Adapter->LinkSpeed = NDIS_LINK_SPEED_UNKNOWN;
     Adapter->MediaConnectState = MediaConnectStateUnknown;
     Adapter->MediaDuplexState = MediaDuplexStateUnknown;
+    Adapter->Offload = RT25_OFFLOAD_ALL;
+    Adapter->PowerState = NdisDeviceStateD0;
+    NdisAllocateSpinLock(&Adapter->StateLock);
     NdisAllocateSpinLock(&Adapter->PhyLock);
     NdisAllocateSpinLock(&Adapter->RxLock);
     NdisAllocateSpinLock(&Adapter->TxLock);
@@ -350,7 +406,11 @@ Rt25InitializeEx(
     if (Status != NDIS_STATUS_SUCCESS)
         goto Fail;
 
-    Rt25EnableInterrupts(Adapter);
+    Status = Rt25SetOffloadAttributes(Adapter);
+    if (Status != NDIS_STATUS_SUCCESS)
+        goto Fail;
+
+    Rt25ResumeInterrupts(Adapter);
     return NDIS_STATUS_SUCCESS;
 
 Fail:
