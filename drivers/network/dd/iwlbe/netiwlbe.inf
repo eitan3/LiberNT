@@ -1,0 +1,74 @@
+; PROJECT:     LiberNT Intel BE200 Native 802.11 Miniport
+; LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+; PURPOSE:     Intel BE200 PCIe Native Wi-Fi miniport installation file
+; COPYRIGHT:   Copyright 2026 The LiberNT contributors
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = Net
+ClassGUID   = {4d36e972-e325-11ce-bfc1-08002be10318}
+Provider    = %LiberNT%
+DriverVer   = 11/28/2026,1.0.0.0
+CatalogFile = netiwlbe.cat
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[Manufacturer]
+%LiberNT% = Models,NTamd64,NTarm64
+
+[Models.NTamd64]
+%iwl.DeviceDesc% = iwl.ndi, PCI\VEN_8086&DEV_272B
+
+[Models.NTarm64]
+%iwl.DeviceDesc% = iwl.ndi, PCI\VEN_8086&DEV_272B
+
+[iwl.ndi]
+Characteristics = 0x84
+*IfType = 71
+*MediaType = 16
+*PhysicalMediaType = 9
+BusType         = 5
+AddReg          = iwl.reg
+CopyFiles       = iwl.CopyFiles
+
+[iwl.ndi.Services]
+AddService = iwlbe, 2, iwl.Service, iwl.EventLog
+
+[iwl.reg]
+HKR, ,                   *IfType,    0x00010001, 71
+HKR, ,                   *MediaType, 0x00010001, 16
+HKR, ,                   *PhysicalMediaType, 0x00010001, 9
+HKR, Ndi,               Service,    0, "iwlbe"
+HKR, Ndi\Interfaces,    UpperRange, 0, "ndis5"
+HKR, Ndi\Interfaces,    LowerRange, 0, "nativewifi"
+
+[iwl.CopyFiles]
+iwlbe.sys
+
+[iwl.Service]
+DisplayName    = %iwl.ServiceDesc%
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\iwlbe.sys
+LoadOrderGroup = NDIS
+
+[iwl.EventLog]
+AddReg = iwl.EventLog.Reg
+
+[iwl.EventLog.Reg]
+HKR, , EventMessageFile, 0x00020000, "%%SystemRoot%%\System32\netevent.dll"
+HKR, , TypesSupported,   0x00010001, 7
+
+[SourceDisksNames]
+1 = %DiskName%
+
+[SourceDisksFiles]
+iwlbe.sys = 1
+
+[Strings]
+LiberNT         = "LiberNT Team"
+iwl.DeviceDesc  = "Intel Wi-Fi 7 BE200 320MHz"
+iwl.ServiceDesc = "LiberNT Intel BE200 PCIe WiFi Driver"
+DiskName        = "LiberNT Intel BE200 PCIe WiFi Driver Installation Disk"
