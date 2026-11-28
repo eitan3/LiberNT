@@ -236,7 +236,22 @@ static void CALLBACK collect_processor_frequency( struct counter *counter )
         counter->status = PDH_CSTATUS_INVALID_DATA;
         return;
     }
-    counter->one.longvalue = current;
+    counter->one.longvalue = maximum;
+    counter->two.largevalue = 0;
+    counter->status = PDH_CSTATUS_VALID_DATA;
+}
+
+static void CALLBACK collect_processor_performance( struct counter *counter )
+{
+    ULONG current, maximum;
+
+    if (!query_processor_power( counter->path, &current, &maximum ) || !maximum)
+    {
+        counter->status = PDH_CSTATUS_INVALID_DATA;
+        return;
+    }
+    /* FIXME: an instantaneous frequency ratio, not the performance averaged over the sample interval */
+    counter->one.longvalue = (ULONG)(((ULONGLONG)current * 100) / maximum);
     counter->two.largevalue = 0;
     counter->status = PDH_CSTATUS_VALID_DATA;
 }
@@ -319,9 +334,10 @@ static const struct source counter_sources[] =
 {
     { 6,   L"\\Processor(_Total)\\% Processor Time", collect_processor_time, TYPE_PROCESSOR_TIME, -5, 10000000 },
     { 6,   L"\\Processor Information(_Total)\\% Processor Time", collect_processor_time, TYPE_PROCESSOR_TIME, -5, 10000000 },
-    { 3114, L"\\Processor Information(*)\\Processor Frequency", collect_processor_frequency, PERF_COUNTER_RAWCOUNT, 0, 0 },
-    { 3116, L"\\Processor Information(*)\\% of Maximum Frequency", collect_maximum_frequency_percent, PERF_COUNTER_RAWCOUNT, 0, 0 },
-    { 3132, L"\\Processor Information(*)\\% Processor Utility", collect_processor_utility, TYPE_PROCESSOR_UTILITY, 0, 0 },
+    { 2774, L"\\Processor Information(*)\\Processor Frequency", collect_processor_frequency, PERF_COUNTER_RAWCOUNT, 0, 0 },
+    { 2776, L"\\Processor Information(*)\\% of Maximum Frequency", collect_maximum_frequency_percent, PERF_COUNTER_RAWCOUNT, 0, 0 },
+    { 2788, L"\\Processor Information(*)\\% Processor Performance", collect_processor_performance, PERF_COUNTER_RAWCOUNT, 0, 0 },
+    { 2792, L"\\Processor Information(*)\\% Processor Utility", collect_processor_utility, TYPE_PROCESSOR_UTILITY, 0, 0 },
     { 674, L"\\System\\System Up Time",              collect_uptime,         TYPE_UPTIME,         -3, 1000 }
 };
 
