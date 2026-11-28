@@ -411,6 +411,7 @@ Rt25StartPhy(
 {
     RT25_ADVERTISEMENT Current, Wanted;
     ULONG FlowControl = Adapter->FlowControl;
+    USHORT Control;
 
     /* These controllers do not support pause frames together with jumbo frames. */
     if (Adapter->MaxFrame > RT25_MAX_FRAME)
@@ -440,6 +441,14 @@ Rt25StartPhy(
 
     Rt25ConfigureEee(Adapter);
     Rt25WritePhy(Adapter, RT25_PHY_BMCR, RT25_BMCR_ANENABLE | RT25_BMCR_ANRESTART);
+
+    /* Bring-up aid: what the PHY holds after the advertisement was written. */
+    Rt25ReadPhy(Adapter, RT25_PHY_BMCR, &Control);
+    Rt25ReadPhy(Adapter, RT25_PHY_ADVERTISE, &Current.Advertise);
+    Rt25ReadPhy(Adapter, RT25_PHY_CTRL1000, &Current.Ctrl1000);
+    Rt25ReadPhyOcp(Adapter, RT25_PHY_OCP_AN_10GBT_CTRL, &Current.MultiGig);
+    DPRINT1("RTL8125: PHY started: BMCR 0x%04x ADV 0x%04x CTRL1000 0x%04x MULTIGIG 0x%04x PMCH 0x%02x\n",
+            Control, Current.Advertise, Current.Ctrl1000, Current.MultiGig, Rt25Read8(Adapter, RT25_REG_PMCH));
 
     NdisReleaseSpinLock(&Adapter->PhyLock);
 }
@@ -686,7 +695,8 @@ Rt25RefreshLink(
     ULONG64 Speed = NDIS_LINK_SPEED_UNKNOWN;
     NDIS_SUPPORTED_PAUSE_FUNCTIONS Pause = NdisPauseFunctionsUnknown;
     ULONG SpeedMbps;
-    USHORT Status, PhyStatus;
+    USHORT Status, PhyStatus = 0, PhyBasic = 0;
+    ULONG Debug;
     BOOLEAN Changed;
 
     if (!Adapter->HardwareRunning)
@@ -695,6 +705,18 @@ Rt25RefreshLink(
     NdisAcquireSpinLock(&Adapter->PhyLock);
 
     Status = Rt25Read16(Adapter, RT25_REG_PHYSTATUS);
+
+    /* Bring-up aid: log the raw MAC and PHY link words whenever they change. */
+    Rt25ReadPhy(Adapter, RT25_PHY_PHYSR, &PhyStatus);
+    Rt25ReadPhy(Adapter, RT25_PHY_BMSR, &PhyBasic);
+    Debug = ((ULONG)Status << 16) ^ ((ULONG)PhyStatus << 8) ^ PhyBasic ^ 1;
+    if (Debug != Adapter->LinkDebug)
+    {
+        Adapter->LinkDebug = Debug;
+        DPRINT1("RTL8125: link words: MAC PHYSTATUS 0x%04x, PHY BMSR 0x%04x, PHYSR 0x%04x\n",
+                Status, PhyBasic, PhyStatus);
+    }
+
     if (Status != 0xFFFF && (Status & RT25_PHYSTATUS_LINK))
     {
         Connect = MediaConnectStateConnected;

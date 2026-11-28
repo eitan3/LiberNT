@@ -156,6 +156,7 @@ typedef struct _RT25_ADAPTER
     ULONG64 LinkSpeed;
     NDIS_SUPPORTED_PAUSE_FUNCTIONS PauseFunctions;
     ULONG LinkSequence;
+    ULONG LinkDebug;
     ULONG SpeedDuplex;
     ULONG FlowControl;
     BOOLEAN EeeEnabled;

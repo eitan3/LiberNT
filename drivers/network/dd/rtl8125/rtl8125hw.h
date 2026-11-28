@@ -142,6 +142,7 @@
 #define RT25_OCP_EEE_TIMER_ENABLE   0x0006
 
 #define RT25_PHY_BMCR               0x00
+#define RT25_PHY_BMSR               0x01
 #define RT25_PHY_ADVERTISE          0x04
 #define RT25_PHY_CTRL1000           0x09
 #define RT25_PHY_PHYSR              0x1A
