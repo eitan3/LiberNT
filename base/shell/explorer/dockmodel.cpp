@@ -36,6 +36,76 @@ BOOL LiberDock_SameApp(LPCWSTR pszTarget, LPCWSTR pszImage)
     return pszTarget && pszImage && *pszTarget && *pszImage && !lstrcmpiW(pszTarget, pszImage);
 }
 
+static BOOL OrderContains(LPCWSTR const *pKeys, UINT cKeys, LPCWSTR pszKey)
+{
+    for (UINT i = 0; i < cKeys; i++)
+    {
+        if (!lstrcmpiW(pKeys[i], pszKey))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+UINT LiberDock_MergeOrder(LPCWSTR const *pFirst, UINT cFirst, LPCWSTR const *pThen, UINT cThen, LPCWSTR *pOut, UINT cMax)
+{
+    UINT count = 0;
+
+    ATLASSERT((pFirst || !cFirst) && (pThen || !cThen) && pOut);
+    for (UINT pass = 0; pass < 2; pass++)
+    {
+        LPCWSTR const *keys = pass ? pThen : pFirst;
+        UINT cKeys = pass ? cThen : cFirst;
+        for (UINT i = 0; i < cKeys && count < cMax; i++)
+        {
+            if (keys[i] && keys[i][0] && !OrderContains(pOut, count, keys[i]))
+                pOut[count++] = keys[i];
+        }
+    }
+    ATLASSERT(count <= cMax);
+    return count;
+}
+
+static UINT OrderRank(LPCWSTR pszKey, LPCWSTR const *pOrder, UINT cOrder)
+{
+    if (pszKey && pszKey[0])
+    {
+        for (UINT i = 0; i < cOrder; i++)
+        {
+            if (!lstrcmpiW(pOrder[i], pszKey))
+                return i;
+        }
+    }
+    return cOrder;
+}
+
+VOID LiberDock_SortByOrder(LPCWSTR const *pKeys, UINT cKeys, LPCWSTR const *pOrder, UINT cOrder, UINT *pPermutation)
+{
+    ATLASSERT((pKeys || !cKeys) && (pOrder || !cOrder) && (pPermutation || !cKeys));
+    for (UINT i = 0; i < cKeys; i++)
+        pPermutation[i] = i;
+    for (UINT i = 1; i < cKeys; i++)
+    {
+        UINT item = pPermutation[i], rank = OrderRank(pKeys[item], pOrder, cOrder), j = i;
+        while (j > 0 && OrderRank(pKeys[pPermutation[j - 1]], pOrder, cOrder) > rank)
+        {
+            pPermutation[j] = pPermutation[j - 1];
+            j--;
+        }
+        pPermutation[j] = item;
+    }
+}
+
+UINT LiberDock_DropSlot(const RECT *pCells, UINT cCells, LONG x)
+{
+    ATLASSERT(pCells && cCells > 0);
+    for (UINT i = 0; i < cCells; i++)
+    {
+        if (x < (pCells[i].left + pCells[i].right) / 2)
+            return i;
+    }
+    return cCells - 1;
+}
+
 SIZE LiberDock_FitThumbnail(SIZE window, SIZE limit)
 {
     SIZE size = { 0, 0 };

@@ -68,8 +68,10 @@ class CDockCell : public Widget, public IAnimationClient
 {
 public:
     CDockCell(CLiberDock *dock, int index, const LIBER_DOCK_METRICS *metrics) : m_Dock(dock), m_Index(index),
-        m_Icon(NULL), m_Running(FALSE), m_Active(FALSE), m_Windows(0), m_Metrics(metrics)
+        m_Icon(NULL), m_Running(FALSE), m_Active(FALSE), m_Windows(0), m_Metrics(metrics), m_Dragging(FALSE),
+        m_SuppressClick(FALSE)
     {
+        m_DownPt.x = m_DownPt.y = 0;
         ATLASSERT(metrics);
         SetSize(metrics->Cell, metrics->Cell);
         SetHitTestable(TRUE);
@@ -109,6 +111,9 @@ public:
     UINT Windows() const { return m_Windows; }
     void OnPointerEnter();
     void OnPointerLeave();
+    void OnPointerDown(POINT pt);
+    void OnPointerMove(POINT pt);
+    void OnPointerUp(POINT pt);
 
     void OnClick();
 
@@ -191,6 +196,9 @@ private:
     BOOL m_Active;
     UINT m_Windows;
     const LIBER_DOCK_METRICS *m_Metrics;
+    POINT m_DownPt;
+    BOOL m_Dragging;
+    BOOL m_SuppressClick;
 };
 
 class CTrayButton : public Widget
@@ -377,6 +385,9 @@ public:
         m_RestoreTray(TRUE)
     {
         ZeroMemory(m_Entries, sizeof(m_Entries));
+        ZeroMemory(m_Order, sizeof(m_Order));
+        m_OrderCount = 0;
+        m_DragIndex = -1;
         ZeroMemory(m_Cells, sizeof(m_Cells));
         ZeroMemory(&m_Layout, sizeof(m_Layout));
         m_PlateRoot = NULL;
@@ -396,6 +407,9 @@ public:
     void OpenStart();
     void RenderDock(ULONGLONG now) { m_DockSurface.Render(now); }
     BOOL CellMenu(int index, POINT screen);
+    BOOL DragBegin(int index);
+    void DragMove(POINT pt);
+    void DragEnd();
     BOOL MinimizeRect(HWND hwnd, RECT *prc);
     UINT Dpi() const { return m_Dpi; }
     const LIBER_DOCK_METRICS &Metrics() const { return m_Metrics; }
@@ -420,6 +434,11 @@ private:
     BOOL UpdateMetrics(const RECT *prcMonitor);
     static BOOL IsForeground(const LIBER_DOCK_ENTRY &entry, HWND foreground);
     void ShowPreview();
+    void SortEntries(const LIBER_DOCK_ENTRY *previous, UINT previousCount);
+    void SetOrder(LPCWSTR const *keys, UINT count);
+    void LoadOrder();
+    void SaveOrder();
+    void SetCellContents();
     UINT AppWindows(UINT index, HWND *windows, UINT max);
     RECT ScreenRect(Surface &surface, const RECT &dip);
 
@@ -439,6 +458,9 @@ private:
     LIBER_DOCK_METRICS m_Metrics;
     LIBER_DOCK_ENTRY m_Entries[LIBER_DOCK_MAX_ITEMS];
     UINT m_Count;
+    WCHAR m_Order[LIBER_DOCK_ORDER_MAX][MAX_PATH];
+    UINT m_OrderCount;
+    int m_DragIndex;
     CLiberPanel *m_DockRoot;
     StackPanel *m_TrayRoot;
     CSystemPill *m_Pill;
@@ -467,8 +489,44 @@ void CDockCell::OnPointerLeave()
     m_Dock->CellHover(m_Index, FALSE);
 }
 
+void CDockCell::OnPointerDown(POINT pt)
+{
+    m_DownPt = pt;
+    m_Dragging = FALSE;
+    m_SuppressClick = FALSE;
+}
+
+void CDockCell::OnPointerMove(POINT pt)
+{
+    if (m_Index < 0 || !HasState(StatePressed))
+        return;
+    if (!m_Dragging)
+    {
+        if (abs(pt.x - m_DownPt.x) < LIBER_DOCK_DRAG_START && abs(pt.y - m_DownPt.y) < LIBER_DOCK_DRAG_START)
+            return;
+        m_Dragging = m_Dock->DragBegin(m_Index);
+    }
+    if (m_Dragging)
+        m_Dock->DragMove(pt);
+}
+
+void CDockCell::OnPointerUp(POINT pt)
+{
+    UNREFERENCED_PARAMETER(pt);
+    if (!m_Dragging)
+        return;
+    m_Dragging = FALSE;
+    m_SuppressClick = TRUE;
+    m_Dock->DragEnd();
+}
+
 void CDockCell::OnClick()
 {
+    if (m_SuppressClick)
+    {
+        m_SuppressClick = FALSE;
+        return;
+    }
     m_Dock->OnCellClick(m_Index, Bounds());
 }
 
@@ -784,6 +842,7 @@ void CLiberDock::Refresh()
     if (!TaskbarPin_IsDisabled())
         TaskbarPin_Enum(PinProc, (LPARAM)this);
     EnumWindows(WindowProc, (LPARAM)this);
+    SortEntries(previous, previousCount);
 
     LIBER_DOCK_METRICS built = m_Metrics;
     HMONITOR monitor = MonitorFromPoint(POINT(), MONITOR_DEFAULTTOPRIMARY);
@@ -828,6 +887,7 @@ void CLiberDock::Refresh()
             DestroyIcon(previous[i].hIcon);
     }
     LocalFree(previous);
+    m_DragIndex = -1;
     for (UINT i = 0; i < _countof(m_Cells); i++)
     {
         if (m_Cells[i])
@@ -890,6 +950,174 @@ UINT CLiberDock::AppWindows(UINT index, HWND *windows, UINT max)
     }
     EnumWindows(CollectAppWindow, (LPARAM)&app);
     return app.Count;
+}
+
+void CLiberDock::SortEntries(const LIBER_DOCK_ENTRY *previous, UINT previousCount)
+{
+    LPCWSTR keys[LIBER_DOCK_MAX_ITEMS], order[LIBER_DOCK_ORDER_MAX];
+    UINT permutation[LIBER_DOCK_MAX_ITEMS];
+    WCHAR szImage[MAX_PATH];
+
+    ATLASSERT(m_Count <= LIBER_DOCK_MAX_ITEMS && m_OrderCount <= LIBER_DOCK_ORDER_MAX);
+    for (UINT i = 0; i < m_Count; i++)
+    {
+        LIBER_DOCK_ENTRY &entry = m_Entries[i];
+        for (UINT j = 0; entry.hwnd && j < previousCount; j++)
+        {
+            HWND kept = previous[j].hwnd;
+            if (kept && kept != entry.hwnd && !lstrcmpiW(previous[j].szTarget, entry.szTarget) && IsWindow(kept) &&
+                LiberDock_IsTaskWindow(kept) && ImagePathOf(kept, szImage, _countof(szImage)) &&
+                LiberDock_SameApp(entry.szTarget, szImage))
+            {
+                entry.hwnd = kept;
+                GetWindowTextW(kept, entry.szTitle, _countof(entry.szTitle));
+                break;
+            }
+        }
+        keys[i] = entry.szTarget;
+    }
+    for (UINT i = 0; i < m_OrderCount; i++)
+        order[i] = m_Order[i];
+    LPCWSTR merged[LIBER_DOCK_ORDER_MAX];
+    UINT count = LiberDock_MergeOrder(order, m_OrderCount, keys, m_Count, merged, LIBER_DOCK_ORDER_MAX);
+    SetOrder(merged, count);
+    for (UINT i = 0; i < m_OrderCount; i++)
+        order[i] = m_Order[i];
+    LiberDock_SortByOrder(keys, m_Count, order, m_OrderCount, permutation);
+
+    LIBER_DOCK_ENTRY *sorted = (LIBER_DOCK_ENTRY *)LocalAlloc(LPTR, sizeof(LIBER_DOCK_ENTRY) * LIBER_DOCK_MAX_ITEMS);
+    if (!sorted)
+        return;
+    for (UINT i = 0; i < m_Count; i++)
+    {
+        ATLASSERT(permutation[i] < m_Count);
+        sorted[i] = m_Entries[permutation[i]];
+    }
+    CopyMemory(m_Entries, sorted, sizeof(LIBER_DOCK_ENTRY) * m_Count);
+    LocalFree(sorted);
+}
+
+void CLiberDock::SetOrder(LPCWSTR const *keys, UINT count)
+{
+    WCHAR (*copy)[MAX_PATH] = (WCHAR (*)[MAX_PATH])LocalAlloc(LPTR, sizeof(m_Order));
+
+    ATLASSERT(count <= LIBER_DOCK_ORDER_MAX);
+    if (!copy)
+        return;
+    for (UINT i = 0; i < count; i++)
+        StringCchCopyW(copy[i], MAX_PATH, keys[i]);
+    CopyMemory(m_Order, copy, sizeof(m_Order));
+    m_OrderCount = count;
+    LocalFree(copy);
+}
+
+void CLiberDock::LoadOrder()
+{
+    DWORD bytes = 0;
+    m_OrderCount = 0;
+    if (RegGetValueW(HKEY_CURRENT_USER, LIBER_DOCK_ORDER_KEY, L"Order", RRF_RT_REG_MULTI_SZ, NULL, NULL, &bytes) !=
+            ERROR_SUCCESS || bytes < sizeof(WCHAR))
+        return;
+    LPWSTR data = (LPWSTR)LocalAlloc(LPTR, bytes + 2 * sizeof(WCHAR));
+    if (!data)
+        return;
+    if (RegGetValueW(HKEY_CURRENT_USER, LIBER_DOCK_ORDER_KEY, L"Order", RRF_RT_REG_MULTI_SZ, NULL, data, &bytes) ==
+        ERROR_SUCCESS)
+    {
+        for (LPCWSTR key = data; *key && m_OrderCount < LIBER_DOCK_ORDER_MAX; key += wcslen(key) + 1)
+            StringCchCopyW(m_Order[m_OrderCount++], MAX_PATH, key);
+    }
+    LocalFree(data);
+}
+
+void CLiberDock::SaveOrder()
+{
+    SIZE_T chars = 1;
+    for (UINT i = 0; i < m_OrderCount; i++)
+        chars += wcslen(m_Order[i]) + 1;
+    LPWSTR data = (LPWSTR)LocalAlloc(LPTR, chars * sizeof(WCHAR));
+    if (!data)
+        return;
+    LPWSTR p = data;
+    for (UINT i = 0; i < m_OrderCount; i++)
+    {
+        SIZE_T len = wcslen(m_Order[i]);
+        CopyMemory(p, m_Order[i], len * sizeof(WCHAR));
+        p += len + 1;
+    }
+    ATLASSERT((SIZE_T)(p - data) + 1 == chars);
+    if (RegSetKeyValueW(HKEY_CURRENT_USER, LIBER_DOCK_ORDER_KEY, L"Order", REG_MULTI_SZ, data,
+                        (DWORD)(chars * sizeof(WCHAR))) != ERROR_SUCCESS)
+        ERR("Could not save the dock order\n");
+    LocalFree(data);
+}
+
+void CLiberDock::SetCellContents()
+{
+    HWND foreground = GetForegroundWindow();
+
+    for (UINT i = 0; i < m_Count; i++)
+    {
+        CDockCell *cell = m_Cells[i + LIBER_DOCK_FIXED_CELLS];
+        if (cell)
+            cell->Set(m_Entries[i].hIcon, m_Entries[i].hwnd != NULL,
+                      IsForeground(m_Entries[i], foreground) && !LiberStart_IsOpen(), m_Entries[i].cWindows,
+                      m_Entries[i].szTitle);
+    }
+}
+
+BOOL CLiberDock::DragBegin(int index)
+{
+    if (index < 0 || (UINT)index >= m_Count)
+        return FALSE;
+    m_DragIndex = index;
+    KillTimer(m_hwndSink, LIBER_TIMER_PREVIEW);
+    LiberPreview_Hide();
+    return TRUE;
+}
+
+void CLiberDock::DragMove(POINT pt)
+{
+    RECT cells[LIBER_DOCK_MAX_ITEMS];
+
+    if (m_DragIndex < 0 || (UINT)m_DragIndex >= m_Count)
+        return;
+    for (UINT i = 0; i < m_Count; i++)
+    {
+        if (!m_Cells[i + LIBER_DOCK_FIXED_CELLS])
+            return;
+        cells[i] = m_Cells[i + LIBER_DOCK_FIXED_CELLS]->Bounds();
+    }
+    UINT target = LiberDock_DropSlot(cells, m_Count, pt.x);
+    UINT from = (UINT)m_DragIndex;
+    ATLASSERT(target < m_Count);
+    if (target == from)
+        return;
+    LIBER_DOCK_ENTRY moved = m_Entries[from];
+    if (target > from)
+        MoveMemory(&m_Entries[from], &m_Entries[from + 1], sizeof(LIBER_DOCK_ENTRY) * (target - from));
+    else
+        MoveMemory(&m_Entries[target + 1], &m_Entries[target], sizeof(LIBER_DOCK_ENTRY) * (from - target));
+    m_Entries[target] = moved;
+    m_DragIndex = (int)target;
+    SetCellContents();
+    m_DockSurface.Render(AnimationClock::Now());
+}
+
+void CLiberDock::DragEnd()
+{
+    LPCWSTR keys[LIBER_DOCK_MAX_ITEMS], order[LIBER_DOCK_ORDER_MAX];
+
+    if (m_DragIndex < 0)
+        return;
+    m_DragIndex = -1;
+    for (UINT i = 0; i < m_Count; i++)
+        keys[i] = m_Entries[i].szTarget;
+    for (UINT i = 0; i < m_OrderCount; i++)
+        order[i] = m_Order[i];
+    LPCWSTR merged[LIBER_DOCK_ORDER_MAX];
+    SetOrder(merged, LiberDock_MergeOrder(keys, m_Count, order, m_OrderCount, merged, LIBER_DOCK_ORDER_MAX));
+    SaveOrder();
 }
 
 void CLiberDock::CellHover(int index, BOOL inside)
@@ -1245,6 +1473,7 @@ HRESULT CLiberDock::Start(ITrayWindow *tray)
     m_TraySurface.SetRoot(m_TrayRoot);
 
     g_pLiberDock = this;
+    LoadOrder();
     Refresh();
     BuildTheme();
     m_TraySurface.SetTokens(&m_TrayTokens);
