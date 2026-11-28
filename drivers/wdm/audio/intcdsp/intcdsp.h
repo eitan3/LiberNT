@@ -224,6 +224,17 @@ IntcDspLogInterruptState(
     _In_ PINTCDSP_DEVICE Dev,
     _In_ const char* Tag);
 
+/*
+ * The block of a boot whose DSP window did not answer (hwops.c, pcidiag.h): the processing
+ * enable as the loader read it, the controller's PCI config through the bus, the power
+ * management capability, one write control and the DSP's first registers. Nothing is read
+ * or written for any other status.
+ */
+VOID
+IntcDspLogDeadWindow(
+    _In_ PINTCDSP_DEVICE Dev,
+    _In_ FWLOAD_STATUS Status);
+
 NTSTATUS
 IntcDspReadSetting(
     _In_ PCWSTR Name,

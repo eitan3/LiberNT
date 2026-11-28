@@ -114,12 +114,42 @@ typedef struct _FAKE_BUS
     HDA_DSP_GATING Config;
     UINT32 GatingCalls;
     UINT32 GatingAllowCalls;
+    /* what the bus's last call of the gating member read of the two registers after each of its forms (dspgating.h HDA_DSP_GATING_READBACK) */
+    HDA_DSP_GATING_READBACK GatingReadback;
+    /* the rest of the controller's config space: bytes 0x44 to 0x4B are Config's words, every other byte is this array's, as the fake's two PCI members move them */
+    UINT8 PciConfig[256];
+    /* one bit per byte of the config space, which the test sets: the byte does not answer a read, does not take a write, or takes a write of one byte alone */
+    UINT32 PciNoRead[8];
+    UINT32 PciNoStick[8];
+    UINT32 PciByteOnly[8];
+    UINT32 PciReads;
+    UINT32 PciWrites;
 } FAKE_BUS, *PFAKE_BUS;
 
-/* A bus of the current interface: the member that takes the platform's power gating of the DSP off and allows it again, a read-modify-write of the two modelled words through the rule the bus itself compiles (dspgating.h HdaDspPowerGatingValues); a bus made without it has the member empty, as a bus built before it has */
+/* A bus of the current interface: the member that takes the platform's power gating of the DSP off and allows it again, the rule of dspgating.h over the model's config space with its readback, through the fake's two PCI members; and the member that hands the readback out. A bus made without them has them empty, as a bus built before them has */
 VOID
 FakeBusPowerGatingEnable(
     _Inout_ PFAKE_BUS Bus);
+
+/* The PCI bus interface of a fake, as a driver receives it from a bus (GetResources): its two members over the model's config space */
+VOID
+FakeBusPciInterface(
+    _Inout_ PFAKE_BUS Bus,
+    _Out_ PBUS_INTERFACE_STANDARD Pci);
+
+/* A byte of the config space that does not answer a read, does not take a write, or takes a write of one byte alone */
+VOID
+FakeBusPciNoRead(
+    _Inout_ PFAKE_BUS Bus,
+    _In_ UINT32 Offset);
+VOID
+FakeBusPciNoStick(
+    _Inout_ PFAKE_BUS Bus,
+    _In_ UINT32 Offset);
+VOID
+FakeBusPciByteOnly(
+    _Inout_ PFAKE_BUS Bus,
+    _In_ UINT32 Offset);
 
 /* A bus of the given version of the interface; version 2 reports the DMA capability Dma64Bit and, when the size says so, the stream members; every pool has FAKE_BUS_STREAMS streams */
 VOID

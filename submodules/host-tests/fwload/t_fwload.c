@@ -13,6 +13,7 @@
 
 #include "fake_dsp.h"
 #include "fake_bus.h"
+#include <pcidiag.h>
 #include "fwload_cases.h"
 
 static int Checks;
@@ -95,6 +96,8 @@ typedef struct _HARNESS
     UINT32 Delays;
     /* the DSP interrupts the line raises per clock advance while a message is pending: the model has no line, the harness plays it */
     UINT32 InterruptsPerDelay;
+    /* what the gating operation answers the loader: FwloadOk unless a case makes the bus refuse the gating */
+    FWLOAD_STATUS GatingStatus;
     UINT32 StreamTag;
     UINT32 OpsSeen;
     /* a clock that reports the same instant whatever the delays: the model still runs, the loader's budgets cannot expire */
@@ -277,17 +280,19 @@ HUnlock(
         FakeDspOps()->Unlock(H->Dsp);
 }
 
-/* The platform's power gating of the DSP: the model's power event in the order beside the registers', and the window decodes from the moment the gating is taken off */
+/* The platform's power gating of the DSP: the model's power event in the order beside the registers', and the window decodes from the moment the gating is taken off; the answer is the case's, FwloadOk for a bus whose write took */
 static
-VOID
+FWLOAD_STATUS
 HDspPowerGating(
     PVOID Context,
     BOOLEAN AllowGating)
 {
     HARNESS* H = HarnessEnter(Context, HOP_DSPPOWERGATING, "DspPowerGating");
 
-    if (H != NULL)
-        FakeDspGating(H->Dsp, AllowGating);
+    if (H == NULL)
+        return FwloadOk;
+    FakeDspGating(H->Dsp, AllowGating);
+    return H->GatingStatus;
 }
 
 /* The driver's shape: one const table of functions, and the harness reaches them as the context of every call */
@@ -378,6 +383,7 @@ HarnessBootPlatform(
     H->OpsSeen = 0;
     H->ClockStalled = FALSE;
     H->InterruptsPerDelay = 0;
+    H->GatingStatus = FwloadOk;
 }
 
 /* The boot the cases run: the Arrow Lake-S record with its image */
@@ -2359,6 +2365,282 @@ CheckBusBound(void)
 }
 
 /*
+ * The gating that does not change (N15-22, the owner's machine: PGCTL read 0 after the write) and the
+ * block of a boot whose window does not answer. (a) the bus's member, over the fake's config space
+ * through its two PCI members: the dword form read back as written is success with nothing else
+ * written, and the four readbacks are kept for the driver; a byte that does not take a write gets the
+ * byte form once, and one that still does not is STATUS_UNSUCCESSFUL; a byte that takes one byte
+ * alone is rescued by the byte form; (b) a word the bus does not move whole is the protocol error
+ * with nothing more written; (c) the boot ends at a gating that fails, before the processing enable
+ * and the power request, the gating allowed again on the way out, and the processing enable's
+ * register is kept for the block when the boot went past it; (d) the block reads nothing and writes
+ * nothing for any status but the dead window's; over a config space it reads the fourteen dwords,
+ * finds the power-management capability or says the list has none, and its write control reads as
+ * written and restores its byte, or says the write did not land.
+ */
+static
+void
+CheckGatingReadback(
+    HARNESS* H,
+    const SOF_RI_IMAGE* Image)
+{
+    FAKE_BUS Bus;
+    ADSP_BUS_INTERFACE Queried;
+    HDA_DSP_GATING_READBACK Readback;
+    BUS_INTERFACE_STANDARD Pci;
+    INTCDSP_DEAD_WINDOW Block;
+    FAKE_DSP_FAULTS Faults;
+    CHAR Text[12];
+    UINT32 Index;
+
+    /* (a) as written by the dword form: two words read, two written, two read back, the byte form not tried */
+    FakeBusInit(&Bus, 2, TRUE);
+    FakeBusPowerGatingEnable(&Bus);
+    RtlZeroMemory(&Queried, sizeof(Queried));
+    CHECK_EQ(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    CHECK(Queried.Size >= RTL_SIZEOF_THROUGH_FIELD(ADSP_BUS_INTERFACE, GetDspPowerGatingReadback));
+    CHECK(Queried.GetDspPowerGatingReadback != NULL);
+    Bus.Config.Pgctl = 0x1234FF78;
+    Bus.Config.Cgctl = 0x9ABC00C1;
+    CHECK_EQ(Queried.SetDspPowerGating(Queried.Context, FALSE), STATUS_SUCCESS);
+    CHECK_EQ(Bus.Config.Pgctl, 0x1234FF78 | HDA_PGCTL_ADSPPGD);
+    CHECK_EQ(Bus.Config.Cgctl, 0x9ABC00C1 & ~(UINT32)HDA_CGCTL_ADSPDCGE);
+    memset(&Readback, 0xA5, sizeof(Readback));
+    Queried.GetDspPowerGatingReadback(Queried.Context, &Readback);
+    CHECK(!Readback.ByteForm);
+    CHECK_EQ(Readback.PgctlAfterDword, 0x1234FF78 | HDA_PGCTL_ADSPPGD);
+    CHECK_EQ(Readback.CgctlAfterDword, 0x9ABC00C1 & ~(UINT32)HDA_CGCTL_ADSPDCGE);
+    CHECK_EQ(Readback.PgctlAfterByte, 0);
+    CHECK_EQ(Readback.CgctlAfterByte, 0);
+    CHECK_EQ(Bus.PciReads, 4);
+    CHECK_EQ(Bus.PciWrites, 2);
+    /* allowed again: the reverse, as written */
+    CHECK_EQ(Queried.SetDspPowerGating(Queried.Context, TRUE), STATUS_SUCCESS);
+    CHECK_EQ(Bus.Config.Pgctl, 0x1234FF78);
+    CHECK_EQ(Bus.Config.Cgctl, 0x9ABC00C1 | HDA_CGCTL_ADSPDCGE);
+    CHECK(!Bus.GatingReadback.ByteForm);
+
+    /* the byte at 0x44, which carries ADSPPGD, does not take a write: the byte form is tried once, the four readbacks are kept, the status is the bus's own */
+    FakeBusPciNoStick(&Bus, HDA_PCIREG_PGCTL);
+    Bus.Config.Pgctl = 0x00000000;
+    Bus.Config.Cgctl = 0x00000002;
+    CHECK_EQ(Queried.SetDspPowerGating(Queried.Context, FALSE), STATUS_UNSUCCESSFUL);
+    CHECK_EQ(Bus.Config.Pgctl, 0x00000000);
+    CHECK_EQ(Bus.Config.Cgctl, 0x00000000);
+    Queried.GetDspPowerGatingReadback(Queried.Context, &Readback);
+    CHECK(Readback.ByteForm);
+    CHECK_EQ(Readback.PgctlAfterDword, 0x00000000);
+    CHECK_EQ(Readback.CgctlAfterDword, 0x00000000);
+    CHECK_EQ(Readback.PgctlAfterByte, 0x00000000);
+    CHECK_EQ(Readback.CgctlAfterByte, 0x00000000);
+    CHECK_EQ(Bus.PciReads, 14);
+    CHECK_EQ(Bus.PciWrites, 8);
+    /* the byte at 0x48, which carries ADSPDCGE, does not take one: allowed again, the gating cannot be put back */
+    FakeBusInit(&Bus, 2, TRUE);
+    FakeBusPowerGatingEnable(&Bus);
+    RtlZeroMemory(&Queried, sizeof(Queried));
+    CHECK_EQ(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    FakeBusPciNoStick(&Bus, HDA_PCIREG_CGCTL);
+    Bus.Config.Pgctl = 0x00000004;
+    Bus.Config.Cgctl = 0x00000000;
+    CHECK_EQ(Queried.SetDspPowerGating(Queried.Context, TRUE), STATUS_UNSUCCESSFUL);
+    CHECK_EQ(Bus.Config.Pgctl, 0x00000000);
+    CHECK_EQ(Bus.Config.Cgctl, 0x00000000);
+    CHECK(Bus.GatingReadback.ByteForm);
+    CHECK_EQ(Bus.GatingReadback.PgctlAfterByte, 0x00000000);
+
+    /* the byte takes one byte alone: the dword form is refused, the byte form lands, and the call is a success that says so */
+    FakeBusInit(&Bus, 2, TRUE);
+    FakeBusPowerGatingEnable(&Bus);
+    RtlZeroMemory(&Queried, sizeof(Queried));
+    CHECK_EQ(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    FakeBusPciByteOnly(&Bus, HDA_PCIREG_PGCTL);
+    Bus.Config.Pgctl = 0x00000100;
+    Bus.Config.Cgctl = 0x00000000;
+    CHECK_EQ(Queried.SetDspPowerGating(Queried.Context, FALSE), STATUS_SUCCESS);
+    CHECK_EQ(Bus.Config.Pgctl, 0x00000104);
+    CHECK_EQ(Bus.Config.Cgctl, 0x00000000);
+    CHECK(Bus.GatingReadback.ByteForm);
+    CHECK_EQ(Bus.GatingReadback.PgctlAfterDword, 0x00000100);
+    CHECK_EQ(Bus.GatingReadback.PgctlAfterByte, 0x00000104);
+
+    /* (b) a word the bus does not move whole: the protocol error, the second word not read and nothing written; and one that does not write: nothing read back */
+    FakeBusInit(&Bus, 2, TRUE);
+    FakeBusPowerGatingEnable(&Bus);
+    RtlZeroMemory(&Queried, sizeof(Queried));
+    CHECK_EQ(FakeBusQueryInterface(&Bus, &Queried, sizeof(Queried), ADSP_BUS_INTERFACE_VERSION), STATUS_SUCCESS);
+    FakeBusPciNoRead(&Bus, HDA_PCIREG_PGCTL);
+    CHECK_EQ(Queried.SetDspPowerGating(Queried.Context, FALSE), STATUS_DEVICE_PROTOCOL_ERROR);
+    CHECK_EQ(Bus.PciReads, 2);
+    CHECK_EQ(Bus.PciWrites, 0);
+    CHECK(!Bus.GatingReadback.ByteForm);
+    CHECK_EQ(Bus.GatingReadback.PgctlAfterDword, 0);
+
+    /* (c) the bus refuses the gating: the boot ends there, before the processing enable and the power request, with no step logged */
+    HarnessBoot(H, Image, NULL);
+    H->GatingStatus = FwloadDspWindowDead;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadDspWindowDead);
+    CHECK_EQ(H->Ctx->Status, FwloadDspWindowDead);
+    CHECK_EQ(H->Ctx->State, FwloadStateFailed);
+    CHECK_EQ(H->Ctx->FailedState, FwloadStatePoweringUp);
+    CHECK_EQ(H->LogCount, 0);
+    CHECK(!H->Ctx->PpCtlEnabled && !H->Ctx->SubsystemOn && !H->Ctx->CoreOn && !H->Ctx->StreamSubmitted);
+    CHECK(!H->Ctx->GatingDisabled);
+    CHECK(H->Dsp->PowerOrderCount >= 2);
+    CHECK_EQ(H->Dsp->PowerOrder[0], FAKE_POWER_GATING_OFF);
+    CHECK_EQ(H->Dsp->PowerOrder[H->Dsp->PowerOrderCount - 1], FAKE_POWER_GATING_ON);
+    for (Index = 1; Index + 1 < H->Dsp->PowerOrderCount; Index++)
+        CHECK(H->Dsp->PowerOrder[Index] != FAKE_POWER_SUBSYSTEM_ON && H->Dsp->PowerOrder[Index] != FAKE_POWER_GPROCEN_ON &&
+            H->Dsp->PowerOrder[Index] != FAKE_POWER_CORE_ON);
+    for (Index = 0; Index < H->Dsp->WriteCount; Index++)
+        CHECK(!(H->Dsp->WriteLog[Index].Bar == FWLOAD_BAR_PP && (H->Dsp->WriteLog[Index].Value & FWLOAD_PPCTL_GPROCEN)) &&
+            !(H->Dsp->WriteLog[Index].Bar == FWLOAD_BAR_DSP && H->Dsp->WriteLog[Index].Offset == H->Ctx->Platform->SubsystemControl));
+    CHECK_EQ(H->Dsp->PpControl & FWLOAD_PPCTL_GPROCEN, 0);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    H->GatingStatus = FwloadOk;
+
+    /* the processing enable's register as the loader read it right after its update: kept for the block, with the policy's PIE, also for a boot that ends at the power-up */
+    HarnessBoot(H, Image, NULL);
+    CHECK(!H->Ctx->PpCtlEnabled);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK(H->Ctx->PpCtlEnabled);
+    CHECK_EQ(H->Ctx->PpCtlAfterEnable, FWLOAD_PPCTL_GPROCEN);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    HarnessBoot(H, Image, NULL);
+    H->Ctx->UseInterrupts = TRUE;
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadOk);
+    CHECK_EQ(H->Ctx->PpCtlAfterEnable, FWLOAD_PPCTL_GPROCEN | FWLOAD_PPCTL_PIE);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadOk);
+    Faults = *FakeDspDefaultFaults();
+    Faults.WindowDead = TRUE;
+    HarnessBoot(H, Image, &Faults);
+    CHECK_EQ(FwloadBoot(H->Ctx), FwloadDspWindowDead);
+    CHECK(H->Ctx->PpCtlEnabled);
+    CHECK_EQ(H->Ctx->PpCtlAfterEnable, FWLOAD_PPCTL_GPROCEN);
+    CHECK_EQ(FwloadPowerDown(H->Ctx), FwloadInterruptTimeout);
+
+    /* (d) the block: nothing read and nothing written for any status but the dead window's; the one write it makes must never reach a healthy boot */
+    FakeBusInit(&Bus, 2, TRUE);
+    FakeBusPciInterface(&Bus, &Pci);
+    CHECK(!IntcDspDeadWindowCollect(FwloadOk, &Pci, &Block));
+    CHECK(!IntcDspDeadWindowCollect(FwloadTimeoutPowerUp, &Pci, &Block));
+    CHECK(!IntcDspDeadWindowCollect(FwloadRomError, &Pci, &Block));
+    CHECK(!IntcDspDeadWindowCollect(FwloadCancelled, &Pci, &Block));
+    CHECK_EQ(Bus.PciReads, 0);
+    CHECK_EQ(Bus.PciWrites, 0);
+
+    /* over a config space: the fourteen dwords through the bus, the capability behind another one, the control that sticks and restores */
+    Bus.PciConfig[0x00] = 0x86;
+    Bus.PciConfig[0x01] = 0x80;
+    Bus.PciConfig[0x02] = 0x50;
+    Bus.PciConfig[0x03] = 0x7F;
+    Bus.PciConfig[0x04] = 0x06;
+    Bus.PciConfig[0x0C] = 0x10;
+    Bus.PciConfig[0x0D] = 0x20;
+    Bus.PciConfig[0x34] = 0x60;
+    Bus.PciConfig[0x40] = 0xAA;
+    Bus.PciConfig[0x41] = 0x55;
+    Bus.Config.Pgctl = 0x00000004;
+    Bus.Config.Cgctl = 0x00000000;
+    Bus.PciConfig[0x4C] = 0x01;
+    Bus.PciConfig[0x50] = 0x02;
+    Bus.PciConfig[0x54] = 0x03;
+    Bus.PciConfig[0x58] = 0x04;
+    Bus.PciConfig[0x5C] = 0x05;
+    Bus.PciConfig[0x60] = 0x11;
+    Bus.PciConfig[0x61] = 0x70;
+    Bus.PciConfig[0x64] = 0x99;
+    Bus.PciConfig[0x70] = 0x01;
+    Bus.PciConfig[0x74] = 0x03;
+    Bus.PciConfig[0x75] = 0x08;
+    memset(&Block, 0xA5, sizeof(Block));
+    CHECK(IntcDspDeadWindowCollect(FwloadDspWindowDead, &Pci, &Block));
+    CHECK_EQ(Block.Config[0], 0x7F508086);
+    CHECK_EQ(Block.Config[1], 0x00000006);
+    CHECK_EQ(Block.Config[2], 0x00002010);
+    CHECK_EQ(Block.Config[3], 0x00000060);
+    CHECK_EQ(Block.Config[4], 0x000055AA);
+    CHECK_EQ(Block.Config[5], 0x00000004);
+    CHECK_EQ(Block.Config[6], 0x00000000);
+    CHECK_EQ(Block.Config[7], 0x00000001);
+    CHECK_EQ(Block.Config[8], 0x00000002);
+    CHECK_EQ(Block.Config[9], 0x00000003);
+    CHECK_EQ(Block.Config[10], 0x00000004);
+    CHECK_EQ(Block.Config[11], 0x00000005);
+    CHECK_EQ(Block.Config[12], 0x00007011);
+    CHECK_EQ(Block.Config[13], 0x00000099);
+    for (Index = 0; Index < INTCDSP_PCI_DIAG_COUNT; Index++)
+        CHECK(Block.ConfigRead[Index]);
+    CHECK_EQ(IntcDspPciDiagOffset(0), 0x00);
+    CHECK_EQ(IntcDspPciDiagOffset(3), 0x34);
+    CHECK_EQ(IntcDspPciDiagOffset(4), 0x40);
+    CHECK_EQ(IntcDspPciDiagOffset(13), 0x64);
+    CHECK(Block.Pm.Present);
+    CHECK_EQ(Block.Pm.Pointer, 0x60);
+    CHECK_EQ(Block.Pm.Control, 0x0803);
+    CHECK_EQ(Block.Pm.State, 3);
+    CHECK(Block.Control.Done);
+    CHECK_EQ(Block.Control.Original, 0x10);
+    CHECK_EQ(Block.Control.Wrote, 0x08);
+    CHECK_EQ(Block.Control.Read, 0x08);
+    CHECK_EQ(Block.Control.Restored, 0x10);
+    CHECK_EQ(Bus.PciConfig[0x0C], 0x10);
+    /* the gating words are the model's: the dwords of 0x44 and 0x48 are what the bus wrote there */
+    CHECK_EQ(Bus.Config.Pgctl, 0x00000004);
+    /* the text of a dword as the lines print it */
+    CHECK_STR(IntcDspPciDwordText(0x7F508086, TRUE, Text), "0x7f508086");
+    CHECK_STR(IntcDspPciDwordText(0, TRUE, Text), "0x00000000");
+    CHECK_STR(IntcDspPciDwordText(4, FALSE, Text), "unread");
+    /* an original of 0x08: 0x10 is written */
+    Bus.PciConfig[0x0C] = 0x08;
+    CHECK(IntcDspDeadWindowCollect(FwloadDspWindowDead, &Pci, &Block));
+    CHECK(Block.Control.Done);
+    CHECK_EQ(Block.Control.Original, 0x08);
+    CHECK_EQ(Block.Control.Wrote, 0x10);
+    CHECK_EQ(Block.Control.Read, 0x10);
+    CHECK_EQ(Block.Control.Restored, 0x08);
+    CHECK_EQ(Bus.PciConfig[0x0C], 0x08);
+    /* a write that does not land through the path: the control says so, and the original is still there */
+    Bus.PciConfig[0x0C] = 0x10;
+    FakeBusPciNoStick(&Bus, 0x0C);
+    CHECK(IntcDspDeadWindowCollect(FwloadDspWindowDead, &Pci, &Block));
+    CHECK(Block.Control.Done);
+    CHECK_EQ(Block.Control.Original, 0x10);
+    CHECK_EQ(Block.Control.Wrote, 0x08);
+    CHECK_EQ(Block.Control.Read, 0x10);
+    CHECK_EQ(Block.Control.Restored, 0x10);
+    CHECK_EQ(Bus.PciConfig[0x0C], 0x10);
+
+    /* the capability list: none; one without the power-management capability; a pointer into the header; one not aligned; one that loops; a word the bus does not answer */
+    Bus.PciConfig[0x34] = 0x00;
+    IntcDspPciPowerManagement(&Pci, &Block.Pm);
+    CHECK(!Block.Pm.Present);
+    CHECK_EQ(Block.Pm.Pointer, 0x00);
+    Bus.PciConfig[0x34] = 0x50;
+    IntcDspPciPowerManagement(&Pci, &Block.Pm);
+    CHECK(!Block.Pm.Present);
+    CHECK_EQ(Block.Pm.Pointer, 0x50);
+    Bus.PciConfig[0x34] = 0x20;
+    IntcDspPciPowerManagement(&Pci, &Block.Pm);
+    CHECK(!Block.Pm.Present);
+    Bus.PciConfig[0x34] = 0x62;
+    IntcDspPciPowerManagement(&Pci, &Block.Pm);
+    CHECK(!Block.Pm.Present);
+    Bus.PciConfig[0x34] = 0x60;
+    Bus.PciConfig[0x61] = 0x60;
+    IntcDspPciPowerManagement(&Pci, &Block.Pm);
+    CHECK(!Block.Pm.Present);
+    CHECK_EQ(Block.Pm.Pointer, 0x60);
+    Bus.PciConfig[0x61] = 0x70;
+    FakeBusPciNoRead(&Bus, 0x64);
+    CHECK(IntcDspDeadWindowCollect(FwloadDspWindowDead, &Pci, &Block));
+    CHECK(!Block.ConfigRead[13]);
+    CHECK(Block.ConfigRead[12] && Block.ConfigRead[0]);
+    CHECK(Block.Pm.Present);
+    CHECK_EQ(Block.Pm.State, 3);
+}
+
+/*
  * The platform's power gating of the DSP around a boot (N15, the first boot on silicon, image p5e3: every BAR4
  * read all ones, before and after the power-up). (a) the order at a boot: the gating off, then the global
  * processing enable, then the subsystem's power request, and no read reaches a gated window; (b) the gating
@@ -2971,6 +3253,7 @@ main(
     CheckRetry(&H, Image);
     CheckCancellation(&H, Image);
     CheckPowerGating(&H, Image);
+    CheckGatingReadback(&H, Image);
     CheckBadPayload(&H, Data, Image);
     CheckDma(&H, Data, Image);
     CheckBusBound();

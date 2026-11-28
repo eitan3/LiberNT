@@ -3,6 +3,7 @@
 
 /* the appended members carry the bus's own types */
 #include "policy.h"
+#include "dspgating.h"
 
 //
 // The ADSP_BUS_INTERFACE interface GUID
@@ -61,6 +62,8 @@ typedef VOID (*PADSP_GET_WALL_CLOCK_REGISTER) (_In_ PVOID _context, _Out_ PULONG
 typedef _Must_inspect_result_ NTSTATUS (*PADSP_STREAM_NOTIFICATION_EVENT) (_In_ PVOID _context, _In_ HANDLE Handle, _In_ PKEVENT NotificationEvent);
 /* Appended for the DSP driver's firmware boot: the platform's clock and power gating of the DSP, two bits of PCI config space (dspgating.h) that only the bus reaches, as it owns the FDO. AllowGating FALSE keeps the DSP powered around a boot (CGCTL ADSPDCGE cleared, PGCTL ADSPPGD set), TRUE lets the platform gate it again (the reverse); the link's own L1 policy is not touched. A driver built before it reads the structure through DetachDmaBuffer; one that needs it asks by size, and a bus that has it may leave it empty */
 typedef _Must_inspect_result_ NTSTATUS (*PADSP_SET_DSP_POWER_GATING) (_In_ PVOID _context, _In_ BOOLEAN AllowGating);
+/* Appended after SetDspPowerGating: what the bus's last call of it read of the two registers after each of its forms (dspgating.h HDA_DSP_GATING_READBACK), for the driver's line when a bit did not change; the call itself reads them back, tries the byte form once for a bit that did not take, and answers STATUS_UNSUCCESSFUL when it still did not. A driver built before it reads the structure through SetDspPowerGating, and one that needs it asks by size */
+typedef VOID (*PADSP_GET_DSP_POWER_GATING_READBACK) (_In_ PVOID _context, _Out_ PHDA_DSP_GATING_READBACK Readback);
 
 typedef struct _ADSP_BUS_INTERFACE
 {
@@ -115,6 +118,8 @@ typedef struct _ADSP_BUS_INTERFACE
     PADSP_DETACH_DMA_BUFFER                     DetachDmaBuffer;
     /* Appended after version 3 (dspgating.h): a driver built before it reads the structure through DetachDmaBuffer, and one that needs it asks by size */
     PADSP_SET_DSP_POWER_GATING                  SetDspPowerGating;
+    /* Appended after SetDspPowerGating: a driver built before it reads the structure through SetDspPowerGating, and one that needs it asks by size */
+    PADSP_GET_DSP_POWER_GATING_READBACK          GetDspPowerGatingReadback;
 } ADSP_BUS_INTERFACE, * PADSP_BUS_INTERFACE;
 
 #ifndef ADSP_DECL

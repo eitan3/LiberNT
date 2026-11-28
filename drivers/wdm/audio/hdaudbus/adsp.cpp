@@ -586,41 +586,31 @@ NTSTATUS ADSPUnregisterNotificationEvent(_In_ PVOID _context, _In_ HANDLE Handle
 	return hdac_stream_unregister_event(stream, NotificationEvent) ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
 }
 
-/* The platform's clock and power gating of the DSP (dspgating.h): a read-modify-write of the two registers through the PCI bus interface the FDO holds, the clock gate first and the power gate last, as Linux's hda_dsp_ctrl_clock_power_gating orders them; the bus does it itself because the FDO's config space is the bus's to reach, and a word that does not read or write whole ends the call with nothing more written */
+/* The platform's clock and power gating of the DSP (dspgating.h): a read-modify-write of the two registers through the PCI bus interface the FDO holds, the clock gate first and the power gate last, as Linux's hda_dsp_ctrl_clock_power_gating orders them, each read back after the write (HdaDspPowerGatingWrite): a bit that does not read as written gets the byte form once, and one that still does not ends the call with STATUS_UNSUCCESSFUL, so that a boot stops there. The bus does it itself because the FDO's config space is the bus's to reach, and a word that does not read or write whole ends the call with nothing more written; what was read is kept for the driver's line (ADSPGetDspPowerGatingReadback) */
 NTSTATUS ADSPSetDspPowerGating(_In_ PVOID _context, _In_ BOOLEAN AllowGating) {
 	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
-	HDA_DSP_GATING Gating;
-	PBUS_INTERFACE_STANDARD pci;
-	ULONG Bytes;
+	HDA_DSP_GATING_READBACK Readback;
+	NTSTATUS Status;
 
 	if (!_context)
 		return STATUS_NO_SUCH_DEVICE;
 	if (!devData->FdoContext) {
 		return STATUS_NO_SUCH_DEVICE;
 	}
-	pci = &devData->FdoContext->BusInterface;
-	if (!pci->GetBusData || !pci->SetBusData) {
-		return STATUS_NOT_SUPPORTED;
-	}
-	RtlZeroMemory(&Gating, sizeof(Gating));
-	Bytes = pci->GetBusData(pci->Context, PCI_WHICHSPACE_CONFIG, &Gating.Cgctl, HDA_PCIREG_CGCTL, sizeof(Gating.Cgctl));
-	if (Bytes != sizeof(Gating.Cgctl)) {
-		return STATUS_DEVICE_PROTOCOL_ERROR;
-	}
-	Bytes = pci->GetBusData(pci->Context, PCI_WHICHSPACE_CONFIG, &Gating.Pgctl, HDA_PCIREG_PGCTL, sizeof(Gating.Pgctl));
-	if (Bytes != sizeof(Gating.Pgctl)) {
-		return STATUS_DEVICE_PROTOCOL_ERROR;
-	}
-	HdaDspPowerGatingValues(AllowGating ? 1 : 0, Gating.Pgctl, Gating.Cgctl, &Gating);
-	Bytes = pci->SetBusData(pci->Context, PCI_WHICHSPACE_CONFIG, &Gating.Cgctl, HDA_PCIREG_CGCTL, sizeof(Gating.Cgctl));
-	if (Bytes != sizeof(Gating.Cgctl)) {
-		return STATUS_DEVICE_PROTOCOL_ERROR;
-	}
-	Bytes = pci->SetBusData(pci->Context, PCI_WHICHSPACE_CONFIG, &Gating.Pgctl, HDA_PCIREG_PGCTL, sizeof(Gating.Pgctl));
-	if (Bytes != sizeof(Gating.Pgctl)) {
-		return STATUS_DEVICE_PROTOCOL_ERROR;
-	}
-	return STATUS_SUCCESS;
+	Status = HdaDspPowerGatingWrite(&devData->FdoContext->BusInterface, AllowGating ? 1 : 0, &Readback);
+	devData->FdoContext->DspPowerGating = Readback;
+	return Status;
+}
+
+/* What the last SetDspPowerGating of the controller read of the two registers after each of its forms: the driver's line at a gating that did not change */
+VOID ADSPGetDspPowerGatingReadback(_In_ PVOID _context, _Out_ PHDA_DSP_GATING_READBACK Readback) {
+	PPDO_DEVICE_DATA devData = (PPDO_DEVICE_DATA)_context;
+
+	RtlZeroMemory(Readback, sizeof(*Readback));
+	if (!_context)
+		return;
+	if (devData->FdoContext)
+		*Readback = devData->FdoContext->DspPowerGating;
 }
 
 ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
@@ -665,6 +655,7 @@ ADSP_BUS_INTERFACE ADSP_BusInterface(PVOID Context) {
 	busInterface.RegisterNotificationEvent = ADSPRegisterNotificationEvent;
 	busInterface.UnregisterNotificationEvent = ADSPUnregisterNotificationEvent;
 	busInterface.SetDspPowerGating = ADSPSetDspPowerGating;
+	busInterface.GetDspPowerGatingReadback = ADSPGetDspPowerGatingReadback;
 
 	return busInterface;
 }

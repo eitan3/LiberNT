@@ -7,6 +7,7 @@
 
 #include "intcdsp.h"
 #include <dspgating.h>
+#include "pcidiag.h"
 
 #define INTCDSP_STALL_MAX_US     2000
 
@@ -292,34 +293,109 @@ IntcDspReadConfig32(
  * The platform's clock and power gating of the DSP, through the bus: the loader takes it off before
  * its first register write and allows it again on every way out of the boot (fwboot.c FwloadBoot),
  * so that the DSP's window decodes while it is booted. One line when it comes off, with the two
- * registers before and after, for the first boot on silicon; a failure is a line either way.
+ * registers before and after, for the first boot on silicon; a failure is a line either way. The bus
+ * reads the two registers back and tries the byte form for a bit that did not take (dspgating.h
+ * HdaDspPowerGatingWrite): a gating that did not change is four readbacks on a line of their own,
+ * and taken off without success it ends the boot there with the dead window's status, before the
+ * processing enable and the power request.
  */
 static
-VOID
+FWLOAD_STATUS
 IntcDspOpDspPowerGating(
     PVOID Context,
     BOOLEAN AllowGating)
 {
     PINTCDSP_DEVICE Dev = Context;
+    HDA_DSP_GATING_READBACK Readback;
     UINT32 PgctlBefore = 0, CgctlBefore = 0, PgctlAfter = 0, CgctlAfter = 0;
-    BOOLEAN Read;
+    UINT32 PgctlNow, CgctlNow;
+    BOOLEAN Read, ReadbackRead;
     NTSTATUS Status;
 
+    RtlZeroMemory(&Readback, sizeof(Readback));
     Read = IntcDspReadConfig32(Dev, HDA_PCIREG_PGCTL, &PgctlBefore) &&
         IntcDspReadConfig32(Dev, HDA_PCIREG_CGCTL, &CgctlBefore);
     Status = Dev->Bus.SetDspPowerGating(Dev->Bus.Context, AllowGating);
+    /* what the bus read after each of its forms: a member a bus built before it does not carry */
+    ReadbackRead = INTCDSP_BUS_HAS(&Dev->Bus, GetDspPowerGatingReadback);
+    if (ReadbackRead)
+        Dev->Bus.GetDspPowerGatingReadback(Dev->Bus.Context, &Readback);
+    if (!AllowGating)
+    {
+        Read = IntcDspReadConfig32(Dev, HDA_PCIREG_PGCTL, &PgctlAfter) &&
+            IntcDspReadConfig32(Dev, HDA_PCIREG_CGCTL, &CgctlAfter) && Read;
+        IntcDspLog("power gating: PGCTL 0x%08x CGCTL 0x%08x -> PGCTL 0x%08x CGCTL 0x%08x%s%s\n",
+                   PgctlBefore, CgctlBefore, PgctlAfter, CgctlAfter, Read ? "" : " (the registers are not read)",
+                   Readback.ByteForm ? " (the byte form was needed)" : "");
+    }
+    if (Status == STATUS_UNSUCCESSFUL && ReadbackRead)
+    {
+        PgctlNow = Readback.ByteForm ? Readback.PgctlAfterByte : Readback.PgctlAfterDword;
+        CgctlNow = Readback.ByteForm ? Readback.CgctlAfterByte : Readback.CgctlAfterDword;
+        IntcDspLog("the platform's power gating did not change: PGCTL 0x%08x CGCTL 0x%08x (after the dword write 0x%08x 0x%08x, after the byte write 0x%08x 0x%08x)\n",
+                   PgctlNow, CgctlNow, Readback.PgctlAfterDword, Readback.CgctlAfterDword,
+                   Readback.PgctlAfterByte, Readback.CgctlAfterByte);
+    }
+    if (NT_SUCCESS(Status))
+        return FwloadOk;
     if (AllowGating)
     {
-        if (!NT_SUCCESS(Status))
-            IntcDspLog("the DSP's power gating is not allowed again: 0x%08lx\n", Status);
-        return;
+        IntcDspLog("the DSP's power gating is not allowed again: 0x%08lx\n", Status);
+        return FwloadOk;
     }
-    Read = IntcDspReadConfig32(Dev, HDA_PCIREG_PGCTL, &PgctlAfter) &&
-        IntcDspReadConfig32(Dev, HDA_PCIREG_CGCTL, &CgctlAfter) && Read;
-    IntcDspLog("power gating: PGCTL 0x%08x CGCTL 0x%08x -> PGCTL 0x%08x CGCTL 0x%08x%s\n",
-               PgctlBefore, CgctlBefore, PgctlAfter, CgctlAfter, Read ? "" : " (the registers are not read)");
-    if (!NT_SUCCESS(Status))
-        IntcDspLog("the DSP's power gating is not taken off: 0x%08lx\n", Status);
+    IntcDspLog("the DSP's power gating is not taken off: 0x%08lx\n", Status);
+    return FwloadDspWindowDead;
+}
+
+/*
+ * The block of a boot whose DSP window did not answer (intcdsp.c IntcDspBoot): the processing enable
+ * as the loader read it right after its update, or that the boot stopped before it; the controller's
+ * PCI config as the bus reads it, dwords of the header and of the vendor-specific block; the power
+ * management capability; one write control through the bus's own two members, which says whether a
+ * write reaches this device at all (pcidiag.h); and the DSP's first registers after all that.
+ */
+VOID
+IntcDspLogDeadWindow(
+    _In_ PINTCDSP_DEVICE Dev,
+    _In_ FWLOAD_STATUS Status)
+{
+    INTCDSP_DEAD_WINDOW Block;
+    CHAR Text[INTCDSP_PCI_DIAG_COUNT][12];
+    ULONG Index;
+    UINT32 PpCtl;
+    UINT32 Bar4[4];
+
+    if (!IntcDspDeadWindowCollect(Status, &Dev->PciConfig, &Block))
+        return;
+    for (Index = 0; Index < INTCDSP_PCI_DIAG_COUNT; Index++)
+        IntcDspPciDwordText(Block.Config[Index], Block.ConfigRead[Index], Text[Index]);
+    if (Dev->Fw.PpCtlEnabled)
+        IntcDspLog("PPCTL after the processing enable: 0x%08x (GPROCEN %u, PIE %u)\n",
+                   Dev->Fw.PpCtlAfterEnable, (Dev->Fw.PpCtlAfterEnable & FWLOAD_PPCTL_GPROCEN) ? 1 : 0,
+                   (Dev->Fw.PpCtlAfterEnable & FWLOAD_PPCTL_PIE) ? 1 : 0);
+    else
+    {
+        PpCtl = IntcDspOpsTable()->Read32(Dev, FWLOAD_BAR_PP, FWLOAD_PP_OFFSET_PPCTL);
+        IntcDspLog("PPCTL after the processing enable: not reached, the boot stopped at the platform's power gating (PPCTL now 0x%08x, GPROCEN %u, PIE %u)\n",
+                   PpCtl, (PpCtl & FWLOAD_PPCTL_GPROCEN) ? 1 : 0, (PpCtl & FWLOAD_PPCTL_PIE) ? 1 : 0);
+    }
+    IntcDspLog("PCI config through the bus: 0x00 %s 0x04 %s 0x0C %s 0x34 %s\n", Text[0], Text[1], Text[2], Text[3]);
+    IntcDspLog("PCI config through the bus: 0x40 %s 0x44 %s 0x48 %s 0x4C %s 0x50 %s\n",
+               Text[4], Text[5], Text[6], Text[7], Text[8]);
+    IntcDspLog("PCI config through the bus: 0x54 %s 0x58 %s 0x5C %s 0x60 %s 0x64 %s\n",
+               Text[9], Text[10], Text[11], Text[12], Text[13]);
+    if (Block.Pm.Present)
+        IntcDspLog("PCI PMCSR 0x%04x (D%u)\n", Block.Pm.Control, Block.Pm.State);
+    else
+        IntcDspLog("PCI PMCSR: no power-management capability in the list (Capabilities Pointer 0x%02x)\n", Block.Pm.Pointer);
+    IntcDspLog("config write control: CLS 0x%02x -> wrote 0x%02x -> read 0x%02x -> restored 0x%02x%s\n",
+               Block.Control.Original, Block.Control.Wrote, Block.Control.Read, Block.Control.Restored,
+               Block.Control.Done ? "" : " (not completed: a transfer did not go whole)");
+    for (Index = 0; Index < 4; Index++)
+        Bar4[Index] = IntcDspOpsTable()->Read32(Dev, FWLOAD_BAR_DSP, 0x1000 + 4 * Index);
+    IntcDspLog("ADSPCS 0x%08x, BAR4 +0x1000: 0x%08x 0x%08x 0x%08x 0x%08x\n",
+               IntcDspOpsTable()->Read32(Dev, FWLOAD_BAR_DSP, Dev->Platform->SubsystemControl),
+               Bar4[0], Bar4[1], Bar4[2], Bar4[3]);
 }
 
 static const FWLOAD_OPS IntcDspOps =

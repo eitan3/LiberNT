@@ -13,18 +13,94 @@
 #endif
 #include "fake_bus.h"
 
-/* The bus's member for the DSP's power gating (N15): the same rule over the model's two words that adsp.cpp applies to the controller's config space */
+#ifdef FAKE_BUS_KERNEL
+/* the kernel's PCI bus interface takes the calling convention of its members; the host's stub has none */
+#define FAKE_BUS_CALL NTAPI
+#else
+#define FAKE_BUS_CALL
+#endif
+
+/* The byte of the model's config space at Offset: bytes 0x44 to 0x4B are the two gating words' (little endian, as the model and the target are), every other byte is the array's */
+static UINT8* FakePciByte(PFAKE_BUS Bus, ULONG Offset)
+{
+    if (Offset >= HDA_PCIREG_PGCTL && Offset < HDA_PCIREG_PGCTL + sizeof(Bus->Config))
+        return (UINT8*)&Bus->Config + (Offset - HDA_PCIREG_PGCTL);
+    return &Bus->PciConfig[Offset];
+}
+
+/* Whether the test marked the byte at Offset in one of the three masks */
+static BOOLEAN FakePciMarked(const UINT32* Marks, ULONG Offset)
+{
+    return (Marks[Offset >> 5] & (1u << (Offset & 31))) != 0;
+}
+
+/*
+ * The fake's two members of the PCI bus interface over the model's config space. A read moves its
+ * bytes whole unless it touches a byte marked as not answering: then it moves nothing. A write lands
+ * in every byte but those marked as not taking one; a byte marked as taking one byte alone takes a
+ * transfer of one byte and refuses a longer one. The bus sees every write go whole, as the real
+ * interface reports the bytes it moved, not what the register did with them.
+ */
+static ULONG FAKE_BUS_CALL FakeBusGetBusData(PVOID Context, ULONG WhichSpace, PVOID Buffer, ULONG Offset, ULONG Length)
+{
+    PFAKE_BUS Bus = (PFAKE_BUS)Context;
+    ULONG Index;
+
+    (VOID)WhichSpace;
+    Bus->PciReads++;
+    if (Offset > sizeof(Bus->PciConfig) || Length > sizeof(Bus->PciConfig) - Offset)
+        return 0;
+    for (Index = 0; Index < Length; Index++)
+    {
+        if (FakePciMarked(Bus->PciNoRead, Offset + Index))
+            return 0;
+        ((PUCHAR)Buffer)[Index] = *FakePciByte(Bus, Offset + Index);
+    }
+    return Length;
+}
+
+static ULONG FAKE_BUS_CALL FakeBusSetBusData(PVOID Context, ULONG WhichSpace, PVOID Buffer, ULONG Offset, ULONG Length)
+{
+    PFAKE_BUS Bus = (PFAKE_BUS)Context;
+    ULONG Index;
+
+    (VOID)WhichSpace;
+    Bus->PciWrites++;
+    if (Offset > sizeof(Bus->PciConfig) || Length > sizeof(Bus->PciConfig) - Offset)
+        return 0;
+    for (Index = 0; Index < Length; Index++)
+    {
+        if (FakePciMarked(Bus->PciNoStick, Offset + Index) ||
+            (Length > 1 && FakePciMarked(Bus->PciByteOnly, Offset)))
+            continue;
+        *FakePciByte(Bus, Offset + Index) = ((const UCHAR*)Buffer)[Index];
+    }
+    return Length;
+}
+
+/*
+ * The bus's member for the DSP's power gating (N15): the bus's own rule over the model's config
+ * space, with its readback (dspgating.h HdaDspPowerGatingWrite), through the fake's two PCI members,
+ * as adsp.cpp applies it to the controller's config space
+ */
 static NTSTATUS FakeBusPowerGating(PVOID Context, BOOLEAN AllowGating)
 {
     PFAKE_BUS Bus = (PFAKE_BUS)Context;
+    BUS_INTERFACE_STANDARD Pci;
 
     if (Bus == NULL)
         return STATUS_NO_SUCH_DEVICE;
     Bus->GatingCalls++;
     if (AllowGating)
         Bus->GatingAllowCalls++;
-    HdaDspPowerGatingValues(AllowGating ? 1 : 0, Bus->Config.Pgctl, Bus->Config.Cgctl, &Bus->Config);
-    return STATUS_SUCCESS;
+    FakeBusPciInterface(Bus, &Pci);
+    return HdaDspPowerGatingWrite(&Pci, AllowGating ? 1 : 0, &Bus->GatingReadback);
+}
+
+/* The member that hands out what the last call read */
+static VOID FakeBusGatingReadback(PVOID Context, PHDA_DSP_GATING_READBACK Readback)
+{
+    *Readback = ((PFAKE_BUS)Context)->GatingReadback;
 }
 
 VOID
@@ -32,6 +108,42 @@ FakeBusPowerGatingEnable(
     PFAKE_BUS Bus)
 {
     Bus->Interface.SetDspPowerGating = FakeBusPowerGating;
+    Bus->Interface.GetDspPowerGatingReadback = FakeBusGatingReadback;
+}
+
+VOID
+FakeBusPciInterface(
+    PFAKE_BUS Bus,
+    PBUS_INTERFACE_STANDARD Pci)
+{
+    RtlZeroMemory(Pci, sizeof(*Pci));
+    Pci->Context = Bus;
+    Pci->GetBusData = FakeBusGetBusData;
+    Pci->SetBusData = FakeBusSetBusData;
+}
+
+VOID
+FakeBusPciNoRead(
+    PFAKE_BUS Bus,
+    UINT32 Offset)
+{
+    Bus->PciNoRead[Offset >> 5] |= 1u << (Offset & 31);
+}
+
+VOID
+FakeBusPciNoStick(
+    PFAKE_BUS Bus,
+    UINT32 Offset)
+{
+    Bus->PciNoStick[Offset >> 5] |= 1u << (Offset & 31);
+}
+
+VOID
+FakeBusPciByteOnly(
+    PFAKE_BUS Bus,
+    UINT32 Offset)
+{
+    Bus->PciByteOnly[Offset >> 5] |= 1u << (Offset & 31);
 }
 
 #ifndef FAKE_BUS_KERNEL

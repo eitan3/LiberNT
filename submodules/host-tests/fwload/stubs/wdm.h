@@ -1,4 +1,4 @@
-/* Host stand-in for the WDM types the ADSP bus interface names: the layout of the structures is never used on the host */
+/* Host stand-in for the WDM types the ADSP bus interface names: the layouts are never used on the host but the PCI bus interface's, which the fake bus builds and the gating rule (dspgating.h) and the dead window's diagnostics (intcdsp pcidiag.h) read the controller's config space through */
 #include "../shim.h"
 
 #ifndef FWLOAD_STUB_WDM_H
@@ -6,9 +6,14 @@
 
 typedef VOID (*PINTERFACE_REFERENCE)(PVOID Context);
 typedef VOID (*PINTERFACE_DEREFERENCE)(PVOID Context);
+/* wdm.h: the PCI bus driver's interface to a device's configuration space. A member takes the space (PCI_WHICHSPACE_CONFIG is the configuration space), the buffer, the offset in the space and the length in bytes, and answers the bytes it moved */
+#define PCI_WHICHSPACE_CONFIG       0x0
+typedef ULONG (*PGET_SET_BUS_DATA)(PVOID Context, ULONG WhichSpace, PVOID Buffer, ULONG Offset, ULONG Length);
 typedef struct _BUS_INTERFACE_STANDARD
 {
-    UCHAR Opaque;
+    PVOID Context;
+    PGET_SET_BUS_DATA GetBusData;
+    PGET_SET_BUS_DATA SetBusData;
 } BUS_INTERFACE_STANDARD, *PBUS_INTERFACE_STANDARD;
 typedef enum _DEVICE_POWER_STATE
 {

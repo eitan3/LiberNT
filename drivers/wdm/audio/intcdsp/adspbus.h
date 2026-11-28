@@ -12,6 +12,7 @@
 #include <wdm.h>
 #include <hdaudio.h>
 #include <policy.h>
+#include <dspgating.h>
 
 /* The version of GUID_ADSP_BUS_INTERFACE this driver asks for: a bus of version 1 or 2 answers with a shorter structure (drivers/wdm/audio/hdaudbus/adsp.h); version 3 carries DetachDmaBuffer, without which no stream is opened (IntcDspBusStreams), so an older bus is refused by the framework's query (R5-01) */
 #define ADSP_BUS_INTERFACE_VERSION  3
@@ -78,6 +79,8 @@ typedef void(*PADSP_GET_WALL_CLOCK_REGISTER)(_In_ PVOID Context, _Out_ PULONG* W
 typedef _Must_inspect_result_ NTSTATUS(*PADSP_STREAM_NOTIFICATION_EVENT)(_In_ PVOID Context, _In_ HANDLE Handle, _In_ PKEVENT NotificationEvent);
 /* Appended after version 3 (drivers/wdm/audio/hdaudbus/adsp.h, dspgating.h): the platform's clock and power gating of the DSP, two bits of PCI config space that only the bus reaches; FALSE keeps the DSP powered around a boot, TRUE lets the platform gate it again. A bus built before it reports a shorter structure and one that has it may leave it empty: without it no firmware is booted (IntcDspBusPowerGating), since on silicon a gated DSP answers all ones to every read */
 typedef _Must_inspect_result_ NTSTATUS(*PADSP_SET_DSP_POWER_GATING)(_In_ PVOID Context, _In_ BOOLEAN AllowGating);
+/* Appended after SetDspPowerGating (drivers/wdm/audio/hdaudbus/adsp.h, dspgating.h HDA_DSP_GATING_READBACK): what the bus's last call of it read of the two registers after each of its forms, for the driver's line when a bit did not change; the call itself reads them back, tries the byte form once for a bit that did not take, and answers STATUS_UNSUCCESSFUL when it still did not. A bus built before it reports a shorter structure */
+typedef VOID(*PADSP_GET_DSP_POWER_GATING_READBACK)(_In_ PVOID Context, _Out_ PHDA_DSP_GATING_READBACK Readback);
 
 typedef struct _ADSP_BUS_INTERFACE
 {
@@ -114,6 +117,7 @@ typedef struct _ADSP_BUS_INTERFACE
     PADSP_STREAM_NOTIFICATION_EVENT UnregisterNotificationEvent;
     PADSP_DETACH_DMA_BUFFER DetachDmaBuffer;
     PADSP_SET_DSP_POWER_GATING SetDspPowerGating;
+    PADSP_GET_DSP_POWER_GATING_READBACK GetDspPowerGatingReadback;
 } ADSP_BUS_INTERFACE, *PADSP_BUS_INTERFACE;
 
 /* Whether the interface a query returned carries one appended member: a bus built before it reports a shorter structure, and one that has it may leave it empty */

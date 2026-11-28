@@ -681,6 +681,8 @@ IntcDspBoot(
                FwloadStatusName(Dev->Fw.Status), Dev->Fw.RomStatus, FwloadFsrStateName(Dev->Fw.RomStatus & FWLOAD_FSR_STATE_MASK),
                Dev->Fw.RomError, FwloadRomErrorName(Dev->Fw.RomError), Dev->Fw.LastIpcStatus, Dev->Fw.LastIpcPrimary, Dev->Fw.LastIpcExtension, Dev->Fw.Attempt,
                Dev->Fw.InterruptCount, FwloadStatusName(Dev->Fw.CleanupStatus), Dev->Adspcs);
+    /* a boot whose window did not answer, at the power gating or at the power-up: what the controller's PCI config says of it, and whether a write reaches the device at all (hwops.c IntcDspLogDeadWindow) */
+    IntcDspLogDeadWindow(Dev, Status);
     /* the boot's last step allowed the platform's power gating of the DSP again: whether the DSP's window still answers is a silicon fact the next log must carry */
     if (Status == FwloadOk)
         IntcDspLog("after the boot (gating allowed again): ADSPCS 0x%08x\n", Dev->Adspcs);

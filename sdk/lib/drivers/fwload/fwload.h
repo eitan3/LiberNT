@@ -514,8 +514,11 @@ typedef struct _FWLOAD_OPS
      * reaches. FALSE keeps the DSP powered (taken off before a boot touches the DSP, as Linux's hda_dsp_pre_fw_run
      * does), TRUE lets the platform gate it again (on every way out of FwloadBoot). NULL: the library behaves as
      * it did without it, and nothing is written.
+     * The answer of the FALSE call is the boot's: FwloadOk, or the status the boot fails with right there, before
+     * anything reaches the DSP (the gating allowed again on the way out, whatever the call achieved). The answer
+     * of the TRUE call is the way out's, for the driver to log alone.
      */
-    VOID (*DspPowerGating)(PVOID Context, BOOLEAN AllowGating);
+    FWLOAD_STATUS (*DspPowerGating)(PVOID Context, BOOLEAN AllowGating);
 } FWLOAD_OPS, *PFWLOAD_OPS;
 
 /* What the firmware answered after FW_READY */
@@ -589,6 +592,9 @@ struct _FWLOAD_CONTEXT
     BOOLEAN InterruptStorm;
     BOOLEAN SubsystemOn;
     BOOLEAN CoreOn;
+    /* PPCTL as read right after the boot set the global processing enable (FwloadBoot), for the driver's line when the window does not answer; PpCtlEnabled says whether the boot reached that step */
+    UINT32 PpCtlAfterEnable;
+    BOOLEAN PpCtlEnabled;
     UINT32 InterruptCount;
     /* DSP interrupts in a row that no received message separated */
     UINT32 StormCount;

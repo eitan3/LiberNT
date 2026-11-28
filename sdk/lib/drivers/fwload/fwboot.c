@@ -801,7 +801,8 @@ FwloadGatingAllow(
     if (!Context->GatingDisabled)
         return;
     Context->GatingDisabled = FALSE;
-    Context->Ops->DspPowerGating(Context->OpsContext, TRUE);
+    /* the answer is the driver's to log: the way out goes on whatever the gating did */
+    (VOID)Context->Ops->DspPowerGating(Context->OpsContext, TRUE);
 }
 
 /* Everything the boot switched on goes off again, in the order of mtl_power_down_dsp and the suspend path of hda-dsp.c; the platform's power gating of the DSP, which the boot took off first, is allowed again last, whichever way the boot ended */
@@ -1127,16 +1128,21 @@ FwloadBoot(
     Context->FailedState = FwloadStateOff;
 
     Context->State = FwloadStatePoweringUp;
-    Context->SubsystemOn = TRUE;
-    /* the platform's clock and power gating of the DSP comes off before anything reaches the DSP, so that its window decodes: Linux's hda_dsp_pre_fw_run; the operation is optional, and the flag it sets is what every way out reads (FwloadGatingAllow), so a failed or cancelled boot cannot leave it off */
+    /* the platform's clock and power gating of the DSP comes off before anything reaches the DSP, so that its window decodes: Linux's hda_dsp_pre_fw_run; the operation is optional, and the flag it sets is what every way out reads (FwloadGatingAllow), so a failed or cancelled boot cannot leave it off. The flag is set first, so that the way out allows the gating again whatever the call achieved: a write that half landed is the platform's to take back. A call that fails ends the boot here, its status the boot's, before anything reaches the DSP: the subsystem is not the boot's yet, so the way out does not write to it */
     if (Context->Ops->DspPowerGating != NULL)
     {
-        Context->Ops->DspPowerGating(Context->OpsContext, FALSE);
         Context->GatingDisabled = TRUE;
+        Status = Context->Ops->DspPowerGating(Context->OpsContext, FALSE);
+        if (Status != FwloadOk)
+            return FwloadFail(Context, Context->State, Status);
     }
+    Context->SubsystemOn = TRUE;
     /* the processing capabilities' global enable for the DSP, and with it the DSP-to-host interrupt enable (PPCTL PIE, which Linux sets at its probe, hda_dsp_ctrl_ppcap_int_enable) when the caller asked for interrupts: without it no DSP interrupt reaches the host; the boot polls without it */
     FwloadUpdate(Context, FWLOAD_BAR_PP, FWLOAD_PP_OFFSET_PPCTL, FWLOAD_PPCTL_GPROCEN | FWLOAD_PPCTL_PIE,
         FWLOAD_PPCTL_GPROCEN | (Context->UseInterrupts ? FWLOAD_PPCTL_PIE : 0));
+    /* the register as the enable left it, read at once: for the driver's line when the window does not answer */
+    Context->PpCtlAfterEnable = Context->Ops->Read32(Context->OpsContext, FWLOAD_BAR_PP, FWLOAD_PP_OFFSET_PPCTL);
+    Context->PpCtlEnabled = TRUE;
     Status = FwloadSubsystemPowerUp(Context);
     if (Status != FwloadOk)
         return FwloadFail(Context, Context->State, Status);

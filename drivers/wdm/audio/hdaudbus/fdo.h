@@ -121,6 +121,8 @@ typedef struct _FDO_CONTEXT
     ULONG Bar4Register; //the raw PCI BAR4 register
     BOOLEAN PpCapSane; //the processing capabilities header and PPCTL read back
     BUS_INTERFACE_STANDARD BusInterface; //PCI Bus Interface
+    /* what the DSP child's last SetDspPowerGating read of the controller's two gating registers after each of its forms (dspgating.h), for the driver's line when a bit did not change */
+    HDA_DSP_GATING_READBACK DspPowerGating;
     WDFINTERRUPT Interrupt;
     BOOLEAN InterruptResourcePresent;
     BOOLEAN InterruptConnected;
