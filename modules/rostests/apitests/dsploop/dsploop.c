@@ -25,6 +25,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include "compare.h"
+#include "walk.h"
 
 /* The KS identifiers the node reads use, as the mmdevapi apitests have theirs (devicetopology.c): the headers declare
  * these GUIDs by name but no library the test links defines them, so each is a constant of its own here */
@@ -144,10 +145,12 @@ VisitedPart(
  * decibels, as the tray reads it: through the topology's control interface, the node part's
  * IKsControl. The node is found by its subtype along the signal path from the endpoint's connector:
  * through the part a connector is connected to (the endpoint's connector to the filter's pin, a
- * bridge pin's to the next filter's) and the parts the signal reaches from a part, outgoing of a
- * render endpoint's connector and incoming to a capture endpoint's (the render topology's volume
- * node is downstream of the endpoint's connector: the wave pin, the DAC node, the bridge pin, the
- * topology's pin, the node). Each part is entered once.
+ * bridge pin's to the next filter's) and the parts the signal reaches from a part, incoming to a
+ * render endpoint's connector and outgoing from a capture endpoint's (walk.h DsploopWalkIncoming,
+ * N15-20: the endpoint's connector is bridged to the topology filter's pin of the endpoint itself, the
+ * jack's; the render topology's volume node is upstream of that pin: the wave's pin, the DAC node, the
+ * bridge pin, the topology's wave pin, the node, the endpoint's pin; a capture endpoint's node is
+ * downstream of its microphone pin). Each part is entered once.
  * A part without a control interface answers E_NOINTERFACE, and the caller falls back to the
  * endpoint's scalar with a line.
  */
@@ -248,8 +251,8 @@ ReadNodeProperty(
     }
     if (SUCCEEDED(hr))
     {
-        /* the signal leaves a render endpoint's connector (its data flow is in) and enters a capture endpoint's */
-        hr = NodePartOfSubtype(Part, Subtype, Flow == Out, 0, &Visited, &Node);
+        /* the parts upstream of a render endpoint's connector (its data flow is in), downstream of a capture endpoint's */
+        hr = NodePartOfSubtype(Part, Subtype, DsploopWalkIncoming(Flow == Out ? DsploopFlowOut : DsploopFlowIn), 0, &Visited, &Node);
         IPart_Release(Part);
     }
     VisitedFree(&Visited);

@@ -10,6 +10,7 @@
 #include <string.h>
 #include <math.h>
 #include "compare.h"
+#include "walk.h"
 
 /* The run's parameters, as the apitest has them (dsploop.c): one second of tone, a second of latency at most, the capture holding both */
 #define DSPLOOP_FRAMES           48000
@@ -643,6 +644,20 @@ CheckGain(
     }
 }
 
+/*
+ * The walk's direction (walk.h, N15-20): the parts upstream of a render endpoint's connector, downstream of a capture endpoint's, and the two flows as IConnector::GetDataFlow answers them
+ */
+static
+void
+CheckWalkDirection(
+    void)
+{
+    CHECK_EQ(DsploopFlowIn, 0);
+    CHECK_EQ(DsploopFlowOut, 1);
+    CHECK_EQ(DsploopWalkIncoming(DsploopFlowIn), 1);
+    CHECK_EQ(DsploopWalkIncoming(DsploopFlowOut), 0);
+}
+
 int
 main(
     void)
@@ -654,6 +669,7 @@ main(
     CheckNoMatch();
     CheckMidCycle();
     CheckGain();
+    CheckWalkDirection();
     printf("dsploop: %d checks, %d failures\n", Checks, Failures);
     return Failures != 0;
 }
