@@ -590,6 +590,10 @@ typedef struct _KSE_NODE
 #define IOCTL_KS_METHOD CTL_CODE(FILE_DEVICE_KS, 0x003, METHOD_NEITHER, FILE_ANY_ACCESS)
 #define S_OK 0
 #define E_INVALIDARG ((HRESULT)0x80070057)
+/* the node's flag of each request, as ks.h defines it */
+#define KSPROPERTY_TYPE_TOPOLOGY 0x10000000
+#define KSMETHOD_TYPE_TOPOLOGY   0x10000000
+#define KSEVENT_TYPE_TOPOLOGY    0x10000000
 
 #include "devicetopology_control.h"
 
@@ -666,7 +670,7 @@ fake_channel_init(
         CHECK_EQ((fake)->data_size, (data_size_)); \
     } while (0)
 
-/* A property of the node: a KSP_NODE of the part's node, the caller's header and the data as the driver takes them */
+/* A property of the node: a KSP_NODE of the part's node, the caller's header with the node's flag and the data as the driver takes them */
 static
 void
 check_node_property(
@@ -690,10 +694,19 @@ check_node_property(
     memcpy(&seen, fake.request, sizeof(seen));
     CHECK(IsEqualGUID(&seen.Property.Set, &AudioPropertySet));
     CHECK_EQ(seen.Property.Id, 7);
-    CHECK_EQ(seen.Property.Flags, GET);
+    CHECK_EQ(seen.Property.Flags, GET | KSPROPERTY_TYPE_TOPOLOGY);
     CHECK_EQ(seen.NodeId, NODE);
     CHECK_EQ(seen.Reserved, 0);
     CHECK_EQ(returned, sizeof(level));
+
+    /* a caller who set the node's flag is answered the same one flag */
+    fake_channel_init(&fake);
+    property.Flags = GET | KSPROPERTY_TYPE_TOPOLOGY;
+    hr = ks_node_property(&fake.channel, NODE, &property, sizeof(property), &level, sizeof(level), &returned);
+    CHECK_EQ(hr, S_OK);
+    memcpy(&seen, fake.request, sizeof(seen));
+    CHECK_EQ(seen.Property.Flags, GET | KSPROPERTY_TYPE_TOPOLOGY);
+    property.Flags = GET;
 
     /* the caller's buffer is a KSP_NODE naming another node and a reserved word: the driver sees the part's node and no reserved word */
     fake_channel_init(&fake);
@@ -749,7 +762,7 @@ check_node_method(
     memcpy(&seen, fake.request, sizeof(seen));
     CHECK(IsEqualGUID(&seen.Method.Set, &AudioPropertySet));
     CHECK_EQ(seen.Method.Id, 9);
-    CHECK_EQ(seen.Method.Flags, 0x3);
+    CHECK_EQ(seen.Method.Flags, 0x3 | KSMETHOD_TYPE_TOPOLOGY);
     CHECK_EQ(seen.NodeID, NODE);
     CHECK_EQ(seen.Reserved, 0);
     CHECK_EQ(returned, sizeof(value));
@@ -783,7 +796,7 @@ check_node_event(
     memcpy(&seen, fake.request, sizeof(seen));
     CHECK(IsEqualGUID(&seen.Event.Set, &AudioPropertySet));
     CHECK_EQ(seen.Event.Id, 5);
-    CHECK_EQ(seen.Event.Flags, 0x1);
+    CHECK_EQ(seen.Event.Flags, 0x1 | KSEVENT_TYPE_TOPOLOGY);
     CHECK_EQ(seen.NodeId, NODE);
     CHECK_EQ(seen.Reserved, 0);
 

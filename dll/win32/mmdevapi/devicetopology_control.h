@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT Core Audio
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     The control interface of a part that stands for a KS node: which parts are nodes, and the three requests the driver sees through the KS channel of the topology's filter (a KSP_NODE, a KSM_NODE and a KSE_NODE carrying the node's id). Free of COM, so that the host test runs the very code the DLL runs (N15-08)
+ * PURPOSE:     The control interface of a part that stands for a KS node: which parts are nodes, and the three requests the driver sees through the KS channel of the topology's filter (a KSP_NODE, a KSM_NODE and a KSE_NODE carrying the node's id and the request's node flag). Free of COM, so that the host test runs the very code the DLL runs (N15-08, N15-20)
  * COPYRIGHT:   Copyright 2026 LiberNT contributors
  */
 
@@ -10,7 +10,7 @@
 
 #include <stddef.h>
 
-/* The includer provides HRESULT, BOOL, DWORD, UINT, ULONG, HANDLE, ZeroMemory, KSPROPERTY, KSMETHOD, KSEVENT, KSP_NODE, KSM_NODE, KSE_NODE, the IOCTL_KS_* codes, S_OK and E_INVALIDARG */
+/* The includer provides HRESULT, BOOL, DWORD, UINT, ULONG, HANDLE, ZeroMemory, KSPROPERTY, KSMETHOD, KSEVENT, KSP_NODE, KSM_NODE, KSE_NODE, the IOCTL_KS_* codes, the KSPROPERTY_TYPE_TOPOLOGY, KSMETHOD_TYPE_TOPOLOGY and KSEVENT_TYPE_TOPOLOGY flags, S_OK and E_INVALIDARG */
 
 /* A part's local id: its kind in the high half and its index in the filter's list in the low one */
 #define PART_KIND_CONNECTOR 1
@@ -46,8 +46,12 @@ static inline BOOL part_node_id(UINT local_id, const void *path, ULONG *node)
 }
 
 /*
- * A property of the node: the caller's header (the set, the id and the flags) as a KSP_NODE of
- * the node, whatever node the caller's buffer names; the data is the driver's to read or fill.
+ * A property of the node: the caller's header (the set, the id and the flags) as a KSP_NODE of the
+ * node, whatever node the caller's buffer names, with the node's flag (KSPROPERTY_TYPE_TOPOLOGY,
+ * ks.h): the driver tells a node's request from a filter's or a pin's by that flag (portcls
+ * undoc.cpp PcHandlePropertyWithTable, ksfilter filter.c), and without it the request is answered
+ * STATUS_NOT_FOUND, the 0x80070490 the E5b walk met at the volume node (N15-20); the mixer's node
+ * requests carry it (mmixer controls.c, sup.c). The data is the driver's to read or fill.
  */
 static HRESULT ks_node_property(const struct ks_channel *channel, ULONG node, const KSPROPERTY *property,
                                 ULONG length, void *data, ULONG size, ULONG *returned)
@@ -60,6 +64,7 @@ static HRESULT ks_node_property(const struct ks_channel *channel, ULONG node, co
         return E_INVALIDARG;
     ZeroMemory(&request, sizeof(request));
     request.Property = *property;
+    request.Property.Flags |= KSPROPERTY_TYPE_TOPOLOGY;
     request.NodeId = node;
     hr = channel->request(channel->filter, IOCTL_KS_PROPERTY, &request, sizeof(request), data, size, &bytes);
     if (returned)
@@ -67,7 +72,7 @@ static HRESULT ks_node_property(const struct ks_channel *channel, ULONG node, co
     return hr;
 }
 
-/* A method of the node, as the property: a KSM_NODE of the node through IOCTL_KS_METHOD */
+/* A method of the node, as the property: a KSM_NODE of the node with the node's flag (KSMETHOD_TYPE_TOPOLOGY) through IOCTL_KS_METHOD */
 static HRESULT ks_node_method(const struct ks_channel *channel, ULONG node, const KSMETHOD *method,
                               ULONG length, void *data, ULONG size, ULONG *returned)
 {
@@ -79,6 +84,7 @@ static HRESULT ks_node_method(const struct ks_channel *channel, ULONG node, cons
         return E_INVALIDARG;
     ZeroMemory(&request, sizeof(request));
     request.Method = *method;
+    request.Method.Flags |= KSMETHOD_TYPE_TOPOLOGY;
     request.NodeID = node;
     hr = channel->request(channel->filter, IOCTL_KS_METHOD, &request, sizeof(request), data, size, &bytes);
     if (returned)
@@ -87,9 +93,10 @@ static HRESULT ks_node_method(const struct ks_channel *channel, ULONG node, cons
 }
 
 /*
- * An event of the node: with an event (a KSE_NODE of the node) it is enabled through
- * IOCTL_KS_ENABLE_EVENT, the data being the KSEVENTDATA; without one (no length) the event the
- * data names is disabled through IOCTL_KS_DISABLE_EVENT, which takes the data as its request.
+ * An event of the node: with an event (a KSE_NODE of the node, with the node's flag KSEVENT_TYPE_TOPOLOGY
+ * by which portcls finds the node's event item) it is enabled through IOCTL_KS_ENABLE_EVENT, the data
+ * being the KSEVENTDATA; without one (no length) the event the data names is disabled through
+ * IOCTL_KS_DISABLE_EVENT, which takes the data as its request.
  */
 static HRESULT ks_node_event(const struct ks_channel *channel, ULONG node, const KSEVENT *event,
                              ULONG length, void *data, ULONG size, ULONG *returned)
@@ -109,6 +116,7 @@ static HRESULT ks_node_event(const struct ks_channel *channel, ULONG node, const
         return E_INVALIDARG;
     ZeroMemory(&request, sizeof(request));
     request.Event = *event;
+    request.Event.Flags |= KSEVENT_TYPE_TOPOLOGY;
     request.NodeId = node;
     hr = channel->request(channel->filter, IOCTL_KS_ENABLE_EVENT, &request, sizeof(request), data, size, &bytes);
     if (returned)
