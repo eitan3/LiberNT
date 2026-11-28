@@ -321,6 +321,7 @@ typedef struct _DXGK_REDIRECTION_SURFACES_SYNC
 #define DWM_PROP_GPU_OUTPUT           L"ReactOS.Dwm.GpuOutput"
 #define DWM_PROP_LIBER_MATERIAL       L"LiberNT.Dwm.Material"
 #define DWM_PROP_LIBER_MATERIAL_TINT  L"LiberNT.Dwm.MaterialTint"
+#define DWM_PROP_LIBER_DARK_FRAME     L"LiberNT.Dwm.DarkFrame"
 
 /* Liber material kinds are LIBER_MATERIAL_KIND + 1, so 0 means no material. */
 #define DWM_LIBER_MATERIAL_NONE       0u

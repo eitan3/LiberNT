@@ -438,6 +438,17 @@ ThemeCaptionIsLight(HTHEME hTheme)
            (GetRValue(fill) * 299 + GetGValue(fill) * 587 + GetBValue(fill) * 114) / 1000 >= 128;
 }
 
+static void
+ThemeMarkDarkFrame(HWND hWnd, BOOL Dark)
+{
+    if ((GetPropW(hWnd, DWM_PROP_LIBER_DARK_FRAME) != NULL) == Dark)
+        return;
+    if (Dark)
+        SetPropW(hWnd, DWM_PROP_LIBER_DARK_FRAME, (HANDLE)1);
+    else
+        RemovePropW(hWnd, DWM_PROP_LIBER_DARK_FRAME);
+}
+
 void
 ThemeInitDrawContext(PDRAW_CONTEXT pcontext,
                      HWND hWnd,
@@ -452,6 +463,7 @@ ThemeInitDrawContext(PDRAW_CONTEXT pcontext,
     pcontext->theme = GetNCCaptionTheme(hWnd, pcontext->wi.dwStyle);
     pcontext->DarkMode = GetPropW(hWnd, immersive_dark_mode_propW) != NULL &&
                          ThemeCaptionIsLight(pcontext->theme);
+    ThemeMarkDarkFrame(hWnd, pcontext->DarkMode || !ThemeCaptionIsLight(pcontext->theme));
     pcontext->scrolltheme = GetNCScrollbarTheme(hWnd, pcontext->wi.dwStyle);
 
     pcontext->CaptionHeight = pcontext->wi.cyWindowBorders;

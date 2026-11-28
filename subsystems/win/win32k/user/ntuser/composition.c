@@ -206,7 +206,8 @@ IntCompositionIsFrameAtom(_In_ ATOM Atom)
             Atom == AtomDwmCaptionRow ||
             Atom == AtomDwmCaptionState ||
             Atom == AtomDwmLiberMaterial ||
-            Atom == AtomDwmLiberMaterialTint);
+            Atom == AtomDwmLiberMaterialTint ||
+            Atom == AtomDwmLiberDarkFrame);
 }
 
 static ULONG
@@ -3838,8 +3839,8 @@ IntCompositionDwmGetFrame(_In_ PVOID pUser)
             {
                 lf |= DWM_WINDOW_ACTIVE;
             }
-            if (AtomDwmDarkMode != 0 &&
-                UserGetProp(w, AtomDwmDarkMode, FALSE) != NULL)
+            if ((AtomDwmDarkMode != 0 && UserGetProp(w, AtomDwmDarkMode, FALSE) != NULL) ||
+                (AtomDwmLiberDarkFrame != 0 && UserGetProp(w, AtomDwmLiberDarkFrame, FALSE) != NULL))
             {
                 lf |= DWM_WINDOW_DARK;
             }
