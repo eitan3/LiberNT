@@ -772,4 +772,16 @@ if(BUILD_TESTING AND NTFSLIB_BUILD_FUSE)
             "${CMAKE_CURRENT_LIST_DIR}/tests/case_sensitive_smoke.sh"
             "$<TARGET_FILE:ntfslib_fuse>"
     )
+    # Replays $LogFile streams Windows 11 wrote and compares every file with Windows'
+    # own replay.  The images stay outside the tree: NTFSLIB_NTFS_FIXTURES names them.
+    add_test(
+        NAME ntfslib_linux_windows_log_replay
+        COMMAND /bin/sh
+            "${CMAKE_CURRENT_LIST_DIR}/tests/windows_log_replay_test.sh"
+            "$<TARGET_FILE:ntfslib_fuse>"
+    )
+    set_tests_properties(
+        ntfslib_linux_windows_log_replay
+        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900
+    )
 endif()

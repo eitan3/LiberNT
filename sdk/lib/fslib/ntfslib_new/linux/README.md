@@ -357,9 +357,12 @@ incorrect result fails instead of being reported as fast.
   become a limit; the previous clusters remain owned until the replacement is
   durable, and bounded incremental growth is the fallback when a contiguous
   replacement is unavailable.
-- An all-`0xff` `$LogFile` is recognized as NTFS's empty/clean form, but there
-  is no journal replay, transaction logging or crash recovery, so a writable
-  mount that does not unmount cleanly can leave the volume inconsistent.
+- An all-`0xff` `$LogFile` is recognized as NTFS's empty/clean form. A writable open
+  replays an LFS 2.0 log Windows left dirty (`tests/windows_log_replay_test.sh` checks
+  the replay against Windows' own); a 1.1 log is written to only when it says its volume
+  was closed cleanly. The library itself writes no journal and never marks a volume
+  dirty, so there is no crash recovery for its own writes: a writable mount that does
+  not unmount cleanly can leave the volume inconsistent.
 - Growth synchronizes duplicated local and parent-index `$FILE_NAME` sizes,
   but those metadata writes are not crash-atomic until LFS transactions exist.
 - Native NTFS/LZNT1-compressed and encrypted stream writes remain unsupported
