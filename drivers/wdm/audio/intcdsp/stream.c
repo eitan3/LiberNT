@@ -391,12 +391,12 @@ IntcDspGainEntry(
 /*
  * A sample in its container as the firmware's volume component forwards it
  * under a Q1.31 gain: a 16-bit sample is widened to 32 bits as a host
- * copier takes it (24 valid bits in a 32-bit word already are the high
- * part), the product rounded and shifted, saturated, and back in the
- * container with the bits below the valid ones clear, as the capture
- * copier writes it; unity is the sample itself, the component's
- * passthrough. The self-test's expected capture and the model's gain are
- * this arithmetic.
+ * copier takes it, the product rounded and shifted, saturated, and back in
+ * the container; unity is the sample itself, the component's passthrough.
+ * The container is the sample whole, whatever its valid bits (the
+ * self-test fills a 32-bit container the same at 24 and 32 valid bits, and
+ * the model forwards the bytes as they are). The self-test's expected
+ * capture and the model's gain are this arithmetic.
  */
 INT32
 IntcDspGainApply(
@@ -416,11 +416,7 @@ IntcDspGainApply(
         Product = (INT64)0x7FFFFFFF;
     else if (Product < -(INT64)0x80000000)
         Product = -(INT64)0x80000000;
-    Product >>= Shift;
-    /* the bits below the valid ones are not the sample's: clear them */
-    if (ValidBits < ContainerBits)
-        Product &= (INT64)~(((UINT64)1 << (ContainerBits - ValidBits)) - 1);
-    return (INT32)Product;
+    return (INT32)(Product >> Shift);
 }
 
 /* the whole decibels and the hundredths of a level below unity, for the lines */

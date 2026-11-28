@@ -452,8 +452,7 @@ IntcDspGainEntry(
  * A sample in its container as the firmware's volume component forwards it
  * under a Q1.31 gain: a 16-bit sample widened to 32 bits as a host copier
  * takes it, the product rounded and shifted, saturated, and back in the
- * container with the bits below the valid ones clear; unity is the sample
- * itself. The self-test's expected capture.
+ * container; unity is the sample itself. The self-test's expected capture.
  */
 INT32
 IntcDspGainApply(

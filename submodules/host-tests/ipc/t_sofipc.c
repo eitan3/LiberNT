@@ -2150,7 +2150,6 @@ StreamWireGain(
 {
     UINT32 Volume = Module->Words == 16 ? Module->Config[11] : Module->Words == 6 ? Module->Config[1] : 0x7fffffff;
     ULONG Width = Capture->Format.ContainerSize / 8, Shift = 32 - Capture->Format.ContainerSize;
-    INT64 Low = Capture->Format.ValidBitsPerSample < Capture->Format.ContainerSize ? ((INT64)1 << (Capture->Format.ContainerSize - Capture->Format.ValidBitsPerSample)) - 1 : 0;
     double Scale = ldexp((double)Volume, Shift - 31);
     UINT32 I, Channel;
     double Scaled;
@@ -2172,7 +2171,6 @@ StreamWireGain(
             if (Wide < -0x80000000LL)
                 Wide = -0x80000000LL;
             Wide >>= Shift;
-            Wide &= ~Low;
             if (Width == 2)
                 *(INT16*)At = (INT16)Wide;
             else
@@ -5625,14 +5623,14 @@ CheckStreamGainValues(
     CHECK_EQ(Entry.CurveType, 0);
     CHECK_EQ(Entry.Reserved, 0);
     CHECK_EQ(Entry.CurveDuration, 0);
-    /* the arithmetic: unity is the sample itself; one half rounds in the 32-bit domain and narrows; the valid bits sit in the high part and the bits below them are clear; a zero gain is silence; the largest sample under -6 dB is the rounded product */
+    /* the arithmetic: unity is the sample itself; one half rounds in the 32-bit domain and narrows; a 32-bit container is the sample whole whatever its valid bits; a zero gain is silence; the largest sample under -6 dB is the rounded product */
     CHECK_EQ(IntcDspGainApply(1000, 16, 16, 0x7fffffff), 1000);
     CHECK_EQ(IntcDspGainApply(-1000, 32, 32, 0x7fffffff), -1000);
     CHECK_EQ(IntcDspGainApply(1001, 16, 16, 0x40000000), 500);
     CHECK_EQ(IntcDspGainApply(-1001, 16, 16, 0x40000000), -501);
     CHECK_EQ(IntcDspGainApply(-1, 16, 16, 0x40000000), -1);
     CHECK_EQ(IntcDspGainApply(0x7fffff00, 32, 24, 0x7fffffff), 0x7fffff00);
-    CHECK_EQ(IntcDspGainApply(0x7fffff00, 32, 24, 0x4026e73d), 0x4026e600);
+    CHECK_EQ(IntcDspGainApply(0x7fffff00, 32, 24, 0x4026e73d), 0x4026e6bd);
     CHECK_EQ(IntcDspGainApply(0x12345600, 32, 24, 0x40000000), 0x091a2b00);
     CHECK_EQ(IntcDspGainApply(0x12345678, 32, 32, 0), 0);
     CHECK_EQ(IntcDspGainApply(0x7fffffff, 32, 32, 0x4026e73d), 1076291388);
@@ -5841,8 +5839,8 @@ CheckStreamSelfTestGain(
     CHECK(StreamLogCount(S, "loopback self-test: the gain step, three depths at -6.00 dB (gain 0x4026e73d)\n") == 1);
     CHECK(StreamLogCount(S, "max abs error 0, render rms 5794.253, capture rms 5794.253, ok\n") == 1);
     CHECK(StreamLogCount(S, "max abs error 0, gain 0x4026e73d, render rms 5794.253, capture rms 2903.940, ok\n") == 1);
-    CHECK(StreamLogCount(S, "max abs error 0, gain 0x4026e73d, render rms 379742706.482, capture rms 190322170.081, ok\n") == 1);
-    CHECK(StreamLogCount(S, "max abs error 0, gain 0x4026e73d, render rms 379742706.482, capture rms 190322196.559, ok\n") == 1);
+    /* the 24 and the 32 valid bits fill the 32-bit container alike, so their captures are alike */
+    CHECK(StreamLogCount(S, "max abs error 0, gain 0x4026e73d, render rms 379742706.482, capture rms 190322196.559, ok\n") == 2);
     CHECK(StreamLogCount(S, "loopback self-test: 6 runs, 6 matched, 0 failed,") == 1);
     CHECK_EQ(S->Streams.Gain[Pcm].Level, -3L * 65536L);
     CHECK(S->Streams.Gain[Pcm].Kept);
