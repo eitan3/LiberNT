@@ -13,6 +13,11 @@ target_include_directories(ndis_poll PRIVATE ${REACTOS_HOST_SOURCE_ROOT}/drivers
 target_compile_options(ndis_poll PRIVATE -Wall -Wextra)
 add_test(NAME ndis.poll COMMAND ndis_poll)
 
+add_executable(ndis_rtl8125 t_rtl8125.c)
+target_include_directories(ndis_rtl8125 PRIVATE ${REACTOS_HOST_SOURCE_ROOT}/drivers/network/dd/rtl8125)
+target_compile_options(ndis_rtl8125 PRIVATE -Wall -Wextra)
+add_test(NAME ndis.rtl8125 COMMAND ndis_rtl8125)
+
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     foreach(driver nvnet vmxnet3)
